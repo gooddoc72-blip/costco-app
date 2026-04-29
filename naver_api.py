@@ -293,6 +293,147 @@ def get_kakao_token_by_code(rest_api_key, auth_code, redirect_uri="http://localh
     except Exception as e:
         return None, None, str(e)
 
+def upload_product_image(client_id, client_secret, image_source):
+    """
+    이미지(로컬 파일 경로 또는 URL)를 네이버 CDN에 업로드.
+    반환: (naver_cdn_url, error_msg)
+    """
+    token, err = get_token(client_id, client_secret)
+    if not token:
+        return None, err
+
+    headers = {"Authorization": f"Bearer {token}"}
+    tmp_path = None
+
+    try:
+        if image_source.startswith("http"):
+            import urllib.request, tempfile, os
+            ext = os.path.splitext(image_source.split("?")[0])[-1].lower()
+            if ext not in (".jpg", ".jpeg", ".png", ".webp"):
+                ext = ".jpg"
+            tmp_fd, tmp_path = tempfile.mkstemp(suffix=ext)
+            os.close(tmp_fd)
+            req = urllib.request.Request(
+                image_source,
+                headers={"User-Agent": "Mozilla/5.0", "Referer": "https://www.costco.co.kr/"},
+            )
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                with open(tmp_path, "wb") as f:
+                    f.write(resp.read())
+            src_path = tmp_path
+        else:
+            src_path = image_source
+
+        with open(src_path, "rb") as f:
+            resp = requests.post(
+                "https://api.commerce.naver.com/external/v1/product-images/upload",
+                headers=headers,
+                files={"imageFiles": f},
+                timeout=30,
+            )
+
+        if resp.status_code == 200:
+            imgs = resp.json().get("images", [])
+            if imgs:
+                return imgs[0].get("url"), None
+        return None, f"이미지 업로드 실패({resp.status_code}): {resp.text[:300]}"
+
+    except Exception as e:
+        return None, str(e)
+    finally:
+        if tmp_path:
+            try:
+                import os
+                os.remove(tmp_path)
+            except Exception:
+                pass
+
+
+def register_product(client_id, client_secret, product_info):
+    """
+    네이버 스마트스토어 상품 등록.
+    product_info 필수 키:
+      name, sale_price, image_url(네이버CDN), category_id
+    선택 키:
+      stock(default 100), shipping_fee(default 0), detail_content,
+      after_service_tel, origin_code('03'=국내, '04'=해외)
+    반환: ({"origin_product_no": str}, error_msg)
+    """
+    token, err = get_token(client_id, client_secret)
+    if not token:
+        return None, err
+
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
+    shipping_fee = int(product_info.get("shipping_fee", 0))
+    fee_type = "FREE" if shipping_fee == 0 else "CHARGE"
+    name = (product_info.get("name") or "")[:100]
+    detail = product_info.get("detail_content") or f"<p>{name}</p>"
+    as_tel = product_info.get("after_service_tel") or "1588-1234"
+    origin = product_info.get("origin_code") or "03"
+
+    payload = {
+        "originProduct": {
+            "statusType": "SALE",
+            "saleType": "NEW",
+            "leafCategoryId": str(product_info["category_id"]),
+            "name": name,
+            "detailContent": detail,
+            "images": {
+                "representativeImage": {"url": product_info["image_url"]},
+                "optionalImages": [],
+            },
+            "salePrice": int(product_info["sale_price"]),
+            "stockQuantity": int(product_info.get("stock", 100)),
+            "deliveryInfo": {
+                "deliveryType": "DELIVERY",
+                "deliveryAttributeType": "NORMAL",
+                "deliveryFee": {
+                    "deliveryFeeType": fee_type,
+                    "baseFee": shipping_fee,
+                    "deliveryFeePayType": "PREPAID",
+                },
+                "returnDeliveryFee": {
+                    "deliveryFeeType": "CHARGE",
+                    "baseFee": 5000,
+                    "deliveryFeePayType": "COLLECT",
+                },
+                "exchangeDeliveryFee": {
+                    "deliveryFeeType": "CHARGE",
+                    "baseFee": 5000,
+                    "deliveryFeePayType": "COLLECT",
+                },
+            },
+            "detailAttribute": {
+                "afterServiceInfo": {
+                    "afterServiceTelephoneNumber": as_tel,
+                    "afterServiceGuideContent": "판매자에게 문의해 주세요.",
+                },
+                "originAreaInfo": {
+                    "originAreaCode": origin,
+                    "content": "",
+                },
+            },
+        }
+    }
+
+    try:
+        resp = requests.post(
+            "https://api.commerce.naver.com/external/v2/products",
+            headers=headers,
+            json=payload,
+            timeout=30,
+        )
+        if resp.status_code in (200, 201):
+            data = resp.json()
+            pno = str(data.get("originProductNo") or data.get("productNo") or "")
+            return {"origin_product_no": pno}, None
+        msg = resp.json().get("message") or resp.text[:400]
+        return None, f"상품 등록 실패({resp.status_code}): {msg}"
+    except Exception as e:
+        return None, str(e)
+
+
 def calc_min_price(unit_cost, shipping_cost, box_cost, target_margin_rate):
     """적자 안 나는 최소 판매가 계산 (네이버 수수료 5.5% 기준)"""
     total_cost = unit_cost + shipping_cost + box_cost

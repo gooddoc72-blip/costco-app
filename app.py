@@ -9,6 +9,7 @@ import sqlite3
 import os
 import re
 import io
+import json
 import math
 import hashlib
 import secrets
@@ -93,12 +94,16 @@ def init_auth_db():
     except: pass
     try: conn.execute("ALTER TABLE shared_products ADD COLUMN price_type TEXT DEFAULT '매장'")
     except: pass
-    # NULL인 price_type을 '매장'으로 채움 (컬럼 추가 전 기존 데이터 보정)
-    try: conn.execute("UPDATE shared_products SET price_type='매장' WHERE price_type IS NULL")
+    # 크롤러 수집 = 온라인가 / 영수증 등 나머지 NULL = 매장가
+    try: conn.execute("UPDATE shared_products SET price_type='온라인' WHERE updated_by='crawler'")
+    except: pass
+    try: conn.execute("UPDATE shared_products SET price_type='매장' WHERE price_type IS NULL OR price_type=''")
     except: pass
     try: conn.execute("ALTER TABLE shared_products ADD COLUMN image_url TEXT DEFAULT ''")
     except: pass
     try: conn.execute("ALTER TABLE shared_products ADD COLUMN local_image TEXT DEFAULT ''")
+    except: pass
+    try: conn.execute("ALTER TABLE shared_products ADD COLUMN naver_category_id TEXT DEFAULT ''")
     except: pass
     try: conn.execute("ALTER TABLE users ADD COLUMN status TEXT DEFAULT 'active'")
     except: pass
@@ -2834,6 +2839,23 @@ elif tab_choice == "⚙️ 설정":
         st.warning("naver_api.py 파일이 프로그램 폴더에 없습니다. 관리자에게 문의하세요.")
 
     st.divider()
+    st.subheader("🛍 네이버 상품 등록 기본값")
+    st.caption("제품 DB에서 '🛍등록' 버튼 클릭 시 자동 입력되는 기본값입니다.")
+    _nc1, _nc2 = st.columns(2)
+    _def_cat = _nc1.text_input("기본 카테고리 ID",
+                                value=get_setting(USERNAME, 'naver_default_category'),
+                                placeholder="예: 50000803",
+                                key="set_naver_cat")
+    _def_as  = _nc2.text_input("A/S 전화번호",
+                                value=get_setting(USERNAME, 'naver_as_tel'),
+                                placeholder="010-0000-0000",
+                                key="set_naver_as")
+    if st.button("상품 등록 기본값 저장", key="save_naver_reg_defaults"):
+        set_setting(USERNAME, 'naver_default_category', _def_cat.strip())
+        set_setting(USERNAME, 'naver_as_tel', _def_as.strip())
+        st.success("✅ 저장 완료!")
+
+    st.divider()
     st.subheader("📱 카카오톡 알림")
     st.caption("장보기 목록을 카카오톡(나에게 보내기)으로 전송합니다.")
     
@@ -2981,6 +3003,109 @@ elif tab_choice == "📦 제품 DB":
     st.header("📦 제품 가격 DB 관리")
     st.caption("🔗 공유 필드(매입가·상품명)는 읽기전용 — 영수증 업로드 또는 관리자 탭에서 수정 | ✏️ 판매가·배송비는 개인별 수정 가능")
 
+    # ── 네이버 상품 등록 폼 ─────────────────────────────────────────
+    _nreg_sp_id = st.session_state.get('naver_reg_sp_id')
+    if _nreg_sp_id is not None:
+        _nreg_kw = st.session_state.get('naver_reg_kw', '')
+        conn_auth = sqlite3.connect(AUTH_DB)
+        conn_auth.row_factory = sqlite3.Row
+        _sp = conn_auth.execute("SELECT * FROM shared_products WHERE id=?", (_nreg_sp_id,)).fetchone()
+        conn_auth.close()
+
+        if _sp:
+            _sp = dict(_sp)
+            with st.expander(f"🛍 네이버 스마트스토어 상품 등록 — {_sp['costco_name']}", expanded=True):
+                if not HAS_NAVER_API:
+                    st.error("naver_api.py 없음")
+                elif not api_id or not api_secret:
+                    st.warning("⚙️ 설정 탭에서 네이버 API 키를 먼저 입력하세요.")
+                else:
+                    _saved_cat = _sp.get('naver_category_id') or get_setting(USERNAME, 'naver_default_category') or ''
+                    _saved_as  = get_setting(USERNAME, 'naver_as_tel') or ''
+
+                    rc1, rc2 = st.columns(2)
+                    _reg_name  = rc1.text_input("상품명", value=_sp['costco_name'][:100], key="nreg_name")
+                    _reg_cat   = rc2.text_input("네이버 카테고리 ID",
+                                                value=_saved_cat,
+                                                placeholder="예: 50000803 (냉동식품)",
+                                                key="nreg_cat",
+                                                help="스마트스토어 센터 > 상품관리 > 카테고리에서 리프 카테고리 ID 확인")
+
+                    rc3, rc4, rc5 = st.columns(3)
+                    _up = next((x for x in get_all_products_merged(USERNAME) if x.get('shared_id') == _nreg_sp_id), {})
+                    _def_price = int(_up.get('sale_price') or 0) or int(_sp.get('unit_price') or 0)
+                    _def_fee   = int(_up.get('shipping_fee') or 0)
+                    _reg_price = rc3.number_input("판매가 (원)", value=_def_price, step=100, key="nreg_price")
+                    _reg_fee   = rc4.number_input("배송비 (0=무료)", value=_def_fee, step=500, key="nreg_fee")
+                    _reg_stock = rc5.number_input("재고 수량", value=100, step=10, key="nreg_stock")
+
+                    rc6, rc7 = st.columns(2)
+                    _reg_as   = rc6.text_input("A/S 전화번호", value=_saved_as, placeholder="010-0000-0000", key="nreg_as")
+                    _reg_orig = rc7.selectbox("원산지", ["국내산 (03)", "해외산 (04)"], key="nreg_orig")
+                    _orig_code = "03" if "03" in _reg_orig else "04"
+
+                    _image_src = _sp.get('local_image') or _sp.get('image_url') or ''
+                    if _image_src:
+                        st.image(_image_src, width=80, caption="등록 이미지")
+                    else:
+                        st.warning("이미지 없음 — 크롤링 후 재시도 권장")
+
+                    btn_c1, btn_c2 = st.columns([1, 4])
+                    if btn_c2.button("✖ 취소", key="nreg_cancel"):
+                        st.session_state.pop('naver_reg_sp_id', None)
+                        st.session_state.pop('naver_reg_kw', None)
+                        st.rerun()
+
+                    if btn_c1.button("🛍 네이버 등록", key="nreg_submit", type="primary"):
+                        if not _reg_cat.strip():
+                            st.error("카테고리 ID를 입력하세요.")
+                        elif not _reg_price:
+                            st.error("판매가를 입력하세요.")
+                        elif not _image_src:
+                            st.error("이미지가 없습니다. 먼저 크롤링을 실행하세요.")
+                        else:
+                            with st.spinner("이미지 업로드 중..."):
+                                _cdn_url, _err = naver_api.upload_product_image(api_id, api_secret, _image_src)
+                            if _err or not _cdn_url:
+                                st.error(f"이미지 업로드 실패: {_err}")
+                            else:
+                                with st.spinner("네이버 상품 등록 중..."):
+                                    _result, _err2 = naver_api.register_product(api_id, api_secret, {
+                                        "name": _reg_name,
+                                        "sale_price": _reg_price,
+                                        "image_url": _cdn_url,
+                                        "category_id": _reg_cat.strip(),
+                                        "stock": _reg_stock,
+                                        "shipping_fee": _reg_fee,
+                                        "after_service_tel": _reg_as,
+                                        "origin_code": _orig_code,
+                                    })
+                                if _err2 or not _result:
+                                    st.error(f"상품 등록 실패: {_err2}")
+                                else:
+                                    _npno = _result.get("origin_product_no", "")
+                                    # 사용자 products 테이블에 네이버 상품번호 저장
+                                    upsert_user_private(USERNAME, _nreg_kw,
+                                                        _sp['costco_name'],
+                                                        naver_product_no=_npno)
+                                    # 카테고리 ID를 shared_products 및 사용자 기본값으로 저장
+                                    try:
+                                        _ca = sqlite3.connect(AUTH_DB)
+                                        _ca.execute("UPDATE shared_products SET naver_category_id=? WHERE id=?",
+                                                    (_reg_cat.strip(), _nreg_sp_id))
+                                        _ca.commit(); _ca.close()
+                                    except Exception:
+                                        pass
+                                    set_setting(USERNAME, 'naver_default_category', _reg_cat.strip())
+                                    set_setting(USERNAME, 'naver_as_tel', _reg_as)
+                                    st.success(f"✅ 등록 완료! 네이버 상품번호: {_npno}")
+                                    st.session_state.pop('naver_reg_sp_id', None)
+                                    st.session_state.pop('naver_reg_kw', None)
+                                    st.rerun()
+        else:
+            st.session_state.pop('naver_reg_sp_id', None)
+            st.session_state.pop('naver_reg_kw', None)
+
     products = get_all_products_merged(USERNAME)
     if products:
         # ── 검색 ──
@@ -3015,8 +3140,8 @@ elif tab_choice == "📦 제품 DB":
         # 공유(읽기전용): 상품번호 | 코스트코 상품명 | 매칭키 | 매입가 | 분리
         # 개인(수정가능): 판매가(네이버) | 고객배송비
         # 기타: 공유여부 | 업데이트 | 수정 | 삭제
-        HDR = [0.9, 2.8, 2.0, 1.05, 1.05, 0.6, 1.2, 1.1, 1.0, 0.75, 0.65]
-        HDR_LABELS = ['상품번호', '코스트코 상품명', '매칭키', '매장가🔒', '온라인가🔒', '소분🔒', '판매가(네이버)✏️', '고객배송비✏️', '업데이트', '수정', '삭제']
+        HDR = [0.9, 2.8, 2.0, 1.05, 1.05, 0.6, 1.2, 1.1, 1.0, 0.6, 0.6, 0.55]
+        HDR_LABELS = ['상품번호', '코스트코 상품명', '매칭키', '매장가🔒', '온라인가🔒', '소분🔒', '판매가(네이버)✏️', '고객배송비✏️', '업데이트', '수정', '🛍등록', '삭제']
         hdr_cols = st.columns(HDR)
         for lbl, col in zip(HDR_LABELS, hdr_cols):
             col.markdown(f"<span style='font-size:15px;font-weight:600;color:#555'>{lbl}</span>",
@@ -3146,7 +3271,14 @@ elif tab_choice == "📦 제품 DB":
                 if row_cols[9].button("✏️", key=f"edit_btn_{kw}", use_container_width=True):
                     st.session_state['editing_product_kw'] = kw
                     st.rerun()
-                if row_cols[10].button("🗑", key=f"del_btn_{kw}", use_container_width=True):
+                _n_registered = bool(p.get('naver_product_no'))
+                _n_label = "✅" if _n_registered else "🛍"
+                if row_cols[10].button(_n_label, key=f"nreg_btn_{kw}", use_container_width=True,
+                                       help="네이버 스마트스토어 등록" if not _n_registered else f"등록됨 ({p.get('naver_product_no')})"):
+                    st.session_state['naver_reg_sp_id'] = p.get('shared_id')
+                    st.session_state['naver_reg_kw'] = kw
+                    st.rerun()
+                if row_cols[11].button("🗑", key=f"del_btn_{kw}", use_container_width=True):
                     pid_del = p.get('private_id')
                     if pid_del:
                         conn_u = get_user_db(USERNAME)
@@ -3593,24 +3725,32 @@ elif tab_choice == "🤖 자동화":
 
     TASK1_NAME = f"CostcoHotdeal_Shopping_{USERNAME}"
     TASK2_NAME = f"CostcoHotdeal_Shipping_{USERNAME}"
+    TASK3_NAME = "CostcoHotdeal_Crawl"
 
     # ── 현재 스케줄 상태 ──
     with st.expander("📌 현재 등록된 작업 스케줄러 상태", expanded=True):
-        c1, c2 = st.columns(2)
+        c1, c2, c3 = st.columns(3)
         t1_ok, t1_out = _query_task(TASK1_NAME)
         t2_ok, t2_out = _query_task(TASK2_NAME)
+        t3_ok, t3_out = _query_task(TASK3_NAME)
         with c1:
             if t1_ok:
-                st.success(f"✅ Task 1 (장보기) 등록됨")
+                st.success("✅ Task 1 (장보기) 등록됨")
                 st.code(t1_out[:400], language=None)
             else:
                 st.warning("⚠️ Task 1 미등록")
         with c2:
             if t2_ok:
-                st.success(f"✅ Task 2 (발송처리) 등록됨")
+                st.success("✅ Task 2 (발송처리) 등록됨")
                 st.code(t2_out[:400], language=None)
             else:
                 st.warning("⚠️ Task 2 미등록")
+        with c3:
+            if t3_ok:
+                st.success("✅ Task 3 (크롤링) 등록됨")
+                st.code(t3_out[:400], language=None)
+            else:
+                st.warning("⚠️ Task 3 미등록")
 
     st.divider()
 
@@ -3717,6 +3857,97 @@ elif tab_choice == "🤖 자동화":
         st.code(output, language=None)
 
     st.divider()
+
+    # ── Task 3: 정기 크롤링 (admin 전용) ──
+    if IS_ADMIN:
+        st.subheader("🕐 Task 3 — 코스트코 정기 크롤링")
+        st.caption("매일 지정 시간에 코스트코 상품을 자동 크롤링하여 공유 제품 DB를 최신 상태로 유지합니다.")
+
+        _CRAWL_PRESETS = {
+            "🔄 정기갱신": ["신선식품", "냉동식품", "과자/간식", "커피/음료", "가공식품"],
+            "🔥 핫딜시즌": ["스페셜할인", "커클랜드", "신상품"],
+            "🆕 새상품탐색": ["신상품", "스페셜할인"],
+            "🏗️ 전체카테고리": ["식품", "신선식품", "냉동식품", "과자/간식", "커피/음료",
+                                "가공식품", "생활용품", "세제/청소", "화장지", "가전/디지털",
+                                "주방가전", "뷰티/화장품", "건강/영양제", "의류/패션",
+                                "완구", "반려동물", "자동차용품"],
+        }
+
+        task3_en = get_setting(USERNAME, 'auto_crawl_enabled') == '1'
+        task3_time_str = get_setting(USERNAME, 'auto_crawl_time') or '06:00'
+        t3h, t3m = [int(x) for x in task3_time_str.split(':')]
+        _saved_cats_json = get_setting(USERNAME, 'auto_crawl_categories') or '[]'
+        try:
+            _saved_cats = json.loads(_saved_cats_json)
+        except Exception:
+            _saved_cats = []
+        _saved_max = int(get_setting(USERNAME, 'auto_crawl_max') or 200)
+
+        cr1, cr2 = st.columns([1, 2])
+        new_t3_en   = cr1.checkbox("활성화", value=task3_en, key="t3_en")
+        new_t3_time = cr2.time_input("실행 시간", value=dtime(t3h, t3m), key="t3_time")
+
+        st.markdown("**크롤링 카테고리 선택**")
+        _preset_cols = st.columns(4)
+        for _pi, (_plabel, _pcats) in enumerate(_CRAWL_PRESETS.items()):
+            if _preset_cols[_pi].button(_plabel, key=f"t3_preset_{_pi}", use_container_width=True):
+                _saved_cats = list(set(_saved_cats) | set(_pcats))
+
+        from costco_crawler import CATEGORIES as _ALL_CATS
+        _cat_names = [c for c in _ALL_CATS if c not in ("전체",)]
+        _sel_cats = st.multiselect("크롤링 대상 카테고리",
+                                   options=_cat_names,
+                                   default=[c for c in _saved_cats if c in _cat_names],
+                                   key="t3_cats")
+        _new_max = st.number_input("카테고리당 최대 수집 수", value=_saved_max,
+                                   min_value=50, max_value=500, step=50, key="t3_max")
+
+        col_s3, col_d3, col_run3 = st.columns(3)
+        if col_s3.button("💾 Task 3 저장 & 등록", key="save_t3", type="primary", use_container_width=True):
+            t3_str = new_t3_time.strftime("%H:%M")
+            set_setting(USERNAME, 'auto_crawl_enabled', '1' if new_t3_en else '0')
+            set_setting(USERNAME, 'auto_crawl_time', t3_str)
+            set_setting(USERNAME, 'auto_crawl_categories', json.dumps(_sel_cats, ensure_ascii=False))
+            set_setting(USERNAME, 'auto_crawl_max', str(int(_new_max)))
+            if new_t3_en:
+                _cmd3 = f'"{PYTHON_PATH}" "{SCRIPT_PATH}" --task crawl --user {USERNAME}'
+                ok, out = _schtasks_run(["/create", "/tn", TASK3_NAME, "/tr", _cmd3,
+                                         "/sc", "daily", "/st", t3_str, "/f"])
+                if ok:
+                    st.success(f"✅ Task 3 등록 완료 — 매일 {t3_str} 자동 크롤링")
+                else:
+                    st.error(f"❌ 등록 실패 (관리자 권한으로 실행 필요)\n{out}")
+            else:
+                _schtasks_run(["/delete", "/tn", TASK3_NAME, "/f"])
+                st.info("Task 3 비활성화 — 스케줄 삭제됨")
+            st.rerun()
+
+        if col_d3.button("🗑 Task 3 삭제", key="del_t3", use_container_width=True):
+            ok, out = _schtasks_run(["/delete", "/tn", TASK3_NAME, "/f"])
+            set_setting(USERNAME, 'auto_crawl_enabled', '0')
+            st.success("삭제됨") if ok else st.error(f"삭제 실패: {out}")
+            st.rerun()
+
+        if col_run3.button("▶ 지금 테스트 실행", key="run_t3", use_container_width=True):
+            if not _sel_cats:
+                st.warning("카테고리를 선택하세요.")
+            else:
+                set_setting(USERNAME, 'auto_crawl_categories',
+                            json.dumps(_sel_cats, ensure_ascii=False))
+                with st.spinner(f"크롤링 실행 중 ({len(_sel_cats)}개 카테고리)... 수 분 소요"):
+                    r = subprocess.run(
+                        [PYTHON_PATH, SCRIPT_PATH, "--task", "crawl", "--user", USERNAME],
+                        capture_output=True, text=True, encoding="utf-8", errors="replace",
+                        timeout=600
+                    )
+                output = (r.stdout + r.stderr).strip()
+                if r.returncode == 0:
+                    st.success("✅ 크롤링 완료")
+                else:
+                    st.error("❌ 크롤링 오류")
+                st.code(output, language=None)
+
+        st.divider()
 
     # ── 실행 로그 ──
     st.subheader("📄 자동화 실행 로그")

@@ -18,7 +18,7 @@ Task 2 (shipping) - 자동 발송처리
   python auto_task.py --task shipping          # 발송처리만
   python auto_task.py --task shopping --user admin
 """
-import sqlite3, os, sys, argparse, re
+import sqlite3, os, sys, argparse, re, json
 from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -64,6 +64,17 @@ def extract_pack_qty(option_str, name_str=""):
             if 1 < v <= 30:
                 return v
     return 1
+
+
+def get_global_setting(key, default=''):
+    """auth.db app_settings에서 전역 설정값 읽기 (코스트코 이메일/비번 등)"""
+    db_path = os.path.join(DATA_DIR, "auth.db")
+    if not os.path.exists(db_path):
+        return default
+    conn = sqlite3.connect(db_path)
+    row = conn.execute("SELECT value FROM app_settings WHERE key=?", (key,)).fetchone()
+    conn.close()
+    return row[0] if row else default
 
 
 def get_user_settings(username):
@@ -173,6 +184,59 @@ def send_notification(settings, msg, username=None):
         log(f"  텔레그램 실패: {err}")
 
     return False
+
+
+# ── Task 3: 정기 크롤링 ──────────────────────────
+def run_crawl_task(username="admin"):
+    log("=" * 50)
+    log(f"[Task 3] 정기 크롤링 시작 (사용자: {username})")
+
+    settings = get_user_settings(username)
+    if not settings:
+        log(f"❌ '{username}' 사용자 DB 없음")
+        return False
+
+    cats_json = settings.get("auto_crawl_categories", "[]")
+    try:
+        categories = json.loads(cats_json)
+    except Exception:
+        categories = []
+
+    if not categories:
+        log("❌ 크롤링 카테고리 미설정 — 자동화 탭 > Task 3에서 카테고리를 설정하세요.")
+        return False
+
+    max_per = int(settings.get("auto_crawl_max", 200) or 200)
+    email    = get_global_setting("costco_email")
+    password = get_global_setting("costco_password")
+
+    log(f"  카테고리 {len(categories)}개, 카테고리당 최대 {max_per}개")
+
+    try:
+        import costco_crawler
+    except ImportError:
+        log("❌ costco_crawler.py를 찾을 수 없습니다.")
+        return False
+
+    targets = [{"type": "category", "name": c} for c in categories]
+    result = costco_crawler.run_crawl(
+        targets, email, password, max_per,
+        progress_cb=lambda m: log(m),
+        updated_by="crawler",
+    )
+
+    summary = (
+        f"🕐 정기 크롤링 완료\n"
+        f"카테고리: {', '.join(categories)}\n"
+        f"신규: {result['new']}개 / 업데이트: {result['updated']}개"
+    )
+    if result.get("errors"):
+        summary += f"\n오류 {len(result['errors'])}건: " + "; ".join(result["errors"][:3])
+
+    log(summary)
+    send_notification(settings, summary, username)
+    log("[Task 3] 완료")
+    return True
 
 
 # ── Task 1: 장보기 목록 발송 ─────────────────────
@@ -405,7 +469,7 @@ def run_shipping_task(username="admin"):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="코스트코핫딜 자동화 실행")
     parser.add_argument("--task",
-                        choices=["shopping", "shipping", "all"],
+                        choices=["shopping", "shipping", "crawl", "all"],
                         default="all",
                         help="실행할 작업 (기본: all)")
     parser.add_argument("--user",
@@ -417,6 +481,9 @@ if __name__ == "__main__":
         run_shopping_task(args.user)
     elif args.task == "shipping":
         run_shipping_task(args.user)
+    elif args.task == "crawl":
+        run_crawl_task(args.user)
     else:
+        run_crawl_task(args.user)
         run_shopping_task(args.user)
         run_shipping_task(args.user)
