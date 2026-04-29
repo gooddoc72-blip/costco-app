@@ -94,11 +94,12 @@ def init_auth_db():
     except: pass
     try: conn.execute("ALTER TABLE shared_products ADD COLUMN price_type TEXT DEFAULT '매장'")
     except: pass
-    # 크롤러 수집 = 온라인가 / 영수증 등 나머지 NULL = 매장가
+    # 크롤러 수집 = 온라인가 / NULL·빈값 = 매장가 기본
     try: conn.execute("UPDATE shared_products SET price_type='온라인' WHERE updated_by='crawler'")
     except: pass
     try: conn.execute("UPDATE shared_products SET price_type='매장' WHERE price_type IS NULL OR price_type=''")
     except: pass
+    conn.commit()
     try: conn.execute("ALTER TABLE shared_products ADD COLUMN image_url TEXT DEFAULT ''")
     except: pass
     try: conn.execute("ALTER TABLE shared_products ADD COLUMN local_image TEXT DEFAULT ''")
@@ -4199,7 +4200,7 @@ http://yourname.duckdns.org:8501
                                 password=_c_pw,
                                 max_products=int(max_cat),
                                 progress_cb=_cb_cat,
-                                updated_by=USERNAME,
+                                updated_by='crawler',
                             )
                             if result["errors"]:
                                 st.warning("오류:\n" + "\n".join(result["errors"]))
@@ -4254,7 +4255,7 @@ http://yourname.duckdns.org:8501
                                 password=_c_pw,
                                 max_products=int(max_kw),
                                 progress_cb=_cb_kw,
-                                updated_by=USERNAME,
+                                updated_by='crawler',
                             )
                             if result2["errors"]:
                                 st.warning("오류:\n" + "\n".join(result2["errors"]))
