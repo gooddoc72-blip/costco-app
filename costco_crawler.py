@@ -725,6 +725,7 @@ def download_product_image(product_no: str, image_url: str) -> str:
 def save_to_shared_products(
     products: list[dict],
     updated_by: str = "crawler",
+    category: str = "",
 ) -> tuple[int, int]:
     if not os.path.exists(DATA_DIR):
         os.makedirs(DATA_DIR)
@@ -737,6 +738,7 @@ def save_to_shared_products(
         for col_sql in [
             "ALTER TABLE shared_products ADD COLUMN image_url TEXT DEFAULT ''",
             "ALTER TABLE shared_products ADD COLUMN local_image TEXT DEFAULT ''",
+            "ALTER TABLE shared_products ADD COLUMN category TEXT DEFAULT ''",
         ]:
             try:
                 conn.execute(col_sql)
@@ -769,10 +771,10 @@ def save_to_shared_products(
                     """UPDATE shared_products
                        SET costco_name=?, unit_price=?, product_no=?,
                            updated_by=?, updated_at=?, price_type='온라인',
-                           image_url=?, local_image=?
+                           image_url=?, local_image=?, category=?
                        WHERE id=?""",
                     (name, p["price"], product_no, updated_by, now,
-                     image_url, local_image, existing[0])
+                     image_url, local_image, category, existing[0])
                 )
                 updated += 1
             else:
@@ -780,10 +782,10 @@ def save_to_shared_products(
                     """INSERT INTO shared_products
                        (product_no, costco_name, match_keyword, unit_price,
                         split_qty, updated_by, updated_at, price_type,
-                        image_url, local_image)
-                       VALUES (?,?,?,?,1,?,?,'온라인',?,?)""",
+                        image_url, local_image, category)
+                       VALUES (?,?,?,?,1,?,?,'온라인',?,?,?)""",
                     (product_no, name, name, p["price"], updated_by, now,
-                     image_url, local_image)
+                     image_url, local_image, category)
                 )
                 saved += 1
 
@@ -834,8 +836,9 @@ def run_crawl(
             else:
                 continue
 
+            cat_label = cat_name if mode == "category" else (kw if mode == "keyword" else "")
             _log(f"{label} {len(products)}개 → DB 저장...", progress_cb)
-            new_cnt, upd_cnt = save_to_shared_products(products, updated_by)
+            new_cnt, upd_cnt = save_to_shared_products(products, updated_by, category=cat_label)
             total_crawled += len(products)
             total_new     += new_cnt
             total_updated += upd_cnt

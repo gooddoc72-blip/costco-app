@@ -106,6 +106,8 @@ def init_auth_db():
     except: pass
     try: conn.execute("ALTER TABLE shared_products ADD COLUMN naver_category_id TEXT DEFAULT ''")
     except: pass
+    try: conn.execute("ALTER TABLE shared_products ADD COLUMN category TEXT DEFAULT ''")
+    except: pass
     try: conn.execute("ALTER TABLE users ADD COLUMN status TEXT DEFAULT 'active'")
     except: pass
     # 관리자 계정이 없으면 기본 생성
@@ -274,6 +276,7 @@ def get_all_products_merged(username):
             'price_type': sp.get('price_type') or '매장',
             'image_url': sp.get('image_url', ''),
             'local_image': sp.get('local_image', ''),
+            'category': sp.get('category', ''),
             'shared_updated_by': sp.get('updated_by', ''),
             'shared_updated_at': sp.get('updated_at', ''),
             # 개인 필드 (수정 가능)
@@ -3115,16 +3118,35 @@ elif tab_choice == "📦 제품 DB":
 
     products = get_all_products_merged(USERNAME)
     if products:
+        # ── 카테고리 버튼 ──
+        _all_cats = sorted({p.get('category', '') for p in products if p.get('category', '')})
+        if 'product_cat_filter' not in st.session_state:
+            st.session_state['product_cat_filter'] = '전체'
+        _cat_filter = st.session_state['product_cat_filter']
+
+        _cat_buttons = ['전체'] + _all_cats
+        if _all_cats:
+            _btn_cols = st.columns(min(len(_cat_buttons), 8))
+            for _ci, _cat in enumerate(_cat_buttons):
+                _active = (_cat == _cat_filter)
+                _style = "primary" if _active else "secondary"
+                if _btn_cols[_ci % 8].button(_cat, key=f"cat_btn_{_ci}",
+                                              type=_style, use_container_width=True):
+                    st.session_state['product_cat_filter'] = _cat
+                    st.session_state['product_page'] = 1
+                    st.rerun()
+
         # ── 검색 ──
         s_col, _ = st.columns([2, 3])
         search_q = s_col.text_input("🔍 검색", placeholder="상품명 또는 상품번호", key="product_search")
 
         filtered_products = products
+        if _cat_filter != '전체':
+            filtered_products = [p for p in filtered_products if p.get('category', '') == _cat_filter]
         if search_q:
             sq_low = search_q.strip().lower()
-            filtered_products = [p for p in products if
+            filtered_products = [p for p in filtered_products if
                 sq_low in p.get('costco_name', '').lower() or
-                sq_low in p.get('match_keyword', '').lower() or
                 sq_low in str(p.get('product_no', ''))]
 
         total_count = len(filtered_products)
@@ -3141,14 +3163,11 @@ elif tab_choice == "📦 제품 DB":
         end_idx = min(start_idx + per_page, total_count)
         page_products = filtered_products[start_idx:end_idx]
 
-        st.caption(f"총 {total_count}개 제품 (페이지 {page}/{total_pages})  |  🔗 공유 DB  👤 개인 DB")
+        st.caption(f"총 {total_count}개 제품 (페이지 {page}/{total_pages})")
 
-        # ── 테이블 헤더 ──
-        # 공유(읽기전용): 상품번호 | 코스트코 상품명 | 매칭키 | 매입가 | 분리
-        # 개인(수정가능): 판매가(네이버) | 고객배송비
-        # 기타: 공유여부 | 업데이트 | 수정 | 삭제
-        HDR = [0.9, 2.8, 2.0, 1.05, 1.05, 0.6, 1.2, 1.1, 1.0, 0.6, 0.6, 0.55]
-        HDR_LABELS = ['상품번호', '코스트코 상품명', '매칭키', '매장가🔒', '온라인가🔒', '소분🔒', '판매가(네이버)✏️', '고객배송비✏️', '업데이트', '수정', '🛍등록', '삭제']
+        # ── 테이블 헤더 (매칭키 제거) ──
+        HDR = [0.9, 4.6, 1.05, 1.05, 0.6, 1.2, 1.1, 1.0, 0.6, 0.6, 0.55]
+        HDR_LABELS = ['상품번호', '코스트코 상품명', '매장가🔒', '온라인가🔒', '소분🔒', '판매가(네이버)✏️', '고객배송비✏️', '업데이트', '수정', '🛍등록', '삭제']
         hdr_cols = st.columns(HDR)
         for lbl, col in zip(HDR_LABELS, hdr_cols):
             col.markdown(f"<span style='font-size:15px;font-weight:600;color:#555'>{lbl}</span>",
@@ -3194,35 +3213,33 @@ elif tab_choice == "📦 제품 DB":
                         st.rerun()
                 else:
                     # 레거시 개인 제품: 모든 필드 수정 가능
-                    fc = st.columns([0.9, 2.8, 2.0, 1.3, 0.8, 1.2, 1.1, 1.0, 0.8])
+                    fc = st.columns([0.9, 4.6, 1.3, 0.8, 1.2, 1.1, 1.0, 0.8])
                     pid_legacy = p.get('private_id')
                     e_pno  = fc[0].text_input("상품번호", value=p.get('product_no', ''), key=f"e_pno_{kw}",
                                               label_visibility="collapsed", placeholder="상품번호")
                     e_name = fc[1].text_input("상품명",   value=p['costco_name'],        key=f"e_name_{kw}",
                                               label_visibility="collapsed")
-                    e_kw2  = fc[2].text_input("매칭키",   value=kw,                       key=f"e_kw2_{kw}",
-                                              label_visibility="collapsed")
-                    e_price= fc[3].number_input("매입가", value=int(p.get('unit_price', 0) or 0),
+                    e_price= fc[2].number_input("매입가", value=int(p.get('unit_price', 0) or 0),
                                                 step=100, key=f"e_price_{kw}", label_visibility="collapsed")
-                    e_sq   = fc[4].number_input("소분", value=sq_val, min_value=1, max_value=20,
+                    e_sq   = fc[3].number_input("소분", value=sq_val, min_value=1, max_value=20,
                                                 key=f"e_sq_{kw}", label_visibility="collapsed")
-                    e_sale = fc[5].number_input("판매가", value=sale_val, min_value=0, step=100,
+                    e_sale = fc[4].number_input("판매가", value=sale_val, min_value=0, step=100,
                                                 key=f"e_sale2_{kw}", label_visibility="collapsed")
-                    e_fee  = fc[6].number_input("배송비", value=fee_val, min_value=0, step=100,
+                    e_fee  = fc[5].number_input("배송비", value=fee_val, min_value=0, step=100,
                                                 key=f"e_fee2_{kw}", label_visibility="collapsed")
-                    if fc[7].button("✅ 저장", key=f"e_save2_{kw}", use_container_width=True, type="primary"):
+                    if fc[6].button("✅ 저장", key=f"e_save2_{kw}", use_container_width=True, type="primary"):
                         if pid_legacy:
                             conn_u = get_user_db(USERNAME)
                             conn_u.execute(
                                 "UPDATE products SET product_no=?, costco_name=?, match_keyword=?, "
                                 "unit_price=?, split_qty=?, sale_price=?, shipping_fee=?, updated_at=? WHERE id=?",
-                                (e_pno, e_name, e_kw2, e_price, e_sq, e_sale, e_fee,
+                                (e_pno, e_name, kw, e_price, e_sq, e_sale, e_fee,
                                  datetime.now().strftime("%Y-%m-%d %H:%M"), pid_legacy)
                             )
                             conn_u.commit(); conn_u.close()
                         st.session_state.pop('editing_product_kw', None)
                         st.rerun()
-                    if fc[8].button("✖", key=f"e_cancel2_{kw}", use_container_width=True):
+                    if fc[7].button("✖", key=f"e_cancel2_{kw}", use_container_width=True):
                         st.session_state.pop('editing_product_kw', None)
                         st.rerun()
                 st.markdown("</div>", unsafe_allow_html=True)
@@ -3250,42 +3267,39 @@ elif tab_choice == "📦 제품 DB":
                     unsafe_allow_html=True)
                 _thumb = p.get('image_url', '')
                 _img_html = (
-                    f"<img src='{_thumb}' width='38' height='38' "
-                    f"style='object-fit:cover;border-radius:4px;"
-                    f"vertical-align:middle;margin-right:6px;border:1px solid #eee'>"
+                    f"<img src='{_thumb}' width='57' height='57' "
+                    f"style='object-fit:cover;border-radius:6px;"
+                    f"vertical-align:middle;margin-right:8px;border:1px solid #eee'>"
                     if _thumb else ""
                 )
                 row_cols[1].markdown(
                     f"{_img_html}<span style='font-size:17px'>{p['costco_name']}</span>",
                     unsafe_allow_html=True)
-                row_cols[2].markdown(
-                    f"<span style='font-size:16px;color:#555'>{kw}</span>",
-                    unsafe_allow_html=True)
-                row_cols[3].markdown(store_disp, unsafe_allow_html=True)
-                row_cols[4].markdown(online_disp, unsafe_allow_html=True)
-                row_cols[5].markdown(
+                row_cols[2].markdown(store_disp, unsafe_allow_html=True)
+                row_cols[3].markdown(online_disp, unsafe_allow_html=True)
+                row_cols[4].markdown(
                     f"<span style='font-size:17px;{sq_color}'>{sq_label}</span>",
                     unsafe_allow_html=True)
-                row_cols[6].markdown(
+                row_cols[5].markdown(
                     f"<span style='font-size:17px;{sale_color}'>{sale_label}</span>",
                     unsafe_allow_html=True)
-                row_cols[7].markdown(
+                row_cols[6].markdown(
                     f"<span style='font-size:17px;{fee_color}'>{fee_label}</span>",
                     unsafe_allow_html=True)
-                row_cols[8].markdown(
+                row_cols[7].markdown(
                     f"<span style='font-size:15px;color:#888'>{updated_str}</span>",
                     unsafe_allow_html=True)
-                if row_cols[9].button("✏️", key=f"edit_btn_{kw}", use_container_width=True):
+                if row_cols[8].button("✏️", key=f"edit_btn_{kw}", use_container_width=True):
                     st.session_state['editing_product_kw'] = kw
                     st.rerun()
                 _n_registered = bool(p.get('naver_product_no'))
                 _n_label = "✅" if _n_registered else "🛍"
-                if row_cols[10].button(_n_label, key=f"nreg_btn_{kw}", use_container_width=True,
-                                       help="네이버 스마트스토어 등록" if not _n_registered else f"등록됨 ({p.get('naver_product_no')})"):
+                if row_cols[9].button(_n_label, key=f"nreg_btn_{kw}", use_container_width=True,
+                                      help="네이버 스마트스토어 등록" if not _n_registered else f"등록됨 ({p.get('naver_product_no')})"):
                     st.session_state['naver_reg_sp_id'] = p.get('shared_id')
                     st.session_state['naver_reg_kw'] = kw
                     st.rerun()
-                if row_cols[11].button("🗑", key=f"del_btn_{kw}", use_container_width=True):
+                if row_cols[10].button("🗑", key=f"del_btn_{kw}", use_container_width=True):
                     pid_del = p.get('private_id')
                     if pid_del:
                         conn_u = get_user_db(USERNAME)
