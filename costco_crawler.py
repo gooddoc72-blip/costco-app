@@ -683,6 +683,44 @@ def crawl_search(
     return crawl_category(search_url, email, password, max_products, progress_cb)
 
 
+# ─── 이미지 다운로드 ──────────────────────────────────────────────
+def download_product_image(product_no: str, image_url: str) -> str:
+    """
+    코스트코 CDN 이미지 → data/images/{product_no}.jpg 저장.
+    이미 있으면 재다운로드 없이 기존 경로 반환. 실패 시 빈 문자열 반환.
+    """
+    if not product_no or not image_url:
+        return ""
+
+    images_dir = os.path.join(DATA_DIR, "images")
+    os.makedirs(images_dir, exist_ok=True)
+
+    ext = os.path.splitext(image_url.split("?")[0])[-1].lower()
+    if ext not in (".jpg", ".jpeg", ".png", ".webp", ".gif"):
+        ext = ".jpg"
+    local_path = os.path.join(images_dir, f"{product_no}{ext}")
+
+    if os.path.exists(local_path):
+        return local_path
+
+    try:
+        import urllib.request
+        req = urllib.request.Request(
+            image_url,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "Referer": "https://www.costco.co.kr/",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = resp.read()
+        with open(local_path, "wb") as f:
+            f.write(data)
+        return local_path
+    except Exception:
+        return ""
+
+
 # ─── DB 저장 ─────────────────────────────────────────────────────
 def save_to_shared_products(
     products: list[dict],
@@ -696,11 +734,15 @@ def save_to_shared_products(
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
 
     try:
-        try:
-            conn.execute("ALTER TABLE shared_products ADD COLUMN image_url TEXT DEFAULT ''")
-            conn.commit()
-        except Exception:
-            pass
+        for col_sql in [
+            "ALTER TABLE shared_products ADD COLUMN image_url TEXT DEFAULT ''",
+            "ALTER TABLE shared_products ADD COLUMN local_image TEXT DEFAULT ''",
+        ]:
+            try:
+                conn.execute(col_sql)
+                conn.commit()
+            except Exception:
+                pass
 
         for p in products:
             name = (p.get("name") or "").strip()
@@ -708,6 +750,9 @@ def save_to_shared_products(
                 continue
             product_no = str(p.get("product_no") or "").strip()
             image_url  = str(p.get("image_url") or "").strip()
+
+            # 이미지 로컬 다운로드
+            local_image = download_product_image(product_no, image_url)
 
             existing = None
             if product_no:
@@ -723,18 +768,22 @@ def save_to_shared_products(
                 conn.execute(
                     """UPDATE shared_products
                        SET costco_name=?, unit_price=?, product_no=?,
-                           updated_by=?, updated_at=?, price_type='온라인', image_url=?
+                           updated_by=?, updated_at=?, price_type='온라인',
+                           image_url=?, local_image=?
                        WHERE id=?""",
-                    (name, p["price"], product_no, updated_by, now, image_url, existing[0])
+                    (name, p["price"], product_no, updated_by, now,
+                     image_url, local_image, existing[0])
                 )
                 updated += 1
             else:
                 conn.execute(
                     """INSERT INTO shared_products
                        (product_no, costco_name, match_keyword, unit_price,
-                        split_qty, updated_by, updated_at, price_type, image_url)
-                       VALUES (?,?,?,?,1,?,?,'온라인',?)""",
-                    (product_no, name, name, p["price"], updated_by, now, image_url)
+                        split_qty, updated_by, updated_at, price_type,
+                        image_url, local_image)
+                       VALUES (?,?,?,?,1,?,?,'온라인',?,?)""",
+                    (product_no, name, name, p["price"], updated_by, now,
+                     image_url, local_image)
                 )
                 saved += 1
 

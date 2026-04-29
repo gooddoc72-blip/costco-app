@@ -98,6 +98,8 @@ def init_auth_db():
     except: pass
     try: conn.execute("ALTER TABLE shared_products ADD COLUMN image_url TEXT DEFAULT ''")
     except: pass
+    try: conn.execute("ALTER TABLE shared_products ADD COLUMN local_image TEXT DEFAULT ''")
+    except: pass
     try: conn.execute("ALTER TABLE users ADD COLUMN status TEXT DEFAULT 'active'")
     except: pass
     # 관리자 계정이 없으면 기본 생성
@@ -3114,8 +3116,15 @@ elif tab_choice == "📦 제품 DB":
                 row_cols[0].markdown(
                     f"<span style='font-size:16px;color:#888'>{p.get('product_no','') or '-'}</span>",
                     unsafe_allow_html=True)
+                _thumb = p.get('image_url', '')
+                _img_html = (
+                    f"<img src='{_thumb}' width='38' height='38' "
+                    f"style='object-fit:cover;border-radius:4px;"
+                    f"vertical-align:middle;margin-right:6px;border:1px solid #eee'>"
+                    if _thumb else ""
+                )
                 row_cols[1].markdown(
-                    f"<span style='font-size:17px'>{p['costco_name']}</span>",
+                    f"{_img_html}<span style='font-size:17px'>{p['costco_name']}</span>",
                     unsafe_allow_html=True)
                 row_cols[2].markdown(
                     f"<span style='font-size:16px;color:#555'>{kw}</span>",
