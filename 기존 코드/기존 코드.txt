@@ -1,0 +1,1347 @@
+"""
+코스트코핫딜 주문 수익 관리 시스템 v3 (Multi-user Web Edition)
+- 로그인 / 멀티유저 / 엑셀 비밀번호 자동해제 / 네이버 커머스API 연동
+- 배포: Streamlit Cloud or self-hosted
+"""
+import streamlit as st
+import pandas as pd
+import sqlite3
+import os
+import re
+import io
+import hashlib
+from datetime import datetime, timedelta
+import plotly.graph_objects as go
+
+# 네이버 커머스 API (선택)
+try:
+    import naver_api
+    HAS_NAVER_API = True
+except ImportError:
+    HAS_NAVER_API = False
+
+# ─── 기본 설정 ───
+APP_TITLE = "📦 코스트코핫딜 주문 수익 관리"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR = os.path.join(BASE_DIR, "data")
+AUTH_DB = os.path.join(DATA_DIR, "auth.db")
+os.makedirs(DATA_DIR, exist_ok=True)
+
+st.set_page_config(page_title=APP_TITLE, page_icon="📦", layout="wide")
+
+EXTRACT_COLS = ['수취인명','상품명','옵션정보','수량','최종 상품별 총 주문금액','배송비 합계','제주/도서 추가배송비','정산예정금액']
+
+# ═══════════════════════════════════════
+# 인증 시스템
+# ═══════════════════════════════════════
+def hash_pw(pw):
+    return hashlib.sha256(pw.encode()).hexdigest()
+
+def init_auth_db():
+    conn = sqlite3.connect(AUTH_DB)
+    conn.execute("""CREATE TABLE IF NOT EXISTS users (
+        username TEXT PRIMARY KEY,
+        password TEXT NOT NULL,
+        display_name TEXT DEFAULT '',
+        is_admin INTEGER DEFAULT 0,
+        created_at TEXT NOT NULL
+    )""")
+    admin = conn.execute("SELECT 1 FROM users WHERE is_admin=1").fetchone()
+    if not admin:
+        conn.execute("INSERT OR IGNORE INTO users VALUES (?,?,?,?,?)",
+                     ("admin", hash_pw("admin1234"), "관리자", 1, datetime.now().strftime("%Y-%m-%d %H:%M")))
+    conn.commit()
+    conn.close()
+
+def check_login(username, password):
+    conn = sqlite3.connect(AUTH_DB)
+    row = conn.execute("SELECT password, display_name, is_admin FROM users WHERE username=?", (username,)).fetchone()
+    conn.close()
+    if row and row[0] == hash_pw(password):
+        return {"username": username, "display_name": row[1], "is_admin": row[2]}
+    return None
+
+def get_all_users():
+    conn = sqlite3.connect(AUTH_DB)
+    rows = conn.execute("SELECT username, display_name, is_admin, created_at FROM users ORDER BY created_at").fetchall()
+    conn.close()
+    return [{"username": r[0], "display_name": r[1], "is_admin": r[2], "created_at": r[3]} for r in rows]
+
+def add_user(username, password, display_name=""):
+    conn = sqlite3.connect(AUTH_DB)
+    try:
+        conn.execute("INSERT INTO users VALUES (?,?,?,?,?)",
+                     (username, hash_pw(password), display_name or username, 0, datetime.now().strftime("%Y-%m-%d %H:%M")))
+        conn.commit()
+        conn.close()
+        return True
+    except Exception:
+        conn.close()
+        return False
+
+def delete_user(username):
+    conn = sqlite3.connect(AUTH_DB)
+    conn.execute("DELETE FROM users WHERE username=? AND is_admin=0", (username,))
+    conn.commit()
+    conn.close()
+    db_path = os.path.join(DATA_DIR, f"{username}.db")
+    if os.path.exists(db_path):
+        os.remove(db_path)
+
+def change_password(username, new_password):
+    conn = sqlite3.connect(AUTH_DB)
+    conn.execute("UPDATE users SET password=? WHERE username=?", (hash_pw(new_password), username))
+    conn.commit()
+    conn.close()
+
+init_auth_db()
+
+# ═══════════════════════════════════════
+# 사용자별 DB
+# ═══════════════════════════════════════
+def get_user_db(username):
+    db_path = os.path.join(DATA_DIR, f"{username}.db")
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+def init_user_db(username):
+    conn = get_user_db(username)
+    c = conn.cursor()
+    c.execute("""CREATE TABLE IF NOT EXISTS products (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        store_product_name TEXT DEFAULT '',
+        costco_name TEXT DEFAULT '',
+        match_keyword TEXT NOT NULL UNIQUE,
+        unit_price INTEGER NOT NULL,
+        updated_at TEXT NOT NULL
+    )""")
+    c.execute("""CREATE TABLE IF NOT EXISTS settings (
+        key TEXT PRIMARY KEY, value TEXT NOT NULL
+    )""")
+    c.execute("""CREATE TABLE IF NOT EXISTS daily_orders (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        order_date TEXT NOT NULL, recipient TEXT, product_name TEXT,
+        option_info TEXT, qty INTEGER DEFAULT 1,
+        order_amount INTEGER DEFAULT 0, shipping_fee INTEGER DEFAULT 0,
+        extra_shipping INTEGER DEFAULT 0, settlement INTEGER DEFAULT 0,
+        cost_price INTEGER DEFAULT 0, delivery_cost INTEGER DEFAULT 0,
+        box_cost INTEGER DEFAULT 0, profit INTEGER DEFAULT 0,
+        matched INTEGER DEFAULT 0, created_at TEXT NOT NULL
+    )""")
+    c.execute("INSERT OR IGNORE INTO settings VALUES ('shipping_cost', '1800')")
+    c.execute("INSERT OR IGNORE INTO settings VALUES ('box_cost', '300')")
+    c.execute("INSERT OR IGNORE INTO settings VALUES ('excel_password', '')")
+    c.execute("INSERT OR IGNORE INTO settings VALUES ('api_client_id', '')")
+    c.execute("INSERT OR IGNORE INTO settings VALUES ('api_client_secret', '')")
+    c.execute("INSERT OR IGNORE INTO settings VALUES ('telegram_token', '')")
+    c.execute("INSERT OR IGNORE INTO settings VALUES ('telegram_chat_id', '')")
+    c.execute("INSERT OR IGNORE INTO settings VALUES ('target_margin', '10')")
+    c.execute("INSERT OR IGNORE INTO settings VALUES ('max_increase_pct', '20')")
+    c.execute("""CREATE TABLE IF NOT EXISTS price_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        product_name TEXT, origin_product_no TEXT,
+        old_price INTEGER, new_price INTEGER,
+        cost_price INTEGER, reason TEXT,
+        status TEXT DEFAULT 'applied',
+        created_at TEXT NOT NULL
+    )""")
+    conn.commit()
+    conn.close()
+
+# ─── DB 헬퍼 (사용자별) ───
+def get_setting(username, key):
+    conn = get_user_db(username)
+    row = conn.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+    conn.close()
+    return row['value'] if row else ''
+
+def set_setting(username, key, value):
+    conn = get_user_db(username)
+    conn.execute("INSERT OR REPLACE INTO settings VALUES (?, ?)", (key, str(value)))
+    conn.commit()
+    conn.close()
+
+def get_all_products(username):
+    conn = get_user_db(username)
+    rows = conn.execute("SELECT * FROM products ORDER BY costco_name").fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+def upsert_product(username, costco_name, keyword, price):
+    conn = get_user_db(username)
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    existing = conn.execute("SELECT id FROM products WHERE match_keyword=?", (keyword,)).fetchone()
+    if existing:
+        conn.execute("UPDATE products SET unit_price=?, costco_name=?, updated_at=? WHERE match_keyword=?",
+                     (price, costco_name, now, keyword))
+    else:
+        try:
+            conn.execute("INSERT INTO products (store_product_name, costco_name, match_keyword, unit_price, updated_at) VALUES (?,?,?,?,?)",
+                         (costco_name, costco_name, keyword, price, now))
+        except Exception:
+            conn.execute("INSERT INTO products (costco_name, match_keyword, unit_price, updated_at) VALUES (?,?,?,?)",
+                         (costco_name, keyword, price, now))
+    conn.commit()
+    conn.close()
+
+def save_daily_orders(username, order_date, orders_df, shipping_cost, box_cost):
+    conn = get_user_db(username)
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    conn.execute("DELETE FROM daily_orders WHERE order_date=?", (order_date,))
+    for _, r in orders_df.iterrows():
+        cost = r.get('구입가격', 0) or 0
+        ship_fee = int(r['배송비 합계'])
+        settlement = int(r['정산예정금액'])
+        profit = (settlement + ship_fee) - (int(cost) + shipping_cost + box_cost)
+        conn.execute("""INSERT INTO daily_orders
+            (order_date,recipient,product_name,option_info,qty,order_amount,shipping_fee,extra_shipping,settlement,cost_price,delivery_cost,box_cost,profit,matched,created_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (order_date, r['수취인명'], r['상품명'], r.get('옵션정보',''), int(r['수량']),
+             int(r['최종 상품별 총 주문금액']), ship_fee, int(r.get('제주/도서 추가배송비',0)),
+             settlement, int(cost), shipping_cost, box_cost, profit, 1 if cost > 0 else 0, now))
+    conn.commit()
+    conn.close()
+
+def get_daily_orders(username, order_date):
+    conn = get_user_db(username)
+    rows = conn.execute("SELECT * FROM daily_orders WHERE order_date=? ORDER BY product_name", (order_date,)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+def get_date_range_stats(username, start_date, end_date):
+    conn = get_user_db(username)
+    rows = conn.execute("""SELECT order_date, COUNT(*) as cnt, SUM(qty) as total_qty,
+        SUM(order_amount) as total_sales, SUM(profit) as total_profit
+        FROM daily_orders WHERE order_date BETWEEN ? AND ?
+        GROUP BY order_date ORDER BY order_date""", (start_date, end_date)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+def get_monthly_stats(username):
+    conn = get_user_db(username)
+    rows = conn.execute("""SELECT substr(order_date, 1, 7) as month, COUNT(*) as cnt,
+        SUM(order_amount) as total_sales, SUM(profit) as total_profit
+        FROM daily_orders GROUP BY substr(order_date, 1, 7) ORDER BY month""").fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+def get_product_ranking(username, year_month=None):
+    conn = get_user_db(username)
+    where = "WHERE substr(order_date, 1, 7) = ?" if year_month else ""
+    params = (year_month,) if year_month else ()
+    rows = conn.execute(f"""SELECT product_name, SUM(qty) as total_qty, SUM(order_amount) as total_sales, SUM(profit) as total_profit
+        FROM daily_orders {where} GROUP BY product_name ORDER BY total_profit DESC LIMIT 10""", params).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+def get_saved_dates(username):
+    conn = get_user_db(username)
+    rows = conn.execute("SELECT DISTINCT order_date FROM daily_orders ORDER BY order_date DESC").fetchall()
+    conn.close()
+    return [r['order_date'] for r in rows]
+
+# ═══════════════════════════════════════
+# 엑셀 비밀번호 해제 + 읽기
+# ═══════════════════════════════════════
+def decrypt_excel(uploaded_file, password):
+    try:
+        import msoffcrypto
+    except ImportError:
+        st.warning("msoffcrypto 라이브러리가 설치되지 않았습니다. `pip install msoffcrypto-tool`")
+        return uploaded_file, None
+
+    try:
+        # Streamlit UploadedFile을 BytesIO로 변환
+        uploaded_file.seek(0)
+        raw = io.BytesIO(uploaded_file.read())
+        raw.seek(0)
+
+        f = msoffcrypto.OfficeFile(raw)
+        if not f.is_encrypted():
+            raw.seek(0)
+            return raw, None
+
+        f.load_key(password=password)
+        decrypted = io.BytesIO()
+        f.decrypt(decrypted)
+        decrypted.seek(0)
+        return decrypted, None
+    except Exception as e:
+        uploaded_file.seek(0)
+        return None, str(e)
+
+def read_excel_auto(uploaded_file, password=""):
+    decrypt_error = None
+    if password:
+        result, decrypt_error = decrypt_excel(uploaded_file, password)
+        if result is None:
+            return None, f"비밀번호 해제 실패: {decrypt_error}"
+        uploaded_file = result
+
+    for engine in ['openpyxl', 'xlrd']:
+        for skip in [0, 1]:
+            try:
+                uploaded_file.seek(0)
+                df = pd.read_excel(uploaded_file, engine=engine, header=skip)
+                first_col = str(df.columns[0]) if len(df.columns) > 0 else ""
+                if skip == 0 and len(first_col) > 50:
+                    continue
+                if len(df) > 0 and len(df.columns) > 3:
+                    return df, None
+            except Exception as e:
+                last_error = str(e)
+
+    for enc in ['utf-8', 'euc-kr']:
+        try:
+            uploaded_file.seek(0)
+            dfs = pd.read_html(uploaded_file, encoding=enc)
+            if dfs: return dfs[0], None
+        except Exception:
+            pass
+
+    if decrypt_error:
+        return None, f"비밀번호 해제 실패: {decrypt_error}"
+    return None, f"파일 읽기 실패: {last_error if 'last_error' in dir() else '알 수 없는 오류'}"
+
+# ═══════════════════════════════════════
+# 제품명 매칭 (1차 3글자 → 2차 5글자)
+# ═══════════════════════════════════════
+def clean_name(name):
+    if pd.isna(name) or not isinstance(name, str):
+        return ""
+    name = str(name).replace("'", "").replace("\u2018", "").replace("\u2019", "")
+    return name.replace(" ", "").lower()
+
+def has_meaningful_char(s):
+    korean = sum(1 for c in s if '\uac00' <= c <= '\ud7a3')
+    english = sum(1 for c in s if c.isalpha() and not ('\uac00' <= c <= '\ud7a3'))
+    return korean >= 1 or english >= 3
+
+def get_ngrams(name, n):
+    cleaned = clean_name(name)
+    if len(cleaned) < n: return set()
+    return set(cleaned[i:i+n] for i in range(len(cleaned) - n + 1) if has_meaningful_char(cleaned[i:i+n]))
+
+def calc_match_score(name_a, name_b):
+    match_3 = get_ngrams(name_a, 3) & get_ngrams(name_b, 3)
+    s3 = len(match_3)
+    if s3 == 0: return 0
+    s5 = len(get_ngrams(name_a, 5) & get_ngrams(name_b, 5))
+    return s3 + s5 * 3
+
+MIN_MATCH_SCORE = 1
+
+def match_product_to_db(username, store_product_name):
+    products = get_all_products(username)
+    if not products: return None
+    candidates = []
+    for p in products:
+        s1 = calc_match_score(p.get('costco_name',''), store_product_name)
+        s2 = calc_match_score(p['match_keyword'], store_product_name)
+        score = max(s1, s2)
+        if score >= MIN_MATCH_SCORE:
+            candidates.append((p, score))
+    if not candidates: return None
+    candidates.sort(key=lambda x: x[1], reverse=True)
+    return candidates[0][0]
+
+def match_receipt_to_orders(receipt_items, order_product_names):
+    matches = {}
+    for store_name in order_product_names:
+        best_idx, best_score = None, 0
+        for i, item in enumerate(receipt_items):
+            score = calc_match_score(item['상품명'], store_name)
+            if score > best_score:
+                best_score, best_idx = score, i
+        if best_idx is not None and best_score >= MIN_MATCH_SCORE:
+            matches[store_name] = receipt_items[best_idx]
+    return matches
+
+# ═══════════════════════════════════════
+# 영수증 PDF 파싱
+# ═══════════════════════════════════════
+def parse_costco_receipt_pdf(uploaded_pdf):
+    try:
+        import pdfplumber
+    except ImportError:
+        return None
+    items = []
+    uploaded_pdf.seek(0)
+    with pdfplumber.open(uploaded_pdf) as pdf:
+        full_text = ""
+        for page in pdf.pages:
+            full_text += (page.extract_text() or "")
+    lines = full_text.split('\n')
+    skip_next = False
+    for i in range(len(lines) - 1):
+        if skip_next:
+            skip_next = False
+            continue
+        line, next_line = lines[i].strip(), lines[i + 1].strip()
+        if line == '*** CPN':
+            skip_next = True
+            continue
+        if 'CPN' in line or 'IRC' in line:
+            continue
+        match = re.match(r'^(\d{4,7})\s+(\d+)\s+([\d,]+)\s+([\d,\-\s]+)\s*T$', next_line)
+        if match:
+            name = line
+            qty = int(match.group(2))
+            unit_price = int(match.group(3).replace(',', ''))
+            if any(x in name for x in ['코스트코코리아', '대표자', '부산시', '판매', '닫기', 'costco', 'http']):
+                continue
+            if not name or len(name) < 2:
+                continue
+            items.append({'상품명': name, '수량': qty, '단가': unit_price})
+            skip_next = True
+    return items if items else None
+
+# ═══════════════════════════════════════
+# 유틸
+# ═══════════════════════════════════════
+def fmt(n):
+    if n is None: return "-"
+    return f"{int(n):,}"
+
+def to_id_str(val):
+    try: return str(int(float(val)))
+    except: return str(val).strip()
+
+
+# ═══════════════════════════════════════
+# 로그인 화면
+# ═══════════════════════════════════════
+if 'user' not in st.session_state:
+    st.session_state['user'] = None
+
+if st.session_state['user'] is None:
+    st.markdown("<h1 style='text-align:center;margin-top:80px'>📦 코스트코핫딜</h1>", unsafe_allow_html=True)
+    st.markdown("<h3 style='text-align:center;color:gray'>주문 수익 관리 시스템</h3>", unsafe_allow_html=True)
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    col1, col2, col3 = st.columns([1, 1.5, 1])
+    with col2:
+        with st.form("login_form"):
+            username = st.text_input("아이디")
+            password = st.text_input("비밀번호", type="password")
+            submitted = st.form_submit_button("로그인", use_container_width=True, type="primary")
+
+            if submitted:
+                user = check_login(username, password)
+                if user:
+                    st.session_state['user'] = user
+                    init_user_db(user['username'])
+                    st.rerun()
+                else:
+                    st.error("아이디 또는 비밀번호가 올바르지 않습니다.")
+
+        st.caption("초기 관리자 계정: admin / admin1234")
+    st.stop()
+
+
+# ═══════════════════════════════════════
+# 로그인 후 메인 화면
+# ═══════════════════════════════════════
+user = st.session_state['user']
+USERNAME = user['username']
+IS_ADMIN = user['is_admin']
+excel_pw = get_setting(USERNAME, 'excel_password')
+api_id = get_setting(USERNAME, 'api_client_id')
+api_secret = get_setting(USERNAME, 'api_client_secret')
+
+# 사이드바
+with st.sidebar:
+    st.title(APP_TITLE)
+    st.caption(f"👤 {user['display_name']} ({USERNAME})")
+    st.divider()
+
+    menus = ["📋 주문 업로드", "📮 송장번호 등록", "🧾 영수증 등록", "💰 수익 계산", "📊 대시보드", "⚙️ 설정"]
+    if IS_ADMIN:
+        menus.append("👑 관리자")
+    tab_choice = st.radio("메뉴", menus, label_visibility="collapsed")
+
+    st.divider()
+    ship = get_setting(USERNAME, 'shipping_cost')
+    box = get_setting(USERNAME, 'box_cost')
+    st.caption(f"택배비: {fmt(int(ship) if ship else 0)}원 | 박스비: {fmt(int(box) if box else 0)}원")
+
+    if st.button("🚪 로그아웃", use_container_width=True):
+        st.session_state['user'] = None
+        for k in list(st.session_state.keys()):
+            if k != 'user':
+                del st.session_state[k]
+        st.rerun()
+
+
+# ═══════════════════════════════════════
+# 탭 1: 주문 업로드
+# ═══════════════════════════════════════
+if tab_choice == "📋 주문 업로드":
+    st.header("📋 주문 파일 업로드")
+
+    # ── API 자동 조회 ──
+    if HAS_NAVER_API and api_id and api_secret:
+        c_api1, c_api2, c_api3 = st.columns([1, 1, 1])
+        with c_api1:
+            status_options = {"배송준비 (발주확인)": "READY", "결제완료 (신규주문)": "PAYED", "전체 (신규+배송준비)": "ALL"}
+            status_label = st.selectbox("주문 상태", list(status_options.keys()), index=0)
+            status_type = status_options[status_label]
+        with c_api2:
+            hours = st.selectbox("조회 범위", [1, 6, 12, 24, 48, 72, 168], index=3, format_func=lambda x: f"최근 {x}시간" if x < 168 else "최근 7일")
+        with c_api3:
+            st.write("")
+            st.write("")
+            fetch_btn = st.button("🔄 API로 주문 자동 조회", type="primary", key="api_fetch")
+        if fetch_btn:
+            all_orders = []
+            types_to_query = ["READY", "PAYED"] if status_type == "ALL" else [status_type]
+            with st.spinner("네이버 커머스 API에서 주문을 조회 중..."):
+                for st_type in types_to_query:
+                    orders, err = naver_api.get_new_orders(api_id, api_secret, hours_back=hours, status_type=st_type)
+                    if orders:
+                        all_orders.extend(orders)
+                    elif err:
+                        if err.startswith("DEBUG_RESP:"):
+                            st.caption(f"🔍 API 응답: {err[11:]}")
+                        else:
+                            st.warning(f"{st_type} 조회: {err}")
+            if not all_orders:
+                st.info("조회된 주문이 없습니다.")
+            else:
+                df = pd.DataFrame(all_orders)
+                for c in ['수량','최종 상품별 총 주문금액','배송비 합계','제주/도서 추가배송비','정산예정금액']:
+                    if c in df.columns:
+                        df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0).astype(int)
+                df = df.sort_values('상품명').reset_index(drop=True)
+
+                costs = []
+                for _, r in df.iterrows():
+                    p = match_product_to_db(USERNAME, r['상품명'])
+                    costs.append(p['unit_price'] * r['수량'] if p else 0)
+                df['구입가격'] = costs
+
+                st.session_state['orders'] = df
+                if '상품주문번호' in df.columns:
+                    st.session_state['order_full'] = pd.DataFrame(all_orders)
+                st.session_state['order_date'] = datetime.today().strftime("%Y-%m-%d")
+                
+                s_cost = int(get_setting(USERNAME, 'shipping_cost') or 1800)
+                b_cost = int(get_setting(USERNAME, 'box_cost') or 300)
+                save_daily_orders(USERNAME, st.session_state['order_date'], df, s_cost, b_cost)
+                
+                st.success(f"✅ API에서 {len(df)}건 주문 조회 완료!")
+                st.rerun()
+        st.divider()
+    elif not HAS_NAVER_API:
+        st.caption("💡 naver_api.py 파일과 bcrypt, pybase64 패키지를 설치하면 API 자동 조회를 사용할 수 있습니다.")
+    elif not api_id:
+        st.caption("💡 설정에서 API 키를 등록하면 자동 주문 조회를 사용할 수 있습니다.")
+
+    col1, col2, col3 = st.columns([2, 1, 1])
+    with col1:
+        uploaded = st.file_uploader("네이버 스마트스토어 발주발송관리 xlsx 파일", type=['xlsx', 'xls'], key="order_upload")
+    with col2:
+        order_date = st.date_input("주문 날짜", value=datetime.today())
+    with col3:
+        input_pw = st.text_input("엑셀 비밀번호", value=excel_pw, type="password", key="upload_pw")
+
+    if uploaded:
+        use_pw = input_pw or excel_pw
+        df, err = read_excel_auto(uploaded, use_pw)
+        if df is None:
+            st.error(f"❌ {err}")
+            if "비밀번호" in str(err):
+                st.info("비밀번호를 확인하고 오른쪽 입력란에 다시 입력해주세요.")
+        else:
+            missing = [c for c in EXTRACT_COLS if c not in df.columns]
+            if missing:
+                st.error(f"필요한 컬럼이 없습니다: {missing}")
+            else:
+                # 송장번호 등록용 전체 데이터 저장 (상품주문번호 포함)
+                if '상품주문번호' in df.columns:
+                    st.session_state['order_full'] = df.copy()
+
+                df = df[EXTRACT_COLS].copy()
+                for c in ['수량','최종 상품별 총 주문금액','배송비 합계','제주/도서 추가배송비','정산예정금액']:
+                    df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0).astype(int)
+                df = df.sort_values('상품명').reset_index(drop=True)
+
+                costs = []
+                for _, r in df.iterrows():
+                    p = match_product_to_db(USERNAME, r['상품명'])
+                    costs.append(p['unit_price'] * r['수량'] if p else 0)
+                df['구입가격'] = costs
+
+                st.session_state['orders'] = df
+                st.session_state['order_date'] = order_date.strftime("%Y-%m-%d")
+                
+                s_cost = int(get_setting(USERNAME, 'shipping_cost') or 1800)
+                b_cost = int(get_setting(USERNAME, 'box_cost') or 300)
+                save_daily_orders(USERNAME, st.session_state['order_date'], df, s_cost, b_cost)
+
+    if 'orders' in st.session_state and st.session_state['orders'] is not None:
+        df = st.session_state['orders']
+        order_date_str = st.session_state.get('order_date', datetime.today().strftime("%Y-%m-%d"))
+
+        st.subheader(f"📦 주문 목록 ({len(df)}건)")
+        
+        if 'order_full' in st.session_state and st.session_state['order_full'] is not None:
+            output = io.BytesIO()
+            with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                st.session_state['order_full'].to_excel(writer, index=False)
+            output.seek(0)
+            st.download_button(
+                label="📥 배송준비건 엑셀 다운로드 (비밀번호 없음)",
+                data=output,
+                file_name=f"발주발송관리_{order_date_str}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                type="secondary"
+            )
+
+        st.dataframe(df[['수취인명','상품명','옵션정보','수량','최종 상품별 총 주문금액','배송비 합계','정산예정금액']],
+                   use_container_width=True, hide_index=True)
+
+        st.subheader("🛒 코스트코 장보기 목록")
+        shop_cols = ['상품명', '옵션정보', '수량']
+        shopping = df[shop_cols].copy()
+        shopping['옵션정보'] = shopping['옵션정보'].fillna('')
+        shopping = shopping.groupby(['상품명', '옵션정보'], sort=True).agg({'수량': 'sum'}).reset_index()
+        shopping.columns = ['상품명', '옵션', '필요수량']
+        db_prices = []
+        for _, r in shopping.iterrows():
+            p = match_product_to_db(USERNAME, r['상품명'])
+            db_prices.append(p['unit_price'] if p else None)
+        shopping['저장단가'] = db_prices
+        shopping['예상금액'] = shopping.apply(lambda r: r['필요수량'] * r['저장단가'] if r['저장단가'] else None, axis=1)
+        st.dataframe(shopping, use_container_width=True, hide_index=True)
+
+        c1, c2 = st.columns(2)
+        c1.metric("예상 구매 총액", f"{fmt(shopping['예상금액'].dropna().sum())}원")
+        c2.metric("단가 미등록 상품", f"{shopping['저장단가'].isna().sum()}종")
+
+        # 텔레그램으로 장보기 목록 전송
+        tg_token = get_setting(USERNAME, 'telegram_token')
+        tg_chat = get_setting(USERNAME, 'telegram_chat_id')
+        if HAS_NAVER_API and tg_token and tg_chat:
+            if st.button("📱 장보기 목록 휴대폰 전송", key="send_shopping"):
+                order_date_obj = datetime.strptime(order_date_str, "%Y-%m-%d")
+                lines = [f"🛒 코스트코 장보기 목록 ({order_date_obj.strftime('%m/%d')})", ""]
+                for _, r in shopping.iterrows():
+                    opt = f" ({r['옵션']})" if r['옵션'] else ""
+                    lines.append(f"▪ {r['상품명'][:25]}{opt} × {int(r['필요수량'])}개")
+                lines.append(f"\n💰 예상 총액: {fmt(shopping['예상금액'].dropna().sum())}원")
+                lines.append(f"📦 총 {len(df)}건 / {int(df['수량'].sum())}개")
+                msg = "\n".join(lines)
+                ok, err = naver_api.send_telegram(tg_token, tg_chat, msg)
+                if ok:
+                    st.success("✅ 휴대폰으로 전송 완료!")
+                else:
+                    st.error(f"❌ {err}")
+        elif not tg_token:
+            st.caption("💡 설정에서 텔레그램 봇을 설정하면 장보기 목록을 휴대폰으로 전송할 수 있습니다.")
+
+
+# ═══════════════════════════════════════
+# 탭 1.5: 송장번호 등록
+# ═══════════════════════════════════════
+elif tab_choice == "📮 송장번호 등록":
+    st.header("📮 송장번호 일괄 등록 파일 생성")
+
+    # 주문 데이터 확인
+    has_order = 'order_full' in st.session_state and st.session_state['order_full'] is not None
+    
+    if has_order:
+        order_df = st.session_state['order_full']
+        order_date = st.session_state.get('order_date', '')
+        st.success(f"✅ 주문 데이터 로드됨: {len(order_df)}건 ({order_date})")
+    else:
+        st.warning("📋 '주문 업로드' 탭에서 먼저 주문 파일을 업로드해주세요.")
+
+    pidpic_file = st.file_uploader("PIDPIC 파일 업로드", type=['xlsx', 'xls'], key="track_pidpic")
+    courier = st.selectbox("택배사", ["롯데택배", "한진택배", "CJ대한통운", "우체국택배", "로젠택배"])
+
+    if has_order and pidpic_file:
+        pidpic_df, err2 = read_excel_auto(pidpic_file)
+
+        if pidpic_df is None:
+            st.error(f"PIDPIC 파일 읽기 실패: {err2}")
+        elif '상품주문번호' not in order_df.columns:
+            st.error("주문 데이터에 '상품주문번호'가 없습니다. 주문 파일을 다시 업로드해주세요.")
+        elif '주문번호' not in pidpic_df.columns or '운송장번호' not in pidpic_df.columns:
+            st.error("PIDPIC 파일에 '주문번호' 또는 '운송장번호' 컬럼이 없습니다.")
+        else:
+            order_df['상품주문번호_str'] = order_df['상품주문번호'].apply(to_id_str)
+            pidpic_df['주문번호_str'] = pidpic_df['주문번호'].apply(to_id_str)
+            pidpic_df['운송장번호_str'] = pidpic_df['운송장번호'].apply(to_id_str)
+
+            pidpic_valid = pidpic_df[pidpic_df['주문번호_str'].str.len() > 5]
+            tracking_map = dict(zip(pidpic_valid['주문번호_str'], pidpic_valid['운송장번호_str']))
+
+            result_rows, matched_cnt, unmatched_cnt = [], 0, 0
+            for _, r in order_df.iterrows():
+                oid = r['상품주문번호_str']
+                tracking = tracking_map.get(oid, '')
+                if tracking and tracking != 'nan':
+                    matched_cnt += 1
+                else:
+                    tracking = ''
+                    unmatched_cnt += 1
+                result_rows.append({'상품주문번호': oid, '배송방법': '택배,등기,소포', '택배사': courier, '송장번호': tracking})
+
+            result_df = pd.DataFrame(result_rows)
+
+            c1, c2, c3 = st.columns(3)
+            c1.metric("주문 건수", f"{len(order_df)}건")
+            c2.metric("송장 매칭", f"{matched_cnt}건")
+            c3.metric("미매칭", f"{unmatched_cnt}건")
+
+            display_df = result_df.copy()
+            if '수취인명' in order_df.columns:
+                display_df.insert(1, '수취인명', order_df['수취인명'].values)
+            if '상품명' in order_df.columns:
+                display_df.insert(2, '상품명', order_df['상품명'].str[:30].values)
+            st.dataframe(display_df, use_container_width=True, hide_index=True)
+
+            st.divider()
+            output = io.BytesIO()
+            download_df = result_df[result_df['송장번호'] != ''].reset_index(drop=True)[['상품주문번호', '배송방법', '택배사', '송장번호']]
+
+            with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                download_df.to_excel(writer, index=False, sheet_name='발송처리')
+            output.seek(0)
+
+            st.download_button(
+                label=f"📥 송장번호_일괄_등록.xlsx 다운로드 ({len(download_df)}건)",
+                data=output,
+                file_name=f"송장번호_일괄_등록_{datetime.today().strftime('%Y%m%d')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                type="primary",
+            )
+
+            # API 발송처리
+            if HAS_NAVER_API and api_id and api_secret and matched_cnt > 0:
+                st.divider()
+                st.subheader("🚀 API로 일괄 발송처리")
+                st.caption("버튼을 누르면 네이버 스마트스토어에 송장번호가 자동 등록되고 발송처리됩니다.")
+                if st.button(f"🚀 {matched_cnt}건 일괄 발송처리", type="primary", key="api_ship"):
+                    ship_data = []
+                    for _, row in download_df.iterrows():
+                        ship_data.append({
+                            "productOrderId": row['상품주문번호'],
+                            "택배사": courier,
+                            "trackingNumber": row['송장번호'],
+                        })
+                    with st.spinner("네이버 스마트스토어에 발송처리 중..."):
+                        result, err = naver_api.ship_orders(api_id, api_secret, ship_data)
+                    if err:
+                        st.error(f"❌ {err}")
+                    else:
+                        st.success(f"✅ 발송처리 완료! 성공: {result['success']}건, 실패: {result['fail']}건")
+                        if result['fail'] > 0:
+                            st.warning(f"실패 상세: {result['fail_details']}")
+
+
+# ═══════════════════════════════════════
+# 탭 2: 영수증 등록
+# ═══════════════════════════════════════
+elif tab_choice == "🧾 영수증 등록":
+    st.header("🧾 코스트코 영수증 등록")
+
+    st.subheader("📄 영수증 PDF 업로드")
+    receipt_file = st.file_uploader("코스트코 영수증 PDF", type=['pdf'], key="receipt_pdf")
+
+    if receipt_file:
+        parsed = parse_costco_receipt_pdf(receipt_file)
+        if parsed:
+            st.success(f"✅ {len(parsed)}개 상품 인식!")
+            st.dataframe(pd.DataFrame(parsed), use_container_width=True, hide_index=True)
+            st.session_state['receipt_items'] = [{"상품명": p['상품명'], "수량": p['수량'], "단가": p['단가']} for p in parsed]
+
+            if st.button("💾 이 가격들을 DB에 저장", type="primary", key="save_parsed"):
+                cnt = 0
+                for p in parsed:
+                    upsert_product(USERNAME, p['상품명'], p['상품명'], p['단가'])
+                    cnt += 1
+                st.success(f"✅ {cnt}건 저장 완료!")
+        else:
+            st.warning("PDF 인식 실패. 아래에서 직접 입력해주세요.")
+
+    st.divider()
+    st.subheader("✏️ 수동 입력")
+    if 'manual_items' not in st.session_state:
+        st.session_state['manual_items'] = [{"상품명": "", "단가": 0}]
+
+    m_items = st.session_state['manual_items']
+    to_delete = None
+    for i, item in enumerate(m_items):
+        cols = st.columns([4, 2, 1])
+        m_items[i]['상품명'] = cols[0].text_input(f"mn_{i}", value=item['상품명'], label_visibility="collapsed", key=f"mn_{i}", placeholder="코스트코 상품명")
+        m_items[i]['단가'] = cols[1].number_input(f"mp_{i}", value=item['단가'], min_value=0, step=100, label_visibility="collapsed", key=f"mp_{i}")
+        if cols[2].button("🗑", key=f"md_{i}") and len(m_items) > 1:
+            to_delete = i
+    if to_delete is not None:
+        m_items.pop(to_delete)
+        st.rerun()
+
+    c1, c2 = st.columns([1, 3])
+    if c1.button("➕ 행 추가"):
+        m_items.append({"상품명": "", "단가": 0})
+        st.rerun()
+    if c2.button("💾 수동 입력 저장"):
+        cnt = 0
+        for item in m_items:
+            name = item['상품명'].strip()
+            if name and item['단가'] > 0:
+                upsert_product(USERNAME, name, name, item['단가'])
+                cnt += 1
+        if cnt: st.success(f"✅ {cnt}건 저장!")
+
+    st.divider()
+    st.subheader("📦 저장된 제품 가격 DB")
+    products = get_all_products(USERNAME)
+    if products:
+        pdf = pd.DataFrame(products)[['costco_name','match_keyword','unit_price','updated_at']]
+        pdf.columns = ['코스트코 상품명', '매칭키', '단가', '최종 업데이트']
+        st.dataframe(pdf, use_container_width=True, hide_index=True)
+    else:
+        st.info("등록된 제품이 없습니다.")
+
+
+# ═══════════════════════════════════════
+# 탭 3: 수익 계산
+# ═══════════════════════════════════════
+elif tab_choice == "💰 수익 계산":
+    st.header("💰 수익 계산")
+    shipping_cost = int(get_setting(USERNAME, 'shipping_cost') or 1800)
+    box_cost = int(get_setting(USERNAME, 'box_cost') or 300)
+
+    st.info(f"📐 수익 = (정산예정 + 고객택배비) - (구입가 + 택배비 {fmt(shipping_cost)} + 박스비 {fmt(box_cost)})")
+
+    col_date, _ = st.columns([1, 3])
+    with col_date:
+        calc_date = st.date_input("계산할 주문 날짜 선택", value=datetime.today())
+        calc_date_str = calc_date.strftime("%Y-%m-%d")
+
+    # 기존 DB에서 데이터 불러오기
+    saved_rows = get_daily_orders(USERNAME, calc_date_str)
+    if saved_rows:
+        df = pd.DataFrame(saved_rows)
+        # DB 컬럼명을 UI용 컬럼명으로 매핑
+        rename_map = {
+            'recipient': '수취인명',
+            'product_name': '상품명',
+            'option_info': '옵션정보',
+            'qty': '수량',
+            'order_amount': '최종 상품별 총 주문금액',
+            'shipping_fee': '배송비 합계',
+            'settlement': '정산예정금액',
+            'cost_price': '구입가격'
+        }
+        df = df.rename(columns=rename_map)
+    else:
+        df = None
+
+    if df is not None and not df.empty:
+        receipt_items = st.session_state.get('receipt_items', [])
+        unique_products = df['상품명'].unique().tolist()
+        receipt_matches = match_receipt_to_orders(receipt_items, unique_products) if receipt_items else {}
+
+        costs, match_sources, matched_names = [], [], []
+        for _, r in df.iterrows():
+            product, qty = r['상품명'], r['수량']
+            if product in receipt_matches:
+                item = receipt_matches[product]
+                costs.append(item['단가'] * qty)
+                match_sources.append("영수증")
+                matched_names.append(item['상품명'])
+            else:
+                p = match_product_to_db(USERNAME, product)
+                if p:
+                    costs.append(p['unit_price'] * qty)
+                    match_sources.append("DB")
+                    matched_names.append(p['costco_name'])
+                else:
+                    costs.append(0)
+                    match_sources.append("미매칭")
+                    matched_names.append("")
+
+        df['구입가격'] = costs
+        df['매칭출처'] = match_sources
+        df['매칭제품'] = matched_names
+
+        if 'cost_overrides' not in st.session_state:
+            st.session_state['cost_overrides'] = {}
+        for idx in df.index:
+            key = f"{df.loc[idx,'수취인명']}_{df.loc[idx,'상품명']}_{idx}_{calc_date_str}"
+            if key in st.session_state['cost_overrides']:
+                df.loc[idx, '구입가격'] = st.session_state['cost_overrides'][key]
+                if st.session_state['cost_overrides'][key] > 0 and df.loc[idx, '매칭출처'] == '미매칭':
+                    df.loc[idx, '매칭출처'] = '수동입력'
+
+        df['수입'] = df.apply(
+            lambda r: (r['정산예정금액'] + r['배송비 합계']) - (r['구입가격'] + shipping_cost + box_cost) if r['구입가격'] > 0 else None, axis=1)
+
+        st.caption(f"📅 {calc_date_str}")
+
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("🟢 영수증", f"{len(df[df['매칭출처']=='영수증'])}건")
+        c2.metric("🔵 DB", f"{len(df[df['매칭출처']=='DB'])}건")
+        c3.metric("✏️ 수동", f"{len(df[df['매칭출처']=='수동입력'])}건")
+        c4.metric("🟡 미매칭", f"{len(df[df['매칭출처']=='미매칭'])}건")
+
+        st.subheader("📊 일별 정산표")
+        st.caption("🟢=영수증 | 🔵=DB | ⬜=수동 | 🟡=미매칭")
+
+        hcols = st.columns([1.5, 3.5, 0.7, 1.5, 1.5, 1.5, 2.3, 0.5, 1.5])
+        for h, c in zip(['수취인','상품명','수량','정산예정','고객택배비','구입가격✏️','매칭키워드✏️','','수입'], hcols):
+            c.markdown(f"**{h}**")
+
+        for idx, r in df.iterrows():
+            key = f"{r['수취인명']}_{r['상품명']}_{idx}"
+            bg = "#fff3cd" if r['매칭출처']=='미매칭' else "#d4edda" if r['매칭출처']=='영수증' else "#d6eaf8" if r['매칭출처']=='DB' else "#ffffff"
+            cols = st.columns([1.5, 3.5, 0.7, 1.5, 1.5, 1.5, 2.3, 0.5, 1.5])
+            cols[0].markdown(f"<div style='background:{bg};padding:4px;border-radius:4px;font-size:12px'>{r['수취인명']}</div>", unsafe_allow_html=True)
+            cols[1].markdown(f"<div style='background:{bg};padding:4px;border-radius:4px;font-size:11px'>{r['상품명'][:40]}</div>", unsafe_allow_html=True)
+            cols[2].markdown(f"<div style='background:{bg};padding:4px;border-radius:4px;text-align:center'>{int(r['수량'])}</div>", unsafe_allow_html=True)
+            cols[3].markdown(f"<div style='background:{bg};padding:4px;border-radius:4px;text-align:right;font-size:12px'>{fmt(r['정산예정금액'])}</div>", unsafe_allow_html=True)
+            cols[4].markdown(f"<div style='background:{bg};padding:4px;border-radius:4px;text-align:right;font-size:12px'>{fmt(r['배송비 합계'])}</div>", unsafe_allow_html=True)
+
+            current_cost = int(r['구입가격'])
+            new_cost = cols[5].number_input(f"c_{idx}", value=current_cost, min_value=0, step=100, label_visibility="collapsed", key=f"c_{idx}")
+            if new_cost != current_cost:
+                st.session_state['cost_overrides'][key] = new_cost
+
+            current_kw = r['매칭제품'] if r['매칭제품'] else ""
+            new_kw = cols[6].text_input(f"k_{idx}", value=current_kw, label_visibility="collapsed", key=f"k_{idx}", placeholder="매칭키워드")
+            if cols[7].button("💾", key=f"s_{idx}"):
+                kw = new_kw.strip()
+                price = new_cost if new_cost > 0 else current_cost
+                unit_price = price // int(r['수량']) if int(r['수량']) > 1 else price
+                if kw and unit_price > 0:
+                    upsert_product(USERNAME, kw, kw, unit_price)
+                    st.success(f"✅ '{kw}' → {fmt(unit_price)}원 저장!")
+                    st.session_state['cost_overrides'] = {}
+                    st.rerun()
+
+            pv = r['수입']
+            cols[8].markdown(f"<div style='background:{bg};padding:4px;border-radius:4px;text-align:right'>{fmt(pv) if pd.notna(pv) else '-'}</div>", unsafe_allow_html=True)
+
+        if st.button("🔄 수정사항 반영", key="recalc"):
+            st.session_state['cost_overrides'] = {}
+            st.rerun()
+
+        # 합계
+        st.subheader("📋 합계")
+        matched_df = df[df['구입가격'] > 0]
+        total_settlement = matched_df['정산예정금액'].sum()
+        total_cust_ship = matched_df['배송비 합계'].sum()
+        total_cost = matched_df['구입가격'].sum()
+        total_ship = len(matched_df) * shipping_cost
+        total_box = len(matched_df) * box_cost
+        total_profit = matched_df['수입'].sum() if len(matched_df) > 0 else 0
+
+        c1, c2 = st.columns(2)
+        with c1:
+            st.markdown("**수입**")
+            st.write(f"정산예정: {fmt(total_settlement)}원 + 고객택배비: {fmt(total_cust_ship)}원 = **{fmt(total_settlement + total_cust_ship)}원**")
+        with c2:
+            st.markdown("**지출**")
+            st.write(f"구입가: {fmt(total_cost)}원 + 택배: {fmt(total_ship)}원 + 박스: {fmt(total_box)}원 = **{fmt(total_cost + total_ship + total_box)}원**")
+        st.markdown(f"### 순수익: {'🟢' if total_profit >= 0 else '🔴'} {fmt(total_profit)}원")
+
+        st.divider()
+        if st.button("💾 정산 데이터 저장", type="primary"):
+            save_daily_orders(USERNAME, order_date, df, shipping_cost, box_cost)
+            st.success(f"✅ {order_date} 저장 완료!")
+
+        # ── 적자 상품 가격 자동 조정 ──
+        loss_df = df[(df['구입가격'] > 0) & (df['수입'] < 0)].copy()
+        if len(loss_df) > 0:
+            st.divider()
+            st.subheader("🔴 적자 상품 가격 조정")
+
+            target_margin = int(get_setting(USERNAME, 'target_margin') or 10)
+            max_increase = int(get_setting(USERNAME, 'max_increase_pct') or 20)
+            tg_token = get_setting(USERNAME, 'telegram_token')
+            tg_chat = get_setting(USERNAME, 'telegram_chat_id')
+
+            # 적자 상품별로 권장 가격 계산
+            loss_products = loss_df.drop_duplicates(subset='상품명')[['상품명','구입가격','수량','정산예정금액','수입']].reset_index(drop=True)
+
+            st.caption(f"목표 마진: {target_margin}% | 최대 인상폭: {max_increase}%")
+
+            adjust_list = []
+            for i, r in loss_products.iterrows():
+                unit_cost = int(r['구입가격'] / r['수량']) if r['수량'] > 1 else int(r['구입가격'])
+                current_price = int(r['정산예정금액'] / r['수량']) if r['수량'] > 1 else int(r['정산예정금액'])
+
+                if HAS_NAVER_API:
+                    min_price = naver_api.calc_min_price(unit_cost, shipping_cost, box_cost, target_margin / 100)
+                else:
+                    min_price = int((unit_cost + shipping_cost + box_cost) * (1 + target_margin / 100) / 0.945 / 100) * 100
+
+                increase_pct = ((min_price - current_price) / current_price * 100) if current_price > 0 else 0
+                over_limit = increase_pct > max_increase
+
+                cols = st.columns([3, 1.5, 1.5, 1.5, 1.5, 1])
+                cols[0].markdown(f"**{r['상품명'][:30]}**")
+                cols[1].markdown(f"원가: {fmt(unit_cost)}")
+                cols[2].markdown(f"현재가: {fmt(current_price)}")
+                cols[3].markdown(f"권장가: **{fmt(min_price)}**")
+
+                if over_limit:
+                    cols[4].markdown(f"🔴 +{increase_pct:.0f}% (상한초과)")
+                else:
+                    cols[4].markdown(f"🟡 +{increase_pct:.0f}%")
+
+                adjust_list.append({
+                    '상품명': r['상품명'],
+                    '원가': unit_cost,
+                    '현재가': current_price,
+                    '권장가': min_price,
+                    '인상률': increase_pct,
+                    '상한초과': over_limit,
+                    '손익': int(r['수입']),
+                })
+
+            if adjust_list and HAS_NAVER_API and api_id and api_secret:
+                st.divider()
+                safe_list = [a for a in adjust_list if not a['상한초과'] and a['권장가'] > a['현재가']]
+                over_list = [a for a in adjust_list if a['상한초과']]
+
+                if safe_list:
+                    st.markdown(f"**✅ 자동 조정 가능: {len(safe_list)}개** (인상폭 {max_increase}% 이내)")
+                    if st.button(f"💰 {len(safe_list)}개 상품 가격 자동 조정", type="primary", key="auto_price"):
+                        # 텔레그램 알림
+                        if tg_token and tg_chat:
+                            msg_lines = ["🔴 적자 상품 가격 조정 알림\n"]
+                            for a in safe_list:
+                                msg_lines.append(f"▪ {a['상품명'][:20]}")
+                                msg_lines.append(f"  {fmt(a['현재가'])} → {fmt(a['권장가'])} (+{a['인상률']:.0f}%)")
+                            msg_lines.append(f"\n⏰ 10분 내 '취소' 입력 시 취소됩니다.")
+                            naver_api.send_telegram(tg_token, tg_chat, "\n".join(msg_lines))
+                            st.info("📱 텔레그램 알림 전송 완료. 10분 내 '취소' 응답이 없으면 자동 적용됩니다.")
+
+                        # 상품 목록 조회 → 매칭 → 가격 변경
+                        with st.spinner("스마트스토어 상품 조회 중..."):
+                            store_products, err = naver_api.get_product_list(api_id, api_secret)
+
+                        if err:
+                            st.error(f"❌ 상품 조회 실패: {err}")
+                        elif store_products:
+                            success_cnt, fail_cnt = 0, 0
+                            conn = get_user_db(USERNAME)
+                            now = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+                            for adj in safe_list:
+                                # 스토어 상품 매칭 (이름 유사도)
+                                matched_product = None
+                                for sp in store_products:
+                                    score = calc_match_score(adj['상품명'], sp['productName'])
+                                    if score >= MIN_MATCH_SCORE:
+                                        matched_product = sp
+                                        break
+
+                                if matched_product:
+                                    ok, err = naver_api.update_product_price(
+                                        api_id, api_secret,
+                                        matched_product['originProductNo'],
+                                        adj['권장가']
+                                    )
+                                    if ok:
+                                        success_cnt += 1
+                                        conn.execute("""INSERT INTO price_history
+                                            (product_name, origin_product_no, old_price, new_price, cost_price, reason, status, created_at)
+                                            VALUES (?,?,?,?,?,?,?,?)""",
+                                            (adj['상품명'], str(matched_product['originProductNo']),
+                                             adj['현재가'], adj['권장가'], adj['원가'],
+                                             f"적자 자동조정 (+{adj['인상률']:.0f}%)", "applied", now))
+                                    else:
+                                        fail_cnt += 1
+                                        st.warning(f"⚠️ {adj['상품명'][:20]}: {err}")
+                                else:
+                                    fail_cnt += 1
+                                    st.warning(f"⚠️ {adj['상품명'][:20]}: 스토어 상품 매칭 실패")
+
+                            conn.commit()
+                            conn.close()
+
+                            st.success(f"✅ 가격 조정 완료! 성공: {success_cnt}건, 실패: {fail_cnt}건")
+
+                            # 결과 텔레그램 전송
+                            if tg_token and tg_chat:
+                                naver_api.send_telegram(tg_token, tg_chat,
+                                    f"✅ 가격 조정 완료\n성공: {success_cnt}건, 실패: {fail_cnt}건")
+                        else:
+                            st.error("스토어에 판매중인 상품이 없습니다.")
+
+                if over_list:
+                    st.warning(f"⚠️ 수동 확인 필요: {len(over_list)}개 (인상폭 {max_increase}% 초과)")
+                    for a in over_list:
+                        st.caption(f"  {a['상품명'][:30]}: {fmt(a['현재가'])} → {fmt(a['권장가'])} (+{a['인상률']:.0f}%)")
+            elif not HAS_NAVER_API:
+                st.caption("💡 naver_api.py와 API 키가 설정되면 자동 가격 조정이 가능합니다.")
+    else:
+        st.info("📋 '주문 업로드' 탭에서 먼저 주문 파일을 업로드해주세요.")
+        dates = get_saved_dates(USERNAME)
+        if dates:
+            st.subheader("📅 저장된 정산 이력")
+            sel_date = st.selectbox("날짜 선택", dates)
+            if sel_date:
+                orders = get_daily_orders(USERNAME, sel_date)
+                if orders:
+                    odf = pd.DataFrame(orders)[['recipient','product_name','qty','settlement','shipping_fee','cost_price','profit']]
+                    odf.columns = ['수취인','상품명','수량','정산예정','고객택배비','구입가','수입']
+                    st.dataframe(odf, use_container_width=True, hide_index=True)
+                    st.metric("당일 순수익", f"{fmt(sum(o['profit'] for o in orders))}원")
+
+
+# ═══════════════════════════════════════
+# 탭 4: 대시보드
+# ═══════════════════════════════════════
+elif tab_choice == "📊 대시보드":
+    st.header("📊 대시보드")
+    today = datetime.today()
+
+    period = st.radio("기간", ["최근 7일", "최근 14일", "최근 30일"], horizontal=True, label_visibility="collapsed")
+    days = {"최근 7일": 7, "최근 14일": 14, "최근 30일": 30}[period]
+    start = (today - timedelta(days=days)).strftime("%Y-%m-%d")
+    end = today.strftime("%Y-%m-%d")
+    stats = get_date_range_stats(USERNAME, start, end)
+
+    if not stats:
+        st.info("저장된 데이터가 없습니다. 주문 업로드 → 수익 계산 → 저장 순서로 진행하세요.")
+    else:
+        today_str = today.strftime("%Y-%m-%d")
+        today_stat = next((s for s in stats if s['order_date'] == today_str), None)
+
+        c1, c2, c3 = st.columns(3)
+        c1.metric("오늘 주문", f"{today_stat['cnt']}건" if today_stat else "0건")
+        c2.metric("오늘 매출", f"{fmt(today_stat['total_sales'])}원" if today_stat else "0원")
+        c3.metric("오늘 순수익", f"{fmt(today_stat['total_profit'])}원" if today_stat else "0원")
+
+        st.subheader("일별 수익 추이")
+        chart_df = pd.DataFrame(stats)
+        chart_df['order_date'] = pd.to_datetime(chart_df['order_date'])
+        fig = go.Figure()
+        fig.add_trace(go.Bar(x=chart_df['order_date'], y=chart_df['total_profit'],
+            name='순수익', marker_color='#1D9E75',
+            text=chart_df['total_profit'].apply(lambda x: f"{x:,.0f}"), textposition='outside'))
+        fig.update_layout(height=350, margin=dict(l=20,r=20,t=20,b=40), yaxis_tickformat=",",
+                         xaxis_dtick="D1", xaxis_tickformat="%m/%d", plot_bgcolor='rgba(0,0,0,0)')
+        fig.update_yaxes(gridcolor='rgba(0,0,0,0.05)')
+        st.plotly_chart(fig, use_container_width=True)
+
+        st.subheader("주간 요약")
+        tw_start = (today - timedelta(days=today.weekday())).strftime("%Y-%m-%d")
+        lw_start = (today - timedelta(days=today.weekday()+7)).strftime("%Y-%m-%d")
+        lw_end = (today - timedelta(days=today.weekday()+1)).strftime("%Y-%m-%d")
+        tw = get_date_range_stats(USERNAME, tw_start, end)
+        lw = get_date_range_stats(USERNAME, lw_start, lw_end)
+        tw_profit = sum(s['total_profit'] for s in tw)
+        lw_profit = sum(s['total_profit'] for s in lw)
+        c1, c2 = st.columns(2)
+        c1.metric("이번 주 순수익", f"{fmt(tw_profit)}원",
+                  delta=f"{((tw_profit/lw_profit-1)*100):.1f}%" if lw_profit > 0 else None)
+        c2.metric("이번 주 주문건수", f"{sum(s['cnt'] for s in tw)}건")
+
+        st.subheader("월별 수익 추이")
+        monthly = get_monthly_stats(USERNAME)
+        if monthly:
+            mdf = pd.DataFrame(monthly)
+            fig2 = go.Figure()
+            fig2.add_trace(go.Scatter(x=mdf['month'], y=mdf['total_profit'], mode='lines+markers+text',
+                line=dict(color='#7F77DD', width=3), marker=dict(size=10),
+                text=mdf['total_profit'].apply(lambda x: f"{x/10000:.1f}만"), textposition='top center'))
+            fig2.update_layout(height=300, margin=dict(l=20,r=20,t=20,b=40), yaxis_tickformat=",", plot_bgcolor='rgba(0,0,0,0)')
+            st.plotly_chart(fig2, use_container_width=True)
+
+        st.subheader("상품별 수익 순위")
+        ranking = get_product_ranking(USERNAME, today.strftime("%Y-%m"))
+        if ranking:
+            rdf = pd.DataFrame(ranking)
+            rdf.columns = ['상품명', '판매수량', '매출', '순수익']
+            rdf.index = range(1, len(rdf) + 1)
+            st.dataframe(rdf.style.format({'매출': '{:,.0f}', '순수익': '{:,.0f}'}), use_container_width=True)
+
+
+# ═══════════════════════════════════════
+# 탭 5: 설정
+# ═══════════════════════════════════════
+elif tab_choice == "⚙️ 설정":
+    st.header("⚙️ 설정")
+
+    st.subheader("🔓 엑셀 비밀번호")
+    st.caption("네이버 스마트스토어에서 다운받은 엑셀 파일의 비밀번호를 저장하면 자동으로 해제됩니다.")
+    current_pw = get_setting(USERNAME, 'excel_password')
+    new_pw = st.text_input("엑셀 비밀번호", value=current_pw, type="password", key="excel_pw_input")
+    if st.button("비밀번호 저장", key="save_pw"):
+        set_setting(USERNAME, 'excel_password', new_pw)
+        st.success("✅ 엑셀 비밀번호 저장 완료!")
+
+    st.divider()
+    st.subheader("🔗 네이버 커머스 API")
+    st.caption("커머스API센터에서 발급받은 키를 입력하면 주문 자동 조회 + 발송 자동 처리가 가능합니다.")
+    api_id_val = get_setting(USERNAME, 'api_client_id')
+    api_secret_val = get_setting(USERNAME, 'api_client_secret')
+    c1, c2 = st.columns(2)
+    new_api_id = c1.text_input("애플리케이션 ID", value=api_id_val, key="api_id_input")
+    new_api_secret = c2.text_input("애플리케이션 시크릿", value=api_secret_val, type="password", key="api_secret_input")
+    if st.button("API 키 저장", key="save_api"):
+        set_setting(USERNAME, 'api_client_id', new_api_id)
+        set_setting(USERNAME, 'api_client_secret', new_api_secret)
+        st.success("✅ API 키 저장 완료!")
+        if HAS_NAVER_API and new_api_id and new_api_secret:
+            with st.spinner("API 연결 테스트 중..."):
+                token, err = naver_api.get_token(new_api_id, new_api_secret)
+            if token:
+                st.success("✅ API 연결 성공!")
+            else:
+                st.error(f"❌ API 연결 실패: {err}")
+    if not HAS_NAVER_API:
+        st.warning("naver_api.py 파일이 같은 폴더에 있어야 합니다. bcrypt, pybase64 패키지도 설치해주세요.")
+
+    st.divider()
+    st.subheader("📱 텔레그램 알림")
+    st.caption("장보기 목록을 휴대폰으로 전송합니다. 텔레그램 봇 설정 방법: ① @BotFather에서 봇 생성 → 토큰 복사 ② 봇에게 아무 메시지 전송 ③ @userinfobot에게 /start → Chat ID 확인")
+    tg_token = get_setting(USERNAME, 'telegram_token')
+    tg_chat = get_setting(USERNAME, 'telegram_chat_id')
+    c1, c2 = st.columns(2)
+    new_tg_token = c1.text_input("봇 토큰", value=tg_token, type="password", key="tg_token_input")
+    new_tg_chat = c2.text_input("Chat ID", value=tg_chat, key="tg_chat_input")
+    c_btn1, c_btn2 = st.columns(2)
+    if c_btn1.button("텔레그램 저장", key="save_tg"):
+        set_setting(USERNAME, 'telegram_token', new_tg_token)
+        set_setting(USERNAME, 'telegram_chat_id', new_tg_chat)
+        st.success("✅ 텔레그램 설정 저장!")
+    if c_btn2.button("🔔 테스트 전송", key="test_tg"):
+        if new_tg_token and new_tg_chat and HAS_NAVER_API:
+            ok, err = naver_api.send_telegram(new_tg_token, new_tg_chat, "✅ 코스트코핫딜 알림 테스트 성공!")
+            if ok:
+                st.success("✅ 텔레그램 전송 성공! 휴대폰을 확인하세요.")
+            else:
+                st.error(f"❌ {err}")
+        else:
+            st.warning("봇 토큰과 Chat ID를 입력해주세요.")
+
+    st.divider()
+    st.subheader("📦 고정 비용")
+    c1, c2 = st.columns(2)
+    new_ship = c1.number_input("택배비 (원)", value=int(get_setting(USERNAME, 'shipping_cost') or 1800), step=100)
+    new_box = c2.number_input("박스비 (원)", value=int(get_setting(USERNAME, 'box_cost') or 300), step=50)
+    if st.button("비용 저장", key="save_cost"):
+        set_setting(USERNAME, 'shipping_cost', new_ship)
+        set_setting(USERNAME, 'box_cost', new_box)
+        st.success(f"✅ 택배비 {fmt(new_ship)}원, 박스비 {fmt(new_box)}원 저장")
+
+    st.divider()
+    st.subheader("💰 가격 자동 조정")
+    st.caption("적자 상품 감지 시 스마트스토어 판매가를 자동으로 조정합니다.")
+    c1, c2 = st.columns(2)
+    new_margin = c1.number_input("목표 마진율 (%)", value=int(get_setting(USERNAME, 'target_margin') or 10), min_value=1, max_value=50, step=1)
+    new_max_inc = c2.number_input("최대 인상폭 (%)", value=int(get_setting(USERNAME, 'max_increase_pct') or 20), min_value=5, max_value=50, step=5)
+    st.caption(f"예시: 원가 10,000원 + 택배비 {fmt(new_ship)}원 + 박스비 {fmt(new_box)}원 → 최소 판매가 약 {fmt(int((10000+new_ship+new_box) * (1+new_margin/100) / 0.945 / 100) * 100)}원")
+    if st.button("마진 설정 저장", key="save_margin"):
+        set_setting(USERNAME, 'target_margin', new_margin)
+        set_setting(USERNAME, 'max_increase_pct', new_max_inc)
+        st.success(f"✅ 목표 마진 {new_margin}%, 최대 인상폭 {new_max_inc}% 저장")
+
+    # 가격 변경 이력
+    conn = get_user_db(USERNAME)
+    history = conn.execute("SELECT * FROM price_history ORDER BY created_at DESC LIMIT 20").fetchall()
+    conn.close()
+    if history:
+        st.divider()
+        st.subheader("📋 가격 변경 이력")
+        hdf = pd.DataFrame([dict(h) for h in history])[['created_at','product_name','old_price','new_price','cost_price','reason','status']]
+        hdf.columns = ['일시','상품명','변경전','변경후','원가','사유','상태']
+        st.dataframe(hdf, use_container_width=True, hide_index=True)
+
+    st.divider()
+    st.subheader("🔑 비밀번호 변경")
+    new_login_pw = st.text_input("새 로그인 비밀번호", type="password", key="new_login_pw")
+    new_login_pw2 = st.text_input("비밀번호 확인", type="password", key="new_login_pw2")
+    if st.button("비밀번호 변경", key="change_pw"):
+        if new_login_pw and new_login_pw == new_login_pw2:
+            change_password(USERNAME, new_login_pw)
+            st.success("✅ 비밀번호 변경 완료!")
+        elif new_login_pw != new_login_pw2:
+            st.error("비밀번호가 일치하지 않습니다.")
+
+    st.divider()
+    st.subheader("📦 제품 가격 DB 관리")
+    products = get_all_products(USERNAME)
+    if products:
+        for p in products:
+            with st.expander(f"{p['costco_name']} — {fmt(p['unit_price'])}원"):
+                c1, c2, c3 = st.columns([2, 2, 2])
+                nk = c1.text_input("매칭키", value=p['match_keyword'], key=f"pk_{p['id']}")
+                np_ = c2.number_input("단가", value=p['unit_price'], step=100, key=f"pp_{p['id']}")
+                if c3.button("수정", key=f"pu_{p['id']}"):
+                    conn = get_user_db(USERNAME)
+                    conn.execute("UPDATE products SET match_keyword=?, unit_price=?, updated_at=? WHERE id=?",
+                                (nk, np_, datetime.now().strftime("%Y-%m-%d %H:%M"), p['id']))
+                    conn.commit()
+                    conn.close()
+                    st.rerun()
+                if c3.button("🗑", key=f"pd_{p['id']}"):
+                    conn = get_user_db(USERNAME)
+                    conn.execute("DELETE FROM products WHERE id=?", (p['id'],))
+                    conn.commit()
+                    conn.close()
+                    st.rerun()
+
+    st.divider()
+    st.subheader("🗄 정산 이력")
+    dates = get_saved_dates(USERNAME)
+    if dates:
+        del_date = st.selectbox("삭제할 날짜", ["선택"] + dates)
+        if del_date != "선택" and st.button(f"🗑 {del_date} 삭제"):
+            conn = get_user_db(USERNAME)
+            conn.execute("DELETE FROM daily_orders WHERE order_date=?", (del_date,))
+            conn.commit()
+            conn.close()
+            st.rerun()
+
+
+# ═══════════════════════════════════════
+# 탭 6: 관리자
+# ═══════════════════════════════════════
+elif tab_choice == "👑 관리자" and IS_ADMIN:
+    st.header("👑 관리자 페이지")
+
+    st.subheader("👥 사용자 목록")
+    users = get_all_users()
+    for u in users:
+        role = "👑 관리자" if u['is_admin'] else "👤 일반"
+        with st.expander(f"{role} {u['display_name']} ({u['username']}) — {u['created_at']}"):
+            if not u['is_admin']:
+                c1, c2 = st.columns(2)
+                if c1.button(f"🗑 '{u['username']}' 삭제", key=f"del_{u['username']}"):
+                    delete_user(u['username'])
+                    st.success(f"✅ '{u['username']}' 삭제 완료!")
+                    st.rerun()
+                reset_pw = c2.text_input("비밀번호 초기화", key=f"reset_{u['username']}")
+                if c2.button("초기화", key=f"resetbtn_{u['username']}"):
+                    if reset_pw:
+                        change_password(u['username'], reset_pw)
+                        st.success(f"✅ '{u['username']}' 비밀번호 초기화 완료!")
+
+    st.divider()
+    st.subheader("➕ 새 사용자 추가")
+    c1, c2, c3 = st.columns(3)
+    new_id = c1.text_input("아이디", key="new_user_id")
+    new_name = c2.text_input("이름", key="new_user_name")
+    new_pw_admin = c3.text_input("초기 비밀번호", type="password", key="new_user_pw")
+
+    if st.button("사용자 추가", type="primary", key="add_user"):
+        if new_id and new_pw_admin:
+            if add_user(new_id, new_pw_admin, new_name):
+                init_user_db(new_id)
+                st.success(f"✅ '{new_id}' 계정 생성 완료!")
+                st.rerun()
+            else:
+                st.error("이미 존재하는 아이디입니다.")
+        else:
+            st.warning("아이디와 비밀번호를 입력해주세요.")

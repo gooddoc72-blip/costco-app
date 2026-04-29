@@ -1,0 +1,36 @@
+# 개인정보 / 데이터 (절대 업로드 금지)
+data/
+
+# Python 캐시
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# 가상환경
+.venv/
+venv/
+env/
+
+# Streamlit 설정 (시크릿 포함 가능)
+.streamlit/secrets.toml
+
+# 배포 패키지 ZIP
+*.zip
+
+# Claude 작업 폴더
+.claude/
+
+# 임시/디버그 파일
+_diag*.py
+_test*.py
+data/debug_page.html
+
+# Windows
+Thumbs.db
+Desktop.ini
+
+# IDE
+.vscode/
+.idea/

@@ -1,0 +1,263 @@
+"""
+네이버 커머스 API 연동 모듈
+- 인증 토큰 발급
+- 주문 조회 (발주확인 대기 주문)
+- 발송처리 (송장번호 일괄 등록)
+"""
+import time
+import requests
+import bcrypt
+import pybase64
+
+API_BASE = "https://api.commerce.naver.com/external"
+TOKEN_URL = f"{API_BASE}/v1/oauth2/token"
+
+def get_token(client_id, client_secret):
+    """인증 토큰 발급"""
+    timestamp = str(int((time.time() - 3) * 1000))
+    password = client_id + "_" + timestamp
+    hashed = bcrypt.hashpw(password.encode('utf-8'), client_secret.encode('utf-8'))
+    client_secret_sign = pybase64.standard_b64encode(hashed).decode('utf-8')
+
+    data = {
+        "client_id": client_id,
+        "timestamp": timestamp,
+        "client_secret_sign": client_secret_sign,
+        "grant_type": "client_credentials",
+        "type": "SELF",
+    }
+    resp = requests.post(TOKEN_URL, data=data)
+    if resp.status_code == 200:
+        return resp.json().get("access_token"), None
+    else:
+        return None, f"토큰 발급 실패 ({resp.status_code}): {resp.text}"
+
+def get_headers(token):
+    return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
+def get_new_orders(client_id, client_secret, hours_back=24, status_type="PAYED"):
+    """주문 조회
+    status_type: PAYED(신규), READY(배송준비/발주확인)
+    """
+    token, err = get_token(client_id, client_secret)
+    if not token:
+        return None, err
+
+    from datetime import datetime, timedelta, timezone
+    now = datetime.now(timezone.utc)
+    from_time = now - timedelta(hours=hours_back)
+
+    headers = get_headers(token)
+
+    # 변경 상품 주문 내역 조회 API
+    url = f"{API_BASE}/v1/pay-order/seller/product-orders/last-changed-statuses"
+    params = {
+        "lastChangedFrom": from_time.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+        "lastChangedTo": now.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+    }
+    if status_type != "READY":
+        params["lastChangedType"] = status_type
+    resp = requests.get(url, headers=headers, params=params)
+    if resp.status_code != 200:
+        return None, f"주문 조회 실패 ({resp.status_code}): {resp.text}"
+
+    data = resp.json().get("data", {})
+    product_order_ids = data.get("lastChangeStatuses", [])
+    if not product_order_ids:
+        return [], None
+
+    order_ids = [item["productOrderId"] for item in product_order_ids]
+    detail_url = f"{API_BASE}/v1/pay-order/seller/product-orders/query"
+    detail_resp = requests.post(detail_url, headers=headers, json={"productOrderIds": order_ids})
+    if detail_resp.status_code != 200:
+        return None, f"상세 조회 실패 ({detail_resp.status_code}): {detail_resp.text}"
+
+    orders = []
+    response_data = detail_resp.json().get("data") or []
+    target_status = "PRODUCT_READY" if status_type == "READY" else status_type
+
+    for item in response_data:
+        po = item.get("productOrder", {})
+        
+        if po.get("productOrderStatus") != target_status:
+            continue
+
+        orders.append({
+            "상품주문번호": po.get("productOrderId", ""),
+            "주문번호": po.get("orderId", ""),
+            "배송방법": "택배,등기,소포",
+            "수취인명": po.get("shippingAddress", {}).get("name", ""),
+            "수취인연락처1": po.get("shippingAddress", {}).get("tel1", ""),
+            "수취인연락처2": po.get("shippingAddress", {}).get("tel2", ""),
+            "배송지": po.get("shippingAddress", {}).get("baseAddress", "") + " " + po.get("shippingAddress", {}).get("detailedAddress", ""),
+            "우편번호": po.get("shippingAddress", {}).get("zipCode", ""),
+            "배송메모": po.get("shippingAddress", {}).get("shippingMemo", ""),
+            "상품명": po.get("productName", ""),
+            "옵션정보": po.get("optionCode", ""),
+            "수량": po.get("quantity", 1),
+            "최종 상품별 총 주문금액": po.get("totalPaymentAmount", 0),
+            "배송비 합계": po.get("deliveryFeeAmount", 0),
+            "제주/도서 추가배송비": po.get("islandDeliveryFeeAmount", 0),
+            "정산예정금액": po.get("expectedSettlementAmount", 0),
+        })
+
+    return orders, None
+
+def ship_orders(client_id, client_secret, ship_data):
+    """
+    발송처리 (송장번호 일괄 등록)
+    ship_data: list of {"productOrderId": "...", "deliveryCompanyCode": "...", "trackingNumber": "..."}
+    """
+    token, err = get_token(client_id, client_secret)
+    if not token:
+        return None, err
+
+    # 택배사 코드 매핑
+    courier_codes = {
+        "롯데택배": "HYUNDAI",
+        "한진택배": "HANJIN",
+        "CJ대한통운": "CJGLS",
+        "우체국택배": "EPOST",
+        "로젠택배": "KGB",
+    }
+
+    url = f"{API_BASE}/v1/pay-order/seller/product-orders/dispatch"
+
+    dispatch_list = []
+    for item in ship_data:
+        company_code = courier_codes.get(item.get("택배사", ""), item.get("deliveryCompanyCode", ""))
+        import datetime
+        now_str = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        dispatch_list.append({
+            "productOrderId": str(item["productOrderId"]),
+            "deliveryMethod": "DELIVERY",
+            "deliveryCompanyCode": company_code,
+            "trackingNumber": str(item["trackingNumber"]),
+            "dispatchDate": now_str,
+        })
+
+    body = {"dispatchProductOrders": dispatch_list}
+    resp = requests.post(url, headers=get_headers(token), json=body)
+
+    if resp.status_code == 200:
+        result = resp.json()
+        success_count = len(result.get("data", {}).get("successProductOrderIds", []))
+        fail_count = len(result.get("data", {}).get("failProductOrderInfos", []))
+        fail_details = result.get("data", {}).get("failProductOrderInfos", [])
+        return {"success": success_count, "fail": fail_count, "fail_details": fail_details}, None
+    else:
+        return None, f"발송처리 실패 ({resp.status_code}): {resp.text}"
+
+
+# ═══════════════════════════════════════
+# 텔레그램 전송
+# ═══════════════════════════════════════
+def send_telegram(bot_token, chat_id, message):
+    """텔레그램으로 메시지 전송"""
+    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+    data = {"chat_id": chat_id, "text": message, "parse_mode": "HTML"}
+    try:
+        resp = requests.post(url, json=data, timeout=10)
+        if resp.status_code == 200:
+            return True, None
+        else:
+            return False, f"텔레그램 전송 실패 ({resp.status_code}): {resp.text}"
+    except Exception as e:
+        return False, f"텔레그램 연결 실패: {str(e)}"
+
+
+def get_telegram_updates(bot_token, timeout=0):
+    """텔레그램 봇에 온 메시지 확인 (취소 응답 확인용)"""
+    url = f"https://api.telegram.org/bot{bot_token}/getUpdates"
+    try:
+        resp = requests.get(url, params={"timeout": timeout, "limit": 10}, timeout=15)
+        if resp.status_code == 200:
+            return resp.json().get("result", []), None
+        return [], f"업데이트 조회 실패: {resp.text}"
+    except Exception as e:
+        return [], str(e)
+
+
+# ═══════════════════════════════════════
+# 상품 가격 변경 API
+# ═══════════════════════════════════════
+def get_product_list(client_id, client_secret):
+    """스토어 전체 상품 목록 조회"""
+    token, err = get_token(client_id, client_secret)
+    if not token:
+        return None, err
+
+    url = f"{API_BASE}/v2/products/search"
+    body = {
+        "searchCondition": {
+            "saleStatus": ["ON_SALE"],  # 판매중인 상품만
+        },
+        "page": 1,
+        "size": 100,
+    }
+    resp = requests.post(url, headers=get_headers(token), json=body)
+    if resp.status_code == 200:
+        data = resp.json().get("data", {})
+        products = []
+        for p in data.get("contents", []):
+            products.append({
+                "channelProductNo": p.get("channelProductNo"),
+                "originProductNo": p.get("originProductNo"),
+                "productName": p.get("productName", ""),
+                "salePrice": p.get("salePrice", 0),
+                "stockQuantity": p.get("stockQuantity", 0),
+            })
+        return products, None
+    else:
+        return None, f"상품 조회 실패 ({resp.status_code}): {resp.text}"
+
+
+def update_product_price(client_id, client_secret, origin_product_no, new_price):
+    """상품 가격 변경"""
+    token, err = get_token(client_id, client_secret)
+    if not token:
+        return False, err
+
+    url = f"{API_BASE}/v2/products/origin-products/{origin_product_no}"
+    body = {
+        "originProduct": {
+            "saleInfo": {
+                "salePrice": int(new_price),
+            }
+        }
+    }
+    resp = requests.patch(url, headers=get_headers(token), json=body)
+    if resp.status_code == 200:
+        return True, None
+    else:
+        return False, f"가격 변경 실패 ({resp.status_code}): {resp.text}"
+
+
+def calc_min_price(cost_price, shipping_cost=1800, box_cost=300, margin_rate=0.10, naver_fee_rate=0.055):
+    """최소 판매가 계산
+    판매가 = (원가 + 택배비 + 박스비 + 마진) / (1 - 네이버수수료율)
+    """
+    total_cost = cost_price + shipping_cost + box_cost
+    min_price = total_cost * (1 + margin_rate) / (1 - naver_fee_rate)
+    return int(min_price / 100) * 100  # 100원 단위 올림
+
+
+if __name__ == "__main__":
+    # 테스트용
+    import sys
+    if len(sys.argv) >= 3:
+        cid, csecret = sys.argv[1], sys.argv[2]
+        token, err = get_token(cid, csecret)
+        if token:
+            print(f"토큰 발급 성공: {token[:20]}...")
+            orders, err = get_new_orders(cid, csecret)
+            if orders is not None:
+                print(f"주문 {len(orders)}건 조회됨")
+                for o in orders[:3]:
+                    print(f"  {o['수취인명']} | {o['상품명'][:30]} | {o['수량']}개")
+            else:
+                print(f"주문 조회 실패: {err}")
+        else:
+            print(f"토큰 실패: {err}")
+    else:
+        print("사용법: python naver_api.py <client_id> <client_secret>")
