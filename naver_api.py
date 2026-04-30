@@ -293,6 +293,65 @@ def get_kakao_token_by_code(rest_api_key, auth_code, redirect_uri="http://localh
     except Exception as e:
         return None, None, str(e)
 
+def _get_category_cache_path():
+    import os
+    base = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(base, "data", "naver_categories.json")
+
+
+def load_naver_category_cache(client_id, client_secret, force_refresh=False):
+    """전체 카테고리를 API에서 받아 로컬 JSON 캐시로 저장.
+    캐시가 있으면 바로 반환 (force_refresh=True면 강제 갱신).
+    반환: ([{"id": str, "full_name": str}], error_msg)
+    """
+    import os, json as _json
+    cache_path = _get_category_cache_path()
+    if not force_refresh and os.path.exists(cache_path):
+        try:
+            with open(cache_path, encoding="utf-8") as f:
+                return _json.load(f), None
+        except Exception:
+            pass
+
+    token, err = get_token(client_id, client_secret)
+    if not token:
+        return [], err
+    headers = {"Authorization": f"Bearer {token}"}
+    try:
+        resp = requests.get(
+            "https://api.commerce.naver.com/external/v1/categories",
+            headers=headers,
+            params={"page": 1, "pageSize": 100},
+            timeout=20,
+        )
+        if resp.status_code != 200:
+            return [], f"카테고리 조회 실패({resp.status_code})"
+        all_cats = resp.json() if isinstance(resp.json(), list) else []
+        leaf_cats = [
+            {"id": str(c["id"]), "full_name": c.get("wholeCategoryName", c.get("name", ""))}
+            for c in all_cats if c.get("last") and c.get("id")
+        ]
+        os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+        with open(cache_path, "w", encoding="utf-8") as f:
+            _json.dump(leaf_cats, f, ensure_ascii=False)
+        return leaf_cats, None
+    except Exception as e:
+        return [], str(e)
+
+
+def search_naver_categories(client_id, client_secret, keyword):
+    """캐시에서 키워드로 카테고리 검색 (부분 일치, 대소문자 무시).
+    반환: ([{"id": str, "full_name": str}], error_msg)
+    """
+    cats, err = load_naver_category_cache(client_id, client_secret)
+    if err and not cats:
+        return [], err
+    kw = keyword.strip().lower()
+    matched = [c for c in cats if kw in c["full_name"].lower()]
+    matched.sort(key=lambda c: (c["full_name"].lower().index(kw), c["full_name"]))
+    return matched[:50], None
+
+
 def upload_product_image(client_id, client_secret, image_source):
     """
     이미지(로컬 파일 경로 또는 URL)를 네이버 CDN에 업로드.
@@ -372,6 +431,8 @@ def register_product(client_id, client_secret, product_info):
     as_tel = product_info.get("after_service_tel") or "1588-1234"
     origin = product_info.get("origin_code") or "03"
 
+    rp = product_info.get("review_points") or {}
+
     payload = {
         "originProduct": {
             "statusType": "SALE",
@@ -404,6 +465,14 @@ def register_product(client_id, client_secret, product_info):
                     "deliveryFeePayType": "COLLECT",
                 },
             },
+            "benefitInfo": {
+                "reviewPointPolicy": {
+                    "textReviewPoint":              rp.get("text", 50),
+                    "photoVideoReviewPoint":        rp.get("photo", 100),
+                    "afterUseTextReviewPoint":      rp.get("after_text", 100),
+                    "afterUsePhotoVideoReviewPoint": rp.get("after_photo", 100),
+                }
+            },
             "detailAttribute": {
                 "afterServiceInfo": {
                     "afterServiceTelephoneNumber": as_tel,
@@ -412,6 +481,16 @@ def register_product(client_id, client_secret, product_info):
                 "originAreaInfo": {
                     "originAreaCode": origin,
                     "content": "",
+                },
+                "productInfoProvidedNotice": {
+                    "productInfoProvidedNoticeType": "ETC",
+                    "etc": {
+                        "returnCostReason":          "상품 상세페이지 참조",
+                        "noRefundReason":            "상품 상세페이지 참조",
+                        "qualityAssuranceStandard":  "상품 상세페이지 참조",
+                        "compensationProcedure":     "상품 상세페이지 참조",
+                        "troubleShootingContents":   "상품 상세페이지 참조",
+                    },
                 },
             },
         }
