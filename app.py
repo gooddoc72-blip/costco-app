@@ -2766,9 +2766,31 @@ elif tab_choice == "🛍 네이버 등록":
 
     # ── 상품 목록 ─────────────────────────────────────────────────
     st.divider()
-    _nr_unreg = [p for p in _nr_all if not p.get('naver_product_no')]
-    _nr_reg   = [p for p in _nr_all if p.get('naver_product_no')]
-    st.caption(f"전체 {len(_nr_all)}개 · 미등록 {len(_nr_unreg)}개 · 등록완료 {len(_nr_reg)}개")
+
+    # 카테고리 버튼 필터
+    _nr_cats = sorted({p.get('category', '') for p in _nr_all if p.get('category', '')})
+    if 'nr2_cat_filter' not in st.session_state:
+        st.session_state['nr2_cat_filter'] = '전체'
+    _nr_cat_active = st.session_state['nr2_cat_filter']
+    if _nr_cats:
+        _nr_cat_btns = ['전체'] + _nr_cats
+        _nr_cbcols = st.columns(min(len(_nr_cat_btns), 8))
+        for _ci, _cname in enumerate(_nr_cat_btns):
+            _cstyle = "primary" if _cname == _nr_cat_active else "secondary"
+            if _nr_cbcols[_ci % 8].button(_cname, key=f"nr2_catbtn_{_ci}",
+                                           type=_cstyle, use_container_width=True):
+                st.session_state['nr2_cat_filter'] = _cname
+                st.rerun()
+
+    # 카테고리 필터 적용
+    if _nr_cat_active == '전체':
+        _nr_cat_filtered = _nr_all
+    else:
+        _nr_cat_filtered = [p for p in _nr_all if p.get('category', '') == _nr_cat_active]
+
+    _nr_unreg = [p for p in _nr_cat_filtered if not p.get('naver_product_no')]
+    _nr_reg   = [p for p in _nr_cat_filtered if p.get('naver_product_no')]
+    st.caption(f"전체 {len(_nr_cat_filtered)}개 · 미등록 {len(_nr_unreg)}개 · 등록완료 {len(_nr_reg)}개")
 
     _nr_flt = st.radio(
         "필터", ["전체", f"미등록 ({len(_nr_unreg)})", f"등록완료 ({len(_nr_reg)})"],
@@ -2779,7 +2801,7 @@ elif tab_choice == "🛍 네이버 등록":
     elif "등록완료" in _nr_flt:
         _nr_show = _nr_reg
     else:
-        _nr_show = _nr_all
+        _nr_show = _nr_cat_filtered
 
     if not _nr_show:
         st.info("상품이 없습니다. 먼저 제품 DB에서 상품을 추가하세요.")
