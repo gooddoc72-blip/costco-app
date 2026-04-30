@@ -271,79 +271,88 @@ def run_shopping_task(username="admin"):
         return True
 
     log(f"✅ {len(orders)}건 조회 완료")
-    save_daily_orders(username, orders, settings)
+    try:
+        save_daily_orders(username, orders, settings)
+    except Exception as e:
+        log(f"⚠️ 주문 DB 저장 실패 (계속 진행): {e}")
 
-    # ── 상품별 집계: (상품번호, 상품명, 옵션정보) 조합별로 구분 ──
-    from collections import defaultdict
-    # key = (상품번호, 상품명, 옵션정보) → 같은 조합만 합산
-    shopping = defaultdict(lambda: {"주문수량": 0, "상품명": "", "옵션": "", "상품번호": ""})
-    for o in orders:
-        pno = str(o.get("상품번호", ""))
-        name = o.get("상품명", "")
-        opt = o.get("옵션정보", "") or ""
-        key = (pno, name, opt)
-        shopping[key]["주문수량"] += int(o.get("수량", 1))
-        shopping[key]["상품명"] = name
-        shopping[key]["옵션"] = opt
-        shopping[key]["상품번호"] = pno
+    try:
+        # ── 상품별 집계: (상품번호, 상품명, 옵션정보) 조합별로 구분 ──
+        from collections import defaultdict
+        shopping = defaultdict(lambda: {"주문수량": 0, "상품명": "", "옵션": "", "상품번호": ""})
+        for o in orders:
+            pno = str(o.get("상품번호", ""))
+            name = o.get("상품명", "")
+            opt = o.get("옵션정보", "") or ""
+            key = (pno, name, opt)
+            shopping[key]["주문수량"] += int(o.get("수량", 1))
+            shopping[key]["상품명"] = name
+            shopping[key]["옵션"] = opt
+            shopping[key]["상품번호"] = pno
 
-    products = get_all_products(username)
-    total_cost = 0
-    total_costco_qty = 0
-    lines = [
-        f"🛒 코스트코 장보기 목록",
-        f"📅 {now.strftime('%Y-%m-%d %H:%M')}",
-        f"📦 주문 {len(orders)}건",
-        "",
-    ]
-    for idx, (_, item) in enumerate(
-            sorted(shopping.items(), key=lambda x: x[1]["상품명"]), 1):
-        name = item["상품명"]
-        order_qty = item["주문수량"]
-        opt = item["옵션"]
-        pno = item["상품번호"]
+        products = get_all_products(username)
+        total_cost = 0
+        total_costco_qty = 0
+        lines = [
+            f"🛒 코스트코 장보기 목록",
+            f"📅 {now.strftime('%Y-%m-%d %H:%M')}",
+            f"📦 주문 {len(orders)}건",
+            "",
+        ]
+        for idx, (_, item) in enumerate(
+                sorted(shopping.items(), key=lambda x: x[1]["상품명"]), 1):
+            name = item["상품명"]
+            order_qty = item["주문수량"]
+            opt = item["옵션"]
+            pno = item["상품번호"]
 
-        # 묶음수량 추출 → 코스트코 실제 구매수량
-        pack = extract_pack_qty(opt, name)
-        costco_qty = order_qty * pack
+            pack = extract_pack_qty(opt, name)
+            costco_qty = order_qty * pack
 
-        unit_price = None
-        for p in products:
-            if pno and str(p.get("product_no", "")) == pno:
-                unit_price = p["unit_price"]
-                break
-        if not unit_price:
+            unit_price = None
             for p in products:
-                kw = p.get("match_keyword", "")
-                if kw and (kw in name or name in p.get("costco_name", "")):
+                if pno and str(p.get("product_no", "")) == pno:
                     unit_price = p["unit_price"]
                     break
+            if not unit_price:
+                for p in products:
+                    kw = p.get("match_keyword", "")
+                    if kw and (kw in name or name in p.get("costco_name", "")):
+                        unit_price = p["unit_price"]
+                        break
 
-        if unit_price:
-            total_cost += unit_price * costco_qty
-        total_costco_qty += costco_qty
+            if unit_price:
+                total_cost += unit_price * costco_qty
+            total_costco_qty += costco_qty
 
-        opt_str = f" ({opt[:15]})" if opt else ""
-        name_short = name[:22]
-        if pack > 1:
-            qty_str = f"{costco_qty}개 (주문{order_qty}건×{pack}구)"
+            opt_str = f" ({opt[:15]})" if opt else ""
+            name_short = name[:22]
+            if pack > 1:
+                qty_str = f"{costco_qty}개 (주문{order_qty}건×{pack}구)"
+            else:
+                qty_str = f"{costco_qty}개"
+            price_str = f" @{fmt(unit_price)}" if unit_price else ""
+            lines.append(f"{idx}. {name_short}{opt_str} × {qty_str}{price_str}")
+
+        lines.append("")
+        if total_cost > 0:
+            lines.append(f"💰 예상 구매액: {fmt(total_cost)}원")
+        lines.append(f"🛒 코스트코 총 {total_costco_qty}개 구매 필요")
+
+        msg = "\n".join(lines)
+        log(msg)
+
+        if send_notification(settings, msg, username):
+            log("✅ 알림 전송 완료")
         else:
-            qty_str = f"{costco_qty}개"
-        price_str = f" @{fmt(unit_price)}" if unit_price else ""
-        lines.append(f"{idx}. {name_short}{opt_str} × {qty_str}{price_str}")
+            log("⚠️ 알림 채널 미설정 (카카오/텔레그램 설정 필요)")
 
-    lines.append("")
-    if total_cost > 0:
-        lines.append(f"💰 예상 구매액: {fmt(total_cost)}원")
-    lines.append(f"🛒 코스트코 총 {total_costco_qty}개 구매 필요")
-
-    msg = "\n".join(lines)
-    log(msg)
-
-    if send_notification(settings, msg, username):
-        log("✅ 알림 전송 완료")
-    else:
-        log("⚠️ 알림 채널 미설정 (카카오/텔레그램 설정 필요)")
+    except Exception as e:
+        import traceback
+        log(f"❌ 장보기 목록 생성/발송 중 오류: {e}")
+        log(traceback.format_exc())
+        send_notification(settings, f"❌ Task 1 오류\n{e}", username)
+        return False
 
     log(f"[Task 1] 완료")
     return True
