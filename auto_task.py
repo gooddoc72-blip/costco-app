@@ -34,9 +34,10 @@ def log(msg):
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     line = f"[{ts}] {msg}"
     try:
-        print(line)
-    except UnicodeEncodeError:
-        print(line.encode("utf-8", errors="replace").decode("utf-8", errors="replace"))
+        sys.stdout.buffer.write((line + "\n").encode("utf-8", errors="replace"))
+        sys.stdout.buffer.flush()
+    except Exception:
+        pass
     os.makedirs(DATA_DIR, exist_ok=True)
     with open(LOG_PATH, "a", encoding="utf-8") as f:
         f.write(line + "\n")
