@@ -33,7 +33,10 @@ LOG_PATH = os.path.join(DATA_DIR, "auto_task.log")
 def log(msg):
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     line = f"[{ts}] {msg}"
-    print(line)
+    try:
+        print(line)
+    except UnicodeEncodeError:
+        print(line.encode("utf-8", errors="replace").decode("utf-8", errors="replace"))
     os.makedirs(DATA_DIR, exist_ok=True)
     with open(LOG_PATH, "a", encoding="utf-8") as f:
         f.write(line + "\n")
