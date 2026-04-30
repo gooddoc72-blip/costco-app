@@ -23,6 +23,7 @@ from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import naver_api
+from utils import fmt, extract_pack_qty
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")
@@ -41,33 +42,6 @@ def log(msg):
     os.makedirs(DATA_DIR, exist_ok=True)
     with open(LOG_PATH, "a", encoding="utf-8") as f:
         f.write(line + "\n")
-
-
-def fmt(n):
-    try:
-        return f"{int(n):,}"
-    except Exception:
-        return "-"
-
-
-def extract_pack_qty(option_str, name_str=""):
-    """옵션정보·상품명에서 묶음수량 추출 (예: '2구', '3개묶음', '1+1' → 2, 3, 2)"""
-    text = f"{option_str or ''} {name_str or ''}".strip()
-    if not text:
-        return 1
-    m = re.search(r'(\d)\s*\+\s*(\d)', text)
-    if m:
-        v = int(m.group(1)) + int(m.group(2))
-        if 1 < v <= 30:
-            return v
-    for pat in [r'(\d+)\s*구\b', r'(\d+)\s*개\s*묶음', r'(\d+)\s*개\s*세트',
-                r'(\d+)\s*p(?:ack)?\b', r'(\d+)\s*set\b', r'x\s*(\d+)\b']:
-        m = re.search(pat, text, re.IGNORECASE)
-        if m:
-            v = int(m.group(1))
-            if 1 < v <= 30:
-                return v
-    return 1
 
 
 def get_global_setting(key, default=''):
