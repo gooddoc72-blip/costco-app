@@ -3318,13 +3318,29 @@ elif tab_choice == "📦 제품 DB":
             if e_pg - s_pg < max_vis - 1:
                 s_pg = max(1, e_pg - max_vis + 1)
             pg_range = list(range(s_pg, e_pg + 1))
-            pad = max(1, (20 - len(pg_range)) // 2)
-            pg_cols = st.columns([pad] + [1] * len(pg_range) + [pad])
-            for i, p_num in enumerate(pg_range):
-                label = f":red[**{p_num}**]" if p_num == page else str(p_num)
-                if pg_cols[i + 1].button(label, key=f"p_btn_{p_num}", use_container_width=True):
-                    st.session_state['product_page'] = p_num
-                    st.rerun()
+            has_prev = page > 1
+            has_next = page < total_pages
+            _items = []
+            if has_prev: _items.append(('prev', page - 1))
+            _items += [('page', p) for p in pg_range]
+            if has_next: _items.append(('next', page + 1))
+            _pad = max(1, (22 - len(_items)) // 2)
+            _pcols = st.columns([_pad] + [1] * len(_items) + [_pad])
+            for _pi, (_typ, _val) in enumerate(_items):
+                _c = _pcols[_pi + 1]
+                if _typ == 'prev':
+                    if _c.button('< 이전', key='p_prev', use_container_width=True):
+                        st.session_state['product_page'] = _val; st.rerun()
+                elif _typ == 'next':
+                    if _c.button('다음 >', key='p_next', use_container_width=True):
+                        st.session_state['product_page'] = _val; st.rerun()
+                elif _val == page:
+                    _c.markdown(f"<div style='text-align:center;padding:7px 0;font-size:15px;"
+                                f"font-weight:700;color:#e67e22;border-bottom:2px solid #e67e22'>{_val}</div>",
+                                unsafe_allow_html=True)
+                else:
+                    if _c.button(str(_val), key=f'p_btn_{_val}', use_container_width=True):
+                        st.session_state['product_page'] = _val; st.rerun()
     else:
         st.info("등록된 제품이 없습니다. 영수증 등록 메뉴에서 추가하세요.")
 
@@ -3562,12 +3578,29 @@ elif tab_choice == "👑 관리자" and IS_ADMIN:
             if e_pg - s_pg < max_vis - 1:
                 s_pg = max(1, e_pg - max_vis + 1)
             pg_range = list(range(s_pg, e_pg + 1))
-            pad = max(1, (20 - len(pg_range)) // 2)
-            pg_cols = st.columns([pad] + [1] * len(pg_range) + [pad])
-            for i, p_num in enumerate(pg_range):
-                label = f":red[**{p_num}**]" if p_num == sp_page else str(p_num)
-                if pg_cols[i + 1].button(label, key=f"sp_pg_{p_num}", use_container_width=True):
-                    st.session_state['admin_sp_page'] = p_num
+            has_prev = sp_page > 1
+            has_next = sp_page < sp_total_pages
+            _items = []
+            if has_prev: _items.append(('prev', sp_page - 1))
+            _items += [('page', p) for p in pg_range]
+            if has_next: _items.append(('next', sp_page + 1))
+            _pad = max(1, (22 - len(_items)) // 2)
+            _pcols = st.columns([_pad] + [1] * len(_items) + [_pad])
+            for _pi, (_typ, _val) in enumerate(_items):
+                _c = _pcols[_pi + 1]
+                if _typ == 'prev':
+                    if _c.button('< 이전', key='sp_prev', use_container_width=True):
+                        st.session_state['admin_sp_page'] = _val; st.rerun()
+                elif _typ == 'next':
+                    if _c.button('다음 >', key='sp_next', use_container_width=True):
+                        st.session_state['admin_sp_page'] = _val; st.rerun()
+                elif _val == sp_page:
+                    _c.markdown(f"<div style='text-align:center;padding:7px 0;font-size:15px;"
+                                f"font-weight:700;color:#e67e22;border-bottom:2px solid #e67e22'>{_val}</div>",
+                                unsafe_allow_html=True)
+                else:
+                    if _c.button(str(_val), key=f'sp_pg_{_val}', use_container_width=True):
+                        st.session_state['admin_sp_page'] = _val; st.rerun()
                     st.rerun()
     else:
         st.info("공유 제품이 없습니다. 아래에서 추가하거나 영수증 등록 탭에서 업로드하세요.")
