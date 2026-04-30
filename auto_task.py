@@ -94,7 +94,7 @@ def get_user_settings(username):
 
 def save_setting(username, key, value):
     db_path = os.path.join(DATA_DIR, f"{username}.db")
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path, timeout=10)
     conn.execute("INSERT OR REPLACE INTO settings VALUES (?, ?)", (key, str(value)))
     conn.commit()
     conn.close()
@@ -115,8 +115,8 @@ def save_daily_orders(username, orders, settings):
     """조회된 주문을 daily_orders 테이블에 저장"""
     today = datetime.now().strftime("%Y-%m-%d")
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
-    shipping_cost = int(settings.get("shipping_cost", 1800))
-    box_cost = int(settings.get("box_cost", 300))
+    shipping_cost = int(settings.get("shipping_cost") or 1800)
+    box_cost = int(settings.get("box_cost") or 300)
     products = get_all_products(username)
 
     def find_unit_price(order):
@@ -139,8 +139,8 @@ def save_daily_orders(username, orders, settings):
         qty = int(o.get("수량", 1))
         unit_price = find_unit_price(o)
         cost = unit_price * qty
-        settlement = int(o.get("정산예정금액", 0))
-        ship_fee = int(o.get("배송비 합계", 0))
+        settlement = int(o.get("정산예정금액") or 0)
+        ship_fee = int(o.get("배송비 합계") or 0)
         profit = (settlement + ship_fee) - (cost + shipping_cost + box_cost)
         conn.execute(
             """INSERT INTO daily_orders
@@ -150,8 +150,8 @@ def save_daily_orders(username, orders, settings):
                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (today, o.get("수취인명", ""), o.get("상품명", ""),
              str(o.get("상품번호", "")), o.get("옵션정보", ""), qty,
-             int(o.get("최종 상품별 총 주문금액", 0)), ship_fee,
-             int(o.get("제주/도서 추가배송비", 0)), settlement,
+             int(o.get("최종 상품별 총 주문금액") or 0), ship_fee,
+             int(o.get("제주/도서 추가배송비") or 0), settlement,
              cost, shipping_cost, box_cost, profit,
              1 if cost > 0 else 0, now)
         )
@@ -174,10 +174,13 @@ def send_notification(settings, msg, username=None):
         if ok:
             if err and "__TOKEN_REFRESHED__" in str(err) and username:
                 parts = str(err).replace("__TOKEN_REFRESHED__", "").split("||")
-                save_setting(username, "kakao_access_token", parts[0])
-                if len(parts) > 1:
-                    save_setting(username, "kakao_refresh_token", parts[1])
-                log("🔄 카카오 토큰 자동 갱신")
+                try:
+                    save_setting(username, "kakao_access_token", parts[0])
+                    if len(parts) > 1:
+                        save_setting(username, "kakao_refresh_token", parts[1])
+                    log("🔄 카카오 토큰 자동 갱신")
+                except Exception as e:
+                    log(f"⚠️ 카카오 토큰 갱신 저장 실패 (발송은 완료): {e}")
             return True
         log(f"  카카오톡 실패: {err}")
 
