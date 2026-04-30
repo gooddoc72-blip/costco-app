@@ -204,7 +204,7 @@ with st.sidebar:
     st.caption(f"👤 {user['display_name']} ({USERNAME})")
     st.divider()
 
-    menus = ["🏠 홈", "📋 주문 업로드", "📮 송장번호 등록", "🧾 영수증 등록", "💰 수익 계산", "📊 대시보드", "📦 제품 DB", "⚙️ 설정", "🤖 자동화"]
+    menus = ["🏠 홈", "📋 주문 업로드", "📮 송장번호 등록", "🧾 영수증 등록", "💰 수익 계산", "📊 대시보드", "📦 제품 DB", "🛍 네이버 등록", "⚙️ 설정", "🤖 자동화"]
     if IS_ADMIN:
         menus.append("👑 관리자")
     tab_choice = st.radio("메뉴", menus, label_visibility="collapsed", key="main_tab")
@@ -2605,6 +2605,212 @@ elif tab_choice == "👑 관리자" and IS_ADMIN:
                 st.rerun()
             except Exception as e:
                 st.error(f"❌ 가져오기 실패: {e}")
+
+
+
+# ═══════════════════════════════════════
+# 네이버 등록 탭
+# ═══════════════════════════════════════
+elif tab_choice == "🛍 네이버 등록":
+    st.header("🛍 네이버 스마트스토어 상품 등록")
+    st.caption("상품별로 네이버 스마트스토어에 등록하고 등록 현황을 관리합니다.")
+
+    if not HAS_NAVER_API:
+        st.error("naver_api.py 없음 — 관리자에게 문의하세요.")
+        st.stop()
+    if not api_id or not api_secret:
+        st.warning("⚙️ 설정 탭에서 네이버 API 키를 먼저 입력하세요.")
+        st.stop()
+
+    _nr_all    = get_all_products_merged(USERNAME)
+    _nr_kw_sel = st.session_state.get('nreg2_kw')
+    _nr_prod   = next((p for p in _nr_all if p['match_keyword'] == _nr_kw_sel), None) if _nr_kw_sel else None
+
+    # ── 등록 폼 ──────────────────────────────────────────────────
+    if _nr_prod:
+        _nr_sp_id  = _nr_prod.get('shared_id')
+        _saved_cat = ''
+        if _nr_sp_id:
+            try:
+                _ca2 = sqlite3.connect(AUTH_DB)
+                _ca2.row_factory = sqlite3.Row
+                _nr_sp_row = _ca2.execute("SELECT naver_category_id FROM shared_products WHERE id=?", (_nr_sp_id,)).fetchone()
+                _ca2.close()
+                if _nr_sp_row:
+                    _saved_cat = _nr_sp_row['naver_category_id'] or ''
+            except Exception:
+                pass
+        _saved_cat = _saved_cat or get_setting(USERNAME, 'naver_default_category') or ''
+        _saved_as  = get_setting(USERNAME, 'naver_as_tel') or ''
+
+        with st.expander(f"🛍 네이버 등록 — {_nr_prod['costco_name']}", expanded=True):
+            _nr_name = st.text_input("상품명", value=_nr_prod['costco_name'][:100], key="nr2_name")
+
+            st.markdown("**네이버 카테고리**")
+            _nr_cc1, _nr_cc2 = st.columns([4, 1])
+            _nr_cat_kw = _nr_cc1.text_input(
+                "카테고리 키워드",
+                placeholder="예: 냉동, 건강식품, 피자",
+                key="nr2_cat_kw",
+                label_visibility="collapsed",
+            )
+            if _nr_cc2.button("🔍 검색", key="nr2_cat_search") and _nr_cat_kw.strip():
+                with st.spinner("카테고리 검색 중..."):
+                    _nr_cr, _nr_cerr = naver_api.search_naver_categories(api_id, api_secret, _nr_cat_kw.strip())
+                if _nr_cerr:
+                    st.warning(f"카테고리 검색 오류: {_nr_cerr}")
+                    st.session_state['nr2_cat_results'] = []
+                elif not _nr_cr:
+                    st.info("검색 결과 없음")
+                    st.session_state['nr2_cat_results'] = []
+                else:
+                    st.session_state['nr2_cat_results'] = _nr_cr
+
+            _nr_catlist = st.session_state.get('nr2_cat_results', [])
+            if _nr_catlist:
+                _nr_catopts = [f"{c['id']} — {c['full_name']}" for c in _nr_catlist]
+                _nr_catidx  = 0
+                if _saved_cat:
+                    _nm = next((i for i, c in enumerate(_nr_catlist) if c['id'] == _saved_cat), None)
+                    if _nm is not None:
+                        _nr_catidx = _nm
+                _nr_catchosen = st.selectbox("카테고리 선택", options=_nr_catopts, index=_nr_catidx, key="nr2_cat_sel")
+                _nr_cat = _nr_catchosen.split(" — ")[0].strip() if _nr_catchosen else _saved_cat
+                st.caption(f"선택된 카테고리 ID: `{_nr_cat}`")
+            else:
+                _nr_cat = st.text_input(
+                    "카테고리 ID 직접 입력", value=_saved_cat,
+                    placeholder="예: 50000803", key="nr2_cat",
+                    label_visibility="collapsed",
+                )
+                if _saved_cat:
+                    st.caption(f"저장된 카테고리 ID: `{_saved_cat}`")
+                else:
+                    st.caption("키워드 검색 후 선택하거나 ID를 직접 입력하세요.")
+
+            if st.columns([6, 1])[1].button("🔄 갱신", key="nr2_cat_refresh", help="카테고리 캐시 강제 갱신"):
+                with st.spinner("갱신 중..."):
+                    _rf2, _rf2e = naver_api.load_naver_category_cache(api_id, api_secret, force_refresh=True)
+                if _rf2e:
+                    st.error(f"갱신 실패: {_rf2e}")
+                else:
+                    st.success(f"✅ {len(_rf2):,}개 카테고리 갱신 완료")
+
+            _nr_c3, _nr_c4, _nr_c5 = st.columns(3)
+            _nr_defprice = int(_nr_prod.get('sale_price') or 0) or int(_nr_prod.get('unit_price') or 0)
+            _nr_deffee   = int(_nr_prod.get('shipping_fee') or 0)
+            _nr_price = _nr_c3.number_input("판매가 (원)",    value=_nr_defprice, step=100, key="nr2_price")
+            _nr_fee   = _nr_c4.number_input("배송비 (0=무료)", value=_nr_deffee,   step=500, key="nr2_fee")
+            _nr_stock = _nr_c5.number_input("재고 수량",       value=100,          step=10,  key="nr2_stock")
+
+            _nr_c6, _nr_c7 = st.columns(2)
+            _nr_as   = _nr_c6.text_input("A/S 전화번호", value=_saved_as, placeholder="010-0000-0000", key="nr2_as")
+            _nr_orig = _nr_c7.selectbox("원산지", ["국내산 (03)", "해외산 (04)"], key="nr2_orig")
+            _nr_orig_code = "03" if "03" in _nr_orig else "04"
+
+            _nr_img = _nr_prod.get('local_image') or _nr_prod.get('image_url') or ''
+            if _nr_img:
+                st.image(_nr_img, width=80, caption="등록 이미지")
+            else:
+                st.warning("이미지 없음 — 크롤링 후 재시도 권장")
+
+            _nr_b1, _nr_b2 = st.columns([1, 4])
+            if _nr_b2.button("✖ 취소", key="nr2_cancel"):
+                st.session_state.pop('nreg2_kw', None)
+                st.session_state.pop('nr2_cat_results', None)
+                st.rerun()
+
+            if _nr_b1.button("🛍 네이버 등록", key="nr2_submit", type="primary"):
+                if not _nr_cat.strip():
+                    st.error("카테고리 ID를 입력하세요.")
+                elif not _nr_price:
+                    st.error("판매가를 입력하세요.")
+                elif not _nr_img:
+                    st.error("이미지가 없습니다. 먼저 크롤링을 실행하세요.")
+                else:
+                    with st.spinner("이미지 업로드 중..."):
+                        _nr_cdn, _nr_e1 = naver_api.upload_product_image(api_id, api_secret, _nr_img)
+                    if _nr_e1 or not _nr_cdn:
+                        st.error(f"이미지 업로드 실패: {_nr_e1}")
+                    else:
+                        with st.spinner("네이버 상품 등록 중..."):
+                            _nr_res, _nr_e2 = naver_api.register_product(api_id, api_secret, {
+                                "name":              _nr_name,
+                                "sale_price":        _nr_price,
+                                "image_url":         _nr_cdn,
+                                "category_id":       _nr_cat.strip(),
+                                "stock":             _nr_stock,
+                                "shipping_fee":      _nr_fee,
+                                "after_service_tel": _nr_as,
+                                "origin_code":       _nr_orig_code,
+                            })
+                        if _nr_e2 or not _nr_res:
+                            st.error(f"상품 등록 실패: {_nr_e2}")
+                        else:
+                            _nr_npno = _nr_res.get("origin_product_no", "")
+                            upsert_user_private(USERNAME, _nr_kw_sel, _nr_prod['costco_name'], naver_product_no=_nr_npno)
+                            if _nr_sp_id:
+                                try:
+                                    _ca3 = sqlite3.connect(AUTH_DB)
+                                    _ca3.execute("UPDATE shared_products SET naver_category_id=? WHERE id=?",
+                                                 (_nr_cat.strip(), _nr_sp_id))
+                                    _ca3.commit(); _ca3.close()
+                                except Exception:
+                                    pass
+                            set_setting(USERNAME, 'naver_default_category', _nr_cat.strip())
+                            set_setting(USERNAME, 'naver_as_tel', _nr_as)
+                            st.success(f"✅ 등록 완료! 네이버 상품번호: {_nr_npno}")
+                            st.session_state.pop('nreg2_kw', None)
+                            st.session_state.pop('nr2_cat_results', None)
+                            st.rerun()
+
+    # ── 상품 목록 ─────────────────────────────────────────────────
+    st.divider()
+    _nr_unreg = [p for p in _nr_all if not p.get('naver_product_no')]
+    _nr_reg   = [p for p in _nr_all if p.get('naver_product_no')]
+    st.caption(f"전체 {len(_nr_all)}개 · 미등록 {len(_nr_unreg)}개 · 등록완료 {len(_nr_reg)}개")
+
+    _nr_flt = st.radio(
+        "필터", ["전체", f"미등록 ({len(_nr_unreg)})", f"등록완료 ({len(_nr_reg)})"],
+        horizontal=True, key="nr2_filter",
+    )
+    if "미등록" in _nr_flt:
+        _nr_show = _nr_unreg
+    elif "등록완료" in _nr_flt:
+        _nr_show = _nr_reg
+    else:
+        _nr_show = _nr_all
+
+    if not _nr_show:
+        st.info("상품이 없습니다. 먼저 제품 DB에서 상품을 추가하세요.")
+    else:
+        _nr_hcols = st.columns([1, 5, 2, 3, 1])
+        for _h, _t in zip(_nr_hcols, ["이미지", "상품명", "판매가", "네이버 등록", "등록"]):
+            _h.markdown(f"**{_t}**")
+        st.markdown("<hr style='margin:4px 0 2px 0'>", unsafe_allow_html=True)
+
+        for _np in _nr_show:
+            _nr_row = st.columns([1, 5, 2, 3, 1])
+            _np_thumb = _np.get('image_url', '')
+            if _np_thumb:
+                _nr_row[0].markdown(
+                    f"<img src='{_np_thumb}' width='52' height='52' "
+                    f"style='object-fit:cover;border-radius:5px'>",
+                    unsafe_allow_html=True,
+                )
+            else:
+                _nr_row[0].markdown("—")
+            _nr_row[1].markdown(_np['costco_name'])
+            _np_sale = int(_np.get('sale_price') or 0)
+            _nr_row[2].markdown(f"{fmt(_np_sale)}원" if _np_sale else "—")
+            _np_nno = _np.get('naver_product_no') or ''
+            _nr_row[3].markdown(f"✅ `{_np_nno}`" if _np_nno else "미등록")
+            _np_btn_label = "✅" if _np_nno else "🛍"
+            if _nr_row[4].button(_np_btn_label, key=f"nr2_btn_{_np['match_keyword']}", use_container_width=True):
+                st.session_state['nreg2_kw'] = _np['match_keyword']
+                st.session_state.pop('nr2_cat_results', None)
+                st.rerun()
+            st.markdown("<hr style='margin:-4px 0 -6px 0;border-color:#f0f0f0'>", unsafe_allow_html=True)
 
 
 # ═══════════════════════════════════════
