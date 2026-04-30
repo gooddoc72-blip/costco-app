@@ -3732,7 +3732,6 @@ elif tab_choice == "🤖 자동화":
             "/create", "/tn", task_name,
             "/tr", cmd,
             "/sc", "daily", "/st", time_str,
-            "/rl", "HIGHEST",
             "/f"
         ])
         return ok, out
