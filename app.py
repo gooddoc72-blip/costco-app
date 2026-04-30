@@ -1840,13 +1840,71 @@ elif tab_choice == "📦 제품 DB":
                     _saved_cat = _sp.get('naver_category_id') or get_setting(USERNAME, 'naver_default_category') or ''
                     _saved_as  = get_setting(USERNAME, 'naver_as_tel') or ''
 
-                    rc1, rc2 = st.columns(2)
-                    _reg_name  = rc1.text_input("상품명", value=_sp['costco_name'][:100], key="nreg_name")
-                    _reg_cat   = rc2.text_input("네이버 카테고리 ID",
-                                                value=_saved_cat,
-                                                placeholder="예: 50000803 (냉동식품)",
-                                                key="nreg_cat",
-                                                help="스마트스토어 센터 > 상품관리 > 카테고리에서 리프 카테고리 ID 확인")
+                    _reg_name = st.text_input("상품명", value=_sp['costco_name'][:100], key="nreg_name")
+
+                    # ── 카테고리 검색 UI ──────────────────────────────────
+                    st.markdown("**네이버 카테고리**")
+                    _cat_col1, _cat_col2 = st.columns([4, 1])
+                    _cat_kw = _cat_col1.text_input(
+                        "카테고리 키워드 검색",
+                        placeholder="예: 냉동, 건강식품, 피자",
+                        key="nreg_cat_kw",
+                        label_visibility="collapsed",
+                    )
+                    _cat_search_btn = _cat_col2.button("🔍 검색", key="nreg_cat_search")
+
+                    if _cat_search_btn and _cat_kw.strip():
+                        with st.spinner("카테고리 검색 중..."):
+                            _cat_results, _cat_err = naver_api.search_naver_categories(
+                                api_id, api_secret, _cat_kw.strip()
+                            )
+                        if _cat_err:
+                            st.warning(f"카테고리 검색 오류: {_cat_err}")
+                            st.session_state['nreg_cat_results'] = []
+                        elif not _cat_results:
+                            st.info("검색 결과 없음")
+                            st.session_state['nreg_cat_results'] = []
+                        else:
+                            st.session_state['nreg_cat_results'] = _cat_results
+
+                    _cat_results_now = st.session_state.get('nreg_cat_results', [])
+                    if _cat_results_now:
+                        _cat_options = [f"{c['id']} — {c['full_name']}" for c in _cat_results_now]
+                        _cat_sel_idx = 0
+                        if _saved_cat:
+                            _match = next((i for i, c in enumerate(_cat_results_now) if c['id'] == _saved_cat), None)
+                            if _match is not None:
+                                _cat_sel_idx = _match
+                        _cat_chosen = st.selectbox(
+                            "카테고리 선택",
+                            options=_cat_options,
+                            index=_cat_sel_idx,
+                            key="nreg_cat_select",
+                        )
+                        _reg_cat = _cat_chosen.split(" — ")[0].strip() if _cat_chosen else _saved_cat
+                        st.caption(f"선택된 카테고리 ID: `{_reg_cat}`")
+                    else:
+                        _reg_cat = st.text_input(
+                            "카테고리 ID 직접 입력",
+                            value=_saved_cat,
+                            placeholder="예: 50000803",
+                            key="nreg_cat",
+                            label_visibility="collapsed",
+                        )
+                        if _saved_cat:
+                            st.caption(f"저장된 카테고리 ID: `{_saved_cat}`")
+                        else:
+                            st.caption("키워드 검색 후 선택하거나 ID를 직접 입력하세요.")
+
+                    _cat_refresh_col1, _cat_refresh_col2 = st.columns([6, 1])
+                    if _cat_refresh_col2.button("🔄 카테고리 갱신", key="nreg_cat_refresh", help="네이버 카테고리 캐시를 강제 갱신합니다"):
+                        with st.spinner("카테고리 목록 갱신 중..."):
+                            _rf_cats, _rf_err = naver_api.load_naver_category_cache(api_id, api_secret, force_refresh=True)
+                        if _rf_err:
+                            st.error(f"갱신 실패: {_rf_err}")
+                        else:
+                            st.success(f"✅ {len(_rf_cats):,}개 카테고리 갱신 완료")
+                    # ─────────────────────────────────────────────────────
 
                     rc3, rc4, rc5 = st.columns(3)
                     _up = next((x for x in get_all_products_merged(USERNAME) if x.get('shared_id') == _nreg_sp_id), {})
