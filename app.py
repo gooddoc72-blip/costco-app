@@ -3153,6 +3153,16 @@ elif tab_choice == "📦 제품 DB":
         per_page = 30
         total_pages = max(1, (total_count + per_page - 1) // per_page)
 
+        # query_params로 페이지 이동 처리
+        try:
+            _qp = st.query_params.get("product_page")
+            if _qp:
+                _qp_v = max(1, min(int(_qp), total_pages))
+                st.session_state['product_page'] = _qp_v
+                del st.query_params["product_page"]
+        except Exception:
+            pass
+
         if 'product_page' not in st.session_state:
             st.session_state['product_page'] = 1
         if st.session_state['product_page'] > total_pages:
@@ -3310,37 +3320,30 @@ elif tab_choice == "📦 제품 DB":
 
             st.markdown("<hr style='margin:-4px 0 -6px 0;border-color:#f0f0f0'>", unsafe_allow_html=True)
 
-        # ── 페이지 번호 — 하단 중앙 ──
+        # ── 페이지 번호 — 하단 중앙 (HTML 링크 스타일) ──
         if total_pages > 1:
-            max_vis = 10
-            s_pg = max(1, page - max_vis // 2)
-            e_pg = min(total_pages, s_pg + max_vis - 1)
-            if e_pg - s_pg < max_vis - 1:
-                s_pg = max(1, e_pg - max_vis + 1)
-            pg_range = list(range(s_pg, e_pg + 1))
-            has_prev = page > 1
-            has_next = page < total_pages
-            _items = []
-            if has_prev: _items.append(('prev', page - 1))
-            _items += [('page', p) for p in pg_range]
-            if has_next: _items.append(('next', page + 1))
-            _pad = max(1, (22 - len(_items)) // 2)
-            _pcols = st.columns([_pad] + [1] * len(_items) + [_pad])
-            for _pi, (_typ, _val) in enumerate(_items):
-                _c = _pcols[_pi + 1]
-                if _typ == 'prev':
-                    if _c.button('< 이전', key='p_prev', use_container_width=True):
-                        st.session_state['product_page'] = _val; st.rerun()
-                elif _typ == 'next':
-                    if _c.button('다음 >', key='p_next', use_container_width=True):
-                        st.session_state['product_page'] = _val; st.rerun()
-                elif _val == page:
-                    _c.markdown(f"<div style='text-align:center;padding:7px 0;font-size:15px;"
-                                f"font-weight:700;color:#e67e22;border-bottom:2px solid #e67e22'>{_val}</div>",
-                                unsafe_allow_html=True)
+            _s = max(1, page - 5)
+            _e = min(total_pages, _s + 9)
+            if _e - _s < 9: _s = max(1, _e - 9)
+            _a = "color:#555;text-decoration:none;padding:4px 10px;font-size:14px"
+            _n = "color:#333;text-decoration:none;padding:4px 10px;font-size:14px"
+            _cur = ("border:1px solid #e74c3c;color:#e74c3c;padding:3px 9px;"
+                    "border-radius:3px;font-size:14px;font-weight:700")
+            _pg_parts = []
+            if page > 1:
+                _pg_parts.append(f'<a href="?product_page={page-1}" style="{_a}">&lt; 이전</a>')
+            for _p in range(_s, _e + 1):
+                if _p == page:
+                    _pg_parts.append(f'<span style="{_cur}">{_p}</span>')
                 else:
-                    if _c.button(str(_val), key=f'p_btn_{_val}', use_container_width=True):
-                        st.session_state['product_page'] = _val; st.rerun()
+                    _pg_parts.append(f'<a href="?product_page={_p}" style="{_n}">{_p}</a>')
+            if page < total_pages:
+                _pg_parts.append(f'<a href="?product_page={page+1}" style="{_a}">다음 &gt;</a>')
+            st.markdown(
+                '<div style="display:flex;justify-content:center;align-items:center;'
+                'gap:2px;padding:14px 0">' + ''.join(_pg_parts) + '</div>',
+                unsafe_allow_html=True
+            )
     else:
         st.info("등록된 제품이 없습니다. 영수증 등록 메뉴에서 추가하세요.")
 
@@ -3478,6 +3481,14 @@ elif tab_choice == "👑 관리자" and IS_ADMIN:
         SP_PER_PAGE = 30
         sp_total = len(disp_shared)
         sp_total_pages = max(1, math.ceil(sp_total / SP_PER_PAGE))
+        try:
+            _sqp = st.query_params.get("admin_sp_page")
+            if _sqp:
+                _sqp_v = max(1, min(int(_sqp), sp_total_pages))
+                st.session_state['admin_sp_page'] = _sqp_v
+                del st.query_params["admin_sp_page"]
+        except Exception:
+            pass
         if 'admin_sp_page' not in st.session_state:
             st.session_state['admin_sp_page'] = 1
         if st.session_state['admin_sp_page'] > sp_total_pages:
@@ -3570,38 +3581,30 @@ elif tab_choice == "👑 관리자" and IS_ADMIN:
                     st.rerun()
             st.markdown("<hr style='margin:-4px 0 -6px 0;border-color:#f0f0f0'>", unsafe_allow_html=True)
 
-        # 페이지 번호 — 하단 중앙
+        # 페이지 번호 — 하단 중앙 (HTML 링크 스타일)
         if sp_total_pages > 1:
-            max_vis = 10
-            s_pg = max(1, sp_page - max_vis // 2)
-            e_pg = min(sp_total_pages, s_pg + max_vis - 1)
-            if e_pg - s_pg < max_vis - 1:
-                s_pg = max(1, e_pg - max_vis + 1)
-            pg_range = list(range(s_pg, e_pg + 1))
-            has_prev = sp_page > 1
-            has_next = sp_page < sp_total_pages
-            _items = []
-            if has_prev: _items.append(('prev', sp_page - 1))
-            _items += [('page', p) for p in pg_range]
-            if has_next: _items.append(('next', sp_page + 1))
-            _pad = max(1, (22 - len(_items)) // 2)
-            _pcols = st.columns([_pad] + [1] * len(_items) + [_pad])
-            for _pi, (_typ, _val) in enumerate(_items):
-                _c = _pcols[_pi + 1]
-                if _typ == 'prev':
-                    if _c.button('< 이전', key='sp_prev', use_container_width=True):
-                        st.session_state['admin_sp_page'] = _val; st.rerun()
-                elif _typ == 'next':
-                    if _c.button('다음 >', key='sp_next', use_container_width=True):
-                        st.session_state['admin_sp_page'] = _val; st.rerun()
-                elif _val == sp_page:
-                    _c.markdown(f"<div style='text-align:center;padding:7px 0;font-size:15px;"
-                                f"font-weight:700;color:#e67e22;border-bottom:2px solid #e67e22'>{_val}</div>",
-                                unsafe_allow_html=True)
+            _s = max(1, sp_page - 5)
+            _e = min(sp_total_pages, _s + 9)
+            if _e - _s < 9: _s = max(1, _e - 9)
+            _a = "color:#555;text-decoration:none;padding:4px 10px;font-size:14px"
+            _n = "color:#333;text-decoration:none;padding:4px 10px;font-size:14px"
+            _cur = ("border:1px solid #e74c3c;color:#e74c3c;padding:3px 9px;"
+                    "border-radius:3px;font-size:14px;font-weight:700")
+            _pg_parts = []
+            if sp_page > 1:
+                _pg_parts.append(f'<a href="?admin_sp_page={sp_page-1}" style="{_a}">&lt; 이전</a>')
+            for _p in range(_s, _e + 1):
+                if _p == sp_page:
+                    _pg_parts.append(f'<span style="{_cur}">{_p}</span>')
                 else:
-                    if _c.button(str(_val), key=f'sp_pg_{_val}', use_container_width=True):
-                        st.session_state['admin_sp_page'] = _val; st.rerun()
-                    st.rerun()
+                    _pg_parts.append(f'<a href="?admin_sp_page={_p}" style="{_n}">{_p}</a>')
+            if sp_page < sp_total_pages:
+                _pg_parts.append(f'<a href="?admin_sp_page={sp_page+1}" style="{_a}">다음 &gt;</a>')
+            st.markdown(
+                '<div style="display:flex;justify-content:center;align-items:center;'
+                'gap:2px;padding:14px 0">' + ''.join(_pg_parts) + '</div>',
+                unsafe_allow_html=True
+            )
     else:
         st.info("공유 제품이 없습니다. 아래에서 추가하거나 영수증 등록 탭에서 업로드하세요.")
 
