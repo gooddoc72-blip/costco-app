@@ -14,12 +14,12 @@ except ImportError:
 import streamlit as st
 
 # ── 기본 설정 ─────────────────────────────────────────────
-APP_TITLE = "📦 코스트코핫딜 주문 수익 관리"
+APP_TITLE = "costcobiz"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")
 os.makedirs(DATA_DIR, exist_ok=True)
 
-st.set_page_config(page_title=APP_TITLE, page_icon="📦", layout="wide")
+st.set_page_config(page_title=APP_TITLE, page_icon="📦", layout="wide", menu_items={"About": "costcobiz"})
 
 # 디자인 시스템 CSS 주입
 from ui_theme import inject_global_css as _inject_global_css
@@ -142,7 +142,7 @@ if st.session_state['user'] is None:
             _clear_qparams()
 
     # 로그인 UI
-    st.markdown("<h1 style='text-align:center;margin-top:60px'>📦 코스트코핫딜</h1>",
+    st.markdown("<h1 style='text-align:center;margin-top:60px'>📦 costcobiz</h1>",
                 unsafe_allow_html=True)
     col1, col2, col3 = st.columns([1, 1.6, 1])
     with col2:
@@ -222,7 +222,7 @@ with st.sidebar:
             }}
         </style>
         <div class="sidebar-top-box">
-            <div class="logo-text">📦 코스트코핫딜</div>
+            <div class="logo-text">📦 costcobiz</div>
             <div class="user-info-text">
                 👤 <b>{user['display_name']}</b> ({USERNAME})
             </div>
