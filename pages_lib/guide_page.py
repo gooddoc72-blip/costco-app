@@ -21,11 +21,15 @@ _OK_STYLE = (
 
 
 def _step(n, title, body=""):
+    _body_html = (
+        '<br><span style="font-size:13px;color:#444;margin-top:4px;display:block">'
+        + body + '</span>'
+    ) if body else ""
     st.markdown(
         f'<div style="{_STEP_STYLE}">'
         f'<b style="color:#E31837;font-size:16px">STEP {n}</b> '
         f'<b style="font-size:15px">{title}</b>'
-        f'{"<br><span style=\'font-size:13px;color:#444;margin-top:4px;display:block\'>" + body + "</span>" if body else ""}'
+        f'{_body_html}'
         f'</div>',
         unsafe_allow_html=True,
     )
