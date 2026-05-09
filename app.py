@@ -13,14 +13,6 @@ except ImportError:
 
 import streamlit as st
 
-try:
-    import extra_streamlit_components as stx
-    _cmgr = stx.CookieManager(key="_cmgr")
-    HAS_COOKIE = True
-except Exception:
-    _cmgr = None
-    HAS_COOKIE = False
-
 # ── 기본 설정 ─────────────────────────────────────────────
 APP_TITLE = "costcobiz"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -136,10 +128,8 @@ if 'user' not in st.session_state:
     st.session_state['user'] = None
 
 if st.session_state['user'] is None:
-    # 자동 로그인 — 쿠키 우선, 없으면 query param 폴백
-    _sid = ((_cmgr.get('_cbsid') if HAS_COOKIE else None)
-            or _get_qparam('sid')
-            or '')
+    # 자동 로그인 — query param의 sid 토큰
+    _sid = _get_qparam('sid') or ''
     if _sid:
         _auto_username = get_session_user(_sid)
         if _auto_username:
@@ -148,11 +138,8 @@ if st.session_state['user'] is None:
                 st.session_state['user'] = _auto_user
                 st.session_state['_sid'] = _sid
                 init_user_db(_auto_username)
-                _set_qparam('sid', _sid)  # 페이지 이동 후 새로고침 대비 항상 복원
                 st.rerun()
         else:
-            if HAS_COOKIE:
-                _cmgr.delete('_cbsid')
             _clear_qparams()
 
     # 로그인 UI
@@ -177,9 +164,7 @@ if st.session_state['user'] is None:
                         if remember_me:
                             _token = create_session(result['username'], days=30)
                             st.session_state['_sid'] = _token
-                            if HAS_COOKIE:
-                                _cmgr.set('_cbsid', _token, max_age=30 * 24 * 3600)
-                            _set_qparam('sid', _token)  # 쿠키 + query param 동시 저장
+                            _set_qparam('sid', _token)
                         st.rerun()
                     else:
                         st.error("로그인 실패")
@@ -249,8 +234,6 @@ with st.sidebar:
         _sid = st.session_state.get('_sid')
         if _sid:
             delete_session(_sid)
-        if HAS_COOKIE:
-            _cmgr.delete('_cbsid')
         _clear_qparams()
         st.session_state.clear()
         st.rerun()
@@ -333,6 +316,26 @@ _pages = {
 
 if IS_ADMIN:
     _pages["관리자"] = [st.Page(run_admin, title="관리자", icon="👑")]
+
+# 페이지 이동 시 sid 보존 — st.navigation()이 URL 경로를 바꿔도 query param 유지
+_persist_sid = st.session_state.get('_sid')
+if _persist_sid and _get_qparam('sid') != _persist_sid:
+    _set_qparam('sid', _persist_sid)
+
+# 메뉴명 캐시 정리 — 부모 윈도우 localStorage 직접 접근 (reload 없음)
+import streamlit.components.v1 as _stc
+_stc.html("""<script>
+(function(){
+  try {
+    var s = (window.parent || window).localStorage;
+    if (s.getItem('_nav_ver') !== '20260509v3') {
+      Object.keys(s).filter(function(k){return k.indexOf('streamlit')===0;})
+        .forEach(function(k){s.removeItem(k);});
+      s.setItem('_nav_ver', '20260509v3');
+    }
+  } catch(e) {}
+})();
+</script>""", height=0, scrolling=False)
 
 # 라우팅 실행 — Streamlit이 사이드바 네비게이션 메뉴 자동 생성 + 페이지 전환 시 잔상 자동 제거
 pg = st.navigation(_pages)
