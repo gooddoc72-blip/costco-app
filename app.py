@@ -13,6 +13,17 @@ except ImportError:
 
 import streamlit as st
 
+try:
+    import extra_streamlit_components as stx
+    @st.cache_resource
+    def _get_cookie_mgr():
+        return stx.CookieManager(key="_cmgr")
+    _cmgr = _get_cookie_mgr()
+    HAS_COOKIE = True
+except Exception:
+    _cmgr = None
+    HAS_COOKIE = False
+
 # ── 기본 설정 ─────────────────────────────────────────────
 APP_TITLE = "costcobiz"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -127,8 +138,10 @@ if 'user' not in st.session_state:
     st.session_state['user'] = None
 
 if st.session_state['user'] is None:
-    # 자동 로그인 (세션 토큰)
-    _sid = _get_qparam('sid')
+    # 자동 로그인 — 쿠키 우선, 없으면 query param 폴백
+    _sid = ((_cmgr.get('_cbsid') if HAS_COOKIE else None)
+            or _get_qparam('sid')
+            or '')
     if _sid:
         _auto_username = get_session_user(_sid)
         if _auto_username:
@@ -139,6 +152,8 @@ if st.session_state['user'] is None:
                 init_user_db(_auto_username)
                 st.rerun()
         else:
+            if HAS_COOKIE:
+                _cmgr.delete('_cbsid')
             _clear_qparams()
 
     # 로그인 UI
@@ -163,7 +178,10 @@ if st.session_state['user'] is None:
                         if remember_me:
                             _token = create_session(result['username'], days=30)
                             st.session_state['_sid'] = _token
-                            _set_qparam('sid', _token)
+                            if HAS_COOKIE:
+                                _cmgr.set('_cbsid', _token, max_age=30 * 24 * 3600)
+                            else:
+                                _set_qparam('sid', _token)
                         st.rerun()
                     else:
                         st.error("로그인 실패")
@@ -233,6 +251,8 @@ with st.sidebar:
         _sid = st.session_state.get('_sid')
         if _sid:
             delete_session(_sid)
+        if HAS_COOKIE:
+            _cmgr.delete('_cbsid')
         _clear_qparams()
         st.session_state.clear()
         st.rerun()
