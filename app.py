@@ -29,6 +29,22 @@ os.makedirs(DATA_DIR, exist_ok=True)
 
 st.set_page_config(page_title=APP_TITLE, page_icon="📦", layout="wide", menu_items={"About": "costcobiz"})
 
+# 네비게이션 캐시 버전 강제 초기화 (메뉴명 변경 시 구 브라우저 캐시 제거)
+import streamlit.components.v1 as _stc
+_NAV_VER = "20260509v2"
+_stc.html(f"""<script>
+(function(){{
+  var v = '{_NAV_VER}';
+  if (window.localStorage.getItem('_nav_ver') !== v) {{
+    Object.keys(window.localStorage)
+      .filter(function(k){{ return k.indexOf('streamlit') === 0; }})
+      .forEach(function(k){{ window.localStorage.removeItem(k); }});
+    window.localStorage.setItem('_nav_ver', v);
+    window.location.reload();
+  }}
+}})();
+</script>""", height=0, scrolling=False)
+
 # 디자인 시스템 CSS 주입
 from ui_theme import inject_global_css as _inject_global_css
 _inject_global_css()
