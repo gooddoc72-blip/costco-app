@@ -29,21 +29,6 @@ os.makedirs(DATA_DIR, exist_ok=True)
 
 st.set_page_config(page_title=APP_TITLE, page_icon="📦", layout="wide", menu_items={"About": "costcobiz"})
 
-# 네비게이션 캐시 버전 강제 초기화 (메뉴명 변경 시 구 브라우저 캐시 제거)
-import streamlit.components.v1 as _stc
-_NAV_VER = "20260509v2"
-_stc.html(f"""<script>
-(function(){{
-  var v = '{_NAV_VER}';
-  if (window.localStorage.getItem('_nav_ver') !== v) {{
-    Object.keys(window.localStorage)
-      .filter(function(k){{ return k.indexOf('streamlit') === 0; }})
-      .forEach(function(k){{ window.localStorage.removeItem(k); }});
-    window.localStorage.setItem('_nav_ver', v);
-    window.location.reload();
-  }}
-}})();
-</script>""", height=0, scrolling=False)
 
 # 디자인 시스템 CSS 주입
 from ui_theme import inject_global_css as _inject_global_css
@@ -163,6 +148,7 @@ if st.session_state['user'] is None:
                 st.session_state['user'] = _auto_user
                 st.session_state['_sid'] = _sid
                 init_user_db(_auto_username)
+                _set_qparam('sid', _sid)  # 페이지 이동 후 새로고침 대비 항상 복원
                 st.rerun()
         else:
             if HAS_COOKIE:
@@ -193,8 +179,7 @@ if st.session_state['user'] is None:
                             st.session_state['_sid'] = _token
                             if HAS_COOKIE:
                                 _cmgr.set('_cbsid', _token, max_age=30 * 24 * 3600)
-                            else:
-                                _set_qparam('sid', _token)
+                            _set_qparam('sid', _token)  # 쿠키 + query param 동시 저장
                         st.rerun()
                     else:
                         st.error("로그인 실패")
