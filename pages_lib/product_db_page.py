@@ -1193,13 +1193,15 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
 [data-testid="stHorizontalBlock"]:has(.sp-pg-marker) [data-testid="stButton"] {
     padding: 0 !important; margin: 0 !important;
 }
-/* 마커 wrapper가 공간을 차지해 ‹이전 버튼이 밀려내려가는 문제 해결 */
+/* 마커 wrapper를 normal flow에서 완전히 제거 → 이전 버튼 밀림 방지 */
 [data-testid="stMarkdown"]:has(.sp-pg-marker),
 [data-testid="stElementContainer"]:has(.sp-pg-marker),
 .element-container:has(.sp-pg-marker) {
-    height: 0 !important; min-height: 0 !important;
-    margin: 0 !important; padding: 0 !important;
+    position: absolute !important;
+    width: 0 !important; height: 0 !important;
     overflow: hidden !important;
+    margin: 0 !important; padding: 0 !important;
+    opacity: 0 !important; pointer-events: none !important;
 }
 [data-testid="stHorizontalBlock"]:has(.sp-pg-marker) [data-testid="stBaseButton-secondary"] {
     background: transparent !important;
