@@ -15,10 +15,7 @@ import streamlit as st
 
 try:
     import extra_streamlit_components as stx
-    @st.cache_resource
-    def _get_cookie_mgr():
-        return stx.CookieManager(key="_cmgr")
-    _cmgr = _get_cookie_mgr()
+    _cmgr = stx.CookieManager(key="_cmgr")
     HAS_COOKIE = True
 except Exception:
     _cmgr = None
