@@ -18,16 +18,36 @@ Task 2 (shipping) - 자동 발송처리
   python auto_task.py --task shipping          # 발송처리만
   python auto_task.py --task shopping --user admin
 """
-import sqlite3, os, sys, argparse, re, json
+import sqlite3, os, sys, argparse, re, json, logging
+from logging.handlers import RotatingFileHandler
 from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import naver_api
 from utils import fmt, extract_pack_qty
+from db import (
+    get_global_setting,
+    get_all_settings,
+    get_all_products as _db_get_all_products,
+    set_setting,
+    get_user_db,
+)
+from services import match_product_to_db, calc_cost
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")
 LOG_PATH = os.path.join(DATA_DIR, "auto_task.log")
+
+# ── 로그 설정 (5MB × 3개 로테이션) ───────────────
+os.makedirs(DATA_DIR, exist_ok=True)
+_logger = logging.getLogger("auto_task")
+_logger.setLevel(logging.DEBUG)
+if not _logger.handlers:
+    _fh = RotatingFileHandler(
+        LOG_PATH, maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8"
+    )
+    _fh.setFormatter(logging.Formatter("%(message)s"))
+    _logger.addHandler(_fh)
 
 
 # ── 공통 유틸 ─────────────────────────────────
@@ -39,80 +59,71 @@ def log(msg):
         sys.stdout.buffer.flush()
     except Exception:
         pass
-    os.makedirs(DATA_DIR, exist_ok=True)
-    with open(LOG_PATH, "a", encoding="utf-8") as f:
-        f.write(line + "\n")
-
-
-def get_global_setting(key, default=''):
-    """auth.db app_settings에서 전역 설정값 읽기 (코스트코 이메일/비번 등)"""
-    db_path = os.path.join(DATA_DIR, "auth.db")
-    if not os.path.exists(db_path):
-        return default
-    conn = sqlite3.connect(db_path)
-    row = conn.execute("SELECT value FROM app_settings WHERE key=?", (key,)).fetchone()
-    conn.close()
-    return row[0] if row else default
+    _logger.info(line)
 
 
 def get_user_settings(username):
     db_path = os.path.join(DATA_DIR, f"{username}.db")
     if not os.path.exists(db_path):
         return None
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    rows = conn.execute("SELECT key, value FROM settings").fetchall()
-    conn.close()
-    return {r["key"]: r["value"] for r in rows}
-
-
-def save_setting(username, key, value):
-    db_path = os.path.join(DATA_DIR, f"{username}.db")
-    conn = sqlite3.connect(db_path, timeout=10)
-    conn.execute("INSERT OR REPLACE INTO settings VALUES (?, ?)", (key, str(value)))
-    conn.commit()
-    conn.close()
+    return get_all_settings(username)
 
 
 def get_all_products(username):
     db_path = os.path.join(DATA_DIR, f"{username}.db")
     if not os.path.exists(db_path):
         return []
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    rows = conn.execute("SELECT * FROM products ORDER BY costco_name").fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
+    return _db_get_all_products(username)
 
 
 def save_daily_orders(username, orders, settings):
-    """조회된 주문을 daily_orders 테이블에 저장"""
+    """조회된 주문을 daily_orders 테이블에 저장.
+    각 주문의 '결제일' 컬럼에서 실제 결제일자를 추출하여 분산 저장 (옛 버그 수정).
+    영향받는 모든 날짜에 대해 DELETE 후 INSERT.
+    """
     today = datetime.now().strftime("%Y-%m-%d")
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     shipping_cost = int(settings.get("shipping_cost") or 1800)
     box_cost = int(settings.get("box_cost") or 300)
     products = get_all_products(username)
 
-    def find_unit_price(order):
-        pno = str(order.get("상품번호", ""))
+    def find_matched_product(order):
+        """상품번호 우선 → 이름 매칭 순으로 DB 제품을 찾아 반환."""
+        pno = str(order.get("상품번호", "")) or None
         name = order.get("상품명", "")
-        if pno:
-            for p in products:
-                if str(p.get("product_no", "")) == pno:
-                    return p["unit_price"]
-        for p in products:
-            kw = p.get("match_keyword", "")
-            if kw and (kw in name or name in p.get("costco_name", "")):
-                return p["unit_price"]
-        return 0
+        return match_product_to_db(username, name, product_no=pno, _user_prods=products)
 
-    db_path = os.path.join(DATA_DIR, f"{username}.db")
-    conn = sqlite3.connect(db_path)
-    conn.execute("DELETE FROM daily_orders WHERE order_date=?", (today,))
+    def row_order_date(o):
+        """주문 dict에서 결제일 → YYYY-MM-DD 추출. 없으면 today 폴백."""
+        for key in ("결제일", "주문일시", "주문일"):
+            v = o.get(key)
+            if v is None:
+                continue
+            s = str(v).strip()
+            if not s:
+                continue
+            if "T" in s:
+                s = s.split("T", 1)[0]
+            elif " " in s:
+                s = s.split(" ", 1)[0]
+            if len(s) >= 10 and s[4] == '-' and s[7] == '-':
+                return s[:10]
+        return today
+
+    conn = get_user_db(username)
+
+    # 영향받는 모든 날짜를 모아서 DELETE
+    affected_dates = {row_order_date(o) for o in orders}
+    if not affected_dates:
+        affected_dates = {today}
+    for d in affected_dates:
+        conn.execute("DELETE FROM daily_orders WHERE order_date=?", (d,))
+
     for o in orders:
+        d = row_order_date(o)
         qty = int(o.get("수량", 1))
-        unit_price = find_unit_price(o)
-        cost = unit_price * qty
+        matched_p = find_matched_product(o)
+        cost = calc_cost(matched_p, qty) if matched_p else 0
         settlement = int(o.get("정산예정금액") or 0)
         ship_fee = int(o.get("배송비 합계") or 0)
         profit = (settlement + ship_fee) - (cost + shipping_cost + box_cost)
@@ -122,7 +133,7 @@ def save_daily_orders(username, orders, settings):
                 order_amount, shipping_fee, extra_shipping, settlement,
                 cost_price, delivery_cost, box_cost, profit, matched, created_at)
                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (today, o.get("수취인명", ""), o.get("상품명", ""),
+            (d, o.get("수취인명", ""), o.get("상품명", ""),
              str(o.get("상품번호", "")), o.get("옵션정보", ""), qty,
              int(o.get("최종 상품별 총 주문금액") or 0), ship_fee,
              int(o.get("제주/도서 추가배송비") or 0), settlement,
@@ -149,9 +160,9 @@ def send_notification(settings, msg, username=None):
             if err and "__TOKEN_REFRESHED__" in str(err) and username:
                 parts = str(err).replace("__TOKEN_REFRESHED__", "").split("||")
                 try:
-                    save_setting(username, "kakao_access_token", parts[0])
+                    set_setting(username, "kakao_access_token", parts[0])
                     if len(parts) > 1:
-                        save_setting(username, "kakao_refresh_token", parts[1])
+                        set_setting(username, "kakao_refresh_token", parts[1])
                     log("🔄 카카오 토큰 자동 갱신")
                 except Exception as e:
                     log(f"⚠️ 카카오 토큰 갱신 저장 실패 (발송은 완료): {e}")
@@ -258,66 +269,82 @@ def run_shopping_task(username="admin"):
         log(f"⚠️ 주문 DB 저장 실패 (계속 진행): {e}")
 
     try:
-        # ── 상품별 집계: (상품번호, 상품명, 옵션정보) 조합별로 구분 ──
+        # ── 장보기 대상: 발주확인(오늘 처리해야 할 주문)만 집계 ──
+        # 배송중·배송완료·취소 등 이미 처리된 건은 제외
+        SHOPPING_STATUSES = {'발주확인', '결제완료', '발송대기'}
+        shopping_orders = [o for o in orders
+                           if o.get('주문상태', '') in SHOPPING_STATUSES]
+        if not shopping_orders:
+            # 대상 건 없으면 전체 orders로 폴백 (상태 매핑 이슈 대비)
+            shopping_orders = orders
+
         from collections import defaultdict
-        shopping = defaultdict(lambda: {"주문수량": 0, "상품명": "", "옵션": "", "상품번호": ""})
-        for o in orders:
+        shopping = defaultdict(lambda: {"주문수량": 0, "정산금액": 0, "상품명": "", "옵션": "", "상품번호": ""})
+        for o in shopping_orders:
             pno = str(o.get("상품번호", ""))
             name = o.get("상품명", "")
             opt = o.get("옵션정보", "") or ""
             key = (pno, name, opt)
             shopping[key]["주문수량"] += int(o.get("수량", 1))
+            shopping[key]["주문건수"] = shopping[key].get("주문건수", 0) + 1
+            shopping[key]["정산금액"] += int(o.get("정산예정금액") or 0)
             shopping[key]["상품명"] = name
             shopping[key]["옵션"] = opt
             shopping[key]["상품번호"] = pno
 
         products = get_all_products(username)
         total_cost = 0
+        total_settlement = 0
         total_costco_qty = 0
-        lines = [
-            f"🛒 코스트코 장보기 목록",
-            f"📅 {now.strftime('%Y-%m-%d %H:%M')}",
-            f"📦 주문 {len(orders)}건",
-            "",
-        ]
-        for idx, (_, item) in enumerate(
-                sorted(shopping.items(), key=lambda x: x[1]["상품명"]), 1):
-            name = item["상품명"]
-            order_qty = item["주문수량"]
-            opt = item["옵션"]
-            pno = item["상품번호"]
 
-            pack = extract_pack_qty(opt, name)
+        # 항목 조립
+        sorted_items = sorted(shopping.items(), key=lambda x: x[1]["상품명"])
+        item_lines = []
+        for idx, (_, item) in enumerate(sorted_items, 1):
+            name       = item["상품명"]
+            order_qty  = item["주문수량"]
+            opt        = item["옵션"]
+            pno        = item["상품번호"]
+            settlement = item["정산금액"]
+
+            pack       = extract_pack_qty(opt, name)
             costco_qty = order_qty * pack
 
-            unit_price = None
-            for p in products:
-                if pno and str(p.get("product_no", "")) == pno:
-                    unit_price = p["unit_price"]
-                    break
-            if not unit_price:
-                for p in products:
-                    kw = p.get("match_keyword", "")
-                    if kw and (kw in name or name in p.get("costco_name", "")):
-                        unit_price = p["unit_price"]
-                        break
-
-            if unit_price:
-                total_cost += unit_price * costco_qty
+            matched_p = match_product_to_db(username, name,
+                                              product_no=pno or None,
+                                              _user_prods=products)
+            if matched_p:
+                total_cost += calc_cost(matched_p, costco_qty)
+            total_settlement += settlement
             total_costco_qty += costco_qty
 
-            opt_str = f" ({opt[:15]})" if opt else ""
-            name_short = name[:22]
+            # 카드 형식: 상품명 줄 + 상세 줄
+            name_line = f"[{idx}] {name}"
+            detail_parts = []
+            if opt:
+                detail_parts.append(f"옵션: {opt}")
+            order_cnt = item.get("주문건수", order_qty)
             if pack > 1:
-                qty_str = f"{costco_qty}개 (주문{order_qty}건×{pack}구)"
+                detail_parts.append(f"구매: {costco_qty}개 ({order_cnt}건×{pack}구)")
             else:
-                qty_str = f"{costco_qty}개"
-            price_str = f" @{fmt(unit_price)}" if unit_price else ""
-            lines.append(f"{idx}. {name_short}{opt_str} × {qty_str}{price_str}")
+                detail_parts.append(f"구매: {costco_qty}개 ({order_cnt}건)")
+            if settlement:
+                detail_parts.append(f"정산: {fmt(settlement)}원")
+            item_lines.append(name_line)
+            item_lines.append("   " + " │ ".join(detail_parts))
 
-        lines.append("")
+        divider = "─" * 24
+        lines = [
+            "🛒 코스트코 장보기 목록",
+            f"📅 {now.strftime('%Y-%m-%d %H:%M')}  │  주문 {len(shopping_orders)}건 / {len(sorted_items)}종",
+            divider,
+        ]
+        lines += item_lines
+        lines.append(divider)
         if total_cost > 0:
             lines.append(f"💰 예상 구매액: {fmt(total_cost)}원")
+        if total_settlement > 0:
+            lines.append(f"💳 총 정산예정: {fmt(total_settlement)}원")
         lines.append(f"🛒 코스트코 총 {total_costco_qty}개 구매 필요")
 
         msg = "\n".join(lines)
@@ -405,19 +432,21 @@ def run_shipping_task(username="admin"):
         log("⚠️  송장 데이터 없음 → 종료")
         return True
 
-    # ── 송장 파일(.xls) 저장 ──
+    # ── 송장 파일(.xlsx) 저장 (openpyxl — xlwt 대체) ──
     try:
-        import xlwt
-        wb = xlwt.Workbook(encoding="utf-8")
-        ws = wb.add_sheet("발송처리")
-        for ci, h in enumerate(["상품주문번호", "배송방법", "택배사", "송장번호"]):
-            ws.write(0, ci, h)
-        for ri, row in enumerate(ship_data, 1):
-            ws.write(ri, 0, str(row["productOrderId"]))
-            ws.write(ri, 1, "택배,등기,소포")
-            ws.write(ri, 2, str(row["택배사"]))
-            ws.write(ri, 3, str(row["trackingNumber"]))
-        fname = f"발송처리_{now.strftime('%Y%m%d_%H%M')}.xls"
+        from openpyxl import Workbook as _WB
+        wb = _WB()
+        ws = wb.active
+        ws.title = "발송처리"
+        ws.append(["상품주문번호", "배송방법", "택배사", "송장번호"])
+        for row in ship_data:
+            ws.append([
+                str(row["productOrderId"]),
+                "택배,등기,소포",
+                str(row["택배사"]),
+                str(row["trackingNumber"]),
+            ])
+        fname = f"발송처리_{now.strftime('%Y%m%d_%H%M')}.xlsx"
         fpath = os.path.join(DATA_DIR, fname)
         wb.save(fpath)
         log(f"💾 송장 파일 저장: {fname}")
@@ -455,11 +484,202 @@ def run_shipping_task(username="admin"):
     return True
 
 
+# ── Task 5: 주문 자동 수집 (네이버 + 쿠팡) ──────
+def run_fetch_orders_task(username="admin"):
+    log("=" * 50)
+    log(f"[Task 5] 주문 자동 수집 시작 (사용자: {username})")
+
+    settings = get_user_settings(username)
+    if not settings:
+        log(f"❌ '{username}' 사용자 DB 없음")
+        return False
+
+    all_orders = []
+    errors = []
+
+    # ── 네이버 주문 조회 (증분 동기화) ──
+    api_id     = settings.get("api_client_id", "")
+    api_secret = settings.get("api_client_secret", "")
+    if api_id and api_secret:
+        # 마지막 동기화 시점 → 증분 hours_back 계산. 기본 36시간 (API 2번 호출).
+        _last_iso = settings.get('last_order_sync', '')
+        if _last_iso:
+            try:
+                _delta = (datetime.now() - datetime.fromisoformat(_last_iso)).total_seconds() / 3600
+                _hours = max(36, int(_delta) + 6)
+            except Exception:
+                _hours = 36
+        else:
+            _hours = 36  # 첫 실행: 36시간이면 충분
+        log(f"📋 네이버 주문 조회 중... ({_hours}h 범위)")
+        try:
+            orders, err = naver_api.get_new_orders(api_id, api_secret,
+                                                    hours_back=_hours, status_type="ALL")
+            if err:
+                log(f"  ⚠️ 네이버 오류: {err}")
+                errors.append(f"네이버: {err}")
+            elif orders:
+                for o in orders:
+                    o.setdefault("플랫폼", "네이버")
+                all_orders.extend(orders)
+                log(f"  ✅ 네이버 {len(orders)}건 조회 완료")
+                # 동기화 시점 기록
+                try:
+                    set_setting(username, 'last_order_sync', datetime.now().isoformat())
+                except Exception:
+                    pass
+            else:
+                log("  ℹ️ 네이버 주문 없음")
+        except Exception as e:
+            log(f"  ❌ 네이버 예외: {e}")
+            errors.append(f"네이버: {e}")
+    else:
+        log("  ⏭ 네이버 API 키 미설정 — 건너뜀")
+
+    # ── 쿠팡 주문 조회 ──
+    cpg_access = settings.get("coupang_access_key", "")
+    cpg_secret = settings.get("coupang_secret_key", "")
+    cpg_vendor = settings.get("coupang_vendor_id", "")
+    if cpg_access and cpg_secret and cpg_vendor:
+        log("🛒 쿠팡 주문 조회 중...")
+        try:
+            sys.path.insert(0, BASE_DIR)
+            import coupang_api
+            rows, err = coupang_api.get_orders(cpg_access, cpg_secret, cpg_vendor,
+                                               status="ALL", days_back=2)
+            if err:
+                log(f"  ⚠️ 쿠팡 오류: {err}")
+                errors.append(f"쿠팡: {err}")
+            elif rows:
+                all_orders.extend(rows)
+                log(f"  ✅ 쿠팡 {len(rows)}건 조회 완료")
+            else:
+                log("  ℹ️ 쿠팡 주문 없음")
+        except Exception as e:
+            log(f"  ❌ 쿠팡 예외: {e}")
+            errors.append(f"쿠팡: {e}")
+    else:
+        log("  ⏭ 쿠팡 API 키 미설정 — 건너뜀")
+
+    if not all_orders:
+        log("ℹ️ 수집된 주문 없음 → 종료")
+        if errors:
+            send_notification(settings, "❌ 주문 자동 수집 오류\n" + "\n".join(errors), username)
+        return True
+
+    # ── DB 저장 (order_history UPSERT — 매일 누적되어 미발송 주문 추적) ──
+    try:
+        import pandas as _pd
+        from db import save_order_history as _save_hist
+        _df = _pd.DataFrame(all_orders)
+        saved = _save_hist(username, _df)
+        log(f"💾 order_history UPSERT: {saved}건")
+        # 일별 주문 통계
+        s_cost = int(settings.get('shipping_cost') or 1800)
+        b_cost = int(settings.get('box_cost') or 300)
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        save_daily_orders(username, today_str, _df, s_cost, b_cost)
+    except Exception as e:
+        log(f"❌ DB 저장 실패: {e}")
+        return False
+
+    today = datetime.now().strftime("%m/%d")
+    msg = f"📥 주문 자동 수집 완료 ({today})\n총 {len(all_orders)}건"
+    if errors:
+        msg += "\n⚠️ 오류: " + ", ".join(errors)
+    send_notification(settings, msg, username)
+
+    log(f"[Task 5] 완료")
+    return True
+
+
+# ── Task 4: 키워드 순위 자동 체크 ────────────────
+def run_rank_check_task(username="admin"):
+    log("=" * 50)
+    log(f"[Task 4] 키워드 순위 체크 시작 (사용자: {username})")
+
+    settings = get_user_settings(username)
+    if not settings:
+        log(f"❌ '{username}' 사용자 DB 없음")
+        return False
+
+    open_cid  = settings.get('naver_open_client_id', '')
+    open_csec = settings.get('naver_open_client_secret', '')
+    if not open_cid or not open_csec:
+        log("⚠️ 네이버 Open API 키 미설정 — 앱 설정 탭에서 등록 필요")
+        return False
+
+    db_path = os.path.join(DATA_DIR, f"{username}.db")
+    if not os.path.exists(db_path):
+        return False
+
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        trackings = conn.execute(
+            "SELECT * FROM keyword_tracking WHERE active=1"
+        ).fetchall()
+    except Exception:
+        conn.close()
+        log("⚠️ 순위 추적 테이블 없음 — 앱에서 키워드를 먼저 추가해주세요.")
+        return False
+    conn.close()
+
+    if not trackings:
+        log("ℹ️ 추적 중인 키워드 없음 → 종료")
+        return True
+
+    results = []
+    for t in trackings:
+        kw       = t['search_keyword']
+        prod_kw  = t['product_keyword']
+        naver_pno = t['naver_product_no'] or ''
+        store_nm  = t['store_name'] or ''
+
+        r_wonbu, r_compare, r_solo, err = naver_api.check_keyword_rank(
+            open_cid, open_csec, kw,
+            our_product_name=prod_kw,
+            naver_product_no=naver_pno,
+            store_name=store_nm,
+        )
+        if err:
+            log(f"  '{kw}': 오류 — {err}")
+            continue
+
+        now = datetime.now().strftime("%Y-%m-%d %H:%M")
+        conn = sqlite3.connect(db_path)
+        try:
+            conn.execute("ALTER TABLE rank_history ADD COLUMN rank_compare INTEGER")
+        except Exception:
+            pass
+        conn.execute(
+            "INSERT INTO rank_history (tracking_id, rank_price_compare, rank_total, rank_compare, checked_at) VALUES (?,?,?,?,?)",
+            (t['id'], r_wonbu, r_solo, r_compare, now)
+        )
+        conn.commit()
+        conn.close()
+
+        wb_s = f"원부 {r_wonbu}위" if r_wonbu else "원부 미발견"
+        cp_s = f"가격비교 {r_compare}위" if r_compare else "가격비교 미발견"
+        sl_s = f"단독 {r_solo}위" if r_solo else "단독 미발견"
+        line = f"  [{prod_kw}] '{kw}': {wb_s} / {cp_s} / {sl_s}"
+        log(line)
+        results.append(line)
+
+    if results:
+        today = datetime.now().strftime("%m/%d")
+        msg = f"📈 키워드 순위 업데이트 ({today})\n" + "\n".join(results)
+        send_notification(settings, msg, username)
+
+    log(f"[Task 4] 완료 ({len(results)}건 처리)")
+    return True
+
+
 # ── 진입점 ────────────────────────────────────────
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="코스트코핫딜 자동화 실행")
     parser.add_argument("--task",
-                        choices=["shopping", "shipping", "crawl", "all"],
+                        choices=["shopping", "shipping", "crawl", "rank", "orders", "all"],
                         default="all",
                         help="실행할 작업 (기본: all)")
     parser.add_argument("--user",
@@ -473,7 +693,12 @@ if __name__ == "__main__":
         run_shipping_task(args.user)
     elif args.task == "crawl":
         run_crawl_task(args.user)
+    elif args.task == "rank":
+        run_rank_check_task(args.user)
+    elif args.task == "orders":
+        run_fetch_orders_task(args.user)
     else:
-        run_crawl_task(args.user)
+        run_fetch_orders_task(args.user)
         run_shopping_task(args.user)
         run_shipping_task(args.user)
+        run_rank_check_task(args.user)

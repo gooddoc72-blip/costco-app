@@ -1,0 +1,28 @@
+[Unit]
+Description=코스트코핫딜 Streamlit App
+After=network.target
+
+[Service]
+Type=simple
+User=costco
+Group=costco
+WorkingDirectory=/opt/costco-app
+EnvironmentFile=/opt/costco-app/.env
+ExecStart=/opt/costco-app/venv/bin/streamlit run app.py \
+    --server.port=8501 \
+    --server.address=127.0.0.1 \
+    --server.headless=true \
+    --server.enableCORS=false
+
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=costco-app
+
+# 보안 강화
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

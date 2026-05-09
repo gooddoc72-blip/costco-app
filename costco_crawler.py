@@ -488,21 +488,35 @@ def _parse_occ_products(api_data: dict) -> list[dict]:
 
 
 # ─── 크롤링 실제 실행 (subprocess에서 직접 호출) ─────────────────
+def _safe_handle(handler, response):
+    try:
+        handler(response)
+    except Exception:
+        pass
+
+
 def _crawl_direct(url, email, password, max_products, progress_cb=None):
     """
-    subprocess에서 실행. 브라우저 세션 쿠키로 OCC REST API를 직접 fetch().
-    DOM/CSS 셀렉터 불필요 — API JSON 응답을 그대로 파싱.
+    subprocess에서 실행.
+    ① OCC REST API 직접 호출 (여러 엔드포인트 시도)
+    ② 실패 시 네트워크 인터셉터로 수집된 응답 사용
+    ③ 그래도 없으면 DOM 스크래핑 + JSON-LD 폴백
     """
     from playwright.sync_api import sync_playwright
     from urllib.parse import urlparse, parse_qs
 
     results: list[dict] = []
+    intercepted: list[dict] = []   # 네트워크 인터셉터 폴백
 
     _log("  브라우저 시작 중...", progress_cb)
     with sync_playwright() as pw:
         ctx = _make_persistent_context(pw, headless=True)
         page = ctx.new_page()
         _log("  브라우저 시작 완료", progress_cb)
+
+        # ① 네트워크 인터셉터 — 페이지 탐색 전에 등록
+        _handler = _make_response_handler(intercepted)
+        page.on("response", lambda r: _safe_handle(_handler, r))
 
         try:
             _goto(page, COSTCO_HOME_URL)
@@ -524,74 +538,101 @@ def _crawl_direct(url, email, password, max_products, progress_cb=None):
             else:
                 _log("  로그인 상태 확인 OK", progress_cb)
 
-            # OCC API URL 구성
+            # URL 파싱 (원본 URL 기반으로 검색어/카테고리 코드 추출)
             parsed = urlparse(url)
-            if "search" in parsed.path and parsed.query:
-                params = parse_qs(parsed.query)
+            is_search = "search" in parsed.path and bool(parsed.query)
+            if is_search:
+                params  = parse_qs(parsed.query)
                 keyword = params.get("text", params.get("q", [""]))[0]
-                base_api = (
-                    f"{COSTCO_OCC_URL}?fields=FULL"
-                    f"&query={quote(keyword, safe='')}"
-                    f"&lang=ko&curr=KRW"
-                )
                 _log(f"  검색어: {keyword}", progress_cb)
             else:
                 m = re.search(r"/c/([^/?#]+)", parsed.path)
                 cat_code = m.group(1) if m else "cos_10"
-                base_api = (
-                    f"{COSTCO_OCC_URL}?fields=FULL"
-                    f"&query=&category={cat_code}"
-                    f"&lang=ko&curr=KRW"
-                )
                 _log(f"  카테고리 코드: {cat_code}", progress_cb)
 
-            # 카테고리 페이지 방문으로 세션 쿠키 확립
+            # ② 카테고리 페이지 방문 (인터셉터가 자동으로 API 응답 수집)
             _goto(page, url, timeout=30000)
-            time.sleep(2)
+            _log(f"  이동 후 URL: {page.url}", progress_cb)
+            time.sleep(4)   # Angular SPA 렌더링 대기
 
-            # OCC API 페이지 단위 fetch (pageSize 최대 100)
+            # ③ OCC API 직접 호출 — 여러 엔드포인트 순서대로 시도
+            _occ_bases = [
+                f"{COSTCO_BASE}/rest/v2/korea/products/search",
+                f"{COSTCO_BASE}/occ/v2/korea/products/search",
+                f"{COSTCO_BASE}/rest/v2/costco_kr/products/search",
+                f"{COSTCO_BASE}/rest/v2/costco/products/search",
+            ]
             page_size = min(max_products, 100)
-            current_page = 0
-            total_pages = 1
 
-            while len(results) < max_products and current_page < total_pages:
-                api_url = f"{base_api}&pageSize={page_size}&currentPage={current_page}"
-                _log(f"  OCC API 호출 (page {current_page})...", progress_cb)
+            for _base in _occ_bases:
+                if results:
+                    break
+                if is_search:
+                    base_api = (f"{_base}?fields=FULL"
+                                f"&query={quote(keyword, safe='')}&lang=ko&curr=KRW")
+                else:
+                    base_api = (f"{_base}?fields=FULL"
+                                f"&query=&category={cat_code}&lang=ko&curr=KRW")
 
-                js_code = f"""
-                    async () => {{
-                        try {{
-                            const r = await fetch("{api_url}", {{
-                                credentials: "include",
-                                headers: {{"Accept": "application/json"}}
-                            }});
-                            if (!r.ok) return {{error: r.status}};
-                            return await r.json();
-                        }} catch(e) {{
-                            return {{error: String(e)}};
+                cur_pg = 0
+                tot_pg = 1
+                endpoint_label = _base.split("/rest/v2/")[-1].split("/occ/v2/")[-1]
+                while len(results) < max_products and cur_pg < tot_pg:
+                    api_url = f"{base_api}&pageSize={page_size}&currentPage={cur_pg}"
+                    _log(f"  OCC({endpoint_label}) page {cur_pg}...", progress_cb)
+                    js_code = f"""
+                        async () => {{
+                            try {{
+                                const r = await fetch("{api_url}", {{
+                                    credentials: "include",
+                                    headers: {{"Accept": "application/json",
+                                               "X-Requested-With": "XMLHttpRequest"}}
+                                }});
+                                if (!r.ok) return {{error: r.status}};
+                                return await r.json();
+                            }} catch(e) {{
+                                return {{error: String(e)}};
+                            }}
                         }}
-                    }}
-                """
-                api_data = page.evaluate(js_code)
+                    """
+                    api_data = page.evaluate(js_code)
+                    if not isinstance(api_data, dict) or api_data.get("error"):
+                        _log(f"    오류: {api_data}", progress_cb)
+                        break
+                    page_items = _parse_occ_products(api_data)
+                    if not page_items:
+                        _log(f"    상품 없음 — 다음 엔드포인트 시도", progress_cb)
+                        break
+                    results.extend(page_items)
+                    _log(f"    page {cur_pg}: {len(page_items)}개 → 누적 {len(results)}개", progress_cb)
+                    pagination = api_data.get("pagination", {})
+                    tot_pg = pagination.get("totalPages", 1)
+                    cur_pg += 1
 
-                if not isinstance(api_data, dict):
-                    _log(f"  API 응답 오류: {api_data}", progress_cb)
-                    break
-                if api_data.get("error"):
-                    _log(f"  API 오류: {api_data['error']}", progress_cb)
-                    break
+            # ④ 폴백: 인터셉터로 수집된 응답 사용
+            if not results and intercepted:
+                seen: set = set()
+                for item in intercepted:
+                    key = item.get("product_no") or item.get("name", "")
+                    if key and key not in seen:
+                        seen.add(key)
+                        results.append(item)
+                _log(f"  인터셉터 폴백: {len(results)}개 수집", progress_cb)
 
-                page_items = _parse_occ_products(api_data)
-                if not page_items:
-                    _log(f"  페이지 {current_page}: 상품 없음", progress_cb)
-                    break
-
-                results.extend(page_items)
-                _log(f"  페이지 {current_page}: {len(page_items)}개 → 누적 {len(results)}개", progress_cb)
-
-                pagination = api_data.get("pagination", {})
-                total_pages = pagination.get("totalPages", 1)
-                current_page += 1
+            # ⑤ 폴백: DOM 스크래핑
+            if not results:
+                _log("  DOM 스크래핑 시도...", progress_cb)
+                try:
+                    page.wait_for_selector(SEL["spa_ready"], timeout=10000)
+                    time.sleep(2)
+                except Exception:
+                    pass
+                dom_items = _parse_dom(page) or _try_json_ld(page)
+                if dom_items:
+                    results = dom_items
+                    _log(f"  DOM 폴백: {len(results)}개 수집", progress_cb)
+                else:
+                    _log("  ❌ 모든 방법 실패 — 상품 수집 불가", progress_cb)
 
         finally:
             ctx.close()
@@ -767,14 +808,17 @@ def save_to_shared_products(
                 ).fetchone()
 
             if existing:
+                # 크롤러 → 온라인가만 갱신 (매장가 보존)
                 conn.execute(
                     """UPDATE shared_products
                        SET costco_name=?, unit_price=?, product_no=?,
                            updated_by=?, updated_at=?, price_type='온라인',
-                           image_url=?, local_image=?, category=?
+                           image_url=?, local_image=?, category=?,
+                           online_price=?, online_updated_at=?
                        WHERE id=?""",
                     (name, p["price"], product_no, updated_by, now,
-                     image_url, local_image, category, existing[0])
+                     image_url, local_image, category,
+                     p["price"], now, existing[0])
                 )
                 updated += 1
             else:
@@ -782,10 +826,12 @@ def save_to_shared_products(
                     """INSERT INTO shared_products
                        (product_no, costco_name, match_keyword, unit_price,
                         split_qty, updated_by, updated_at, price_type,
-                        image_url, local_image, category)
-                       VALUES (?,?,?,?,1,?,?,'온라인',?,?,?)""",
+                        image_url, local_image, category,
+                        store_price, online_price, store_updated_at, online_updated_at)
+                       VALUES (?,?,?,?,1,?,?,'온라인',?,?,?,0,?,'',?)""",
                     (product_no, name, name, p["price"], updated_by, now,
-                     image_url, local_image, category)
+                     image_url, local_image, category,
+                     p["price"], now)
                 )
                 saved += 1
 
@@ -794,6 +840,225 @@ def save_to_shared_products(
         conn.close()
 
     return saved, updated
+
+
+# ─── 상품 상세 수집 ──────────────────────────────────────────────
+
+def build_detail_html(image_urls: list, description: str = "", features: list = None) -> str:
+    """코스트코 상품 정보 → 네이버 상세페이지 HTML (이미지는 원본 URL 그대로 저장)"""
+    parts = []
+    for url in (image_urls or []):
+        if url:
+            parts.append(
+                f'<img src="{url}" '
+                f'style="max-width:100%;display:block;margin:8px auto">'
+            )
+    if description:
+        parts.append('<div style="padding:16px 0">')
+        for line in description.split('\n'):
+            line = line.strip()
+            if line:
+                parts.append(f'<p style="margin:6px 0;line-height:1.7">{line}</p>')
+        parts.append('</div>')
+    if features:
+        valid = [f.strip() for f in features if isinstance(f, str) and f.strip()]
+        if valid:
+            parts.append('<ul style="padding-left:20px;margin:8px 0">')
+            for feat in valid:
+                parts.append(f'<li style="margin:4px 0;line-height:1.6">{feat}</li>')
+            parts.append('</ul>')
+    return '\n'.join(parts)
+
+
+def save_product_detail(product_no: str, extra_images: list, detail_html: str) -> bool:
+    """shared_products에 extra_images / detail_html 업데이트"""
+    if not os.path.exists(AUTH_DB):
+        return False
+    try:
+        conn = sqlite3.connect(AUTH_DB)
+        for sql in [
+            "ALTER TABLE shared_products ADD COLUMN extra_images TEXT DEFAULT ''",
+            "ALTER TABLE shared_products ADD COLUMN detail_html TEXT DEFAULT ''",
+        ]:
+            try:
+                conn.execute(sql); conn.commit()
+            except Exception:
+                pass
+        conn.execute(
+            "UPDATE shared_products SET extra_images=?, detail_html=? WHERE product_no=?",
+            (json.dumps(extra_images, ensure_ascii=False), detail_html, product_no),
+        )
+        conn.commit()
+        conn.close()
+        return True
+    except Exception:
+        return False
+
+
+def _fetch_detail_direct(product_nos: list, email: str, password: str, progress_cb=None) -> dict:
+    """subprocess에서 실행 — OCC 단품 API로 갤러리 이미지 + 설명 + 특징 수집"""
+    from playwright.sync_api import sync_playwright
+
+    result: dict = {}
+    _log("  브라우저 시작...", progress_cb)
+    with sync_playwright() as pw:
+        ctx = _make_persistent_context(pw, headless=True)
+        page = ctx.new_page()
+        _log("  브라우저 완료", progress_cb)
+        try:
+            _goto(page, COSTCO_HOME_URL)
+            time.sleep(2)
+            if not _check_logged_in(page):
+                if not email or not password:
+                    raise RuntimeError("세션 만료 — 이메일/비밀번호 설정 필요")
+                if not _do_login(page, email, password, progress_cb):
+                    raise RuntimeError("재로그인 실패")
+                _log("  재로그인 성공", progress_cb)
+
+            # 코스트코 카테고리 페이지를 먼저 방문해 세션 쿠키 확립
+            _goto(page, COSTCO_HOME_URL, timeout=20000)
+            time.sleep(2)
+
+            for i, pno in enumerate(product_nos, 1):
+                _log(f"  [{i}/{len(product_nos)}] {pno} 상세 조회...", progress_cb)
+                api_url = (
+                    f"{COSTCO_BASE}/rest/v2/korea/products/{pno}"
+                    f"?fields=FULL&lang=ko&curr=KRW"
+                )
+                js = f"""
+                    async () => {{
+                        try {{
+                            const r = await fetch("{api_url}", {{
+                                credentials: "include",
+                                headers: {{"Accept": "application/json"}}
+                            }});
+                            if (!r.ok) return {{error: r.status}};
+                            return await r.json();
+                        }} catch(e) {{ return {{error: String(e)}}; }}
+                    }}
+                """
+                data = page.evaluate(js)
+                if not isinstance(data, dict) or data.get("error"):
+                    _log(f"    오류: {data}", progress_cb)
+                    continue
+
+                # 이미지 추출 (PRIMARY → GALLERY 순, 중복 제거)
+                seen_urls: set = set()
+                img_urls: list = []
+                for img in (data.get("images") or []):
+                    if not isinstance(img, dict):
+                        continue
+                    if img.get("imageType") not in ("PRIMARY", "GALLERY"):
+                        continue
+                    raw = img.get("url", "")
+                    if not raw:
+                        continue
+                    url = (COSTCO_BASE + raw) if raw.startswith("/") else raw
+                    if url not in seen_urls:
+                        seen_urls.add(url)
+                        img_urls.append(url)
+
+                # 설명 추출
+                desc = (data.get("description") or "").strip()
+
+                # 특징 추출 (featureList + summary)
+                features: list = []
+                summary = (data.get("summary") or "").strip()
+                if summary:
+                    features.append(summary)
+                for feat in (data.get("featureList") or []):
+                    if not isinstance(feat, dict):
+                        continue
+                    for fv in (feat.get("featureValues") or []):
+                        if isinstance(fv, dict):
+                            val = (fv.get("value") or "").strip()
+                            if val and val not in features:
+                                features.append(val)
+
+                result[pno] = {
+                    "extra_images": img_urls,
+                    "description":  desc,
+                    "features":     features,
+                }
+                _log(f"    → 이미지 {len(img_urls)}개, 특징 {len(features)}개", progress_cb)
+                time.sleep(random.uniform(0.4, 1.0))
+
+        finally:
+            ctx.close()
+    return result
+
+
+def crawl_product_details(
+    product_nos: list,
+    email: str = "",
+    password: str = "",
+    progress_cb=None,
+) -> dict:
+    """
+    Playwright subprocess로 상세 수집 → DB 저장.
+    반환: {"ok": N, "fail": N, "errors": [...]}
+    """
+    import tempfile, subprocess
+
+    if not is_profile_exists():
+        raise RuntimeError(
+            "브라우저 프로필이 없습니다.\n'코스트코 브라우저 첫 로그인 설정'을 먼저 실행하세요."
+        )
+    if not product_nos:
+        return {"ok": 0, "fail": 0, "errors": []}
+
+    params_file = tempfile.mktemp(suffix="_detail_params.json")
+    output_file = tempfile.mktemp(suffix="_detail_result.json")
+
+    try:
+        with open(params_file, "w", encoding="utf-8") as f:
+            json.dump({"product_nos": product_nos,
+                       "email": email, "password": password}, f)
+
+        env = os.environ.copy()
+        env["PYTHONUNBUFFERED"] = "1"
+        env["PYTHONIOENCODING"] = "utf-8"
+
+        proc = subprocess.Popen(
+            [sys.executable, __file__, "--do-detail", params_file, output_file],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, encoding="utf-8", errors="replace", env=env,
+        )
+        for line in proc.stdout:
+            _log(line.rstrip(), progress_cb)
+        proc.wait(timeout=1800)
+
+        if not os.path.exists(output_file):
+            raise RuntimeError("상세 결과 파일 생성 실패")
+
+        with open(output_file, encoding="utf-8") as f:
+            detail_map = json.load(f)
+
+        ok = fail = 0
+        errors = []
+        for pno, detail in detail_map.items():
+            extra = detail.get("extra_images", [])
+            html  = build_detail_html(
+                extra,
+                detail.get("description", ""),
+                detail.get("features", []),
+            )
+            if save_product_detail(pno, extra, html):
+                ok += 1
+            else:
+                fail += 1
+                errors.append(f"{pno}: DB 저장 실패")
+
+        _log(f"상세 수집 완료 — 성공 {ok}개 / 실패 {fail}개", progress_cb)
+        return {"ok": ok, "fail": fail, "errors": errors}
+
+    finally:
+        for fp in (params_file, output_file):
+            try:
+                if os.path.exists(fp):
+                    os.remove(fp)
+            except Exception:
+                pass
 
 
 # ─── 통합 실행 ───────────────────────────────────────────────────
@@ -874,6 +1139,28 @@ if __name__ == "__main__":
                 email=_p.get("email", ""),
                 password=_p.get("password", ""),
                 max_products=_p.get("max_products", 300),
+                progress_cb=lambda m: print(m, flush=True),
+            )
+            with open(_output_file, "w", encoding="utf-8") as _f:
+                json.dump(_results, _f, ensure_ascii=False)
+            sys.exit(0)
+        except Exception as _e:
+            print(f"ERROR: {_e}", flush=True)
+            sys.exit(1)
+
+    elif "--do-detail" in sys.argv:
+        # crawl_product_details()가 subprocess로 이 모드를 호출
+        # 인자: --do-detail <params_json> <output_json>
+        idx = sys.argv.index("--do-detail")
+        _params_file = sys.argv[idx + 1]
+        _output_file = sys.argv[idx + 2]
+        try:
+            with open(_params_file, encoding="utf-8") as _f:
+                _p = json.load(_f)
+            _results = _fetch_detail_direct(
+                product_nos=_p["product_nos"],
+                email=_p.get("email", ""),
+                password=_p.get("password", ""),
                 progress_cb=lambda m: print(m, flush=True),
             )
             with open(_output_file, "w", encoding="utf-8") as _f:

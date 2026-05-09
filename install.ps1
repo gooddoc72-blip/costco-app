@@ -79,21 +79,60 @@ if ($LASTEXITCODE -ne 0) {
     Write-Host "      Playwright Chromium 설치 완료!" -ForegroundColor Green
 }
 
-# 3. 바탕화면 바로가기 생성
+# 3. 아이콘 생성 + 바탕화면 바로가기 생성
 Write-Host ""
 Write-Host "[3/5] 바탕화면 바로가기 생성 중..." -ForegroundColor Yellow
 
 $desktopPath = [System.Environment]::GetFolderPath("Desktop")
 $shortcutPath = Join-Path $desktopPath "코스트코 핫딜 관리.lnk"
 $startBat = Join-Path $ScriptDir "start_server.bat"
+$icoPath   = Join-Path $ScriptDir "icon.ico"
 
+# icon.ico 없으면 Python으로 생성
+if (-not (Test-Path $icoPath)) {
+    try {
+        $iconScript = @'
+from PIL import Image, ImageDraw, ImageFont
+def make_frame(sz):
+    img = Image.new("RGBA", (sz, sz), (0,0,0,0))
+    d = ImageDraw.Draw(img)
+    m = max(1, sz // 16)
+    d.ellipse([m, m, sz-m-1, sz-m-1], fill=(220,53,69,255))
+    fs = int(sz * 0.54)
+    try:
+        font = ImageFont.truetype("C:/Windows/Fonts/arialbd.ttf", fs)
+    except Exception:
+        font = ImageFont.load_default()
+    bbox = d.textbbox((0,0), "C", font=font)
+    tx = (sz-(bbox[2]-bbox[0]))//2 - bbox[0]
+    ty = (sz-(bbox[3]-bbox[1]))//2 - bbox[1]
+    d.text((tx, ty), "C", fill=(255,255,255,255), font=font)
+    return img
+import sys
+frames = [make_frame(s) for s in [256,128,64,48,32,16]]
+frames[0].save(sys.argv[1], format="ICO", append_images=frames[1:])
+'@
+        $tmpPy = [System.IO.Path]::GetTempFileName() + ".py"
+        $iconScript | Out-File -FilePath $tmpPy -Encoding utf8
+        & $pythonCmd $tmpPy $icoPath 2>$null
+        Remove-Item $tmpPy -Force -ErrorAction SilentlyContinue
+        if (Test-Path $icoPath) {
+            Write-Host "      아이콘 생성 완료" -ForegroundColor Green
+        }
+    } catch {
+        Write-Host "      (아이콘 생성 건너뜀)" -ForegroundColor DarkYellow
+    }
+}
+
+# 바로가기 생성
+$iconLocation = if (Test-Path $icoPath) { $icoPath } else { "shell32.dll,14" }
 try {
     $WShell = New-Object -ComObject WScript.Shell
     $sc = $WShell.CreateShortcut($shortcutPath)
     $sc.TargetPath = $startBat
     $sc.WorkingDirectory = $ScriptDir
     $sc.Description = "코스트코 핫딜 관리 프로그램 시작"
-    $sc.IconLocation = "shell32.dll,14"
+    $sc.IconLocation = $iconLocation
     $sc.Save()
     Write-Host "      바탕화면에 바로가기 생성 완료!" -ForegroundColor Green
 } catch {

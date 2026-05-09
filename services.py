@@ -8,20 +8,69 @@ from datetime import datetime
 
 import pandas as pd
 
-from utils import calc_match_score, MIN_MATCH_SCORE, extract_pack_qty
+from utils import calc_match_score, MIN_MATCH_SCORE, extract_pack_qty, get_ngrams, ProductMatcher
 from db import (
     get_shared_products, get_all_products, get_all_products_merged,
     upsert_user_private,
 )
 
 
+# ── 비용 계산 (단일 공식) ──────────────────────────────────
+def calc_cost(product: dict, qty: int, pack_qty: int = 1) -> int:
+    """제품 dict + 수량 → 매입가.
+    split_qty: 소분 단위 (예: 박스→3소분이면 단가//3)
+    pack_qty:  묶음 수량 (예: 2구이면 qty*2 매입)
+    """
+    unit_price = int(product.get('unit_price', 0) or 0)
+    split_qty = max(1, int(product.get('split_qty', 1) or 1))
+    return (unit_price // split_qty) * qty * pack_qty
+
+
 # ── 상품 매칭 ─────────────────────────────────────────────
 def _token_score(a: str, b: str) -> float:
+    """가중 토큰 매칭. 짧은 한 단어 매칭(예: '주스')의 false positive 방지.
+       기준: Jaccard + 사이즈 페널티 + 일반어 가중치 감소 + 부분 substring 매칭
+    """
+    # 일반 단어 (의미 약함) — 매칭 점수에서 가중치 낮춤
+    GENERIC = {
+        '주스','과자','음료','우유','요거트','요구르트','빵','쿠키','초콜릿','초코',
+        '코스트코','커클랜드','대용량','소용량','선물','세트','과일','채소','고기','육포',
+        '신상','특가','행사','할인','정품','한정','베스트','정도','신선','냉장','냉동'
+    }
     ta = set(re.findall(r'[가-힣a-zA-Z0-9]+', a.lower()))
     tb = set(re.findall(r'[가-힣a-zA-Z0-9]+', b.lower()))
     if not ta or not tb:
         return 0.0
-    return len(ta & tb) / min(len(ta), len(tb))
+    # 단독 문자(x, g)·단독 숫자(4, 12) 제거 — 묶음수량/단위 표기가 false-positive 야기
+    _noise = {t for t in ta | tb if len(t) < 2 or t.isdigit()}
+    common = ta & tb
+    # 일반어 + 노이즈 제외 후 의미있는 토큰만
+    _skip = GENERIC | _noise
+    meaningful_common = common - _skip
+    meaningful_a = ta - _skip
+    meaningful_b = tb - _skip
+    if not meaningful_a or not meaningful_b:
+        return 0.0
+    # 부분 substring 매칭 (예: '메르시' ⊂ '메르시초콜릿'): 0.5 가중
+    extra_partial = 0
+    a_left = meaningful_a - meaningful_common
+    b_left = meaningful_b - meaningful_common
+    for t in a_left:
+        if len(t) >= 3:
+            for t2 in b_left:
+                if len(t2) >= 3 and (t in t2 or t2 in t):
+                    extra_partial += 0.5
+                    break
+    # Containment(짧은 쪽 기준) + 부분 매칭 가중
+    # 영수증명/네이버명 길이 차이가 클 때 짧은 쪽이 긴 쪽에 얼마나 포함되는지로 측정
+    denom = min(len(meaningful_a), len(meaningful_b))
+    score = (len(meaningful_common) + extra_partial) / max(denom, 1)
+    # 사이즈 페널티: 양쪽 사이즈 있는데 다르면 감점
+    sa = set(re.findall(r'\d+\s*(?:g|kg|ml|l|개|팩|매|장|봉)', a.lower()))
+    sb = set(re.findall(r'\d+\s*(?:g|kg|ml|l|개|팩|매|장|봉)', b.lower()))
+    if sa and sb and not (sa & sb):
+        score *= 0.3
+    return min(1.0, score)
 
 
 def _find_db_product(products, order_name: str, order_pno: str = '', pno_map: dict = None):
@@ -38,54 +87,97 @@ def _find_db_product(products, order_name: str, order_pno: str = '', pno_map: di
     return best_p if best_score >= 0.5 else None
 
 
-def match_product_to_db(username, store_product_name, product_no=None):
-    """제품 매칭: shared_products 우선, 없으면 사용자 DB 폴백."""
-    sp = match_shared_product(store_product_name, product_no=product_no)
+def match_product_to_db(username, store_product_name, product_no=None,
+                        _user_prods=None, _shared_prods=None):
+    """제품 매칭: shared_products 우선, 없으면 사용자 DB 폴백.
+    _user_prods/_shared_prods: 배치 처리 시 미리 로드된 리스트 (N+1 방지용).
+    """
+    sp = match_shared_product(store_product_name, product_no=product_no,
+                               _shared_prods=_shared_prods)
     if sp:
-        user_prods = get_all_products(username)
+        user_prods = _user_prods if _user_prods is not None else get_all_products(username)
         up = next((p for p in user_prods if p['match_keyword'] == sp['match_keyword']), {})
+        # 주문 product_no로 우선 탐색 (shared product의 pno와 달라도 사용자가 등록했을 수 있음)
+        if product_no:
+            _up_by_order_pno = next((p for p in user_prods
+                                     if str(p.get('product_no', '') or '') == str(product_no)), None)
+            if _up_by_order_pno:
+                up = _up_by_order_pno
+        # shared product_no로도 탐색 (match_keyword가 달라도 같은 상품일 수 있음)
+        if not up:
+            _sp_pno = str(sp.get('product_no', '') or '')
+            if _sp_pno:
+                _up_by_pno = next((p for p in user_prods
+                                   if str(p.get('product_no', '') or '') == _sp_pno), None)
+                if _up_by_pno:
+                    up = _up_by_pno
+        _sq_user   = int(up.get('split_qty') or 1) if up else 1
+        _sq_shared = int(sp.get('split_qty') or 1)
+        _sq = max(_sq_user, _sq_shared)   # 둘 중 명시적으로 설정된 값(>1) 우선
+        # 상품명/키워드의 "x N개" 패턴 자동 추출 제거 — 상품 속성과 주문 처리 변수 분리
+        # split_qty는 오직 명시적으로 등록된 DB 값만 사용
+        # unit_price: 사용자 DB 값 우선, 없으면 공유 DB 값 사용 (박스 단가 덮어쓰기 방지)
+        _up_unit_price = int(up.get('unit_price', 0) or 0) if up else 0
+        _final_unit_price = _up_unit_price if _up_unit_price > 0 else int(sp.get('unit_price', 0) or 0)
         return {
             **sp,
-            'sale_price':       int(up.get('sale_price',   0) or 0),
-            'shipping_fee':     int(up.get('shipping_fee', 0) or 0),
-            'naver_product_no': up.get('product_no', ''),
+            'unit_price':       _final_unit_price,
+            'sale_price':       int(up.get('sale_price',   0) or 0) if up else 0,
+            'shipping_fee':     int(up.get('shipping_fee', 0) or 0) if up else 0,
+            'naver_product_no': up.get('product_no', '') if up else '',
+            'split_qty':        _sq,
         }
-    products = get_all_products(username)
+    products = _user_prods if _user_prods is not None else get_all_products(username)
     if not products:
         return None
-    if product_no:
-        for p in products:
-            if p.get('product_no') == str(product_no):
-                return p
+    # product_no가 없거나 불일치 시 이름/키워드 토큰 매칭 (0.5 이상)
     candidates = []
     for p in products:
-        s1 = calc_match_score(p.get('costco_name', ''), store_product_name)
-        s2 = calc_match_score(p['match_keyword'], store_product_name)
+        s1 = _token_score(store_product_name, p.get('costco_name', ''))
+        s2 = _token_score(store_product_name, p['match_keyword'])
         score = max(s1, s2)
-        if score >= MIN_MATCH_SCORE:
+        if score >= 0.5:
             candidates.append((p, score))
     if not candidates:
         return None
     candidates.sort(key=lambda x: x[1], reverse=True)
-    return candidates[0][0]
+    matched = dict(candidates[0][0])
+    # 사용자 상품의 unit_price가 0이고 product_no가 있으면 공유 상품에서 가격/split_qty 보완
+    if (not matched.get('unit_price') or int(matched.get('unit_price') or 0) == 0) and matched.get('product_no'):
+        shared_prods = _shared_prods if _shared_prods is not None else get_shared_products()
+        for sp in (shared_prods or []):
+            if str(sp.get('product_no', '') or '') == str(matched['product_no']):
+                matched['unit_price'] = sp.get('unit_price') or 0
+                # split_qty 미설정 시 공유 상품 명시값만 사용 (이름 자동추출 제거)
+                if not matched.get('split_qty') or int(matched.get('split_qty') or 1) == 1:
+                    matched['split_qty'] = int(sp.get('split_qty') or 1)
+                break
+    return matched
 
 
-def match_shared_product(product_name, product_no=None):
-    """이름·번호로 공유 제품 검색."""
-    products = get_shared_products()
+def match_shared_product(product_name, product_no=None, return_score=False,
+                         _shared_prods=None):
+    """이름·번호로 공유 제품 검색.
+    product_no가 있으면 정확 일치 우선 (score=1.0), 그 외에는 강화된 토큰 점수 ≥ 0.6 필요.
+    return_score=True면 (product, score) 튜플 반환.
+    _shared_prods: 배치 처리 시 미리 로드된 리스트 (N+1 방지용).
+    """
+    products = _shared_prods if _shared_prods is not None else get_shared_products()
     if not products:
-        return None
+        return (None, 0.0) if return_score else None
     if product_no:
         for p in products:
             if str(p.get('product_no', '')) == str(product_no):
-                return p
+                return (p, 1.0) if return_score else p
     best_score, best_p = 0.0, None
     for p in products:
         for field in ('match_keyword', 'costco_name'):
             score = _token_score(product_name, p.get(field) or '')
             if score > best_score:
                 best_score, best_p = score, p
-    return best_p if best_score >= 0.5 else None
+    if best_score >= 0.5:
+        return (best_p, best_score) if return_score else best_p
+    return (None, best_score) if return_score else None
 
 
 # ── 주문에서 제품 정보 자동 업데이트 ─────────────────────
@@ -159,6 +251,10 @@ def update_product_sale_price(username, orders_df):
 
 # ── 가격 변동 감지 ────────────────────────────────────────
 def detect_price_changes(username, parsed_items):
+    """영수증 매입가 ↔ 기존 store_price (매장가) 비교.
+    영수증 가격 = 매장 가격이므로 store_price만 비교 대상.
+    online_price(코스트코몰)는 비교 무시.
+    """
     shared     = get_shared_products()
     user_prods = get_all_products(username)
     user_fee_map = {up['match_keyword']: int(up.get('shipping_fee', 0) or 0) for up in user_prods}
@@ -172,7 +268,12 @@ def detect_price_changes(username, parsed_items):
         sp = match_shared_product(receipt_name, product_no=receipt_no if receipt_no else None)
         if sp is None:
             continue
-        old_price = int(sp.get('unit_price', 0) or 0)
+        # 매장가 우선, 없으면 (마이그레이션 전 데이터) unit_price 폴백
+        old_price = int(sp.get('store_price') or 0)
+        if old_price <= 0:
+            # 폴백: price_type='매장'인 unit_price만 비교 대상
+            if (sp.get('price_type') or '매장') == '매장':
+                old_price = int(sp.get('unit_price') or 0)
         if old_price <= 0 or old_price == receipt_price:
             continue
         diff     = receipt_price - old_price
@@ -237,7 +338,32 @@ def parse_costco_receipt_pdf(uploaded_pdf):
         return None, f"PDF 열기 오류: {e}"
     if not full_text.strip():
         return None, "텍스트 추출 실패 (스캔 이미지 PDF이거나 암호화된 파일)"
-    items, lines, skip_next = [], full_text.split('\n'), False
+
+    lines = full_text.split('\n')
+
+    # 영수증 날짜 추출 (YYYY/MM/DD, YYYY-MM-DD, YY/MM/DD 등)
+    receipt_date = ''
+    _date_re = re.compile(
+        r'(?:날\s*자|날짜|date)[^\d]*(\d{2,4})[/\-\.](\d{1,2})[/\-\.](\d{1,2})'
+        r'|(\d{4})[/\-\.](\d{1,2})[/\-\.](\d{1,2})',
+        re.IGNORECASE
+    )
+    for _l in lines:
+        _dm = _date_re.search(_l)
+        if _dm:
+            try:
+                if _dm.group(1):   # 날자: YYYY/MM/DD 형식
+                    y, mo, d = _dm.group(1), _dm.group(2), _dm.group(3)
+                else:              # 순수 날짜 YYYY/MM/DD
+                    y, mo, d = _dm.group(4), _dm.group(5), _dm.group(6)
+                if len(y) == 2:
+                    y = '20' + y
+                receipt_date = f"{y}-{int(mo):02d}-{int(d):02d}"
+                break
+            except Exception:
+                pass
+
+    items, skip_next = [], False
     for i in range(len(lines) - 1):
         if skip_next:
             skip_next = False
@@ -260,6 +386,7 @@ def parse_costco_receipt_pdf(uploaded_pdf):
                 '상품명': name,
                 '수량': int(m.group(2)),
                 '단가': int(m.group(3).replace(',', '')),
+                'receipt_date': receipt_date,
             })
             skip_next = True
     if items:
@@ -268,16 +395,494 @@ def parse_costco_receipt_pdf(uploaded_pdf):
     return None, f"상품 패턴 미인식 (텍스트 {len(full_text)}자 추출)\n\n--- 추출 원문 ---\n{preview}"
 
 
-def match_receipt_to_orders(receipt_items, order_product_names):
-    matches = {}
-    for store_name in order_product_names:
-        best_idx, best_score = None, 0
-        for i, item in enumerate(receipt_items):
-            score = calc_match_score(item['상품명'], store_name)
+# 브랜드 영한 매핑 (네이버는 한글, 영수증은 영문 흔함)
+_BRAND_MAP = {
+    "MERCI":     "메르시",
+    "KIRKLAND":  "커클랜드",
+    "COSTCO":    "코스트코",
+    "QUAKER":    "퀘이커",
+    "LIPTON":    "립톤",
+    "CJ":        "씨제이",
+    "SAMYANG":   "삼양",
+    "DOVE":      "도브",
+    "HEAD":      "헤드",
+    "PANTENE":   "팬틴",
+    "KIRKWOOD":  "커크우드",
+    "TYSON":     "타이슨",
+    "NESTLE":    "네슬레",
+    "FERRERO":   "페레로",
+}
+
+# 사이즈/수량 정규식 (단위 일관성)
+_SIZE_PATTERN = re.compile(
+    r'(\d+(?:\.\d+)?)\s*(kg|g|ml|l|개|장|매|봉|입|팩|세트|정|p)',
+    re.IGNORECASE
+)
+
+
+def _trigrams_clean(s: str) -> set:
+    """공백/특수문자 제거 후 trigram 집합"""
+    s = re.sub(r'[^\w가-힣]', '', s.lower())
+    return set(s[i:i+3] for i in range(len(s)-2)) if len(s) >= 3 else set()
+
+
+def _jaccard_score(a: str, b: str) -> float:
+    """trigram Jaccard 유사도 0~1 (양쪽 길이 차이 클 때 max-containment 보정)"""
+    ta, tb = _trigrams_clean(a), _trigrams_clean(b)
+    if not (ta | tb):
+        return 0.0
+    inter = len(ta & tb)
+    jaccard = inter / len(ta | tb)
+    # containment (한쪽이 다른 쪽에 얼마나 포함되는지)
+    cont_a = inter / len(ta) if ta else 0
+    cont_b = inter / len(tb) if tb else 0
+    # 비대칭 길이 차이가 클 때 max(jaccard, max_containment*0.7) 사용
+    return max(jaccard, max(cont_a, cont_b) * 0.7)
+
+
+# 비교에서 제외할 일반 단어 (의미 없는 흔한 단어)
+_STOP_WORDS = {
+    "코스트코", "코스트코핫딜", "행사", "특가", "할인", "선물용", "대용량",
+    "정품", "신상", "신상품", "한정", "베스트", "추천", "포함", "세트",
+    "총", "당일출고", "오늘출발", "무료배송", "정식", "매장", "네이버",
+    "총량", "낱개", "낱장", "묶음",
+}
+
+
+def _tokenize_keywords(s: str, min_len: int = 2) -> set:
+    """상품명에서 키워드(2자 이상 단어) 추출. 사이즈/일반어 제외."""
+    tokens = set()
+    for m in re.findall(r'[\w가-힣]+', s.lower()):
+        if len(m) < min_len:
+            continue
+        # 사이즈 패턴 제외 (예: "907g")
+        if _SIZE_PATTERN.fullmatch(m):
+            continue
+        # 숫자만으로 된 토큰 제외 (수량 등)
+        if m.isdigit():
+            continue
+        if m in _STOP_WORDS:
+            continue
+        tokens.add(m)
+    return tokens
+
+
+def _keyword_overlap_score(a: str, b: str) -> float:
+    """키워드(단어 토큰) 매칭 비율 — 짧은 쪽 기준 containment.
+    direct match: 정확히 같은 토큰 일치 (full credit)
+    partial match: 한쪽 토큰이 다른 쪽 텍스트에 substring으로 포함 (×0.5 보수 적용)
+    """
+    ta, tb = _tokenize_keywords(a), _tokenize_keywords(b)
+    if not ta or not tb:
+        return 0.0
+    overlap = ta & tb
+    direct_count = len(overlap)
+    # partial: direct에 없는 토큰들 중에서 substring으로 매칭되는 것
+    a_str = ''.join(ta)
+    b_str = ''.join(tb)
+    partial_a = sum(1 for t in (ta - overlap) if len(t) >= 3 and t in b_str)
+    partial_b = sum(1 for t in (tb - overlap) if len(t) >= 3 and t in a_str)
+    # partial은 보수적 가중치 ×0.5 (양방향 평균 후 절반만 인정)
+    partial_count = (partial_a + partial_b) / 2 * 0.5
+    total_overlap = direct_count + partial_count
+    return min(1.0, total_overlap / min(len(ta), len(tb)))
+
+
+def _extract_sizes(s: str) -> set:
+    """상품명에서 사이즈/수량 추출 → {(값, 단위), ...} 정규화"""
+    found = set()
+    for m in _SIZE_PATTERN.finditer(s.lower()):
+        value, unit = m.group(1), m.group(2).lower()
+        # 단위 정규화 (kg → g, l → ml)
+        try:
+            v = float(value)
+        except Exception:
+            continue
+        if unit == "kg":
+            v, unit = v * 1000, "g"
+        elif unit == "l":
+            v, unit = v * 1000, "ml"
+        found.add((v, unit))
+    return found
+
+
+def _size_match_score(a: str, b: str) -> float:
+    """사이즈 일치 점수
+       - 양쪽 모두 사이즈 있고 일치: 1.0
+       - 양쪽 모두 사이즈 있고 불일치: 0.0
+       - 한쪽만 사이즈 있음: 0.4
+       - 양쪽 모두 사이즈 없음: 0.5 (중립)
+    """
+    sa, sb = _extract_sizes(a), _extract_sizes(b)
+    if not sa and not sb:
+        return 0.5
+    if sa and sb:
+        return 1.0 if (sa & sb) else 0.0
+    return 0.4
+
+
+def _brand_match_score(a: str, b: str) -> float:
+    """브랜드/주요 키워드 일치 (영한 매핑 포함)
+       - 명확 일치: 1.0
+       - 일치 없음: 0.0
+    """
+    a_l, b_l = a.lower(), b.lower()
+    a_brands, b_brands = set(), set()
+    for en, kr in _BRAND_MAP.items():
+        en_l = en.lower()
+        if en_l in a_l or kr in a:
+            a_brands.add(en); a_brands.add(kr)
+        if en_l in b_l or kr in b:
+            b_brands.add(en); b_brands.add(kr)
+    return 1.0 if (a_brands & b_brands) else 0.0
+
+
+def _combined_match_score(a: str, b: str) -> dict:
+    """가중 합산 점수 (0~1) + 페널티/보너스
+       기본: 0.30×Jaccard + 0.25×키워드 + 0.25×사이즈 + 0.20×브랜드
+       페널티:
+         - 사이즈 양쪽 있는데 다름 → ×0.4
+         - 브랜드만 같고 이름 매칭 모두 낮음 → ×0.7
+       보너스:
+         - 사이즈+브랜드 둘 다 정확 → +0.05
+         - 키워드 ≥0.8 → +0.05
+    """
+    j = _jaccard_score(a, b)
+    kw = _keyword_overlap_score(a, b)
+    s = _size_match_score(a, b)
+    br = _brand_match_score(a, b)
+    total = 0.30 * j + 0.25 * kw + 0.25 * s + 0.20 * br
+
+    # 페널티: 사이즈 명백히 다름
+    sizes_a, sizes_b = _extract_sizes(a), _extract_sizes(b)
+    if sizes_a and sizes_b and not (sizes_a & sizes_b):
+        total *= 0.4
+
+    # 페널티: 브랜드만 같고 이름 신호 모두 약함 (false positive 방지)
+    if j < 0.20 and kw < 0.30 and br > 0:
+        total *= 0.7
+
+    # 보너스: 사이즈+브랜드 둘 다 정확
+    if s == 1.0 and br == 1.0:
+        total += 0.05
+    # 보너스: 키워드 매칭 매우 강함
+    if kw >= 0.8:
+        total += 0.05
+
+    total = max(0.0, min(1.0, total))
+    return {"total": total, "jaccard": j, "keyword": kw, "size": s, "brand": br}
+
+
+def match_receipt_to_naver_products(username, receipt_items, threshold=0.30):
+    """영수증 상품 ↔ 사용자 네이버 등록 제품 매칭.
+    이미 product_no가 DB에 저장된 영수증 항목은 매칭에서 제외 (중복 방지).
+    """
+    from db import get_user_db
+
+    conn = get_user_db(username)
+    # 매칭 후보 — product_no 비어있는 사용자 상품
+    candidates = conn.execute("""
+        SELECT id, match_keyword, costco_name, product_no, COALESCE(from_naver, 0) as from_naver
+        FROM products
+        WHERE product_no IS NULL OR product_no = ''
+    """).fetchall()
+    candidates = [dict(c) for c in candidates]
+
+    # 이미 DB에 저장된 product_no 집합 — 영수증 항목 중 이 번호와 같으면 매칭 제외
+    rows_existing = conn.execute(
+        "SELECT product_no FROM products WHERE product_no IS NOT NULL AND product_no != ''"
+    ).fetchall()
+    existing_pnos = {str(r['product_no']).strip() for r in rows_existing if r['product_no']}
+    conn.close()
+
+    # 후보의 특징을 미리 추출하여 속도 개선
+    for c in candidates:
+        user_name = c['match_keyword'] or c['costco_name'] or ''
+        c['features'] = ProductMatcher.extract_features(user_name)
+
+    matched = []
+    unmatched_receipt = []
+    skipped_already = []     # 이미 DB에 product_no가 있어서 제외된 영수증 항목
+    used_user_ids = set()
+
+    for r in receipt_items:
+        receipt_name = (r.get('상품명') or '').strip()
+        receipt_pno  = str(r.get('상품번호') or '').strip()
+        if not receipt_name or not receipt_pno:
+            continue
+
+        # 영수증 단가 = 매입가격 (제품 DB에 함께 반영)
+        try:
+            receipt_price = int(float(r.get('단가') or 0))
+        except Exception:
+            receipt_price = 0
+
+        # 이미 DB에 동일 product_no 있으면 매칭 시도 자체를 건너뜀
+        if receipt_pno in existing_pnos:
+            skipped_already.append(r)
+            continue
+
+        receipt_features = ProductMatcher.extract_features(receipt_name)
+        best, best_score_info = None, None
+        
+        for c in candidates:
+            if c['id'] in used_user_ids:
+                continue
+            
+            si = ProductMatcher.get_score_from_features(receipt_features, c['features'])
+            if best_score_info is None or si["total"] > best_score_info["total"]:
+                best, best_score_info = c, si
+
+        if best and best_score_info and best_score_info["total"] >= threshold:
+            sc = best_score_info["total"]
+            if sc >= 0.70:
+                tier = "확실"
+            elif sc >= 0.50:
+                tier = "유력"
+            else:
+                tier = "참고"
+            matched.append({
+                'user_id':       best['id'],
+                'user_kw':       best['match_keyword'],
+                'receipt_name':  receipt_name,
+                'costco_pno':    receipt_pno,
+                'unit_price':    receipt_price,
+                'score':         sc,
+                'jaccard':       best_score_info["jaccard"],
+                'keyword_score': best_score_info["keyword"],
+                'size_score':    best_score_info["size"],
+                'brand_score':   best_score_info["brand"],
+                'tier':          tier,
+            })
+            used_user_ids.add(best['id'])
+        else:
+            unmatched_receipt.append(r)
+
+    matched.sort(key=lambda x: -x['score'])
+    return {
+        'matched':           matched,
+        'unmatched_receipt': unmatched_receipt,
+        'skipped_already':   skipped_already,
+        'candidates_count':  len(candidates),
+    }
+
+
+def apply_receipt_pno_updates(username, matched_list):
+    """match_receipt_to_naver_products() 결과를 DB에 적용.
+    user products의 product_no(상품번호) + unit_price(매입가)를 영수증 값으로 업데이트.
+
+    안전장치: 영수증 단가가 기존 판매가의 5배를 초과하면 박스 단위 매입가로 판단하여
+    매입가 자동 적용을 거부 (product_no만 갱신). 사용자가 수동 정정 필요.
+
+    매입가가 갱신된 상품에 대해 저장된 daily_orders의 cost_price·profit도 자동 재계산.
+    """
+    from db import get_user_db, recalc_daily_orders_for_products
+    if not matched_list:
+        return 0
+    conn = get_user_db(username)
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    cnt = 0
+    price_updated_pnos = []
+    skipped_box_price = []  # 박스가격 의심으로 매입가 미적용된 상품
+    for m in matched_list:
+        _price   = int(m.get('unit_price') or 0)
+        _user_id = m['user_id']
+
+        # 안전장치: 기존 sale_price/unit_price 와 비교해 박스 단가 의심 시 매입가 적용 거부
+        _row = conn.execute(
+            "SELECT sale_price, unit_price FROM products WHERE id=?", (_user_id,)
+        ).fetchone()
+        _sale  = int((_row[0] if _row else 0) or 0)
+        _old_p = int((_row[1] if _row else 0) or 0)
+        _is_box_suspicion = False
+        if _price > 0:
+            # 판매가의 5배 초과: 거의 확실히 박스 단가
+            if _sale > 0 and _price > _sale * 5:
+                _is_box_suspicion = True
+            # 절대 임계 (200,000원 초과): sale_price 없을 때 폴백 검증
+            elif _sale == 0 and _price > 200000:
+                _is_box_suspicion = True
+
+        if _price > 0 and not _is_box_suspicion:
+            conn.execute(
+                "UPDATE products SET product_no=?, unit_price=?, updated_at=? WHERE id=?",
+                (m['costco_pno'], _price, now, _user_id)
+            )
+            price_updated_pnos.append(m['costco_pno'])
+        else:
+            conn.execute(
+                "UPDATE products SET product_no=?, updated_at=? WHERE id=?",
+                (m['costco_pno'], now, _user_id)
+            )
+            if _is_box_suspicion:
+                skipped_box_price.append({
+                    'user_id':      _user_id,
+                    'pno':          m['costco_pno'],
+                    'receipt_name': m.get('receipt_name', ''),
+                    'rejected_price': _price,
+                    'sale_price':   _sale,
+                    'kept_price':   _old_p,
+                })
+            else:
+                # 매입가 0이어도 product_no가 새로 등록됐으니 daily_orders 재계산 시도
+                price_updated_pnos.append(m['costco_pno'])
+        cnt += 1
+    conn.commit()
+    conn.close()
+
+    # 박스 단가 의심으로 거부된 항목은 모듈 변수에 저장 (UI에서 표시 가능)
+    global _last_skipped_box_prices
+    _last_skipped_box_prices = skipped_box_price
+
+    # 저장된 정산이력(daily_orders)에 매입가 변경 즉시 반영
+    try:
+        recalc_daily_orders_for_products(username, price_updated_pnos)
+    except Exception:
+        pass
+
+    return cnt
+
+
+_last_skipped_box_prices = []
+
+
+def get_last_skipped_box_prices():
+    """직전 apply_receipt_pno_updates에서 박스 단가 의심으로 거부된 항목 반환."""
+    return list(_last_skipped_box_prices)
+
+
+def apply_receipt_to_unmatched_daily_orders(username, unmatched_receipt_items, order_date):
+    """영수증 항목 중 naver products에 매칭 안된 항목을 해당 날짜 daily_orders와 교차매칭.
+    매칭 성공 시: products DB에 product_no + unit_price 등록, daily_orders.cost_price 갱신.
+
+    Returns: list of {receipt_name, order_name, product_no, unit_price, status}
+    """
+    from db import get_user_db, get_daily_orders
+    if not unmatched_receipt_items:
+        return []
+
+    daily_rows = get_daily_orders(username, order_date)
+    if not daily_rows:
+        return []
+
+    conn = get_user_db(username)
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    try:
+        s_row = conn.execute("SELECT value FROM settings WHERE key='shipping_cost'").fetchone()
+        b_row = conn.execute("SELECT value FROM settings WHERE key='box_cost'").fetchone()
+        shipping_cost = int(s_row[0]) if s_row and s_row[0] else 1800
+        box_cost      = int(b_row[0]) if b_row and b_row[0] else 300
+    except Exception:
+        shipping_cost, box_cost = 1800, 300
+
+    results = []
+    used_order_ids = set()
+
+    for receipt_item in unmatched_receipt_items:
+        receipt_name  = (receipt_item.get('상품명') or '').strip()
+        receipt_pno   = str(receipt_item.get('상품번호') or '').strip()
+        try:
+            receipt_price = int(float(receipt_item.get('단가') or 0))
+        except Exception:
+            receipt_price = 0
+        if not receipt_name or not receipt_pno or receipt_price <= 0:
+            continue
+
+        # daily_orders 중 이름 유사도 최고점 탐색 (cost_price=0인 미매칭 우선)
+        best_order, best_score = None, 0.0
+        for order_row in daily_rows:
+            if order_row['id'] in used_order_ids:
+                continue
+            score = calc_match_score(receipt_name, order_row.get('product_name', ''))
             if score > best_score:
-                best_score, best_idx = score, i
-        if best_idx is not None and best_score >= MIN_MATCH_SCORE:
-            matches[store_name] = receipt_items[best_idx]
+                best_score, best_order = score, order_row
+
+        if best_order is None or best_score < MIN_MATCH_SCORE:
+            results.append({'receipt_name': receipt_name, 'order_name': '', 'product_no': receipt_pno,
+                             'unit_price': receipt_price, 'status': '미매칭'})
+            continue
+
+        order_pno  = str(best_order.get('product_no') or '').strip()
+        order_name = best_order.get('product_name', '')
+
+        # 박스 단가 체크
+        existing = conn.execute(
+            "SELECT id, sale_price, unit_price FROM products WHERE product_no=?", (order_pno,)
+        ).fetchone() if order_pno else None
+        _sale = int((existing['sale_price'] if existing else 0) or 0)
+        is_box = (_sale > 0 and receipt_price > _sale * 5) or (_sale == 0 and receipt_price > 200000)
+
+        if is_box:
+            results.append({'receipt_name': receipt_name, 'order_name': order_name, 'product_no': order_pno,
+                             'unit_price': receipt_price, 'status': '박스단가의심(스킵)'})
+            continue
+
+        # products DB upsert
+        if existing:
+            conn.execute("UPDATE products SET unit_price=?, updated_at=? WHERE id=?",
+                         (receipt_price, now, existing['id']))
+        else:
+            conn.execute("""INSERT INTO products
+                (product_no, store_product_name, costco_name, match_keyword, unit_price, split_qty, shipping_fee, updated_at)
+                VALUES (?,?,?,?,?,1,0,?)""",
+                (order_pno or receipt_pno, receipt_name, receipt_name, receipt_name, receipt_price, now))
+
+        # daily_orders cost_price 재계산
+        settlement = int(best_order.get('settlement') or 0)
+        ship_fee   = int(best_order.get('shipping_fee') or 0)
+        profit     = (settlement + ship_fee) - (receipt_price + shipping_cost + box_cost)
+        conn.execute("UPDATE daily_orders SET cost_price=?, profit=?, matched=1 WHERE id=?",
+                     (receipt_price, profit, best_order['id']))
+        used_order_ids.add(best_order['id'])
+        results.append({'receipt_name': receipt_name, 'order_name': order_name,
+                         'product_no': order_pno or receipt_pno, 'unit_price': receipt_price, 'status': '등록완료'})
+
+    conn.commit()
+    conn.close()
+    return results
+
+
+def match_receipt_to_orders(receipt_items, order_product_names, pno_map=None):
+    """
+    receipt_items: 영수증 파싱 결과 (상품번호, 상품명, 단가 등)
+    order_product_names: 주문 상품명 리스트
+    pno_map: {product_no: [order_product_name, ...]} — 상품번호 우선 매칭용
+    매칭 순서: 1) 상품번호 직접 매칭  2) 상품명 특징(ProductMatcher) 매칭
+    """
+    from utils import ProductMatcher
+    matches = {}
+
+    # Stage 1: 상품번호 직접 매칭 (정확도 최우선)
+    if pno_map:
+        rcpt_by_pno = {str(ri.get('상품번호', '') or ''): ri
+                       for ri in receipt_items if ri.get('상품번호')}
+        for pno, order_names in pno_map.items():
+            rcpt_item = rcpt_by_pno.get(str(pno))
+            if rcpt_item:
+                for order_name in order_names:
+                    if order_name not in matches:
+                        matches[order_name] = rcpt_item
+
+    # Stage 2: 상품명 특징 매칭 (상품번호 미매칭 항목만)
+    remaining = [n for n in order_product_names if n not in matches]
+    if remaining:
+        # 영수증 항목의 특징을 미리 추출
+        rcpt_features = [ProductMatcher.extract_features(item.get('상품명', '')) for item in receipt_items]
+        
+        for store_name in remaining:
+            sf = ProductMatcher.extract_features(store_name)
+            if not sf: continue
+            
+            best_idx, best_score = None, 0.0
+            for i, rf in enumerate(rcpt_features):
+                if not rf: continue
+                si = ProductMatcher.get_score_from_features(sf, rf)
+                if si['total'] > best_score:
+                    best_score, best_idx = si['total'], i
+                    
+            if best_idx is not None and best_score >= 0.35: # 임계값 0.35
+                matches[store_name] = receipt_items[best_idx]
+
     return matches
 
 
@@ -312,6 +917,24 @@ def read_excel_auto(uploaded_file, password=""):
         if result is None:
             return None, f"비밀번호 해제 실패: {decrypt_error}"
         uploaded_file = result
+
+    # CSV 파일 처리 (CJ 파일접수 상세내역 등 EUC-KR CSV 지원)
+    fname = getattr(uploaded_file, 'name', '') or ''
+    if fname.lower().endswith('.csv'):
+        for enc in ['euc-kr', 'cp949', 'utf-8-sig', 'utf-8']:
+            try:
+                uploaded_file.seek(0)
+                df = pd.read_csv(uploaded_file, encoding=enc, dtype=str,
+                                 on_bad_lines='skip')
+                if len(df) > 0 and len(df.columns) > 1:
+                    df.columns = [str(c).strip() for c in df.columns]
+                    return df, None
+            except Exception:
+                pass
+        return None, "CSV 파일 읽기 실패 (EUC-KR/UTF-8 모두 실패)"
+
+    # Excel 파일 처리
+    last_error = ''
     for engine in ['openpyxl', 'xlrd']:
         for skip in [0, 1]:
             try:
@@ -334,4 +957,4 @@ def read_excel_auto(uploaded_file, password=""):
             pass
     if decrypt_error:
         return None, f"비밀번호 해제 실패: {decrypt_error}"
-    return None, f"파일 읽기 실패: {'last_error' in dir() and last_error or '알 수 없는 오류'}"
+    return None, f"파일 읽기 실패: {last_error or '알 수 없는 오류'}"
