@@ -901,7 +901,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
 
         _HDR_DATA_LABELS = ['상품번호', '상품명(네이버/코스트코)', '매장가🔒', '온라인가🔒', '소분🔒',
                             '판매가(네이버)✏️', '고객배송비✏️', '업데이트']
-        _HDR_DATA_WIDTHS = [80, 380, 95, 95, 60, 110, 100, 90]
+        _HDR_DATA_WIDTHS = [130, 330, 95, 95, 60, 110, 100, 90]
 
         for _ti, (_dtab, _tname) in enumerate(zip(_db_tabs, _tab_names)):
             with _dtab:
@@ -946,7 +946,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 _hdr_disp, _hdr_btn = st.columns([10, 2])
                 _hdr_labels = list(_HDR_DATA_LABELS)
                 if _is_filter_naver:
-                    _hdr_labels[0] = '네이버 상품번호'
+                    _hdr_labels[0] = '네이버번호 / 코스트코번호'
                     _hdr_labels[1] = '네이버 상품명'
                 _hdr_cells = ''.join(
                     f'<th style="width:{w}px;text-align:left;padding:5px 8px;font-size:13px;'
@@ -1119,9 +1119,14 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                             if _naver_name and _naver_name != p['costco_name']:
                                 _display_name = f"{_naver_name} <span style='color:#aaa;font-size:12px'>({p['costco_name']})</span>"
 
-                        # 상품번호: 네이버 등록 필터에서는 naver_product_no 표시
+                        # 상품번호: 네이버 등록 필터에서는 네이버번호 + 코스트코번호 함께 표시
                         if _is_filter_naver:
-                            _no_disp = p.get('naver_product_no') or '-'
+                            _naver_no  = p.get('naver_product_no') or '-'
+                            _costco_no = p.get('product_no', '') or '-'
+                            _no_disp   = (
+                                f"{_naver_no}"
+                                f"<br><span style='color:#aaa;font-size:11px'>{_costco_no}</span>"
+                            )
                         else:
                             _no_disp = p.get('product_no', '') or '-'
 
@@ -1130,7 +1135,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         _row_html = (
                             f'<table style="width:100%;border-collapse:collapse;table-layout:fixed">'
                             f'<tr>'
-                            f'<td style="{row_cell_style};width:80px;color:#888">{_no_disp}</td>'
+                            f'<td style="{row_cell_style};width:130px;color:#888">{_no_disp}</td>'
                             f'<td style="{row_cell_style};width:380px;color:{_name_color}">{_img_html}{_display_name}{_badge}</td>'
                             f'<td style="{row_cell_style};width:95px">{store_disp}</td>'
                             f'<td style="{row_cell_style};width:95px">{online_disp}</td>'
