@@ -218,9 +218,27 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
 
         import re as _re  # 루프 외부에서 1회만 import
         _match_memo = {}  # 같은 상품명 중복 매칭 방지 (메모이제이션)
-        costs, match_sources, matched_names, matched_pnos = [], [], [], []
 
-        for idx, r in df.iterrows():
+        # 매칭 결과 캐시 — 페이지 이동 시 108행 재계산 방지
+        # 무효화 조건: 날짜/df크기/영수증/오버라이드 변경
+        _mc_key = (
+            calc_date_str, len(df), len(receipt_items),
+            tuple(str(r.get('상품번호', '')) for r in receipt_items[:5]),
+            tuple(sorted(st.session_state.get('kw_overrides', {}).items())),
+        )
+        _mc_state = '_pcalc_match_cache'
+        _cached = st.session_state.get(_mc_state)
+        if _cached and _cached.get('key') == _mc_key:
+            costs = _cached['costs']
+            match_sources = _cached['sources']
+            matched_names = _cached['names']
+            matched_pnos = _cached['pnos']
+            _skip_match_loop = True
+        else:
+            costs, match_sources, matched_names, matched_pnos = [], [], [], []
+            _skip_match_loop = False
+
+        for idx, r in (iter([]) if _skip_match_loop else df.iterrows()):
             product, qty = r['상품명'], r['수량']
             saved_cost = int(r.get('구입가격', 0) or 0)
             _row_key = f"{r['수취인명']}_{r['상품명']}_{idx}_{calc_date_str}"
@@ -337,6 +355,13 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         df['매칭제품'] = matched_names
         df['매칭상품번호'] = matched_pnos
 
+        # 매칭 결과 캐시 저장 (페이지 이동 시 재계산 방지)
+        if not _skip_match_loop:
+            st.session_state[_mc_state] = {
+                'key': _mc_key, 'costs': costs, 'sources': match_sources,
+                'names': matched_names, 'pnos': matched_pnos,
+            }
+
         if 'cost_overrides' not in st.session_state:
             st.session_state['cost_overrides'] = {}
         if 'kw_overrides' not in st.session_state:
@@ -370,11 +395,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 if st.session_state['cost_overrides'][key] > 0:
                     df.loc[idx, '매칭출처'] = '수동입력'
 
-        # 수입 계산: 구입가 반영 후 계산 (위젯 변경 즉시 반영)
-        df['수입'] = df.apply(
-            lambda r: (r['정산예정금액'] + r['배송비 합계']) - (r['구입가격'] + shipping_cost + box_cost),
-            axis=1
-        )
+        # 수입 계산: 벡터화 (apply 대비 ~10배 빠름)
+        df['수입'] = (df['정산예정금액'] + df['배송비 합계']) - (df['구입가격'] + shipping_cost + box_cost)
 
         st.caption(f"📅 {calc_date_str}")
 
