@@ -872,6 +872,18 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 # 최종 표시명: 네이버명 > 주문상품명 > 매칭키워드
                 _disp_name = _nv_name or _disp_key
 
+                # 🐛 임시 디버그 — 매칭 실패 진단
+                if not _nv_pno:
+                    _exact = [p for p in (_preload_user or [])
+                             if p.get('match_keyword','').strip() == _disp_key.strip()
+                             or p.get('costco_name','').strip() == _disp_key.strip()]
+                    st.warning(
+                        f"🐛 디버그: _disp_key='{_disp_key[:60]}' (len={len(_disp_key)}) | "
+                        f"_match_kw='{_match_kw[:30]}' | _preload_user={len(_preload_user or [])}건 | "
+                        f"정확일치={len(_exact)}건"
+                        + (f" → first match: id={_exact[0].get('id')} naver_pno='{_exact[0].get('naver_origin_pno','')}'" if _exact else "")
+                    )
+
                 with st.expander(
                     f"🔴 {_disp_name[:50]}  |  수익 {fmt(_profit)}원 ({_qty}개)",
                     expanded=True
