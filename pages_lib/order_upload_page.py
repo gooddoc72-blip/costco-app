@@ -218,14 +218,22 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 except Exception:
                     pass
 
-            # ── 3. 자동 저장 (수익계산용) ──
+            # ── 3. 자동 저장 (수익계산용) — 통합 진입점 사용 ──
             if fetched_df is not None and not fetched_df.empty:
                 _s_cost = int(_gs('shipping_cost') or 1800)
                 _b_cost = int(_gs('box_cost') or 300)
                 try:
-                    save_daily_orders(USERNAME, datetime.today().strftime("%Y-%m-%d"), fetched_df, _s_cost, _b_cost)
+                    from services import process_and_save_orders
+                    _r = process_and_save_orders(
+                        USERNAME, fetched_df,
+                        datetime.today().strftime("%Y-%m-%d"),
+                        _s_cost, _b_cost,
+                        save_history=False,  # 위에서 이미 save_order_history 호출됨
+                    )
                     st.session_state['orders_unsaved'] = False
-                    st.toast(f"✅ {api_count}건 주문 자동 저장 완료", icon="💾")
+                    st.toast(f"✅ {_r['orders']}건 주문 자동 저장 완료", icon="💾")
+                    if _r.get('error_orders'):
+                        st.error(f"주문 저장 일부 실패: {_r['error_orders']}")
                 except Exception as _se:
                     st.error(f"자동 저장 실패: {_se}")
 
@@ -279,15 +287,17 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         cq_df[_c] = pd.to_numeric(cq_df[_c], errors='coerce').fillna(0).astype(int)
                 cq_df = cq_df.sort_values('상품명').reset_index(drop=True)
 
-                # 구입가격 매칭 (DB 1회 로드)
-                _cq_shared = get_shared_products()
-                _cq_user   = get_all_products(USERNAME)
-                cq_costs = []
-                for _, _r in cq_df.iterrows():
-                    _p = match_product_to_db(USERNAME, _r['상품명'],
-                                             _user_prods=_cq_user, _shared_prods=_cq_shared)
-                    cq_costs.append(_p['unit_price'] * _r['수량'] if _p else 0)
-                cq_df['구입가격'] = cq_costs
+                # 통합 진입점으로 매입가 계산 + 저장 (split_qty 적용)
+                from services import process_and_save_orders
+                _s_cost = int(_gs('shipping_cost') or 1800)
+                _b_cost = int(_gs('box_cost') or 300)
+                _cq_result = process_and_save_orders(
+                    USERNAME, cq_df,
+                    datetime.today().strftime("%Y-%m-%d"),
+                    _s_cost, _b_cost,
+                    save_history=True,
+                )
+                cq_df = _cq_result['df']  # 구입가격 채워진 df
 
                 # 송장용 전체 저장 + Excel bytes 미리 생성
                 st.session_state['order_full'] = cq_df.copy()
@@ -297,14 +307,12 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 st.session_state['order_excel_bytes'] = _cq_xl.getvalue()
                 st.session_state['orders'] = cq_df
                 st.session_state['order_date'] = datetime.today().strftime("%Y-%m-%d")
-                st.session_state['orders_unsaved'] = True
+                st.session_state['orders_unsaved'] = False
 
-                hist_saved = save_order_history(USERNAME, cq_df, cost_df=cq_df)
-                fee_upd, sale_upd = update_product_info_from_orders(USERNAME, cq_df)
                 _notes = []
-                if hist_saved: _notes.append(f"이력 {hist_saved}건 저장")
-                if fee_upd:    _notes.append(f"배송비 {fee_upd}건 업데이트")
-                if sale_upd:   _notes.append(f"판매가 {sale_upd}건 업데이트")
+                if _cq_result['history']:    _notes.append(f"이력 {_cq_result['history']}건 저장")
+                if _cq_result['fee_updates']: _notes.append(f"배송비 {_cq_result['fee_updates']}건 업데이트")
+                if _cq_result['sale_updates']: _notes.append(f"판매가 {_cq_result['sale_updates']}건 업데이트")
                 if _notes:
                     st.caption(f"💡 제품 DB: {' / '.join(_notes)}")
 
@@ -352,44 +360,32 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 for c in ['수량','최종 상품별 총 주문금액','배송비 합계','제주/도서 추가배송비','정산예정금액']:
                     df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0).astype(int)
                 df = df.sort_values('상품명').reset_index(drop=True)
-                _xl_shared = get_shared_products()
-                _xl_user   = get_all_products(USERNAME)
-                costs = []
-                for _, r in df.iterrows():
-                    p_no = str(r.get('상품번호', '')).strip() if '상품번호' in df.columns and r.get('상품번호') else ''
-                    p = match_product_to_db(USERNAME, r['상품명'], product_no=p_no,
-                                            _user_prods=_xl_user, _shared_prods=_xl_shared)
-                    if p:
-                        _sq = max(1, int(p.get('split_qty', 1) or 1))
-                        costs.append((p['unit_price'] // _sq) * int(r['수량']))
-                    else:
-                        costs.append(0)
-                df['구입가격'] = costs
+
+                # 통합 진입점 — 매칭 + 매입가 계산 + 저장 일관 처리
+                from services import process_and_save_orders
+                _s_cost = int(_gs('shipping_cost') or 1800)
+                _b_cost = int(_gs('box_cost') or 300)
+                _xl_result = process_and_save_orders(
+                    USERNAME, df,
+                    order_date.strftime("%Y-%m-%d"),
+                    _s_cost, _b_cost,
+                    save_history=True,
+                )
+                df = _xl_result['df']  # 구입가격 채워진 df
 
                 st.session_state['orders'] = df
                 st.session_state['order_date'] = order_date.strftime("%Y-%m-%d")
+                st.session_state['orders_unsaved'] = False
 
-                st.session_state['orders_unsaved'] = True
-                
-                # ── 자동 저장 (수익계산용) ──
-                _s_cost = int(_gs('shipping_cost') or 1800)
-                _b_cost = int(_gs('box_cost') or 300)
-                try:
-                    save_daily_orders(USERNAME, st.session_state['order_date'], df, _s_cost, _b_cost)
-                    st.session_state['orders_unsaved'] = False
-                    st.toast(f"✅ {len(df)}건 주문 자동 저장 완료", icon="💾")
-                except Exception as _se:
-                    st.error(f"자동 저장 실패: {_se}")
+                if _xl_result.get('error_orders'):
+                    st.error(f"주문 저장 실패: {_xl_result['error_orders']}")
+                else:
+                    st.toast(f"✅ {_xl_result['orders']}건 주문 자동 저장 완료", icon="💾")
 
-                # 주문 이력 누적 저장 (order_full 우선, 없으면 df 사용)
-                full_src = st.session_state.get('order_full')
-                src = full_src if full_src is not None else df
-                hist_saved = save_order_history(USERNAME, src, cost_df=df)
-                fee_upd, sale_upd = update_product_info_from_orders(USERNAME, src)
                 notes = []
-                if hist_saved: notes.append(f"이력 {hist_saved}건 저장")
-                if fee_upd:    notes.append(f"배송비 {fee_upd}건 업데이트")
-                if sale_upd:   notes.append(f"판매가 {sale_upd}건 업데이트")
+                if _xl_result['history']:    notes.append(f"이력 {_xl_result['history']}건 저장")
+                if _xl_result['fee_updates']: notes.append(f"배송비 {_xl_result['fee_updates']}건 업데이트")
+                if _xl_result['sale_updates']: notes.append(f"판매가 {_xl_result['sale_updates']}건 업데이트")
                 if notes:
                     st.caption(f"💡 제품 DB: {' / '.join(notes)}")
 
@@ -405,11 +401,18 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             _s_cost = int(_gs('shipping_cost') or 1800)
             _b_cost = int(_gs('box_cost') or 300)
             try:
-                save_daily_orders(USERNAME, order_date_str, df, _s_cost, _b_cost)
-                update_product_info_from_orders(USERNAME, df)
-                st.session_state['orders_unsaved'] = False
-                st.success(f"✅ {order_date_str} 주문 {len(df)}건 저장됨")
-                st.rerun()
+                from services import process_and_save_orders
+                _r = process_and_save_orders(
+                    USERNAME, df, order_date_str, _s_cost, _b_cost,
+                    save_history=True,
+                )
+                if _r.get('error_orders'):
+                    st.error(f"저장 실패: {_r['error_orders']}")
+                else:
+                    st.session_state['orders'] = _r['df']
+                    st.session_state['orders_unsaved'] = False
+                    st.success(f"✅ {order_date_str} 주문 {_r['orders']}건 저장됨")
+                    st.rerun()
             except Exception as _e:
                 st.error(f"저장 실패: {_e}")
         if _sc2.button("🗑 목록 지우기", key="cancel_orders_btn"):

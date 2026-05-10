@@ -77,71 +77,22 @@ def get_all_products(username):
 
 
 def save_daily_orders(username, orders, settings):
-    """조회된 주문을 daily_orders 테이블에 저장.
-    각 주문의 '결제일' 컬럼에서 실제 결제일자를 추출하여 분산 저장 (옛 버그 수정).
-    영향받는 모든 날짜에 대해 DELETE 후 INSERT.
+    """조회된 주문을 daily_orders + order_history에 저장.
+    services.process_and_save_orders 통합 진입점 사용 — 매입가 계산/매칭 일관성 보장.
     """
+    import pandas as _pd
     today = datetime.now().strftime("%Y-%m-%d")
-    now = datetime.now().strftime("%Y-%m-%d %H:%M")
     shipping_cost = int(settings.get("shipping_cost") or 1800)
     box_cost = int(settings.get("box_cost") or 300)
-    products = get_all_products(username)
 
-    def find_matched_product(order):
-        """상품번호 우선 → 이름 매칭 순으로 DB 제품을 찾아 반환."""
-        pno = str(order.get("상품번호", "")) or None
-        name = order.get("상품명", "")
-        return match_product_to_db(username, name, product_no=pno, _user_prods=products)
+    if not orders:
+        return
 
-    def row_order_date(o):
-        """주문 dict에서 결제일 → YYYY-MM-DD 추출. 없으면 today 폴백."""
-        for key in ("결제일", "주문일시", "주문일"):
-            v = o.get(key)
-            if v is None:
-                continue
-            s = str(v).strip()
-            if not s:
-                continue
-            if "T" in s:
-                s = s.split("T", 1)[0]
-            elif " " in s:
-                s = s.split(" ", 1)[0]
-            if len(s) >= 10 and s[4] == '-' and s[7] == '-':
-                return s[:10]
-        return today
-
-    conn = get_user_db(username)
-
-    # 영향받는 모든 날짜를 모아서 DELETE
-    affected_dates = {row_order_date(o) for o in orders}
-    if not affected_dates:
-        affected_dates = {today}
-    for d in affected_dates:
-        conn.execute("DELETE FROM daily_orders WHERE order_date=?", (d,))
-
-    for o in orders:
-        d = row_order_date(o)
-        qty = int(o.get("수량", 1))
-        matched_p = find_matched_product(o)
-        cost = calc_cost(matched_p, qty) if matched_p else 0
-        settlement = int(o.get("정산예정금액") or 0)
-        ship_fee = int(o.get("배송비 합계") or 0)
-        profit = (settlement + ship_fee) - (cost + shipping_cost + box_cost)
-        conn.execute(
-            """INSERT INTO daily_orders
-               (order_date, recipient, product_name, product_no, option_info, qty,
-                order_amount, shipping_fee, extra_shipping, settlement,
-                cost_price, delivery_cost, box_cost, profit, matched, created_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (d, o.get("수취인명", ""), o.get("상품명", ""),
-             str(o.get("상품번호", "")), o.get("옵션정보", ""), qty,
-             int(o.get("최종 상품별 총 주문금액") or 0), ship_fee,
-             int(o.get("제주/도서 추가배송비") or 0), settlement,
-             cost, shipping_cost, box_cost, profit,
-             1 if cost > 0 else 0, now)
-        )
-    conn.commit()
-    conn.close()
+    df = _pd.DataFrame(orders)
+    from services import process_and_save_orders
+    process_and_save_orders(
+        username, df, today, shipping_cost, box_cost, save_history=True,
+    )
 
 
 def send_notification(settings, msg, username=None):

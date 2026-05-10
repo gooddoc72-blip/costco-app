@@ -12,6 +12,8 @@ from utils import calc_match_score, MIN_MATCH_SCORE, extract_pack_qty, get_ngram
 from db import (
     get_shared_products, get_all_products, get_all_products_merged,
     upsert_user_private,
+    save_daily_orders as _db_save_daily_orders,
+    save_order_history as _db_save_order_history,
 )
 
 
@@ -24,6 +26,91 @@ def calc_cost(product: dict, qty: int, pack_qty: int = 1) -> int:
     unit_price = int(product.get('unit_price', 0) or 0)
     split_qty = max(1, int(product.get('split_qty', 1) or 1))
     return (unit_price // split_qty) * qty * pack_qty
+
+
+def compute_costs_for_df(username, df, _user_prods=None, _shared_prods=None):
+    """주문 DataFrame에 '구입가격' 컬럼을 일관된 공식으로 채워서 반환.
+    이미 '구입가격' 컬럼이 있으면 0인 행만 채움 (수동 수정 보존).
+    네이버/쿠팡/엑셀 모든 경로에서 동일한 매칭+계산 로직을 사용하도록 단일화.
+    """
+    if df is None or df.empty:
+        return df
+    user_prods = _user_prods if _user_prods is not None else get_all_products(username)
+    shared_prods = _shared_prods if _shared_prods is not None else get_shared_products()
+
+    has_cost = '구입가격' in df.columns
+    has_pno = '상품번호' in df.columns
+    costs = []
+    for _, r in df.iterrows():
+        if has_cost:
+            existing = r.get('구입가격')
+            try:
+                existing_int = int(existing or 0)
+            except (TypeError, ValueError):
+                existing_int = 0
+            if existing_int > 0:
+                costs.append(existing_int)
+                continue
+        name = str(r.get('상품명', '') or '')
+        pno = str(r.get('상품번호', '') or '').strip() if has_pno else ''
+        qty = 1
+        try:
+            qty = max(1, int(r.get('수량', 1) or 1))
+        except (TypeError, ValueError):
+            pass
+        p = match_product_to_db(username, name, product_no=pno or None,
+                                _user_prods=user_prods, _shared_prods=shared_prods)
+        costs.append(calc_cost(p, qty) if p else 0)
+    df = df.copy()
+    df['구입가격'] = costs
+    return df
+
+
+def process_and_save_orders(username, df, order_date, shipping_cost, box_cost,
+                             save_history=True):
+    """주문 DataFrame 통합 저장 — 모든 경로(네이버/쿠팡/엑셀/auto_task)의 단일 진입점.
+    1) 매입가 일관 계산 (calc_cost: split_qty 적용)
+    2) save_daily_orders (수익 계산용)
+    3) save_order_history (송장 추적용, save_history=True일 때)
+    4) update_product_info_from_orders (배송비/판매가 자동 갱신)
+
+    반환: dict { 'orders': 저장된 행 수, 'history': 이력 저장 수,
+                'fee_updates': 배송비 업데이트, 'sale_updates': 판매가 업데이트,
+                'df': 구입가격 채워진 DataFrame }
+    """
+    result = {'orders': 0, 'history': 0, 'fee_updates': 0, 'sale_updates': 0, 'df': df}
+    if df is None or df.empty:
+        return result
+
+    # 1) 매입가 계산
+    df_with_costs = compute_costs_for_df(username, df)
+    result['df'] = df_with_costs
+
+    # 2) daily_orders 저장
+    try:
+        _db_save_daily_orders(username, order_date, df_with_costs,
+                              int(shipping_cost), int(box_cost))
+        result['orders'] = len(df_with_costs)
+    except Exception as e:
+        result['error_orders'] = str(e)
+
+    # 3) order_history 저장
+    if save_history:
+        try:
+            saved = _db_save_order_history(username, df_with_costs, cost_df=df_with_costs)
+            result['history'] = saved or 0
+        except Exception as e:
+            result['error_history'] = str(e)
+
+    # 4) 제품 DB 자동 업데이트 (배송비, 판매가)
+    try:
+        fee_cnt, sale_cnt = update_product_info_from_orders(username, df_with_costs)
+        result['fee_updates'] = fee_cnt
+        result['sale_updates'] = sale_cnt
+    except Exception as e:
+        result['error_product_update'] = str(e)
+
+    return result
 
 
 # ── 상품 매칭 ─────────────────────────────────────────────

@@ -105,6 +105,10 @@ def recalc_daily_orders_for_products(username, product_nos):
         if unit_price <= 0:
             continue
 
+        # services.calc_cost와 동일 공식 사용 (지연 import: 순환 참조 회피)
+        from services import calc_cost as _calc_cost
+        _product = {'unit_price': unit_price, 'split_qty': split_qty}
+
         do_rows = conn.execute(
             "SELECT id, qty, settlement, shipping_fee, delivery_cost, box_cost "
             "FROM daily_orders WHERE product_no=?",
@@ -116,7 +120,7 @@ def recalc_daily_orders_for_products(username, product_nos):
             ship_fee   = int(r[3] or 0)
             d_cost     = int(r[4] or shipping_cost)
             b_cost     = int(r[5] or box_cost)
-            new_cost   = (unit_price // split_qty) * qty
+            new_cost   = _calc_cost(_product, qty)
             new_profit = (settlement + ship_fee) - (new_cost + d_cost + b_cost)
             conn.execute(
                 "UPDATE daily_orders SET cost_price=?, profit=?, matched=1, created_at=? WHERE id=?",
