@@ -169,13 +169,20 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                      placeholder="예: 코스트코핫딜", key="rk_store")
             if st.button("추적 추가", type="primary", key="rk_add",
                          disabled=(sel_p is None or not search_kw.strip())):
-                naver_pno = sel_p.get('naver_product_no') or ''  # 코스트코 product_no는 Naver ID가 아님
-                add_keyword_tracking(
-                    USERNAME, sel_p['match_keyword'], search_kw.strip(),
-                    naver_product_no=str(naver_pno), store_name=store_nm.strip()
-                )
-                st.success(f"✅ 추적 추가: {sel_p['costco_name']} / '{search_kw}'")
-                st.rerun()
+                # 중복 검사: 같은 (search_keyword + product_keyword) 추적이 이미 있으면 차단
+                _dup = next((t for t in trackings
+                             if t.get('search_keyword', '') == search_kw.strip()
+                             and t.get('product_keyword', '') == sel_p['match_keyword']), None)
+                if _dup:
+                    st.warning(f"⚠️ 이미 등록됨: '{search_kw}' / {sel_p['costco_name']} (id={_dup.get('id')})")
+                else:
+                    naver_pno = sel_p.get('naver_product_no') or ''
+                    add_keyword_tracking(
+                        USERNAME, sel_p['match_keyword'], search_kw.strip(),
+                        naver_product_no=str(naver_pno), store_name=store_nm.strip()
+                    )
+                    st.success(f"✅ 추적 추가: {sel_p['costco_name']} / '{search_kw}'")
+                    st.rerun()
 
     if not trackings:
         st.info("추적 중인 키워드가 없습니다. 위에서 추가하세요.")

@@ -771,11 +771,20 @@ def check_keyword_rank(open_client_id, open_client_secret, keyword,
             rank_solo = it["pos"]
 
     # 우선순위 1: 정확한 상품번호 일치 (가장 신뢰도 높음)
+    _pno_found = False
     if naver_product_no:
         for it in collected:
             if it["mall_pid"] == str(naver_product_no):
                 _record_match(it, f"PNO_EXACT(mallPid={it['mall_pid']})")
+                _pno_found = True
                 break  # 첫 정확 일치만
+
+    # PNO 등록된 추적은 PNO_EXACT 실패 시 fallback 안 함 (오매칭 방지)
+    # → top 1000에 없으면 None 반환. 비슷한 다른 상품 순위 잘못 보고하지 않음
+    if naver_product_no and not _pno_found:
+        if debug_lines:
+            _last_match_info[0] = " || ".join(debug_lines)
+        return rank_wonbu, rank_compare, rank_solo, None
 
     def _get_sim(t1, t2):
         if ProductMatcher:
