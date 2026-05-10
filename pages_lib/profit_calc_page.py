@@ -139,6 +139,10 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 del st.session_state[_k]
             except KeyError:
                 pass
+        # 매칭 캐시도 삭제 → 자동 재매칭 강제
+        for _k in ('_pcalc_match_cache', '_pcalc_match_cache_key',
+                   '_receipt_match_cache', '_receipt_match_cache_key'):
+            st.session_state.pop(_k, None)
         # 3) 데이터 캐시 무효화 (DB 직접 수정사항 반영)
         try:
             if invalidate_data_cache:
