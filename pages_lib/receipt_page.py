@@ -166,13 +166,21 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict, embedded: bool = False
                 st.caption(f"📅 영수증 날짜: {', '.join(_dates)}")
 
             # 영수증 → 네이버 등록상품 자동 매칭 (확실/유력 자동 저장)
-            # UI 섹션은 제거됨. 주문 교차매칭에서 _match_result 사용.
-            _match_result = match_receipt_to_naver_products(USERNAME, deduped, threshold=0.30)
-            _auto_certain = [m for m in _match_result['matched'] if m['tier'] in ('확실', '유력')]
-            if _auto_certain:
-                apply_receipt_pno_updates(USERNAME, _auto_certain)
-                invalidate_data_cache()
+            # 매칭 결과 session_state 캐시 — receipt_items 변동 시에만 재계산 (화면 속도 개선)
+            _rcm_key = hash(tuple((it.get('상품번호','') or '', str(it.get('단가',0)))
+                                  for it in deduped))
+            _rcm_state = '_receipt_match_cache'
+            if st.session_state.get(_rcm_state + '_key') == _rcm_key:
+                _match_result = st.session_state[_rcm_state]
+            else:
                 _match_result = match_receipt_to_naver_products(USERNAME, deduped, threshold=0.30)
+                _auto_certain = [m for m in _match_result['matched'] if m['tier'] in ('확실', '유력')]
+                if _auto_certain:
+                    apply_receipt_pno_updates(USERNAME, _auto_certain)
+                    invalidate_data_cache()
+                    _match_result = match_receipt_to_naver_products(USERNAME, deduped, threshold=0.30)
+                st.session_state[_rcm_state] = _match_result
+                st.session_state[_rcm_state + '_key'] = _rcm_key
 
             # ── 미매칭 영수증 → 주문 교차매칭 (수익계산 탭에서 embedded 시에만) ──
             _unmatched_after = _match_result.get('unmatched_receipt', []) or []
