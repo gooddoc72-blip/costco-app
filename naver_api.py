@@ -754,7 +754,8 @@ def check_keyword_rank(open_client_id, open_client_secret, keyword,
         return None, None, None, None
 
     # ── 2단계: 우선순위 매칭 ──
-    # 우선순위: 1) PNO_EXACT  2) STORE+NAME  3) NAME_ONLY
+    # 우선순위: 1) STORE+NAME  2) NAME_ONLY
+    # (PNO_EXACT 제거: 네이버 Open API의 mallProductId가 빈 문자열로 옴 → 매칭 불가능)
     rank_wonbu = rank_compare = rank_solo = None
     debug_lines = []
 
@@ -770,39 +771,22 @@ def check_keyword_rank(open_client_id, open_client_secret, keyword,
         elif it["cls"] == "단독" and rank_solo is None:
             rank_solo = it["pos"]
 
-    # 우선순위 1: 정확한 상품번호 일치 (가장 신뢰도 높음)
-    _pno_found = False
-    if naver_product_no:
-        for it in collected:
-            if it["mall_pid"] == str(naver_product_no):
-                _record_match(it, f"PNO_EXACT(mallPid={it['mall_pid']})")
-                _pno_found = True
-                break  # 첫 정확 일치만
-
-    # PNO 등록된 추적은 PNO_EXACT 실패 시 fallback 안 함 (오매칭 방지)
-    # → top 1000에 없으면 None 반환. 비슷한 다른 상품 순위 잘못 보고하지 않음
-    if naver_product_no and not _pno_found:
-        if debug_lines:
-            _last_match_info[0] = " || ".join(debug_lines)
-        return rank_wonbu, rank_compare, rank_solo, None
-
     def _get_sim(t1, t2):
         if ProductMatcher:
             return ProductMatcher.get_score(t1, t2)["total"]
         _a, _b = _clean_trigrams(t1), _clean_trigrams(t2)
         return len(_a & _b) / len(_a | _b) if (_a | _b) else 0.0
 
-    # 우선순위 2: 스토어명 일치 + 이름 유사도 (없으면)
-    if store_name and (rank_wonbu is None and rank_compare is None and rank_solo is None):
+    # 우선순위 1: 스토어명 + 이름 유사도 (가장 신뢰도 높음)
+    if store_name:
         for it in collected:
             if store_name in it["mall"] and our_product_name:
                 sim = _get_sim(it["title"], our_product_name)
-                # 동일 스토어 내 다른 상품 방지를 위해 유사도 조건 0.40으로 상향
                 if sim >= 0.40:
                     _record_match(it, f"STORE+NAME(sim={sim:.2f}, mall={it['mall']})")
                     break
 
-    # 우선순위 3: 스토어명 불일치 (원부/카탈로그) 방어용 이름 유사도 매칭
+    # 우선순위 2: 이름 유사도 (스토어명 없거나 미매칭일 때 fallback)
     if our_product_name and rank_wonbu is None and rank_compare is None and rank_solo is None:
         best_it, best_sim = None, 0.0
         for it in collected:
