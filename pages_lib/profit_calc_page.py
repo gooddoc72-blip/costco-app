@@ -841,48 +841,27 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     _cur_sale + 100
                 )
 
-                # naver_origin_pno 조회: 매칭키워드 일치 → 주문상품명 == match_keyword 또는 costco_name
-                _up_rec = next((p for p in _preload_user if _match_kw and p.get('match_keyword') == _match_kw), None)
-                if not _up_rec and _match_kw:
-                    _up_rec = next((p for p in _preload_user
-                                   if p.get('costco_name', '').strip() == _match_kw.strip()), None)
+                # naver_origin_pno 조회: naver_origin_pno 있는 매칭을 우선 선택
+                # 후보: _disp_key 또는 _match_kw 가 user product의 match_keyword/costco_name과 일치
+                def _is_match(p):
+                    _mk = (p.get('match_keyword','') or '').strip()
+                    _cn = (p.get('costco_name','') or '').strip()
+                    if _disp_key and (_mk == _disp_key.strip() or _cn == _disp_key.strip()):
+                        return True
+                    if _match_kw and (_mk == _match_kw or _cn == _match_kw.strip()):
+                        return True
+                    return False
+                # 1순위: 매칭 + naver_origin_pno 있음
+                _up_rec = next((p for p in _preload_user if _is_match(p) and p.get('naver_origin_pno')), None)
+                # 2순위: 매칭 (PNO 없어도)
                 if not _up_rec:
-                    _up_rec = next((p for p in _preload_user
-                                   if p.get('match_keyword', '').strip() == _disp_key.strip()
-                                   or p.get('costco_name', '').strip() == _disp_key.strip()), None)
+                    _up_rec = next((p for p in _preload_user if _is_match(p)), None)
                 _nv_pno = (_up_rec or {}).get('naver_origin_pno', '') or ''
-                # fallback: 같은 코스트코 product_no를 가진 다른 user products 행에서 검색
-                if not _nv_pno:
-                    _search_pnos = []
-                    if _up_rec:
-                        _search_pnos.append(str(_up_rec.get('product_no', '') or '').strip())
-                    _search_pnos.append(str(_row.get('product_no') or '').strip())
-                    for _pno in _search_pnos:
-                        if not _pno:
-                            continue
-                        _alt = next((p.get('naver_origin_pno') for p in _preload_user
-                                    if str(p.get('product_no', '') or '').strip() == _pno
-                                    and p.get('naver_origin_pno')), None)
-                        if _alt:
-                            _nv_pno = _alt
-                            break
                 # 네이버 상품명: from_naver=1이면 costco_name이 네이버 상품명
                 _is_naver = int((_up_rec or {}).get('from_naver') or 0) == 1
                 _nv_name  = (_up_rec.get('costco_name', '') if _up_rec and _is_naver else '') or ''
                 # 최종 표시명: 네이버명 > 주문상품명 > 매칭키워드
                 _disp_name = _nv_name or _disp_key
-
-                # 🐛 임시 디버그 — 매칭 실패 진단
-                if not _nv_pno:
-                    _exact = [p for p in (_preload_user or [])
-                             if p.get('match_keyword','').strip() == _disp_key.strip()
-                             or p.get('costco_name','').strip() == _disp_key.strip()]
-                    st.warning(
-                        f"🐛 디버그: _disp_key='{_disp_key[:60]}' (len={len(_disp_key)}) | "
-                        f"_match_kw='{_match_kw[:30]}' | _preload_user={len(_preload_user or [])}건 | "
-                        f"정확일치={len(_exact)}건"
-                        + (f" → first match: id={_exact[0].get('id')} naver_pno='{_exact[0].get('naver_origin_pno','')}'" if _exact else "")
-                    )
 
                 with st.expander(
                     f"🔴 {_disp_name[:50]}  |  수익 {fmt(_profit)}원 ({_qty}개)",
