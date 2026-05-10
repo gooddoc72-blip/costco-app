@@ -379,17 +379,17 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             if _bk_early is not None:
                 st.session_state[f'k_{_bidx}'] = _bk_early
 
-        for idx in df.index:
-            key = f"{df.loc[idx,'수취인명']}_{df.loc[idx,'상품명']}_{idx}_{calc_date_str}"
+        # df.loc[idx,'수취인명'] 반복 lookup → numpy array로 1회 추출 (~10x 빠름)
+        _recipients = df['수취인명'].values
+        _products = df['상품명'].values
+        for i, idx in enumerate(df.index):
+            key = f"{_recipients[i]}_{_products[i]}_{idx}_{calc_date_str}"
             _widget_val = st.session_state.get(f"c_{idx}")
             _auto_cost = _auto_costs[idx]
-            
-            # 위젯 값이 자동 계산값과 다를 때만 override로 인정
             if _widget_val is not None and int(_widget_val) != _auto_cost:
                 st.session_state['cost_overrides'][key] = int(_widget_val)
             elif _widget_val is not None and int(_widget_val) == _auto_cost:
                 st.session_state['cost_overrides'].pop(key, None)
-            
             if key in st.session_state['cost_overrides']:
                 df.loc[idx, '구입가격'] = st.session_state['cost_overrides'][key]
                 if st.session_state['cost_overrides'][key] > 0:
@@ -400,14 +400,16 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
 
         st.caption(f"📅 {calc_date_str}")
 
+        # value_counts() 1회 호출로 5개 카운트 추출 (이전: df 5번 스캔 → ~5x 빠름)
+        _src_counts = df['매칭출처'].value_counts().to_dict()
         c1, c2, c3, c4, c5 = st.columns(5)
-        c1.metric("🟢 영수증",     f"{len(df[df['매칭출처']=='영수증'])}건")
-        c2.metric("🔵 DB-번호",    f"{len(df[df['매칭출처']=='DB-번호'])}건",
+        c1.metric("🟢 영수증",     f"{_src_counts.get('영수증', 0)}건")
+        c2.metric("🔵 DB-번호",    f"{_src_counts.get('DB-번호', 0)}건",
                   help="상품번호 정확 매칭 (확실)")
-        c3.metric("🟠 DB-키워드",  f"{len(df[df['매칭출처']=='DB-키워드'])}건",
+        c3.metric("🟠 DB-키워드",  f"{_src_counts.get('DB-키워드', 0)}건",
                   help="키워드 유사도 매칭 — 확인 필요!")
-        c4.metric("✏️ 수동",       f"{len(df[df['매칭출처']=='수동입력'])}건")
-        c5.metric("🟡 미매칭",     f"{len(df[df['매칭출처']=='미매칭'])}건")
+        c4.metric("✏️ 수동",       f"{_src_counts.get('수동입력', 0)}건")
+        c5.metric("🟡 미매칭",     f"{_src_counts.get('미매칭', 0)}건")
 
         # ⚠️ 키워드 매칭 경고
         _kw_match_n = len(df[df['매칭출처']=='DB-키워드'])
@@ -420,21 +422,9 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         st.subheader("📊 일별 정산표")
         st.caption("🟢 영수증 | 🔵 DB-번호 (확실) | 🟠 DB-키워드 (확인 필요) | ⬜ 수동 | 🟡 미매칭")
 
-        # ── session_state는 rerun 시작 전에 이미 최신값 → 렌더 전에 체크 상태 확정 가능 ──
+        # 전체 선택 — 체크박스 대신 버튼 사용 (Streamlit 위젯 sync 이슈 회피)
         _checked_rows = [_i for _i in df.index if st.session_state.get(f"sel_p_{_i}", False)]
-
-        # 전체 선택 헤더 체크박스: 변경 감지 후 즉시 rerun으로 반응성 확보
-        _hdr_sel_key  = f'_hdr_sel_{calc_date_str}'
-        _hdr_prev_key = f'_hdr_sel_prev_{calc_date_str}'
-        _prev_hdr = st.session_state.get(_hdr_prev_key)
-        _cur_hdr  = st.session_state.get(_hdr_sel_key, False)
-        if _prev_hdr is not None and _cur_hdr != _prev_hdr:
-            for _i in df.index:
-                st.session_state[f'sel_p_{_i}'] = _cur_hdr
-            _checked_rows = list(df.index) if _cur_hdr else []
-            st.session_state[_hdr_prev_key] = _cur_hdr
-            st.rerun()
-        st.session_state[_hdr_prev_key] = _cur_hdr
+        _hdr_sel_key = f'_hdr_sel_{calc_date_str}'
 
         # ── 액션 바: 3등분 균일 레이아웃 ──
         _act1, _act4, _act5 = st.columns([2, 2, 2])
@@ -462,7 +452,13 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         # 헤더 — outer column: [전체선택][표시][구입가][🧾영수증]
         _TH = "text-align:{a};padding:3px 6px;font-size:12px;color:#444;background:#fafafa;border-bottom:1px solid #dee2e6"
         _h0, _h1, _h2, _h4 = st.columns([0.3, 9, 1.5, 0.6])
-        _h0.checkbox("", key=_hdr_sel_key, label_visibility="collapsed")
+        # 전체 선택 버튼 — 클릭 시 모든 행 sel_p_X 토글
+        _all_sel = len(_checked_rows) == len(df) and len(df) > 0
+        if _h0.button("☑" if _all_sel else "☐", key=_hdr_sel_key, help="전체 선택/해제"):
+            _new_v = not _all_sel
+            for _i in df.index:
+                st.session_state[f'sel_p_{_i}'] = _new_v
+            st.rerun()
         _h1.markdown(
             '<table style="width:100%;border-collapse:collapse;table-layout:fixed">'
             '<thead><tr>'
