@@ -1,0 +1,16 @@
+[Unit]
+Description=costcobiz Mobile (Next.js)
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/opt/costco-app/mobile
+Environment="NODE_ENV=production"
+Environment="COSTCO_DATA_DIR=/opt/costco-app/data"
+ExecStart=/usr/bin/npm run start
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
