@@ -741,7 +741,7 @@ def check_keyword_rank(open_client_id, open_client_secret, keyword,
                 collected.append({
                     "cls": cls,
                     "pos": cur_pos,
-                    "mall_pid": str(item.get("mallProductId", "")),
+                    "mall_pid": str(item.get("productId", "")),  # API 실제 필드명: productId (mallProductId는 빈값)
                     "title": item.get("title", "").replace("<b>", "").replace("</b>", "").strip(),
                     "mall": item.get("mallName", ""),
                     "ptype": str(item.get("productType", "")),
@@ -754,8 +754,7 @@ def check_keyword_rank(open_client_id, open_client_secret, keyword,
         return None, None, None, None
 
     # ── 2단계: 우선순위 매칭 ──
-    # 우선순위: 1) STORE+NAME  2) NAME_ONLY
-    # (PNO_EXACT 제거: 네이버 Open API의 mallProductId가 빈 문자열로 옴 → 매칭 불가능)
+    # 우선순위: 1) PNO_EXACT (productId)  2) STORE+NAME (best sim)  3) NAME_ONLY
     rank_wonbu = rank_compare = rank_solo = None
     debug_lines = []
 
@@ -777,16 +776,25 @@ def check_keyword_rank(open_client_id, open_client_secret, keyword,
         _a, _b = _clean_trigrams(t1), _clean_trigrams(t2)
         return len(_a & _b) / len(_a | _b) if (_a | _b) else 0.0
 
-    # 우선순위 1: 스토어명 + 이름 유사도 (가장 신뢰도 높음)
-    if store_name:
+    # 우선순위 1: productId 정확 일치 (가장 신뢰도 높음, 사용자가 등록 시)
+    if naver_product_no:
         for it in collected:
-            if store_name in it["mall"] and our_product_name:
-                sim = _get_sim(it["title"], our_product_name)
-                if sim >= 0.40:
-                    _record_match(it, f"STORE+NAME(sim={sim:.2f}, mall={it['mall']})")
-                    break
+            if it["mall_pid"] == str(naver_product_no):
+                _record_match(it, f"PNO_EXACT(productId={it['mall_pid']})")
+                break
 
-    # 우선순위 2: 이름 유사도 (스토어명 없거나 미매칭일 때 fallback)
+    # 우선순위 2: 스토어명 매칭 + 이름 유사도 가장 높은 것 (best sim)
+    if store_name and our_product_name and rank_wonbu is None and rank_compare is None and rank_solo is None:
+        best_it, best_sim = None, 0.0
+        for it in collected:
+            if store_name in it["mall"]:
+                sim = _get_sim(it["title"], our_product_name)
+                if sim > best_sim:
+                    best_sim, best_it = sim, it
+        if best_it and best_sim >= 0.40:
+            _record_match(best_it, f"STORE+NAME(sim={best_sim:.2f}, mall={best_it['mall']}, productId={best_it['mall_pid']})")
+
+    # 우선순위 3: 이름 유사도 (스토어명 없거나 미매칭일 때 fallback)
     if our_product_name and rank_wonbu is None and rank_compare is None and rank_solo is None:
         best_it, best_sim = None, 0.0
         for it in collected:
