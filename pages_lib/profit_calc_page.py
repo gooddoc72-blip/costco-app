@@ -256,7 +256,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                         _user_prods=_preload_user, _shared_prods=_preload_shared)
                 if p:
                     sq = max(1, int(p.get('split_qty', 1) or 1))
-                    _aq = qty * (_sell_factor if sq > 1 else 1)
+                    _aq = qty * _sell_factor
                     costs.append((p['unit_price'] // sq) * _aq)
                 elif saved_cost > 0:
                     costs.append(saved_cost)
@@ -285,7 +285,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 if p and p.get('product_no'):
                     _pno1 = str(p.get('product_no', '')).strip()
                     sq = max(1, int(p.get('split_qty', 1) or 1))
-                    _aq = qty * (_sell_factor if sq > 1 else 1)
+                    _aq = qty * _sell_factor
                     # 영수증에 같은 상품번호 있으면 영수증 가격 우선 (현재 실제 매입가)
                     if _rcpt_by_pno and _pno1 and _pno1 in _rcpt_by_pno:
                         _ri1 = _rcpt_by_pno[_pno1]
@@ -310,7 +310,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         _m2 = _re.search(r'x\s*(\d+)\s*개', item['상품명'], _re.IGNORECASE)
                         if _m2: _rsq = max(1, int(_m2.group(1)))
                     
-                    _aq = qty * (_sell_factor if _rsq > 1 else 1)
+                    _aq = qty * _sell_factor
                     costs.append((item['단가'] // _rsq) * _aq)
                     match_sources.append("영수증")
                     matched_names.append(item['상품명'])
@@ -332,7 +332,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 # ── 3차: 키워드 토큰 매칭 (상품번호 미등록 DB 항목) ──
                 elif p:
                     sq = max(1, int(p.get('split_qty', 1) or 1))
-                    _aq = qty * (_sell_factor if sq > 1 else 1)
+                    _aq = qty * _sell_factor
                     costs.append((p['unit_price'] // sq) * _aq)
                     match_sources.append("DB-키워드")
                     matched_names.append(p['costco_name'])
