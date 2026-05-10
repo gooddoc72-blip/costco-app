@@ -11,49 +11,17 @@ from db_core import get_user_db
 # ── 일별 주문 (수익 계산용) ──────────────────────────────
 
 def save_daily_orders(username, order_date, orders_df, shipping_cost, box_cost):
-    """주문 데이터를 daily_orders에 저장 — 인자 order_date만 영향받음 (Option A).
+    """주문 데이터를 daily_orders에 저장 — 모든 행을 인자 order_date에 저장.
 
-    안전 보장: 행별 결제일이 다양해도 인자로 받은 order_date에만 저장하고
-    그 외 날짜는 DELETE도 INSERT도 하지 않음. "5/7 업로드 = 5/7만 영향"
-
-    df에 결제일 컬럼이 있고 인자 order_date와 다른 행은 자동으로 제외(필터링).
-    필터링된 행 수는 print/log로 알 수 있도록 attribute에 저장 (UI에서 토스트 가능).
+    "업로드/수집 시점의 날짜에 모든 주문건을 저장" 요구사항에 따라
+    결제일 컬럼은 무시하고 인자로 받은 order_date에 일괄 저장.
     """
-    import pandas as pd
     conn = get_user_db(username)
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
 
-    def _row_settle_date(r):
-        """행의 결제일 → YYYY-MM-DD. 없으면 None."""
-        for col in ('결제일', '주문일시', '주문일'):
-            v = r.get(col) if hasattr(r, 'get') else None
-            if v is None or (isinstance(v, float) and pd.isna(v)):
-                continue
-            s = str(v).strip()
-            if not s:
-                continue
-            if 'T' in s:
-                s = s.split('T', 1)[0]
-            elif ' ' in s:
-                s = s.split(' ', 1)[0]
-            if len(s) >= 10 and s[4] == '-' and s[7] == '-':
-                return s[:10]
-        return None
-
-    # 인자 order_date에 해당하는 행만 필터링 (결제일 없으면 인자 날짜로 간주)
-    rows_for_date = []
-    skipped_other_date = 0
-    for _, r in orders_df.iterrows():
-        rd = _row_settle_date(r)
-        if rd is None or rd == order_date:
-            rows_for_date.append(r)
-        else:
-            skipped_other_date += 1
-
-    # 인자 order_date만 DELETE
     conn.execute("DELETE FROM daily_orders WHERE order_date=?", (order_date,))
 
-    for r in rows_for_date:
+    for _, r in orders_df.iterrows():
         cost = r.get('구입가격', 0) or 0
         ship_fee = int(r['배송비 합계'])
         settlement = int(r['정산예정금액'])
@@ -70,12 +38,7 @@ def save_daily_orders(username, order_date, orders_df, shipping_cost, box_cost):
              int(cost), shipping_cost, box_cost, profit, 1 if cost > 0 else 0, now))
     conn.commit()
     conn.close()
-    # 호출자가 토스트로 표시할 수 있도록 attribute 기록
-    save_daily_orders.last_skipped_other_date = skipped_other_date
-    return len(rows_for_date)
-
-
-save_daily_orders.last_skipped_other_date = 0
+    return len(orders_df)
 
 
 def get_daily_orders(username, order_date):
