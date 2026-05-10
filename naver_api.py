@@ -11,7 +11,15 @@ def get_token(client_id, client_secret):
             "client_id": client_id, "timestamp": timestamp, "client_secret_sign": sign,
             "grant_type": "client_credentials", "type": "SELF"
         }, timeout=10)
-        return resp.json().get("access_token"), None
+        try:
+            _body = resp.json()
+        except Exception:
+            return None, f"HTTP {resp.status_code}: {resp.text[:200]}"
+        _token = _body.get("access_token")
+        if _token:
+            return _token, None
+        _msg = _body.get("message") or _body.get("error_description") or _body.get("error") or str(_body)[:200]
+        return None, f"HTTP {resp.status_code} — {_msg}"
     except Exception as e: return None, f"토큰 실패: {e}"
 
 def get_new_orders(client_id, client_secret, hours_back=48, status_type="ALL"):
