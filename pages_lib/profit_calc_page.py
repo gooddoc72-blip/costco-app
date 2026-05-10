@@ -845,7 +845,22 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 if not _up_rec:
                     _up_rec = next((p for p in _preload_user
                                    if p.get('costco_name', '').strip() == _disp_key.strip()), None)
-                _nv_pno  = (_up_rec or {}).get('naver_origin_pno', '') or ''
+                _nv_pno = (_up_rec or {}).get('naver_origin_pno', '') or ''
+                # fallback: 같은 코스트코 product_no를 가진 다른 user products 행에서 검색
+                if not _nv_pno:
+                    _search_pnos = []
+                    if _up_rec:
+                        _search_pnos.append(str(_up_rec.get('product_no', '') or '').strip())
+                    _search_pnos.append(str(_row.get('product_no') or '').strip())
+                    for _pno in _search_pnos:
+                        if not _pno:
+                            continue
+                        _alt = next((p.get('naver_origin_pno') for p in _preload_user
+                                    if str(p.get('product_no', '') or '').strip() == _pno
+                                    and p.get('naver_origin_pno')), None)
+                        if _alt:
+                            _nv_pno = _alt
+                            break
                 # 네이버 상품명: from_naver=1이면 costco_name이 네이버 상품명
                 _is_naver = int((_up_rec or {}).get('from_naver') or 0) == 1
                 _nv_name  = (_up_rec.get('costco_name', '') if _up_rec and _is_naver else '') or ''
