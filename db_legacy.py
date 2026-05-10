@@ -1631,20 +1631,27 @@ def save_rank_result(username, tracking_id, rank_wonbu, rank_solo, rank_compare=
 
 
 def get_daily_ranks_in_month(username, tracking_id, year, month):
-    """이번 달 1~31일 각 날짜의 best rank 반환 (3가지 순위 중 best)"""
+    """이번 달 1~31일 각 날짜의 LATEST rank 반환 (가장 최근 체크 결과 사용).
+    같은 날 여러 번 체크해도 최신 매칭 결과만 표시 → 옛 잘못된 매칭이 화면에 안 남음.
+    """
     conn = get_user_db(username)
     _ensure_rank_tables(conn)
+    # 각 날짜의 가장 최근 체크 1건만 사용 (id가 가장 큰 것 = 가장 최근)
     rows = conn.execute("""
         SELECT
-            CAST(SUBSTR(checked_at, 9, 2) AS INTEGER) as day,
-            MIN(rank_price_compare) as wonbu,
-            MIN(rank_compare) as compare,
-            MIN(rank_total) as solo,
-            MAX(checked_at) as last_check
-        FROM rank_history
-        WHERE tracking_id = ?
-          AND SUBSTR(checked_at, 1, 7) = ?
-        GROUP BY day
+            CAST(SUBSTR(rh.checked_at, 9, 2) AS INTEGER) as day,
+            rh.rank_price_compare as wonbu,
+            rh.rank_compare as compare,
+            rh.rank_total as solo,
+            rh.checked_at as last_check
+        FROM rank_history rh
+        WHERE rh.tracking_id = ?
+          AND SUBSTR(rh.checked_at, 1, 7) = ?
+          AND rh.id = (
+              SELECT MAX(rh2.id) FROM rank_history rh2
+              WHERE rh2.tracking_id = rh.tracking_id
+                AND SUBSTR(rh2.checked_at, 1, 10) = SUBSTR(rh.checked_at, 1, 10)
+          )
     """, (tracking_id, f"{year:04d}-{month:02d}")).fetchall()
     conn.close()
     result = {}
