@@ -837,14 +837,15 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     _cur_sale + 100
                 )
 
-                # naver_origin_pno 조회: match_keyword → costco_name → 주문상품명 순
+                # naver_origin_pno 조회: 매칭키워드 일치 → 주문상품명 == match_keyword 또는 costco_name
                 _up_rec = next((p for p in _preload_user if _match_kw and p.get('match_keyword') == _match_kw), None)
                 if not _up_rec and _match_kw:
                     _up_rec = next((p for p in _preload_user
                                    if p.get('costco_name', '').strip() == _match_kw.strip()), None)
                 if not _up_rec:
                     _up_rec = next((p for p in _preload_user
-                                   if p.get('costco_name', '').strip() == _disp_key.strip()), None)
+                                   if p.get('match_keyword', '').strip() == _disp_key.strip()
+                                   or p.get('costco_name', '').strip() == _disp_key.strip()), None)
                 _nv_pno = (_up_rec or {}).get('naver_origin_pno', '') or ''
                 # fallback: 같은 코스트코 product_no를 가진 다른 user products 행에서 검색
                 if not _nv_pno:
