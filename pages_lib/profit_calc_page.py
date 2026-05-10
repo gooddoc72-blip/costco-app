@@ -699,10 +699,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
 
         if st.button("💾 수정사항 반영", key="recalc", type="primary"):
             save_daily_orders(USERNAME, calc_date_str, df, shipping_cost, box_cost)
-            # 매입가를 products 테이블에 영구 저장 → 다음 날 주문에 매칭 적용
-            # 같은 product_no를 가진 모든 행 일괄 동기화 (다른 이름으로 등록된 동일상품 포함)
-            _conn = get_user_db(USERNAME)
-            _now = datetime.now().strftime("%Y-%m-%d %H:%M")
+            # Phase 1: upsert_product로 매칭 행 저장 (각각 자체 connection)
+            _pno_units = {}  # {product_no: new_unit_price} — Phase 2 일괄 동기화용
             for _, _r in df.iterrows():
                 _pno = str(_r.get('매칭상품번호', '') or '').strip()
                 _kw = (_r.get('매칭제품', '') or '').strip()
@@ -717,14 +715,19 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     upsert_product(USERNAME, _kw or _pno, _kw or _pno, _new_unit,
                                     product_no=_pno, split_qty=_sq,
                                     shipping_fee=(_up or {}).get('shipping_fee'))
-                    # 같은 product_no로 등록된 다른 키워드 행도 unit_price 동기화
                     if _pno:
-                        _conn.execute(
-                            "UPDATE products SET unit_price=?, updated_at=? WHERE product_no=?",
-                            (_new_unit, _now, _pno)
-                        )
-            _conn.commit()
-            _conn.close()
+                        _pno_units[_pno] = _new_unit
+            # Phase 2: 같은 product_no의 다른 키워드 행 일괄 동기화 (단일 connection)
+            if _pno_units:
+                _conn = get_user_db(USERNAME)
+                _now = datetime.now().strftime("%Y-%m-%d %H:%M")
+                for _pno, _unit in _pno_units.items():
+                    _conn.execute(
+                        "UPDATE products SET unit_price=?, updated_at=? WHERE product_no=?",
+                        (_unit, _now, _pno)
+                    )
+                _conn.commit()
+                _conn.close()
             invalidate_data_cache()
             st.session_state['cost_overrides'] = {}
             st.session_state['kw_overrides'] = {}
@@ -770,9 +773,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         st.divider()
         if st.button("💾 정산 데이터 저장", type="primary"):
             save_daily_orders(USERNAME, calc_date_str, df, shipping_cost, box_cost)
-            # 매입가를 products 테이블에 영구 저장 → 같은 product_no 일괄 동기화
-            _conn = get_user_db(USERNAME)
-            _now = datetime.now().strftime("%Y-%m-%d %H:%M")
+            # Phase 1: upsert_product로 매칭 행 저장
+            _pno_units = {}
             for _, _r in df.iterrows():
                 _pno = str(_r.get('매칭상품번호', '') or '').strip()
                 _kw = (_r.get('매칭제품', '') or '').strip()
@@ -788,12 +790,18 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                     product_no=_pno, split_qty=_sq,
                                     shipping_fee=(_up or {}).get('shipping_fee'))
                     if _pno:
-                        _conn.execute(
-                            "UPDATE products SET unit_price=?, updated_at=? WHERE product_no=?",
-                            (_new_unit, _now, _pno)
-                        )
-            _conn.commit()
-            _conn.close()
+                        _pno_units[_pno] = _new_unit
+            # Phase 2: 같은 product_no 일괄 동기화
+            if _pno_units:
+                _conn = get_user_db(USERNAME)
+                _now = datetime.now().strftime("%Y-%m-%d %H:%M")
+                for _pno, _unit in _pno_units.items():
+                    _conn.execute(
+                        "UPDATE products SET unit_price=?, updated_at=? WHERE product_no=?",
+                        (_unit, _now, _pno)
+                    )
+                _conn.commit()
+                _conn.close()
             invalidate_data_cache()
             st.success(f"✅ {calc_date_str} 저장 완료! (제품DB 매입가도 갱신)")
 
