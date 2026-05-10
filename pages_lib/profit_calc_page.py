@@ -677,10 +677,26 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
 
         if st.button("💾 수정사항 반영", key="recalc", type="primary"):
             save_daily_orders(USERNAME, calc_date_str, df, shipping_cost, box_cost)
+            # 매입가를 products 테이블에 영구 저장 → 다음 날 주문에 매칭 적용
+            for _, _r in df.iterrows():
+                _pno = str(_r.get('매칭상품번호', '') or '').strip()
+                _kw = (_r.get('매칭제품', '') or '').strip()
+                _cost = int(_r.get('구입가격', 0) or 0)
+                _qty = max(1, int(_r.get('수량', 1) or 1))
+                if _cost > 0 and (_pno or _kw):
+                    _up = next((p for p in (_preload_user or [])
+                                if (p.get('product_no') and p.get('product_no') == _pno)
+                                or p.get('match_keyword') == _kw), None)
+                    _sq = max(1, int((_up or {}).get('split_qty') or 1))
+                    _new_unit = (_cost // _qty) * _sq
+                    upsert_product(USERNAME, _kw or _pno, _kw or _pno, _new_unit,
+                                    product_no=_pno, split_qty=_sq,
+                                    shipping_fee=(_up or {}).get('shipping_fee'))
+            invalidate_data_cache()
             st.session_state['cost_overrides'] = {}
             st.session_state['kw_overrides'] = {}
             st.session_state['receipt_pick'] = {}
-            st.session_state['_profit_save_toast'] = f"✅ {calc_date_str} 수정사항 저장 완료!"
+            st.session_state['_profit_save_toast'] = f"✅ {calc_date_str} 수정사항 + 제품DB 매입가 저장 완료!"
             st.rerun()
 
         # ── 페이지 네비게이션 ──
@@ -721,7 +737,23 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         st.divider()
         if st.button("💾 정산 데이터 저장", type="primary"):
             save_daily_orders(USERNAME, calc_date_str, df, shipping_cost, box_cost)
-            st.success(f"✅ {calc_date_str} 저장 완료!")
+            # 매입가를 products 테이블에 영구 저장 → 다음 날 주문에 매칭 적용
+            for _, _r in df.iterrows():
+                _pno = str(_r.get('매칭상품번호', '') or '').strip()
+                _kw = (_r.get('매칭제품', '') or '').strip()
+                _cost = int(_r.get('구입가격', 0) or 0)
+                _qty = max(1, int(_r.get('수량', 1) or 1))
+                if _cost > 0 and (_pno or _kw):
+                    _up = next((p for p in (_preload_user or [])
+                                if (p.get('product_no') and p.get('product_no') == _pno)
+                                or p.get('match_keyword') == _kw), None)
+                    _sq = max(1, int((_up or {}).get('split_qty') or 1))
+                    _new_unit = (_cost // _qty) * _sq
+                    upsert_product(USERNAME, _kw or _pno, _kw or _pno, _new_unit,
+                                    product_no=_pno, split_qty=_sq,
+                                    shipping_fee=(_up or {}).get('shipping_fee'))
+            invalidate_data_cache()
+            st.success(f"✅ {calc_date_str} 저장 완료! (제품DB 매입가도 갱신)")
 
         # ── 수익 마이너스 — 네이버 판매가 검토 및 적용 ──
         loss_df = df[(df['구입가격'] > 0) & (df['수입'] < 0)].copy()
