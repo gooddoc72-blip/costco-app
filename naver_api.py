@@ -316,15 +316,21 @@ def send_telegram(tok, cid, msg):
 
 # ✅ 카카오톡 나에게 보내기 (REST API)
 def send_kakao(access_token, msg, rest_api_key=None, refresh_token=None):
-    """카카오톡 메모. text 200자 제한 → 200자 단위로 잘라서 순차 발송."""
+    """카카오톡 메모. text 200자 제한 → 200자 단위로 잘라서 순차 발송.
+    청크 사이 0.5초 sleep — 카카오 API rate limit/순서 보장."""
+    import time as _t
     url = "https://kapi.kakao.com/v2/api/talk/memo/default/send"
     headers = {"Authorization": f"Bearer {access_token}"}
 
     MAX = 200
     chunks = [msg[i:i+MAX] for i in range(0, len(msg), MAX)] if msg else ['']
+    total = len(chunks)
 
     refreshed = None
-    for chunk in chunks:
+    sent = 0
+    for ci, chunk in enumerate(chunks):
+        if ci > 0:
+            _t.sleep(0.5)
         payload = {"template_object": json.dumps({
             "object_type": "text", "text": chunk,
             "link": {"web_url": "https://sell.smartstore.naver.com",
@@ -336,14 +342,15 @@ def send_kakao(access_token, msg, rest_api_key=None, refresh_token=None):
             if resp.status_code == 401 and refresh_token and rest_api_key:
                 new_token, new_refresh, err = refresh_kakao_token(rest_api_key, refresh_token)
                 if not new_token:
-                    return False, f"토큰 갱신 실패: {err}"
+                    return False, f"토큰 갱신 실패 ({ci+1}/{total} 발송 중): {err}"
                 headers["Authorization"] = f"Bearer {new_token}"
                 refreshed = f"__TOKEN_REFRESHED__{new_token}||{new_refresh}"
                 resp = requests.post(url, headers=headers, data=payload, timeout=15)
             if resp.status_code != 200:
-                return False, f"카카오톡 전송 실패 ({resp.status_code}): {resp.text[:120]}"
+                return False, f"카카오 발송 실패 (성공 {sent}/{total}, 청크 {ci+1} 실패 {resp.status_code}): {resp.text[:120]}"
+            sent += 1
         except Exception as e:
-            return False, str(e)
+            return False, f"카카오 발송 예외 (성공 {sent}/{total}): {e}"
     return True, refreshed
 
 def refresh_kakao_token(rest_api_key, refresh_token):
