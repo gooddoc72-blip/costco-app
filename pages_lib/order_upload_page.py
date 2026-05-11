@@ -35,6 +35,7 @@ from db import (
     save_rank_result, get_rank_history, get_latest_ranks,
     get_daily_ranks_in_month, get_yearly_rank_history, delete_trackings_bulk,
     get_rank_drops,
+    submit_shopping_list,
     AUTH_DB,
 )
 from services import (
@@ -601,7 +602,38 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         tg_token = _gs('telegram_token')
         tg_chat = _gs('telegram_chat_id')
 
-        if st.button("📱 장보기 목록 휴대폰 전송", key="send_shopping"):
+        _ship_b1, _ship_b2 = st.columns(2)
+        if _ship_b2.button("📋 장보기 목록 관리자에게 보내기", key="send_shopping_admin",
+                            use_container_width=True):
+            _items = []
+            _total_amount = 0
+            for _, r in shopping.iterrows():
+                _est = r.get('예상금액')
+                _est_v = int(_est) if pd.notna(_est) else 0
+                _total_amount += _est_v
+                _items.append({
+                    "코스트코상품번호": str(r.get('코스트코상품번호') or r.get('상품번호') or ''),
+                    "상품명": str(r.get('상품명', '')),
+                    "옵션정보": str(r.get('옵션정보', '') or ''),
+                    "주문건수": int(r.get('주문건수', 1) or 1),
+                    "주문수량": int(r.get('주문수량', 0) or 0),
+                    "분리수량": int(r.get('분리수량', 1) or 1),
+                    "묶음수량": int(r.get('묶음수량', 1) or 1),
+                    "코스트코구매수량": int(r.get('코스트코구매수량', 0) or 0),
+                    "팩단가": int(r['팩단가']) if pd.notna(r.get('팩단가')) else 0,
+                    "예상금액": _est_v,
+                    "정산금액": int(r['정산금액']) if pd.notna(r.get('정산금액')) else 0,
+                })
+            try:
+                submit_shopping_list(USERNAME, order_date_str, _items,
+                                     total_items=len(_items),
+                                     total_amount=_total_amount)
+                st.success(f"✅ 관리자에게 전송 완료 — {len(_items)}개 상품 ({fmt(_total_amount)}원)")
+            except Exception as _se:
+                st.error(f"❌ 전송 실패: {_se}")
+
+        if _ship_b1.button("📱 장보기 목록 휴대폰 전송", key="send_shopping",
+                            use_container_width=True):
             order_date_obj = datetime.strptime(order_date_str, "%Y-%m-%d")
             lines = [f"🛒 코스트코 장보기 목록 ({order_date_obj.strftime('%m/%d')})", ""]
             _has_settle = '정산금액' in shopping.columns

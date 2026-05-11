@@ -34,6 +34,7 @@ from db import (
     save_rank_result, get_rank_history, get_latest_ranks,
     get_daily_ranks_in_month, get_yearly_rank_history, delete_trackings_bulk,
     get_rank_drops,
+    submit_shopping_list, get_recent_shopping_submissions, delete_shopping_submission,
     AUTH_DB,
 )
 from services import (
@@ -515,8 +516,48 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             except Exception as e:
                 st.error(f"❌ 가져오기 실패: {e}")
 
+    st.divider()
+    st.subheader("🛒 사용자별 장보기 목록")
+    _subs = get_recent_shopping_submissions(limit=50)
+    if not _subs:
+        st.caption("아직 제출된 장보기 목록이 없습니다. (사용자가 주문 업로드 페이지에서 '📋 장보기 목록 관리자에게 보내기' 클릭 시 표시됨)")
+    else:
+        st.caption(f"최근 {len(_subs)}건")
+        for _sub in _subs:
+            _label = (f"📅 {_sub['order_date']}  |  👤 {_sub['username']}  |  "
+                      f"📦 {_sub['total_items']}개 상품  |  💰 {fmt(_sub['total_amount'])}원  "
+                      f"|  ⏰ {_sub['submitted_at']}")
+            with st.expander(_label, expanded=False):
+                try:
+                    _items = json.loads(_sub['items_json'])
+                except Exception:
+                    _items = []
+                if not _items:
+                    st.warning("항목이 비어있습니다.")
+                    continue
+                _df_sub = pd.DataFrame(_items)
+                st.dataframe(_df_sub, use_container_width=True, hide_index=True)
 
+                _xbuf = io.BytesIO()
+                try:
+                    with pd.ExcelWriter(_xbuf, engine='openpyxl') as _xw:
+                        _df_sub.to_excel(_xw, index=False, sheet_name='장보기')
+                    _xbuf.seek(0)
+                    _dl_data = _xbuf.getvalue()
+                except Exception as _xe:
+                    _dl_data = None
+                    st.error(f"엑셀 생성 실패: {_xe}")
 
-    # ═══════════════════════════════════════
-    # 네이버 등록 탭
-    # ═══════════════════════════════════════
+                _dc1, _dc2 = st.columns([2, 1])
+                if _dl_data:
+                    _dc1.download_button(
+                        "📥 엑셀 다운로드",
+                        data=_dl_data,
+                        file_name=f"장보기_{_sub['username']}_{_sub['order_date']}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key=f"dl_sub_{_sub['id']}",
+                        use_container_width=True,
+                    )
+                if _dc2.button("🗑 삭제", key=f"del_sub_{_sub['id']}", use_container_width=True):
+                    delete_shopping_submission(_sub['id'])
+                    st.rerun()
