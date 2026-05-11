@@ -316,43 +316,47 @@ def send_telegram(tok, cid, msg):
 
 # ✅ 카카오톡 나에게 보내기 (REST API)
 def send_kakao(access_token, msg, rest_api_key=None, refresh_token=None):
+    """카카오톡 메모. text 템플릿 200자 제한 → 줄바꿈 단위로 분할 발송."""
     url = "https://kapi.kakao.com/v2/api/talk/memo/default/send"
-    headers = {
-        "Authorization": f"Bearer {access_token}"
-    }
-    payload = {
-        "template_object": json.dumps({
-            "object_type": "text",
-            "text": msg,
-            "link": {
-                "web_url": "https://sell.smartstore.naver.com",
-                "mobile_web_url": "https://sell.smartstore.naver.com"
-            },
-            "button_title": "스마트스토어 바로가기"
-        })
-    }
-    try:
-        resp = requests.post(url, headers=headers, data=payload, timeout=15)
-        if resp.status_code == 200:
-            return True, None
+    headers = {"Authorization": f"Bearer {access_token}"}
 
-        # 401 에러이고 refresh_token이 있으면 토큰 갱신 시도
-        if resp.status_code == 401 and refresh_token and rest_api_key:
-            new_token, new_refresh, err = refresh_kakao_token(rest_api_key, refresh_token)
-            if new_token:
-                # 갱신된 토큰으로 재시도
+    # 줄바꿈 단위로 분할해서 각 청크가 195자 이내가 되도록
+    MAX = 195
+    chunks, cur = [], ""
+    for line in msg.split('\n'):
+        if len(cur) + len(line) + 1 > MAX:
+            if cur:
+                chunks.append(cur)
+            cur = line[:MAX]
+        else:
+            cur = (cur + '\n' + line) if cur else line
+    if cur:
+        chunks.append(cur)
+    total = len(chunks) or 1
+
+    refreshed = None
+    for ci, chunk in enumerate(chunks):
+        text = (f"[{ci+1}/{total}]\n{chunk}" if total > 1 else chunk)[:200]
+        payload = {"template_object": json.dumps({
+            "object_type": "text", "text": text,
+            "link": {"web_url": "https://sell.smartstore.naver.com",
+                     "mobile_web_url": "https://sell.smartstore.naver.com"},
+            "button_title": "스마트스토어 바로가기",
+        })}
+        try:
+            resp = requests.post(url, headers=headers, data=payload, timeout=15)
+            if resp.status_code == 401 and refresh_token and rest_api_key:
+                new_token, new_refresh, err = refresh_kakao_token(rest_api_key, refresh_token)
+                if not new_token:
+                    return False, f"토큰 갱신 실패: {err}"
                 headers["Authorization"] = f"Bearer {new_token}"
-                resp2 = requests.post(url, headers=headers, data=payload, timeout=15)
-                if resp2.status_code == 200:
-                    return True, f"__TOKEN_REFRESHED__{new_token}||{new_refresh}"
-                else:
-                    return False, f"카카오톡 전송 실패 (갱신 후 {resp2.status_code}): {resp2.text}"
-            else:
-                return False, f"토큰 갱신 실패: {err}. 원본 오류: {resp.text}"
-        
-        return False, f"카카오톡 전송 실패 ({resp.status_code}): {resp.text}"
-    except Exception as e:
-        return False, str(e)
+                refreshed = f"__TOKEN_REFRESHED__{new_token}||{new_refresh}"
+                resp = requests.post(url, headers=headers, data=payload, timeout=15)
+            if resp.status_code != 200:
+                return False, f"카카오톡 전송 실패 ({ci+1}/{total}) ({resp.status_code}): {resp.text[:120]}"
+        except Exception as e:
+            return False, str(e)
+    return True, refreshed
 
 def refresh_kakao_token(rest_api_key, refresh_token):
     """카카오 refresh_token으로 새 access_token 발급"""
