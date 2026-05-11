@@ -1005,14 +1005,16 @@ def _sanitize_for_put(d: dict) -> dict:
         return d
     out = {k: v for k, v in d.items() if k not in _READONLY_KEYS}
 
-    # 가격표시제 대상 카테고리: detailAttribute.unitCapacity.unitPriceYn 필수
-    # 없으면 강제로 생성하여 'N'(단위가격 미사용) 채움
+    # 가격표시제 대상 카테고리: detailAttribute.unitCapacity.unitPriceYn 필수 (boolean)
+    # 없거나 문자열이면 false(단위가격 미사용) 채움
     da = out.setdefault('detailAttribute', {})
     if isinstance(da, dict):
         da.pop('sellerTags', None)
         uc = da.setdefault('unitCapacity', {})
         if isinstance(uc, dict):
-            uc.setdefault('unitPriceYn', 'N')
+            cur = uc.get('unitPriceYn')
+            if not isinstance(cur, bool):
+                uc['unitPriceYn'] = False
         # productInfoProvidedNotice 안에 sellerTags 같은 잔재가 있을 수 있어 제거
         notice = da.get('productInfoProvidedNotice')
         if isinstance(notice, dict):
