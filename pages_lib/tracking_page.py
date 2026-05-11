@@ -239,12 +239,12 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         st.dataframe(result_df, use_container_width=True, hide_index=True)
                         st.divider()
 
-                        # ── 반자동: XLS 다운로드 ──────────────────────────
+                        # ── 반자동: XLSX 다운로드 ─────────────────────────
                         st.subheader("📥 반자동 — 파일 다운로드 후 스마트스토어에 직접 업로드")
                         _xl_out = io.BytesIO()
-                        import xlwt as _xlwt
-                        _wb = _xlwt.Workbook(encoding='utf-8')
-                        _ws = _wb.add_sheet('발송처리')
+                        import xlsxwriter as _xlsxwriter
+                        _wb = _xlsxwriter.Workbook(_xl_out, {'in_memory': True})
+                        _ws = _wb.add_worksheet('발송처리')
                         for _ci, _h in enumerate(['상품주문번호', '배송방법', '택배사', '송장번호']):
                             _ws.write(0, _ci, _h)
                         for _ri, (_, _row) in enumerate(result_df.iterrows(), 1):
@@ -252,13 +252,13 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                             _ws.write(_ri, 1, str(_row['배송방법']))
                             _ws.write(_ri, 2, str(_row['택배사']))
                             _ws.write(_ri, 3, str(_row['송장번호']))
-                        _wb.save(_xl_out)
+                        _wb.close()
                         _xl_out.seek(0)
                         st.download_button(
-                            label=f"📥 송장번호_일괄_등록.xls 다운로드 ({len(result_df)}건)",
+                            label=f"📥 송장번호_일괄_등록.xlsx 다운로드 ({len(result_df)}건)",
                             data=_xl_out,
-                            file_name=f"송장번호_일괄_등록_{datetime.today().strftime('%Y%m%d')}.xls",
-                            mime="application/vnd.ms-excel",
+                            file_name=f"송장번호_일괄_등록_{datetime.today().strftime('%Y%m%d')}.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                             use_container_width=True,
                         )
 
