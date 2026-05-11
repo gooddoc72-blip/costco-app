@@ -965,11 +965,44 @@ def get_products_by_nos(client_id, client_secret, product_nos: list):
     return results, err_msg
 
 
+def _format_naver_err(resp) -> str:
+    """Naver API 에러 응답에서 message + errors 배열까지 추출."""
+    try:
+        j = resp.json()
+        msg = j.get('message', '')
+        errs = j.get('errors') or j.get('invalidInputs') or []
+        if errs:
+            parts = []
+            for e in errs[:5]:
+                if isinstance(e, dict):
+                    f = e.get('field') or e.get('name') or ''
+                    m = e.get('message') or e.get('reason') or ''
+                    parts.append(f"[{f}] {m}" if f else m)
+                else:
+                    parts.append(str(e))
+            return f"{msg} | invalid: {' / '.join(parts)}"
+        return msg or resp.text[:300]
+    except Exception:
+        return resp.text[:300]
+
+
+# 네이버 origin product PUT 시 보내면 안 되는 read-only / 시스템 필드
+_READONLY_KEYS = {
+    'originProductNo', 'productNo', 'channelProductNo',
+    'regDate', 'modifiedDate', 'createdDate', 'updatedDate',
+    'channelProducts', 'channelServiceType',
+    'managerPurchasePoint',  # 적립 관리자 포인트 (계산값일 가능성)
+    'representativeImage',   # GET에선 url만 있는 dict이지만 PUT은 images 안에 들어가야 함
+    'discountedPrice', 'mobileDiscountedPrice',  # 계산 결과값
+    'sellerTags',            # GET에선 [{code,text}] / PUT은 다른 구조일 수 있어 일단 제거
+    'wholeCategoryName', 'wholeCategoryId',  # leafCategoryId만 있으면 됨
+}
+
+
 def update_product_price(client_id, client_secret, origin_product_no, new_price):
     """스마트스토어 상품 판매가 수정.
 
-    PATCH가 404로 실패하는 경우, GET으로 origin product 전체 본문을 받아와서
-    salePrice만 교체한 뒤 PUT으로 전체 갱신하는 폴백 경로를 시도.
+    전략: PATCH(부분갱신) → 실패 시 GET으로 본문 받아 read-only 필드 제거 후 PUT.
     """
     token, err = get_token(client_id, client_secret)
     if not token:
@@ -977,48 +1010,52 @@ def update_product_price(client_id, client_secret, origin_product_no, new_price)
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     base_url = f"https://api.commerce.naver.com/external/v2/products/origin-products/{origin_product_no}"
 
-    # 1차: PATCH (부분 갱신)
+    # 1차: PATCH
     try:
         resp = requests.patch(base_url, headers=headers,
-                              json={"originProduct": {"salePrice": new_price}}, timeout=15)
+                              json={"originProduct": {"salePrice": int(new_price)}}, timeout=15)
         if resp.status_code == 200:
             return True, None
         patch_status = resp.status_code
-        try:
-            patch_msg = resp.json().get('message', '')
-        except Exception:
-            patch_msg = resp.text[:200]
+        patch_msg = _format_naver_err(resp)
     except Exception as e:
         patch_status, patch_msg = 'EXC', str(e)
 
-    # 2차: GET → 전체 본문 + salePrice 교체 → PUT
+    # 2차: GET → read-only 필드 제거 → salePrice 교체 → PUT
     try:
         g = requests.get(base_url, headers=headers, timeout=15)
         if g.status_code != 200:
-            return False, (f"PATCH 실패({patch_status}: {patch_msg}) / "
-                           f"GET 조회도 실패({g.status_code}: {g.text[:200]})")
+            return False, (f"PATCH 실패({patch_status}: {patch_msg}) | "
+                           f"GET도 실패({g.status_code}: {_format_naver_err(g)})")
         data = g.json()
-        origin_product = data.get('originProduct') or data
-        smartstore_channel_product = data.get('smartstoreChannelProduct')
+        origin_product = dict(data.get('originProduct') or {})
+        if not origin_product:
+            return False, f"GET 응답에 originProduct 없음: {str(data)[:200]}"
+
+        # read-only 필드 제거
+        for k in list(origin_product.keys()):
+            if k in _READONLY_KEYS:
+                origin_product.pop(k, None)
 
         # salePrice 교체
         origin_product['salePrice'] = int(new_price)
 
         put_body = {"originProduct": origin_product}
-        if smartstore_channel_product:
-            put_body["smartstoreChannelProduct"] = smartstore_channel_product
+        smartstore = data.get('smartstoreChannelProduct')
+        if smartstore:
+            ss = dict(smartstore)
+            for k in list(ss.keys()):
+                if k in _READONLY_KEYS:
+                    ss.pop(k, None)
+            put_body["smartstoreChannelProduct"] = ss
 
         put_resp = requests.put(base_url, headers=headers, json=put_body, timeout=20)
         if put_resp.status_code == 200:
             return True, None
-        try:
-            put_msg = put_resp.json().get('message', put_resp.text[:200])
-        except Exception:
-            put_msg = put_resp.text[:200]
-        return False, (f"PATCH 실패({patch_status}: {patch_msg}) → "
-                       f"PUT 폴백도 실패({put_resp.status_code}: {put_msg})")
+        return False, (f"PATCH 실패({patch_status}: {patch_msg}) | "
+                       f"PUT도 실패({put_resp.status_code}: {_format_naver_err(put_resp)})")
     except Exception as e:
-        return False, f"PATCH 실패({patch_status}: {patch_msg}) → PUT 폴백 예외: {e}"
+        return False, f"PATCH 실패({patch_status}: {patch_msg}) | PUT 예외: {e}"
 
 # ✅ CJ대한통운 API 접수 (가상 구현 - 실제 API 연동 시 수정 필요)
 def register_cj_order(api_id, api_pw, account_no, order_data):
