@@ -316,29 +316,17 @@ def send_telegram(tok, cid, msg):
 
 # ✅ 카카오톡 나에게 보내기 (REST API)
 def send_kakao(access_token, msg, rest_api_key=None, refresh_token=None):
-    """카카오톡 메모. text 템플릿 200자 제한 → 줄바꿈 단위로 분할 발송."""
+    """카카오톡 메모. text 200자 제한 → 200자 단위로 잘라서 순차 발송."""
     url = "https://kapi.kakao.com/v2/api/talk/memo/default/send"
     headers = {"Authorization": f"Bearer {access_token}"}
 
-    # 줄바꿈 단위로 분할해서 각 청크가 195자 이내가 되도록
-    MAX = 195
-    chunks, cur = [], ""
-    for line in msg.split('\n'):
-        if len(cur) + len(line) + 1 > MAX:
-            if cur:
-                chunks.append(cur)
-            cur = line[:MAX]
-        else:
-            cur = (cur + '\n' + line) if cur else line
-    if cur:
-        chunks.append(cur)
-    total = len(chunks) or 1
+    MAX = 200
+    chunks = [msg[i:i+MAX] for i in range(0, len(msg), MAX)] if msg else ['']
 
     refreshed = None
-    for ci, chunk in enumerate(chunks):
-        text = (f"[{ci+1}/{total}]\n{chunk}" if total > 1 else chunk)[:200]
+    for chunk in chunks:
         payload = {"template_object": json.dumps({
-            "object_type": "text", "text": text,
+            "object_type": "text", "text": chunk,
             "link": {"web_url": "https://sell.smartstore.naver.com",
                      "mobile_web_url": "https://sell.smartstore.naver.com"},
             "button_title": "스마트스토어 바로가기",
@@ -353,7 +341,7 @@ def send_kakao(access_token, msg, rest_api_key=None, refresh_token=None):
                 refreshed = f"__TOKEN_REFRESHED__{new_token}||{new_refresh}"
                 resp = requests.post(url, headers=headers, data=payload, timeout=15)
             if resp.status_code != 200:
-                return False, f"카카오톡 전송 실패 ({ci+1}/{total}) ({resp.status_code}): {resp.text[:120]}"
+                return False, f"카카오톡 전송 실패 ({resp.status_code}): {resp.text[:120]}"
         except Exception as e:
             return False, str(e)
     return True, refreshed
