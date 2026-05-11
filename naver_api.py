@@ -1000,19 +1000,23 @@ _READONLY_KEYS = {
 
 
 def _sanitize_for_put(d: dict) -> dict:
-    """PUT 본문에 부적합한 read-only / 검증 실패 유발 필드 정리."""
+    """PUT 본문에 부적합한 read-only / 검증 실패 유발 필드 정리 (재귀적)."""
     if not isinstance(d, dict):
         return d
     out = {k: v for k, v in d.items() if k not in _READONLY_KEYS}
 
-    # detailAttribute.unitCapacity.unitPriceYn 누락 → 'N' 기본값
-    # (가격표시제 대상 카테고리에서 빈 값이면 400)
-    da = out.get('detailAttribute')
+    # 가격표시제 대상 카테고리: detailAttribute.unitCapacity.unitPriceYn 필수
+    # 없으면 강제로 생성하여 'N'(단위가격 미사용) 채움
+    da = out.setdefault('detailAttribute', {})
     if isinstance(da, dict):
-        da.pop('sellerTags', None)  # 혹시 여기 있을 수도
-        uc = da.get('unitCapacity')
-        if isinstance(uc, dict) and not uc.get('unitPriceYn'):
-            uc['unitPriceYn'] = 'N'
+        da.pop('sellerTags', None)
+        uc = da.setdefault('unitCapacity', {})
+        if isinstance(uc, dict):
+            uc.setdefault('unitPriceYn', 'N')
+        # productInfoProvidedNotice 안에 sellerTags 같은 잔재가 있을 수 있어 제거
+        notice = da.get('productInfoProvidedNotice')
+        if isinstance(notice, dict):
+            notice.pop('sellerTags', None)
 
     return out
 
