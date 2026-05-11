@@ -966,22 +966,59 @@ def get_products_by_nos(client_id, client_secret, product_nos: list):
 
 
 def update_product_price(client_id, client_secret, origin_product_no, new_price):
-    """스마트스토어 상품 판매가 수정"""
+    """스마트스토어 상품 판매가 수정.
+
+    PATCH가 404로 실패하는 경우, GET으로 origin product 전체 본문을 받아와서
+    salePrice만 교체한 뒤 PUT으로 전체 갱신하는 폴백 경로를 시도.
+    """
     token, err = get_token(client_id, client_secret)
     if not token:
         return False, err
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    base_url = f"https://api.commerce.naver.com/external/v2/products/origin-products/{origin_product_no}"
+
+    # 1차: PATCH (부분 갱신)
     try:
-        resp = requests.patch(
-            f"https://api.commerce.naver.com/external/v2/products/origin-products/{origin_product_no}",
-            headers=headers,
-            json={"originProduct": {"salePrice": new_price}}
-        )
+        resp = requests.patch(base_url, headers=headers,
+                              json={"originProduct": {"salePrice": new_price}}, timeout=15)
         if resp.status_code == 200:
             return True, None
-        return False, f"가격 수정 실패({resp.status_code}): {resp.json().get('message', resp.text[:100])}"
+        patch_status = resp.status_code
+        try:
+            patch_msg = resp.json().get('message', '')
+        except Exception:
+            patch_msg = resp.text[:200]
     except Exception as e:
-        return False, str(e)
+        patch_status, patch_msg = 'EXC', str(e)
+
+    # 2차: GET → 전체 본문 + salePrice 교체 → PUT
+    try:
+        g = requests.get(base_url, headers=headers, timeout=15)
+        if g.status_code != 200:
+            return False, (f"PATCH 실패({patch_status}: {patch_msg}) / "
+                           f"GET 조회도 실패({g.status_code}: {g.text[:200]})")
+        data = g.json()
+        origin_product = data.get('originProduct') or data
+        smartstore_channel_product = data.get('smartstoreChannelProduct')
+
+        # salePrice 교체
+        origin_product['salePrice'] = int(new_price)
+
+        put_body = {"originProduct": origin_product}
+        if smartstore_channel_product:
+            put_body["smartstoreChannelProduct"] = smartstore_channel_product
+
+        put_resp = requests.put(base_url, headers=headers, json=put_body, timeout=20)
+        if put_resp.status_code == 200:
+            return True, None
+        try:
+            put_msg = put_resp.json().get('message', put_resp.text[:200])
+        except Exception:
+            put_msg = put_resp.text[:200]
+        return False, (f"PATCH 실패({patch_status}: {patch_msg}) → "
+                       f"PUT 폴백도 실패({put_resp.status_code}: {put_msg})")
+    except Exception as e:
+        return False, f"PATCH 실패({patch_status}: {patch_msg}) → PUT 폴백 예외: {e}"
 
 # ✅ CJ대한통운 API 접수 (가상 구현 - 실제 API 연동 시 수정 필요)
 def register_cj_order(api_id, api_pw, account_no, order_data):
