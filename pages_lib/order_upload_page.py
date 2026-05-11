@@ -633,23 +633,39 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             msg = "\n".join(lines)
 
             sent_ok = False
-            if kakao_token:
-                kakao_api_key = _gs('kakao_api_key')
-                kakao_refresh = _gs('kakao_refresh_token')
-                ok, kerr = naver_api.send_kakao(kakao_token, msg, rest_api_key=kakao_api_key, refresh_token=kakao_refresh)
-                if ok:
-                    sent_ok = True
-                    if kerr and "__TOKEN_REFRESHED__" in str(kerr):
-                        parts = str(kerr).replace("__TOKEN_REFRESHED__", "").split("||")
-                        set_setting(USERNAME, 'kakao_access_token', parts[0])
-                        if len(parts) > 1: set_setting(USERNAME, 'kakao_refresh_token', parts[1])
-                else:
-                    st.error(f"❌ 카카오톡 실패: {kerr}")
+            kakao_api_key = _gs('kakao_api_key')
+            kakao_refresh = _gs('kakao_refresh_token')
 
-            if not sent_ok and tg_token and tg_chat:
-                ok, terr = naver_api.send_telegram(tg_token, tg_chat, msg)
-                if ok: sent_ok = True
-                else: st.error(f"❌ 텔레그램 실패: {terr}")
+            # 200자 초과 + 텔레그램 설정 시 → 텔레그램 전체 발송 + 카톡엔 알림만
+            if len(msg) > 200 and tg_token and tg_chat:
+                ok_tg, terr = naver_api.send_telegram(tg_token, tg_chat, msg)
+                if ok_tg:
+                    sent_ok = True
+                    if kakao_token:
+                        short_msg = f"🛒 코스트코 장보기 알림 발송됨\n총 {len(df)}건 ({len(msg):,}자)\n자세한 내역은 텔레그램에서 확인하세요."
+                        ok_k, kerr = naver_api.send_kakao(kakao_token, short_msg, rest_api_key=kakao_api_key, refresh_token=kakao_refresh)
+                        if ok_k and kerr and "__TOKEN_REFRESHED__" in str(kerr):
+                            parts = str(kerr).replace("__TOKEN_REFRESHED__", "").split("||")
+                            set_setting(USERNAME, 'kakao_access_token', parts[0])
+                            if len(parts) > 1: set_setting(USERNAME, 'kakao_refresh_token', parts[1])
+                else:
+                    st.error(f"❌ 텔레그램 실패: {terr}")
+            else:
+                # 200자 이내 또는 텔레그램 미설정 → 카톡 우선
+                if kakao_token:
+                    ok, kerr = naver_api.send_kakao(kakao_token, msg, rest_api_key=kakao_api_key, refresh_token=kakao_refresh)
+                    if ok:
+                        sent_ok = True
+                        if kerr and "__TOKEN_REFRESHED__" in str(kerr):
+                            parts = str(kerr).replace("__TOKEN_REFRESHED__", "").split("||")
+                            set_setting(USERNAME, 'kakao_access_token', parts[0])
+                            if len(parts) > 1: set_setting(USERNAME, 'kakao_refresh_token', parts[1])
+                    else:
+                        st.error(f"❌ 카카오톡 실패: {kerr}")
+                if not sent_ok and tg_token and tg_chat:
+                    ok, terr = naver_api.send_telegram(tg_token, tg_chat, msg)
+                    if ok: sent_ok = True
+                    else: st.error(f"❌ 텔레그램 실패: {terr}")
 
             if sent_ok:
                 st.success("✅ 휴대폰으로 전송 완료!")

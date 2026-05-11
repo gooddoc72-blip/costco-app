@@ -96,27 +96,45 @@ def save_daily_orders(username, orders, settings):
 
 
 def send_notification(settings, msg, username=None):
-    """카카오톡 우선, 실패 시 텔레그램 발송"""
+    """200자 초과 + 텔레그램 설정 시 → 텔레그램 전체 발송 + 카톡엔 알림만.
+    그 외엔 카톡 우선, 실패 시 텔레그램 fallback."""
     kakao_token = settings.get("kakao_access_token", "")
     kakao_api_key = settings.get("kakao_api_key", "")
     kakao_refresh = settings.get("kakao_refresh_token", "")
     tg_token = settings.get("telegram_token", "")
     tg_chat = settings.get("telegram_chat_id", "")
 
+    def _save_refreshed_token(err):
+        if err and "__TOKEN_REFRESHED__" in str(err) and username:
+            parts = str(err).replace("__TOKEN_REFRESHED__", "").split("||")
+            try:
+                set_setting(username, "kakao_access_token", parts[0])
+                if len(parts) > 1:
+                    set_setting(username, "kakao_refresh_token", parts[1])
+                log("🔄 카카오 토큰 자동 갱신")
+            except Exception as e:
+                log(f"⚠️ 카카오 토큰 갱신 저장 실패: {e}")
+
+    # 200자 초과 + 텔레그램 설정 시 → 텔레그램 전체 + 카톡 알림
+    if len(msg) > 200 and tg_token and tg_chat:
+        ok, err = naver_api.send_telegram(tg_token, tg_chat, msg)
+        if ok:
+            if kakao_token:
+                short = f"📱 알림 발송됨 ({len(msg):,}자)\n자세한 내역은 텔레그램에서 확인하세요."
+                ok_k, kerr = naver_api.send_kakao(kakao_token, short,
+                                                   rest_api_key=kakao_api_key,
+                                                   refresh_token=kakao_refresh)
+                if ok_k: _save_refreshed_token(kerr)
+            return True
+        log(f"  텔레그램 실패: {err}")
+
+    # 200자 이내 또는 텔레그램 미설정 → 카톡 우선
     if kakao_token:
         ok, err = naver_api.send_kakao(kakao_token, msg,
                                        rest_api_key=kakao_api_key,
                                        refresh_token=kakao_refresh)
         if ok:
-            if err and "__TOKEN_REFRESHED__" in str(err) and username:
-                parts = str(err).replace("__TOKEN_REFRESHED__", "").split("||")
-                try:
-                    set_setting(username, "kakao_access_token", parts[0])
-                    if len(parts) > 1:
-                        set_setting(username, "kakao_refresh_token", parts[1])
-                    log("🔄 카카오 토큰 자동 갱신")
-                except Exception as e:
-                    log(f"⚠️ 카카오 토큰 갱신 저장 실패 (발송은 완료): {e}")
+            _save_refreshed_token(err)
             return True
         log(f"  카카오톡 실패: {err}")
 
