@@ -994,9 +994,27 @@ _READONLY_KEYS = {
     'managerPurchasePoint',  # 적립 관리자 포인트 (계산값일 가능성)
     'representativeImage',   # GET에선 url만 있는 dict이지만 PUT은 images 안에 들어가야 함
     'discountedPrice', 'mobileDiscountedPrice',  # 계산 결과값
-    'sellerTags',            # GET에선 [{code,text}] / PUT은 다른 구조일 수 있어 일단 제거
+    'sellerTags',            # 금칙어 포함된 옛 태그 PUT 시 거부됨 → 가격수정 목적상 항상 제거
     'wholeCategoryName', 'wholeCategoryId',  # leafCategoryId만 있으면 됨
 }
+
+
+def _sanitize_for_put(d: dict) -> dict:
+    """PUT 본문에 부적합한 read-only / 검증 실패 유발 필드 정리."""
+    if not isinstance(d, dict):
+        return d
+    out = {k: v for k, v in d.items() if k not in _READONLY_KEYS}
+
+    # detailAttribute.unitCapacity.unitPriceYn 누락 → 'N' 기본값
+    # (가격표시제 대상 카테고리에서 빈 값이면 400)
+    da = out.get('detailAttribute')
+    if isinstance(da, dict):
+        da.pop('sellerTags', None)  # 혹시 여기 있을 수도
+        uc = da.get('unitCapacity')
+        if isinstance(uc, dict) and not uc.get('unitPriceYn'):
+            uc['unitPriceYn'] = 'N'
+
+    return out
 
 
 def update_product_price(client_id, client_secret, origin_product_no, new_price):
@@ -1028,14 +1046,12 @@ def update_product_price(client_id, client_secret, origin_product_no, new_price)
             return False, (f"PATCH 실패({patch_status}: {patch_msg}) | "
                            f"GET도 실패({g.status_code}: {_format_naver_err(g)})")
         data = g.json()
-        origin_product = dict(data.get('originProduct') or {})
+        origin_product = data.get('originProduct') or {}
         if not origin_product:
             return False, f"GET 응답에 originProduct 없음: {str(data)[:200]}"
 
-        # read-only 필드 제거
-        for k in list(origin_product.keys()):
-            if k in _READONLY_KEYS:
-                origin_product.pop(k, None)
+        # read-only 제거 + unitCapacity / sellerTags 같은 검증 유발 필드 정리
+        origin_product = _sanitize_for_put(dict(origin_product))
 
         # salePrice 교체
         origin_product['salePrice'] = int(new_price)
@@ -1043,11 +1059,7 @@ def update_product_price(client_id, client_secret, origin_product_no, new_price)
         put_body = {"originProduct": origin_product}
         smartstore = data.get('smartstoreChannelProduct')
         if smartstore:
-            ss = dict(smartstore)
-            for k in list(ss.keys()):
-                if k in _READONLY_KEYS:
-                    ss.pop(k, None)
-            put_body["smartstoreChannelProduct"] = ss
+            put_body["smartstoreChannelProduct"] = _sanitize_for_put(dict(smartstore))
 
         put_resp = requests.put(base_url, headers=headers, json=put_body, timeout=20)
         if put_resp.status_code == 200:
