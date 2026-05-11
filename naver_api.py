@@ -999,26 +999,41 @@ _READONLY_KEYS = {
 }
 
 
+# 어디에 있든 발견 시 제거할 태그/검색태그 관련 필드명
+_TAG_FIELDS_TO_STRIP = {'sellerTags', 'searchTags', 'searchTagList', 'tagList', 'productTagList'}
+
+
+def _strip_tag_fields_deep(obj):
+    """dict/list 구조를 재귀적으로 탐색하여 _TAG_FIELDS_TO_STRIP 필드 모두 제거 (in-place)."""
+    if isinstance(obj, dict):
+        for k in list(obj.keys()):
+            if k in _TAG_FIELDS_TO_STRIP:
+                obj.pop(k, None)
+            else:
+                _strip_tag_fields_deep(obj[k])
+    elif isinstance(obj, list):
+        for item in obj:
+            _strip_tag_fields_deep(item)
+
+
 def _sanitize_for_put(d: dict) -> dict:
-    """PUT 본문에 부적합한 read-only / 검증 실패 유발 필드 정리 (재귀적)."""
+    """PUT 본문에 부적합한 read-only / 검증 실패 유발 필드 정리."""
     if not isinstance(d, dict):
         return d
     out = {k: v for k, v in d.items() if k not in _READONLY_KEYS}
+
+    # 어디에 있든 태그류 필드는 전부 제거 (금칙어 거부 회피)
+    _strip_tag_fields_deep(out)
 
     # 가격표시제 대상 카테고리: detailAttribute.unitCapacity.unitPriceYn 필수 (boolean)
     # 없거나 문자열이면 false(단위가격 미사용) 채움
     da = out.setdefault('detailAttribute', {})
     if isinstance(da, dict):
-        da.pop('sellerTags', None)
         uc = da.setdefault('unitCapacity', {})
         if isinstance(uc, dict):
             cur = uc.get('unitPriceYn')
             if not isinstance(cur, bool):
                 uc['unitPriceYn'] = False
-        # productInfoProvidedNotice 안에 sellerTags 같은 잔재가 있을 수 있어 제거
-        notice = da.get('productInfoProvidedNotice')
-        if isinstance(notice, dict):
-            notice.pop('sellerTags', None)
 
     return out
 
