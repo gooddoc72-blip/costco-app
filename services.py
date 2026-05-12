@@ -67,10 +67,10 @@ def compute_costs_for_df(username, df, _user_prods=None, _shared_prods=None):
 
 
 def process_and_save_orders(username, df, order_date, shipping_cost, box_cost,
-                             save_history=True):
+                             save_history=True, save_daily=True):
     """주문 DataFrame 통합 저장 — 모든 경로(네이버/쿠팡/엑셀/auto_task)의 단일 진입점.
     1) 매입가 일관 계산 (calc_cost: split_qty 적용)
-    2) save_daily_orders (수익 계산용)
+    2) save_daily_orders (수익 계산용, save_daily=True일 때만)
     3) save_order_history (송장 추적용, save_history=True일 때)
     4) update_product_info_from_orders (배송비/판매가 자동 갱신)
 
@@ -86,13 +86,16 @@ def process_and_save_orders(username, df, order_date, shipping_cost, box_cost,
     df_with_costs = compute_costs_for_df(username, df)
     result['df'] = df_with_costs
 
-    # 2) daily_orders 저장
-    try:
-        _db_save_daily_orders(username, order_date, df_with_costs,
-                              int(shipping_cost), int(box_cost))
-        result['orders'] = len(df_with_costs)
-    except Exception as e:
-        result['error_orders'] = str(e)
+    # 2) daily_orders 저장 (save_daily=True일 때만 — 사용자 명시적 저장 시점)
+    if save_daily:
+        try:
+            _db_save_daily_orders(username, order_date, df_with_costs,
+                                  int(shipping_cost), int(box_cost))
+            result['orders'] = len(df_with_costs)
+        except Exception as e:
+            result['error_orders'] = str(e)
+    else:
+        result['orders'] = len(df_with_costs)  # 표시용 카운트만 채움
 
     # 3) order_history 저장
     if save_history:

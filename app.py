@@ -296,7 +296,7 @@ def run_admin():
 _pages = {
     "운영": [
         st.Page(run_home,         title="홈",          icon="🏠", default=True),
-        st.Page(run_order_upload, title="주문 업로드", icon="📋"),
+        st.Page(run_order_upload, title="일일 주문 수집", icon="📋"),
         st.Page(run_tracking,     title="송장번호",    icon="📮"),
         st.Page(run_profit_calc,  title="수익 계산",   icon="💰"),
         st.Page(run_dashboard,    title="대시보드",    icon="📊"),

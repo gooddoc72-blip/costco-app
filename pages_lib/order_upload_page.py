@@ -102,7 +102,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     channel_seller_id = _gs("channel_seller_id")
     excel_pw = _gs("excel_password")
 
-    st.header("📋 주문 파일 업로드")
+    st.header("📋 일일 주문 수집")
+    st.caption("주문을 가져온 뒤 검토하고 **💾 저장** 버튼을 눌러야 수익계산에 반영됩니다.")
 
     # ── API 자동 조회 ──
     if HAS_NAVER_API and api_id and api_secret:
@@ -219,7 +220,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 except Exception:
                     pass
 
-            # ── 3. 자동 저장 (수익계산용) — 통합 진입점 사용 ──
+            # ── 3. 매입가 계산만 수행 (수익계산 저장은 사용자가 명시적으로) ──
             if fetched_df is not None and not fetched_df.empty:
                 _s_cost = int(_gs('shipping_cost') or 1800)
                 _b_cost = int(_gs('box_cost') or 300)
@@ -229,16 +230,15 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         USERNAME, fetched_df,
                         datetime.today().strftime("%Y-%m-%d"),
                         _s_cost, _b_cost,
-                        save_history=False,  # 위에서 이미 save_order_history 호출됨
+                        save_history=False,    # 위에서 이미 save_order_history 호출됨
+                        save_daily=False,      # 사용자가 저장 버튼 누를 때만 daily_orders 저장
                     )
-                    st.session_state['orders_unsaved'] = False
-                    st.toast(f"✅ {_r['orders']}건 주문 자동 저장 완료", icon="💾")
                     if _r.get('error_orders'):
-                        st.error(f"주문 저장 일부 실패: {_r['error_orders']}")
+                        st.error(f"매입가 계산 일부 실패: {_r['error_orders']}")
                 except Exception as _se:
-                    st.error(f"자동 저장 실패: {_se}")
+                    st.error(f"매입가 계산 실패: {_se}")
 
-            st.success(f"✅ API 수집 {api_count}건 / DB 미발송 {len(df)}건 표시")
+            st.success(f"✅ API 수집 {api_count}건 / DB 미발송 {len(df)}건 표시 — 💾 저장 버튼을 눌러 수익계산에 반영하세요")
             st.rerun()
         st.divider()
     elif not HAS_NAVER_API:
@@ -288,7 +288,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         cq_df[_c] = pd.to_numeric(cq_df[_c], errors='coerce').fillna(0).astype(int)
                 cq_df = cq_df.sort_values('상품명').reset_index(drop=True)
 
-                # 통합 진입점으로 매입가 계산 + 저장 (split_qty 적용)
+                # 통합 진입점으로 매입가 계산만 수행 (daily_orders는 사용자 저장 시점에)
                 from services import process_and_save_orders
                 _s_cost = int(_gs('shipping_cost') or 1800)
                 _b_cost = int(_gs('box_cost') or 300)
@@ -297,6 +297,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     datetime.today().strftime("%Y-%m-%d"),
                     _s_cost, _b_cost,
                     save_history=True,
+                    save_daily=False,  # 사용자가 💾 저장 버튼 눌러야 daily_orders 반영
                 )
                 cq_df = _cq_result['df']  # 구입가격 채워진 df
 
@@ -308,7 +309,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 st.session_state['order_excel_bytes'] = _cq_xl.getvalue()
                 st.session_state['orders'] = cq_df
                 st.session_state['order_date'] = datetime.today().strftime("%Y-%m-%d")
-                st.session_state['orders_unsaved'] = False
+                st.session_state['orders_unsaved'] = True  # 저장 대기 상태
 
                 _notes = []
                 if _cq_result['history']:    _notes.append(f"이력 {_cq_result['history']}건 저장")
@@ -362,7 +363,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0).astype(int)
                 df = df.sort_values('상품명').reset_index(drop=True)
 
-                # 통합 진입점 — 매칭 + 매입가 계산 + 저장 일관 처리
+                # 매칭 + 매입가 계산만 (daily_orders는 사용자가 명시적으로 💾 저장 버튼 눌러야 반영)
                 from services import process_and_save_orders
                 _s_cost = int(_gs('shipping_cost') or 1800)
                 _b_cost = int(_gs('box_cost') or 300)
@@ -371,17 +372,18 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     order_date.strftime("%Y-%m-%d"),
                     _s_cost, _b_cost,
                     save_history=True,
+                    save_daily=False,
                 )
                 df = _xl_result['df']  # 구입가격 채워진 df
 
                 st.session_state['orders'] = df
                 st.session_state['order_date'] = order_date.strftime("%Y-%m-%d")
-                st.session_state['orders_unsaved'] = False
+                st.session_state['orders_unsaved'] = True  # 저장 대기
 
                 if _xl_result.get('error_orders'):
-                    st.error(f"주문 저장 실패: {_xl_result['error_orders']}")
+                    st.error(f"매입가 계산 일부 실패: {_xl_result['error_orders']}")
                 else:
-                    st.toast(f"✅ {_xl_result['orders']}건 주문 자동 저장 완료", icon="💾")
+                    st.success(f"✅ {_xl_result['orders']}건 수집 완료 — 💾 저장 버튼을 눌러 수익계산에 반영하세요")
 
                 notes = []
                 if _xl_result['history']:    notes.append(f"이력 {_xl_result['history']}건 저장")
@@ -392,31 +394,57 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
 
     if 'orders' in st.session_state and st.session_state['orders'] is not None:
         df = st.session_state['orders']
-        order_date_str = st.session_state.get('order_date', datetime.today().strftime("%Y-%m-%d"))
-
-        st.subheader(f"📦 주문 목록 ({len(df)}건)")
+        _default_date_str = st.session_state.get('order_date', datetime.today().strftime("%Y-%m-%d"))
 
         _unsaved = st.session_state.get('orders_unsaved', False)
-        _sc1, _sc2, _sc3 = st.columns([2, 2, 4])
-        if _sc1.button("🔄 다시 저장", key="save_orders_btn", help="자동 저장이 실패했거나 날짜를 변경한 경우 재저장"):
+        st.subheader(f"📦 주문 목록 ({len(df)}건)" + (" — 💾 저장 대기" if _unsaved else " — ✅ 저장됨"))
+
+        # 저장 행: 날짜 선택 + 저장 버튼 + 지우기 버튼
+        _sc_date, _sc_save, _sc_clear, _ = st.columns([2, 2, 1.5, 3])
+        with _sc_date:
+            try:
+                _default_dt = datetime.strptime(_default_date_str, "%Y-%m-%d")
+            except Exception:
+                _default_dt = datetime.today()
+            _save_date = st.date_input(
+                "저장할 주문 날짜", value=_default_dt, key="save_date_input",
+                help="이 날짜로 daily_orders 에 저장됩니다 (수익계산에서 이 날짜를 선택하면 불러옴)"
+            )
+            order_date_str = _save_date.strftime("%Y-%m-%d")
+        with _sc_save:
+            st.write("")
+            st.write("")
+            _save_clicked = st.button(
+                "💾 저장하기" + (f" ({order_date_str})" if _unsaved else " (재저장)"),
+                key="save_orders_btn",
+                type="primary" if _unsaved else "secondary",
+                use_container_width=True,
+            )
+        with _sc_clear:
+            st.write("")
+            st.write("")
+            _clear_clicked = st.button("🗑 지우기", key="cancel_orders_btn", use_container_width=True)
+
+        if _save_clicked:
             _s_cost = int(_gs('shipping_cost') or 1800)
             _b_cost = int(_gs('box_cost') or 300)
             try:
                 from services import process_and_save_orders
                 _r = process_and_save_orders(
                     USERNAME, df, order_date_str, _s_cost, _b_cost,
-                    save_history=True,
+                    save_history=True, save_daily=True,
                 )
                 if _r.get('error_orders'):
                     st.error(f"저장 실패: {_r['error_orders']}")
                 else:
                     st.session_state['orders'] = _r['df']
+                    st.session_state['order_date'] = order_date_str
                     st.session_state['orders_unsaved'] = False
-                    st.success(f"✅ {order_date_str} 주문 {_r['orders']}건 저장됨")
+                    st.success(f"✅ {order_date_str} 주문 {_r['orders']}건 저장 완료 — 수익계산에서 확인하세요")
                     st.rerun()
             except Exception as _e:
                 st.error(f"저장 실패: {_e}")
-        if _sc2.button("🗑 목록 지우기", key="cancel_orders_btn"):
+        if _clear_clicked:
             for _k in ['orders', 'order_date', 'order_full', 'order_excel_bytes', 'orders_unsaved', '_naver_status_dist']:
                 st.session_state.pop(_k, None)
             st.rerun()
