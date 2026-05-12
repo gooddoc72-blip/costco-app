@@ -115,9 +115,10 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     st.caption("택배사 PIDPIC/접수파일을 업로드하면 네이버 스마트스토어 일괄 송장 등록 파일을 생성하거나 API로 자동 발송처리합니다.")
 
     _ship_c1, _ship_c2 = st.columns([4, 1])
-    pidpic_file = _ship_c1.file_uploader(
-        "택배사 파일 업로드 (xlsx/xls/csv) — 롯데PIDPIC, CJ파일접수상세내역 모두 지원",
-        type=['xlsx', 'xls', 'csv'], key="track_pidpic"
+    pidpic_files = _ship_c1.file_uploader(
+        "택배사 파일 업로드 (xlsx/xls/csv) — 여러 개 한번에 가능, 롯데PIDPIC·CJ파일접수상세내역 모두 지원",
+        type=['xlsx', 'xls', 'csv'], key="track_pidpic",
+        accept_multiple_files=True,
     )
     courier = _ship_c2.selectbox("택배사", ["CJ대한통운", "롯데택배", "한진택배", "우체국택배", "로젠택배"])
 
@@ -169,98 +170,102 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     # ── 파일 파싱 결과 (파일 있을 때만) ─────────────────────────────────────
     result_df = None  # 항상 초기화 — 아래 발송 섹션에서 None 체크
 
-    if pidpic_file:
-        pidpic_df, err2 = read_excel_auto(pidpic_file)
+    if pidpic_files:
+        _order_kws = ['주문번호', '고객주문', 'ORDER', '주문 번호']
+        _track_kws = ['운송장', '송장', 'TRACKING', '운송 장', '운송번호',
+                      'waybill', 'WAYBILL', '운송No', '배송번호']
 
-        if pidpic_df is None:
-            st.error(f"파일 읽기 실패: {err2}")
-        else:
-            all_cols = [str(c) for c in pidpic_df.columns]
+        _per_file_results = []   # [{name, count, df}]
+        _per_file_errors  = []   # [str]
 
-            # ── 컬럼 자동 인식 (롯데·CJ 모두 대응) ─────────────────
-            _order_kws  = ['주문번호', '고객주문', 'ORDER', '주문 번호']
-            _track_kws  = ['운송장', '송장', 'TRACKING', '운송 장', '운송번호', 'waybill', 'WAYBILL', '운송No', '배송번호']
-            col_order_auto = next((c for c in all_cols if any(kw in c for kw in _order_kws)), None)
-            col_track_auto = next((c for c in all_cols if any(kw in c for kw in _track_kws)), None)
-
-            with st.expander("📋 파일 컬럼 확인 / 수동 선택", expanded=(not col_order_auto or not col_track_auto)):
-                st.caption(f"파일에서 찾은 컬럼 ({len(all_cols)}개): {', '.join(all_cols)}")
-                _mc1, _mc2 = st.columns(2)
-                col_order = _mc1.selectbox(
-                    "🔢 주문번호 컬럼 (= 상품주문번호)", all_cols,
-                    index=all_cols.index(col_order_auto) if col_order_auto else 0,
-                    key="sel_order_col"
+        for _pf in pidpic_files:
+            _pdf, _perr = read_excel_auto(_pf)
+            if _pdf is None:
+                _per_file_errors.append(f"❌ {_pf.name}: 읽기 실패 — {_perr}")
+                continue
+            _cols = [str(c) for c in _pdf.columns]
+            _co = next((c for c in _cols if any(kw in c for kw in _order_kws)), None)
+            _ct = next((c for c in _cols if any(kw in c for kw in _track_kws)), None)
+            if not _co or not _ct or _co == _ct:
+                _per_file_errors.append(
+                    f"⚠️ {_pf.name}: 주문번호/운송장 컬럼을 자동 인식하지 못했습니다 — "
+                    f"발견된 컬럼: {', '.join(_cols)}"
                 )
-                col_track = _mc2.selectbox(
-                    "📦 운송장번호 컬럼", all_cols,
-                    index=all_cols.index(col_track_auto) if col_track_auto else 0,
-                    key="sel_track_col"
+                continue
+            _pdf['_주문번호']   = _pdf[_co].apply(to_id_str)
+            _pdf['_운송장번호'] = _pdf[_ct].apply(to_id_str)
+            _valid = _pdf[
+                (_pdf['_주문번호'].str.len() > 5) &
+                (_pdf['_운송장번호'].str.len() > 5) &
+                (_pdf['_운송장번호'] != 'nan')
+            ].copy()
+            if _valid.empty:
+                _per_file_errors.append(f"⚠️ {_pf.name}: 유효 행 없음")
+                continue
+            _file_df = pd.DataFrame({
+                '상품주문번호': _valid['_주문번호'].values,
+                '배송방법': '택배,등기,소포',
+                '택배사': courier,
+                '송장번호': _valid['_운송장번호'].values,
+            })
+            _same = (_file_df['상품주문번호'] == _file_df['송장번호']).mean()
+            if _same > 0.5:
+                _per_file_errors.append(
+                    f"⛔ {_pf.name}: 송장번호가 주문번호와 동일 비율 {int(_same*100)}% — 컬럼 인식 오류 의심"
                 )
-                if col_order_auto and col_track_auto:
-                    st.success(f"✅ 자동 인식 완료 — 주문번호: **{col_order}** / 운송장: **{col_track}**")
-                else:
-                    st.warning("⚠️ 컬럼을 자동으로 찾지 못했습니다. 위에서 직접 선택해주세요.")
+                continue
+            _per_file_results.append({'name': _pf.name, 'count': len(_file_df),
+                                       'col_order': _co, 'col_track': _ct, 'df': _file_df})
 
-            if col_order == col_track:
-                st.error(
-                    f"⛔ 주문번호 컬럼과 운송장번호 컬럼이 모두 **'{col_order}'** 으로 동일합니다.\n\n"
-                    "위 '📦 운송장번호 컬럼' 셀렉트박스에서 실제 운송장번호 컬럼을 선택해주세요."
-                )
-                st.caption(f"📋 파일의 전체 컬럼: {', '.join(all_cols)}")
-            else:
-                pidpic_df['_주문번호']   = pidpic_df[col_order].apply(to_id_str)
-                pidpic_df['_운송장번호'] = pidpic_df[col_track].apply(to_id_str)
-                valid = pidpic_df[
-                    (pidpic_df['_주문번호'].str.len() > 5) &
-                    (pidpic_df['_운송장번호'].str.len() > 5) &
-                    (pidpic_df['_운송장번호'] != 'nan')
-                ].copy()
+        # 파일별 처리 결과 표시
+        if _per_file_results:
+            with st.expander(f"📋 파일별 인식 결과 ({len(_per_file_results)}개 성공"
+                              + (f" / {len(_per_file_errors)}개 실패" if _per_file_errors else "")
+                              + ")", expanded=bool(_per_file_errors)):
+                for _r in _per_file_results:
+                    st.success(f"✅ {_r['name']}: {_r['count']}건 — 주문번호: **{_r['col_order']}** / 운송장: **{_r['col_track']}**")
+                for _e in _per_file_errors:
+                    st.error(_e)
+        elif _per_file_errors:
+            for _e in _per_file_errors:
+                st.error(_e)
 
-                if valid.empty:
-                    st.warning("유효한 데이터가 없습니다. 컬럼 선택이 올바른지 확인하세요.")
-                    st.dataframe(pidpic_df[[col_order, col_track]].head(5), use_container_width=True)
-                else:
-                    result_df = pd.DataFrame({
-                        '상품주문번호': valid['_주문번호'].values,
-                        '배송방법': '택배,등기,소포',
-                        '택배사': courier,
-                        '송장번호': valid['_운송장번호'].values,
-                    })
-                    _same_ratio = (result_df['상품주문번호'] == result_df['송장번호']).mean()
-                    if _same_ratio > 0.5:
-                        st.error(
-                            f"⛔ 송장번호가 상품주문번호와 동일합니다 ({int(_same_ratio*100)}% 일치). "
-                            "운송장번호 컬럼 선택을 다시 확인해주세요."
-                        )
-                        result_df = None  # 오류 시 발송 불가
+        # 모든 파일의 valid 행을 합산 + 중복 주문번호 제거(첫 번째 우선)
+        if _per_file_results:
+            result_df = pd.concat([r['df'] for r in _per_file_results], ignore_index=True)
+            _before = len(result_df)
+            result_df = result_df.drop_duplicates(subset=['상품주문번호'], keep='first').reset_index(drop=True)
+            _dup_dropped = _before - len(result_df)
+            if _dup_dropped > 0:
+                st.caption(f"💡 중복 주문번호 {_dup_dropped}건 제거됨 (첫 번째 파일의 송장 사용)")
 
-                    if result_df is not None:
-                        st.metric("처리 가능 건수", f"{len(result_df)}건")
-                        st.dataframe(result_df, use_container_width=True, hide_index=True)
-                        st.divider()
+        if result_df is not None:
+            st.metric("처리 가능 건수", f"{len(result_df)}건")
+            st.dataframe(result_df, use_container_width=True, hide_index=True)
+            st.divider()
 
-                        # ── 반자동: XLSX 다운로드 ─────────────────────────
-                        st.subheader("📥 반자동 — 파일 다운로드 후 스마트스토어에 직접 업로드")
-                        _xl_out = io.BytesIO()
-                        import xlsxwriter as _xlsxwriter
-                        _wb = _xlsxwriter.Workbook(_xl_out, {'in_memory': True})
-                        _ws = _wb.add_worksheet('발송처리')
-                        for _ci, _h in enumerate(['상품주문번호', '배송방법', '택배사', '송장번호']):
-                            _ws.write(0, _ci, _h)
-                        for _ri, (_, _row) in enumerate(result_df.iterrows(), 1):
-                            _ws.write(_ri, 0, str(_row['상품주문번호']))
-                            _ws.write(_ri, 1, str(_row['배송방법']))
-                            _ws.write(_ri, 2, str(_row['택배사']))
-                            _ws.write(_ri, 3, str(_row['송장번호']))
-                        _wb.close()
-                        _xl_out.seek(0)
-                        st.download_button(
-                            label=f"📥 송장번호_일괄_등록.xlsx 다운로드 ({len(result_df)}건)",
-                            data=_xl_out,
-                            file_name=f"송장번호_일괄_등록_{datetime.today().strftime('%Y%m%d')}.xlsx",
-                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                            use_container_width=True,
-                        )
+            # ── 반자동: XLSX 다운로드 ─────────────────────────
+            st.subheader("📥 반자동 — 파일 다운로드 후 스마트스토어에 직접 업로드")
+            _xl_out = io.BytesIO()
+            import xlsxwriter as _xlsxwriter
+            _wb = _xlsxwriter.Workbook(_xl_out, {'in_memory': True})
+            _ws = _wb.add_worksheet('발송처리')
+            for _ci, _h in enumerate(['상품주문번호', '배송방법', '택배사', '송장번호']):
+                _ws.write(0, _ci, _h)
+            for _ri, (_, _row) in enumerate(result_df.iterrows(), 1):
+                _ws.write(_ri, 0, str(_row['상품주문번호']))
+                _ws.write(_ri, 1, str(_row['배송방법']))
+                _ws.write(_ri, 2, str(_row['택배사']))
+                _ws.write(_ri, 3, str(_row['송장번호']))
+            _wb.close()
+            _xl_out.seek(0)
+            st.download_button(
+                label=f"📥 송장번호_일괄_등록.xlsx 다운로드 ({len(result_df)}건)",
+                data=_xl_out,
+                file_name=f"송장번호_일괄_등록_{datetime.today().strftime('%Y%m%d')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+            )
 
     # ══════════════════════════════════════════════════════════════════════
     # 🚀 자동 발송처리 — 항상 노출 (파일 없으면 안내 메시지, 있으면 버튼 활성)
