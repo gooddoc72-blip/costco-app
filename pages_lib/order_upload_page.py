@@ -254,10 +254,11 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     if HAS_COUPANG_API and cq_access and cq_secret and cq_vendor:
         cq_c1, cq_c2 = st.columns([2, 1])
         with cq_c1:
+            # ⭐ 기본값 ALL: 결제완료(신규)와 상품준비중(발주확인 후) 모두 수집
             _cq_status_opts = {
-                "결제완료 (신규주문)":   "ACCEPT",
-                "발주확인":              "INSTRUCT",
-                "신규 + 발주확인 (전체)": "ALL",
+                "신규 + 상품준비중 (전체) ⭐":  "ALL",
+                "결제완료 (신규주문)":           "ACCEPT",
+                "상품준비중 (발주확인 후)":      "INSTRUCT",
             }
             _cq_status_label = st.selectbox(
                 "쿠팡 주문 상태", list(_cq_status_opts.keys()),
@@ -271,9 +272,10 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
 
         if cq_fetch_btn:
             with st.spinner("쿠팡 Wing API에서 주문을 조회 중..."):
+                # days_back=7: 상품준비중에서 며칠 정체된 주문까지 포함
                 cq_rows, cq_err = coupang_api.get_orders(
                     cq_access, cq_secret, cq_vendor,
-                    status=_cq_status, days_back=2,
+                    status=_cq_status, days_back=7,
                 )
             if cq_err:
                 st.error(f"❌ {cq_err}")
