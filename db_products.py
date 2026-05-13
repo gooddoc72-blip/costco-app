@@ -530,16 +530,32 @@ def get_all_products_merged(username):
     return merged
 
 
-def upsert_product(username, costco_name, keyword, price, product_no='', split_qty=1, shipping_fee=None):
+def upsert_product(username, costco_name, keyword, price, product_no='', split_qty=1,
+                   shipping_fee=None, naver_origin_pno=''):
+    """제품 가격/정보 upsert.
+    조회 우선순위: naver_origin_pno (네이버 원상품번호) > product_no (코스트코) > match_keyword
+    → 같은 코스트코 상품번호로 여러 네이버 상품이 있어도 각각 별도 가격 저장 가능.
+    """
     conn = get_user_db(username)
+    _ensure_products_columns(conn)
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     split_qty = max(1, int(split_qty or 1))
     existing = None
-    if product_no:
+    # 1순위: naver_origin_pno (네이버 상품별로 고유)
+    if naver_origin_pno:
         existing = conn.execute(
             "SELECT id, shipping_fee, unit_price, costco_name, sale_price "
-            "FROM products WHERE product_no=?", (product_no,)
+            "FROM products WHERE naver_origin_pno=? AND naver_origin_pno != ''",
+            (naver_origin_pno,)
         ).fetchone()
+    # 2순위: 코스트코 product_no (네이버 매핑 없는 경우)
+    if not existing and product_no:
+        existing = conn.execute(
+            "SELECT id, shipping_fee, unit_price, costco_name, sale_price "
+            "FROM products WHERE product_no=? AND (naver_origin_pno='' OR naver_origin_pno IS NULL)",
+            (product_no,)
+        ).fetchone()
+    # 3순위: match_keyword
     if not existing:
         existing = conn.execute(
             "SELECT id, shipping_fee, unit_price, costco_name, sale_price "
@@ -560,15 +576,18 @@ def upsert_product(username, costco_name, keyword, price, product_no='', split_q
             new_price = existing_price
             new_name  = existing['costco_name'] or costco_name
         conn.execute("""UPDATE products
-                        SET unit_price=?, costco_name=?, updated_at=?, product_no=?, split_qty=?, shipping_fee=?
+                        SET unit_price=?, costco_name=?, updated_at=?, product_no=?, split_qty=?, shipping_fee=?,
+                            naver_origin_pno=COALESCE(NULLIF(?, ''), naver_origin_pno)
                         WHERE id=?""",
-                     (new_price, new_name, now, product_no, split_qty, fee, existing['id']))
+                     (new_price, new_name, now, product_no, split_qty, fee,
+                      naver_origin_pno or '', existing['id']))
     else:
         fee = shipping_fee if shipping_fee is not None else 0
         conn.execute("""INSERT INTO products
                         (product_no, store_product_name, costco_name, match_keyword,
-                         unit_price, split_qty, shipping_fee, updated_at)
-                        VALUES (?,?,?,?,?,?,?,?)""",
-                     (product_no, costco_name, costco_name, keyword, price, split_qty, fee, now))
+                         unit_price, split_qty, shipping_fee, naver_origin_pno, updated_at)
+                        VALUES (?,?,?,?,?,?,?,?,?)""",
+                     (product_no, costco_name, costco_name, keyword, price, split_qty, fee,
+                      naver_origin_pno or '', now))
     conn.commit()
     conn.close()

@@ -771,12 +771,13 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     _keep_sq = max(1, int((_user_match or {}).get('split_qty') or 1))
                     _existing_pno = _picked_pno or (_user_match or {}).get('product_no', '') or ''
                     _existing_fee = (_user_match or {}).get('shipping_fee', None)
+                    # ⭐ 네이버 원상품번호 — 같은 코스트코 상품번호로 여러 네이버 상품이 있어도 각각 별도 저장
+                    _existing_naver_origin = (_user_match or {}).get('naver_origin_pno', '') or ''
                     # 사용자가 입력한 _new_cost (= _unit × _qty) 을 그대로 단가로 저장
-                    # split_qty가 1이면 단가 = _new_cost / qty
-                    # split_qty가 N이면 단가 = (_new_cost / qty) × N (1박스 가격)
                     _save_price = _unit * _keep_sq
                     upsert_product(USERNAME, _save_kw, _save_kw, _save_price,
                                    product_no=_existing_pno, split_qty=_keep_sq,
+                                   naver_origin_pno=_existing_naver_origin,
                                    shipping_fee=_existing_fee)
                     _saved_n += 1
             invalidate_data_cache()
