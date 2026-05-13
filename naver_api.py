@@ -1093,12 +1093,14 @@ def update_product_price(client_id, client_secret, origin_product_no, new_price)
 
 # ── 정산 내역 조회 ─────────────────────────────────────────
 def get_settlement_history(client_id, client_secret, start_date, end_date):
-    """네이버 커머스 정산 API — /external/v1/pay-settle/settle/case (건별).
-    파라미터명 후보를 순차 시도. 200 응답을 받으면 그 path/style을 사용.
+    """네이버 커머스 정산 API.
+    Returns:
+        (records, error_msg, used_endpoint_info)
+        used_endpoint_info: "path?style (count rows)" 디버그용
     """
     token, err = get_token(client_id, client_secret)
     if not token:
-        return None, err
+        return None, err, None
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     base = "https://api.commerce.naver.com"
     failed = []
@@ -1114,19 +1116,18 @@ def get_settlement_history(client_id, client_secret, start_date, end_date):
                     failed.append(f"{path}?{style}: 200 비-JSON")
                     continue
                 if isinstance(data, list):
-                    return data, None
+                    return data, None, f"{path} [{style}] → list {len(data)}"
                 if isinstance(data, dict):
-                    # Naver pay-settle 응답은 'elements'에 들어옴 (확인됨)
                     items = (data.get('elements') or data.get('contents')
                              or data.get('data') or data.get('items')
                              or data.get('list') or [])
                     if isinstance(items, list):
-                        return items, None
-                return [], None
+                        return items, None, f"{path} [{style}] → {len(items)}건"
+                return [], None, f"{path} [{style}] → 알 수 없는 응답 구조"
             failed.append(f"{path}?{style}: {resp.status_code}")
         except Exception as e:
             failed.append(f"{path}?{style}: EXC {str(e)[:40]}")
-    return None, "정산 endpoint 모두 실패 — " + " | ".join(failed)
+    return None, "정산 endpoint 모두 실패 — " + " | ".join(failed), None
 
 
 # 정산 API — Naver Commerce 공식 path (애플리케이션 권한 그룹: 정산)

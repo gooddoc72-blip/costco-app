@@ -95,19 +95,30 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     # ── 정산 수집 ────────────────────────────────────────────────
     if fetch_clicked:
         with st.spinner(f"{settle_date_str} 정산 내역 조회 중..."):
-            records, err = naver_api.get_settlement_history(
+            records, err, used = naver_api.get_settlement_history(
                 api_id, api_secret, settle_date_str, settle_date_str
             )
+        if used:
+            st.caption(f"🔗 사용된 endpoint: `{used}`")
         if err:
             st.error(f"❌ 정산 조회 실패: {err}")
             return
         if not records:
-            st.info(f"{settle_date_str}에 정산된 주문이 없습니다.")
+            st.info(f"{settle_date_str}에 정산된 주문이 없습니다. (응답 비어있음)")
         else:
+            # 첫 레코드를 보여줘서 필드 구조 확인
+            with st.expander(f"📋 응답 샘플 (첫 레코드) — 필드 확인용", expanded=False):
+                st.json(records[0])
             # 기존 같은 날짜 정산 제거 후 재저장 (멱등성)
             delete_naver_settlements_by_date(USERNAME, settle_date_str)
             saved = save_naver_settlements(USERNAME, settle_date_str, records)
-            st.success(f"✅ {settle_date_str} 정산 {saved}건 저장됨")
+            if saved == 0 and len(records) > 0:
+                st.warning(
+                    f"⚠️ API에서 {len(records)}건 받았으나 저장 0건 — productOrderId 필드가 없는 응답일 가능성 "
+                    f"(예: /daily 일별 합계). /case 응답이 필요합니다."
+                )
+            else:
+                st.success(f"✅ {settle_date_str} 정산 {saved}건 저장됨 (API 응답 {len(records)}건)")
 
     # ── 매칭 결과 표시 ───────────────────────────────────────────
     st.divider()
@@ -115,7 +126,12 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
 
     # DB에서 양쪽 데이터 로드
     settled_rows = get_naver_settlements_by_date(USERNAME, settle_date_str)
-    shipped_rows = search_order_history(USERNAME, date_from=ship_date_str, date_to=ship_date_str, limit=5000)
+    _all_shipped = search_order_history(USERNAME, date_from=ship_date_str, date_to=ship_date_str, limit=5000)
+    # 네이버 정산 매칭이므로 네이버 주문만 필터 (쿠팡 order_no는 '-' 포함 형식)
+    shipped_rows = [r for r in _all_shipped if '-' not in str(r.get('order_no', ''))]
+    _coupang_count = len(_all_shipped) - len(shipped_rows)
+    if _coupang_count > 0:
+        st.caption(f"💡 발송 {len(_all_shipped)}건 중 쿠팡 {_coupang_count}건 제외 → 네이버 {len(shipped_rows)}건 매칭 대상")
 
     if not settled_rows and not shipped_rows:
         st.info("선택한 날짜에 정산 내역과 발송건이 모두 없습니다. 먼저 정산 수집을 눌러주세요.")
