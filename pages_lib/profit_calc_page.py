@@ -126,23 +126,34 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             st.rerun()
     with _col_clean:
         st.write(""); st.write("")
-        # 진짜 마지막 수단 — 잘못 저장된 daily_orders 통째로 삭제
-        if st.button("🗑 이 날짜 정리", key="profit_clean_date",
+        # 확인 다이얼로그: 첫 클릭 → 경고 표시, 두 번째 클릭 → 실제 삭제
+        _confirm_key = f"_clean_confirm_{calc_date_str}"
+        _is_confirming = st.session_state.get(_confirm_key, False)
+        _btn_label = "⚠️ 정말 삭제? (한번더)" if _is_confirming else "🗑 이 날짜 정리"
+        if st.button(_btn_label, key="profit_clean_date",
                      use_container_width=True,
-                     help=f"{calc_date_str} daily_orders 모두 삭제. 일일 주문 수집에서 결제일 필터로 재저장 필요."):
-            try:
-                _cn = get_user_db(USERNAME)
-                _cur = _cn.execute("DELETE FROM daily_orders WHERE order_date=?", (calc_date_str,))
-                _deleted = _cur.rowcount
-                _cn.commit()
-                _cn.close()
-                if invalidate_data_cache:
-                    invalidate_data_cache()
-                st.session_state.pop('_pcalc_match_cache', None)
-                st.success(f"✅ {calc_date_str} daily_orders {_deleted}건 삭제 — 일일 주문 수집에서 재저장하세요")
+                     type="primary" if _is_confirming else "secondary",
+                     help=f"{calc_date_str} daily_orders 통째 삭제 (확인용 더블클릭)."):
+            if not _is_confirming:
+                # 첫 클릭 → 확인 모드 진입
+                st.session_state[_confirm_key] = True
                 st.rerun()
-            except Exception as _de:
-                st.error(f"삭제 실패: {_de}")
+            else:
+                # 두 번째 클릭 → 실제 삭제
+                try:
+                    _cn = get_user_db(USERNAME)
+                    _cur = _cn.execute("DELETE FROM daily_orders WHERE order_date=?", (calc_date_str,))
+                    _deleted = _cur.rowcount
+                    _cn.commit()
+                    _cn.close()
+                    if invalidate_data_cache:
+                        invalidate_data_cache()
+                    st.session_state.pop('_pcalc_match_cache', None)
+                    st.session_state.pop(_confirm_key, None)
+                    st.success(f"✅ {calc_date_str} daily_orders {_deleted}건 삭제됨")
+                    st.rerun()
+                except Exception as _de:
+                    st.error(f"삭제 실패: {_de}")
 
     # ── 매칭/구입가 전체 초기화 (빠른 액션) ─────────────────────
     _kw_clear_col1, _kw_clear_col2 = st.columns([1.5, 4])
@@ -1095,7 +1106,13 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         for _fm in _fail_msgs:
                             st.error(f"❌ {_fm}")
     else:
-        st.info("📋 '주문 업로드' 탭에서 먼저 주문 파일을 업로드해주세요.")
+        st.info(
+            f"📭 **{calc_date_str}** 에 표시할 데이터가 없습니다.\n\n"
+            "**해결 방법 (둘 중 하나):**\n\n"
+            "1. **📋 일일 주문 수집** 페이지 → API/엑셀 조회 → 💾 저장 "
+            "(결제일이 이 날짜인 주문 자동 필터링)\n"
+            "2. **📮 송장번호** 페이지 → 🚀 발송처리 → dispatch_log 자동 생성"
+        )
 
 
 
