@@ -353,12 +353,17 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     # 영수증에 같은 상품번호 있으면 영수증 가격 우선 (현재 실제 매입가)
                     if _rcpt_by_pno and _pno1 and _pno1 in _rcpt_by_pno:
                         _ri1 = _rcpt_by_pno[_pno1]
-                        costs.append(saved_cost if saved_cost > 0 else (_ri1['단가'] // sq) * _aq)
+                        # ⚠️ 최신 영수증 단가 우선 (saved_cost는 fallback)
+                        # 사용자가 단가 수정 후 저장 → DB에 반영 → 다음 render 시 새 값 사용
+                        _computed = (_ri1['단가'] // sq) * _aq
+                        costs.append(_computed if _computed > 0 else saved_cost)
                         match_sources.append("영수증")
                         matched_names.append(_ri1['상품명'])
                         matched_pnos.append(_pno1)
                     else:
-                        costs.append(saved_cost if saved_cost > 0 else (p['unit_price'] // sq) * _aq)
+                        # ⚠️ 최신 DB unit_price 우선 (사용자 저장값 반영)
+                        _computed = (p['unit_price'] // sq) * _aq
+                        costs.append(_computed if _computed > 0 else saved_cost)
                         match_sources.append("DB-번호")
                         matched_names.append(p['costco_name'])
                         matched_pnos.append(_pno1)
