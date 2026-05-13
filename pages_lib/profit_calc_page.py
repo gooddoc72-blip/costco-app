@@ -103,10 +103,42 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
 
     st.info(f"📐 수익 = (정산예정 + 고객택배비) - (구입가 + 택배비 {fmt(shipping_cost)} + 박스비 {fmt(box_cost)})")
 
-    col_date, _ = st.columns([1, 3])
+    col_date, _col_refresh, _col_clean, _ = st.columns([1.5, 1, 1.5, 2.5])
     with col_date:
         calc_date = st.date_input("계산할 주문 날짜 선택", value=datetime.today() - timedelta(days=1))
         calc_date_str = calc_date.strftime("%Y-%m-%d")
+    with _col_refresh:
+        st.write(""); st.write("")
+        if st.button("🔄 새로고침", key="profit_force_refresh",
+                     use_container_width=True,
+                     help="30초 캐시 무효화 — 일일 주문 수집에서 재저장했는데 옛 데이터가 보일 때"):
+            try:
+                if invalidate_data_cache:
+                    invalidate_data_cache()
+            except Exception:
+                pass
+            st.session_state.pop('_pcalc_match_cache', None)
+            st.rerun()
+    with _col_clean:
+        st.write(""); st.write("")
+        # 진짜 마지막 수단 — 잘못 저장된 daily_orders 통째로 삭제
+        if st.button("🗑 이 날짜 정리", key="profit_clean_date",
+                     use_container_width=True,
+                     help=f"{calc_date_str} daily_orders 모두 삭제. 일일 주문 수집에서 결제일 필터로 재저장 필요."):
+            try:
+                from db_core import get_user_db
+                _cn = get_user_db(USERNAME)
+                _cur = _cn.execute("DELETE FROM daily_orders WHERE order_date=?", (calc_date_str,))
+                _deleted = _cur.rowcount
+                _cn.commit()
+                _cn.close()
+                if invalidate_data_cache:
+                    invalidate_data_cache()
+                st.session_state.pop('_pcalc_match_cache', None)
+                st.success(f"✅ {calc_date_str} daily_orders {_deleted}건 삭제 — 일일 주문 수집에서 재저장하세요")
+                st.rerun()
+            except Exception as _de:
+                st.error(f"삭제 실패: {_de}")
 
     # ── 🧾 영수증 등록 (전체 기능 임베드) ──────────────────────
     # 영수증 PDF 업로드 + 가격 변동 감지 + 공유 DB 저장 + 상품번호 자동 매칭

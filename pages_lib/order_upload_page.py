@@ -461,6 +461,12 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     st.session_state['orders'] = _r['df']
                     st.session_state['order_date'] = order_date_str
                     st.session_state['orders_unsaved'] = False
+                    # 💡 캐시 무효화 — 수익계산이 즉시 최신 데이터 보이도록
+                    try:
+                        if invalidate_data_cache:
+                            invalidate_data_cache()
+                    except Exception:
+                        pass
                     st.success(f"✅ {order_date_str} 주문 {_r['orders']}건 저장 완료 — 수익계산에서 확인하세요")
                     if _filtered_note:
                         st.info(_filtered_note)
@@ -709,6 +715,11 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     st.error(f"저장 실패: {_save_r['error_orders']}")
                 else:
                     st.session_state['orders_unsaved'] = False
+                    try:
+                        if invalidate_data_cache:
+                            invalidate_data_cache()
+                    except Exception:
+                        pass
                     st.success(f"✅ {order_date_str} 장보기 {_save_r['orders']}건 저장 완료")
             except Exception as _e:
                 st.error(f"저장 실패: {_e}")
