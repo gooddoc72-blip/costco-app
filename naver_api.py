@@ -1095,15 +1095,17 @@ def update_product_price(client_id, client_secret, origin_product_no, new_price)
 def get_settlement_history(client_id, client_secret, start_date, end_date):
     """네이버 커머스 정산 API.
     Returns:
-        (records, error_msg, used_endpoint_info)
-        used_endpoint_info: "path?style (count rows)" 디버그용
+        (records, error_msg, used_endpoint_info, attempts_log)
+        attempts_log: 모든 시도의 상태/메시지 list — 성공/실패 무관하게 항상 반환
     """
     token, err = get_token(client_id, client_secret)
     if not token:
-        return None, err, None
+        return None, err, None, []
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     base = "https://api.commerce.naver.com"
-    failed = []
+    attempts = []
+    success_data = None
+    success_info = None
     for method, path, style in _SETTLEMENT_PATH_CANDIDATES:
         url = base + path
         params = _build_params(start_date, end_date, style)
@@ -1113,23 +1115,31 @@ def get_settlement_history(client_id, client_secret, start_date, end_date):
                 try:
                     data = resp.json()
                 except Exception:
-                    failed.append(f"{path}?{style}: 200 비-JSON")
+                    attempts.append(f"❌ {path}?{style}: 200 비-JSON")
                     continue
+                items = []
                 if isinstance(data, list):
-                    return data, None, f"{path} [{style}] → list {len(data)}"
-                if isinstance(data, dict):
+                    items = data
+                elif isinstance(data, dict):
                     items = (data.get('elements') or data.get('contents')
                              or data.get('data') or data.get('items')
                              or data.get('list') or [])
-                    if isinstance(items, list):
-                        return items, None, f"{path} [{style}] → {len(items)}건"
-                return [], None, f"{path} [{style}] → 알 수 없는 응답 구조"
-            # 400은 보통 응답 본문에 정확한 누락 필드명이 들어있음
+                attempts.append(f"✅ {path}?{style}: {len(items)}건")
+                # /case 응답을 우선 (productOrderId 있을 가능성), 없으면 /daily 폴백
+                if success_data is None or _SETTLE_CASE_PATH in path:
+                    success_data = items if isinstance(items, list) else []
+                    success_info = f"{path} [{style}] → {len(success_data)}건"
+                    # /case 성공이면 즉시 종료 (이게 우리가 원하는 것)
+                    if _SETTLE_CASE_PATH in path:
+                        return success_data, None, success_info, attempts
+                continue
             err_body = _format_naver_err(resp)[:300] if resp.status_code == 400 else ""
-            failed.append(f"{path}?{style}: {resp.status_code}" + (f" — {err_body}" if err_body else ""))
+            attempts.append(f"❌ {path}?{style}: {resp.status_code}" + (f" — {err_body}" if err_body else ""))
         except Exception as e:
-            failed.append(f"{path}?{style}: EXC {str(e)[:40]}")
-    return None, "정산 endpoint 모두 실패 —\n\n" + "\n\n".join(failed), None
+            attempts.append(f"❌ {path}?{style}: EXC {str(e)[:40]}")
+    if success_data is not None:
+        return success_data, None, success_info, attempts
+    return None, "정산 endpoint 모두 실패", None, attempts
 
 
 # 정산 API — Naver Commerce 공식 path (애플리케이션 권한 그룹: 정산)
@@ -1140,44 +1150,44 @@ _SETTLE_CASE_PATH  = "/external/v1/pay-settle/settle/case"
 _SETTLE_DAILY_PATH = "/external/v1/pay-settle/settle/daily"
 
 _SETTLEMENT_PATH_CANDIDATES = [
-    # 건별 정산 — Naver 응답에서 확인된 필드명 기반 파라미터 우선 시도
-    ("GET", _SETTLE_CASE_PATH,  "completeRange"),   # startSettleCompleteDate/endSettleCompleteDate
-    ("GET", _SETTLE_CASE_PATH,  "basisRange"),      # startSettleBasisDate/endSettleBasisDate
-    ("GET", _SETTLE_CASE_PATH,  "expectRange"),     # startSettleExpectDate/endSettleExpectDate
-    ("GET", _SETTLE_CASE_PATH,  "searchDateType"),  # searchDateType=SETTLE_COMPLETE + startDate/endDate
+    # /case — 가능한 모든 파라미터 스타일
+    ("GET", _SETTLE_CASE_PATH,  "dateRange"),               # /daily에서 성공한 스타일
+    ("GET", _SETTLE_CASE_PATH,  "dateRangeWithPage"),       # + page/size
+    ("GET", _SETTLE_CASE_PATH,  "completeRange"),
+    ("GET", _SETTLE_CASE_PATH,  "basisRange"),
+    ("GET", _SETTLE_CASE_PATH,  "expectRange"),
+    ("GET", _SETTLE_CASE_PATH,  "settleRangeWithType"),     # + searchDateType=SETTLE_COMPLETE
     ("GET", _SETTLE_CASE_PATH,  "settleRange"),
-    ("GET", _SETTLE_CASE_PATH,  "saleRange"),
-    ("GET", _SETTLE_CASE_PATH,  "dateRange"),
-    ("GET", _SETTLE_CASE_PATH,  "fromTo"),
-    ("GET", _SETTLE_CASE_PATH,  "searchRange"),
-    ("GET", _SETTLE_CASE_PATH,  "settleDateSingle"),
-    # 일별 정산
-    ("GET", _SETTLE_DAILY_PATH, "completeRange"),
-    ("GET", _SETTLE_DAILY_PATH, "basisRange"),
-    ("GET", _SETTLE_DAILY_PATH, "settleRange"),
-    ("GET", _SETTLE_DAILY_PATH, "saleRange"),
+    ("GET", _SETTLE_CASE_PATH,  "lastChangedRange"),        # lastChangedFromDate/lastChangedToDate
+    ("GET", _SETTLE_CASE_PATH,  "payDateRange"),            # startPayDate/endPayDate
+    # /daily
     ("GET", _SETTLE_DAILY_PATH, "dateRange"),
 ]
 
 
 def _build_params(date_from, date_to, style):
     return {
-        "completeRange":    {"startSettleCompleteDate": date_from, "endSettleCompleteDate": date_to},
-        "basisRange":       {"startSettleBasisDate":    date_from, "endSettleBasisDate":    date_to},
-        "expectRange":      {"startSettleExpectDate":   date_from, "endSettleExpectDate":   date_to},
-        "searchDateType":   {"searchDateType": "SETTLE_COMPLETE",
-                             "startDate":      date_from, "endDate":      date_to},
-        "settleRange":      {"startSettleDate":  date_from, "endSettleDate":  date_to},
-        "saleRange":        {"startSaleDate":    date_from, "endSaleDate":    date_to},
-        "dateRange":        {"startDate":        date_from, "endDate":        date_to},
-        "fromTo":           {"from":             date_from, "to":             date_to},
-        "searchRange":      {"searchStartDate":  date_from, "searchEndDate":  date_to},
-        "settleDateSingle": {"settleDate":       date_from},
+        "dateRange":          {"startDate":        date_from, "endDate":        date_to},
+        "dateRangeWithPage":  {"startDate":        date_from, "endDate":        date_to,
+                                "page": 1, "size": 1000},
+        "completeRange":      {"startSettleCompleteDate": date_from, "endSettleCompleteDate": date_to},
+        "basisRange":         {"startSettleBasisDate":    date_from, "endSettleBasisDate":    date_to},
+        "expectRange":        {"startSettleExpectDate":   date_from, "endSettleExpectDate":   date_to},
+        "settleRangeWithType":{"startDate": date_from, "endDate": date_to,
+                                "searchDateType": "SETTLE_COMPLETE"},
+        "settleRange":        {"startSettleDate":  date_from, "endSettleDate":  date_to},
+        "lastChangedRange":   {"lastChangedFromDate": date_from, "lastChangedToDate": date_to},
+        "payDateRange":       {"startPayDate":     date_from, "endPayDate":     date_to},
         # 호환
+        "saleRange":   {"startSaleDate":    date_from, "endSaleDate":    date_to},
+        "fromTo":      {"from":             date_from, "to":             date_to},
+        "searchRange": {"searchStartDate":  date_from, "searchEndDate":  date_to},
+        "settleDateSingle": {"settleDate":  date_from},
+        "searchDateType":   {"searchDateType": "SETTLE_COMPLETE", "startDate": date_from, "endDate": date_to},
         "range":     {"startSettleDate": date_from, "endSettleDate": date_to},
         "rangeStd":  {"startDate":       date_from, "endDate":       date_to},
         "date":      {"settleDate":      date_from},
-    }.get(style, {"startSettleDate": date_from, "endSettleDate": date_to})
+    }.get(style, {"startDate": date_from, "endDate": date_to})
 
 
 def _probe_settlement(method, url, headers, params):

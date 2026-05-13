@@ -95,21 +95,27 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     # ── 정산 수집 ────────────────────────────────────────────────
     if fetch_clicked:
         with st.spinner(f"{settle_date_str} 정산 내역 조회 중..."):
-            records, err, used = naver_api.get_settlement_history(
+            records, err, used, attempts = naver_api.get_settlement_history(
                 api_id, api_secret, settle_date_str, settle_date_str
             )
         if used:
             st.caption(f"🔗 사용된 endpoint: `{used}`")
+        # 모든 시도 로그를 expander에 표시 (디버그 없이도 /case 실패 메시지 즉시 확인)
+        if attempts:
+            with st.expander(f"🔍 시도 로그 ({len(attempts)}건) — /case 400 본문 확인용", expanded=bool(err)):
+                for line in attempts:
+                    if line.startswith("✅"):
+                        st.success(line)
+                    else:
+                        st.text(line)
         if err:
-            st.error(f"❌ 정산 조회 실패: {err}")
+            st.error(f"❌ {err}")
             return
         if not records:
             st.info(f"{settle_date_str}에 정산된 주문이 없습니다. (응답 비어있음)")
         else:
-            # 첫 레코드를 보여줘서 필드 구조 확인
             with st.expander(f"📋 응답 샘플 (첫 레코드) — 필드 확인용", expanded=False):
                 st.json(records[0])
-            # 기존 같은 날짜 정산 제거 후 재저장 (멱등성)
             delete_naver_settlements_by_date(USERNAME, settle_date_str)
             saved = save_naver_settlements(USERNAME, settle_date_str, records)
             if saved == 0 and len(records) > 0:
