@@ -1138,7 +1138,11 @@ _SETTLE_CASE_PATH  = "/external/v1/pay-settle/settle/case"
 _SETTLE_DAILY_PATH = "/external/v1/pay-settle/settle/daily"
 
 _SETTLEMENT_PATH_CANDIDATES = [
-    # 건별 정산 + 다양한 파라미터명
+    # 건별 정산 — Naver 응답에서 확인된 필드명 기반 파라미터 우선 시도
+    ("GET", _SETTLE_CASE_PATH,  "completeRange"),   # startSettleCompleteDate/endSettleCompleteDate
+    ("GET", _SETTLE_CASE_PATH,  "basisRange"),      # startSettleBasisDate/endSettleBasisDate
+    ("GET", _SETTLE_CASE_PATH,  "expectRange"),     # startSettleExpectDate/endSettleExpectDate
+    ("GET", _SETTLE_CASE_PATH,  "searchDateType"),  # searchDateType=SETTLE_COMPLETE + startDate/endDate
     ("GET", _SETTLE_CASE_PATH,  "settleRange"),
     ("GET", _SETTLE_CASE_PATH,  "saleRange"),
     ("GET", _SETTLE_CASE_PATH,  "dateRange"),
@@ -1146,15 +1150,21 @@ _SETTLEMENT_PATH_CANDIDATES = [
     ("GET", _SETTLE_CASE_PATH,  "searchRange"),
     ("GET", _SETTLE_CASE_PATH,  "settleDateSingle"),
     # 일별 정산
+    ("GET", _SETTLE_DAILY_PATH, "completeRange"),
+    ("GET", _SETTLE_DAILY_PATH, "basisRange"),
     ("GET", _SETTLE_DAILY_PATH, "settleRange"),
     ("GET", _SETTLE_DAILY_PATH, "saleRange"),
     ("GET", _SETTLE_DAILY_PATH, "dateRange"),
-    ("GET", _SETTLE_DAILY_PATH, "settleDateSingle"),
 ]
 
 
 def _build_params(date_from, date_to, style):
     return {
+        "completeRange":    {"startSettleCompleteDate": date_from, "endSettleCompleteDate": date_to},
+        "basisRange":       {"startSettleBasisDate":    date_from, "endSettleBasisDate":    date_to},
+        "expectRange":      {"startSettleExpectDate":   date_from, "endSettleExpectDate":   date_to},
+        "searchDateType":   {"searchDateType": "SETTLE_COMPLETE",
+                             "startDate":      date_from, "endDate":      date_to},
         "settleRange":      {"startSettleDate":  date_from, "endSettleDate":  date_to},
         "saleRange":        {"startSaleDate":    date_from, "endSaleDate":    date_to},
         "dateRange":        {"startDate":        date_from, "endDate":        date_to},
