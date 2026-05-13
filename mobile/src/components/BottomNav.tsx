@@ -2,14 +2,15 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { Home, ShoppingBag, Receipt, User } from 'lucide-react';
+import { Home, ShoppingBag, Receipt, Truck, Settings } from 'lucide-react';
 import clsx from 'clsx';
 
 const items = [
   { href: '/dashboard', label: '대시보드', icon: Home },
   { href: '/orders', label: '주문', icon: ShoppingBag },
+  { href: '/tracking', label: '송장', icon: Truck },
   { href: '/profit', label: '수익', icon: Receipt },
-  { href: '/me', label: '내 정보', icon: User },
+  { href: '/settings', label: '설정', icon: Settings },
 ];
 
 export default function BottomNav() {
