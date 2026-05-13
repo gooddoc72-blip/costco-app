@@ -491,17 +491,81 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 st.session_state['order_full'].to_excel(_w, index=False)
             _excel_bytes = _tmp.getvalue()
             st.session_state['order_excel_bytes'] = _excel_bytes
+        # ── 배송준비건 인쇄용 HTML 생성 ────────────────────
+        _prep_disp = df[['수취인명','상품명','옵션정보','수량','최종 상품별 총 주문금액','배송비 합계','정산예정금액']].copy()
+        _prep_rows_html = []
+        for _, _pr in _prep_disp.iterrows():
+            _prep_rows_html.append(
+                '<tr>'
+                f'<td>{str(_pr.get("수취인명",""))}</td>'
+                f'<td>{str(_pr.get("상품명",""))}</td>'
+                f'<td>{str(_pr.get("옵션정보","") or "-")}</td>'
+                f'<td style="text-align:right">{int(_pr.get("수량",0))}</td>'
+                f'<td style="text-align:right">{fmt(int(_pr.get("최종 상품별 총 주문금액",0) or 0))}원</td>'
+                f'<td style="text-align:right;color:#555">{fmt(int(_pr.get("배송비 합계",0) or 0))}원</td>'
+                f'<td style="text-align:right;font-weight:600">{fmt(int(_pr.get("정산예정금액",0) or 0))}원</td>'
+                '</tr>'
+            )
+        _prep_html = (
+            '<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8">'
+            f'<title>배송준비건 — {order_date_str}</title>'
+            '<style>'
+            'body{font-family:"맑은 고딕",sans-serif;padding:24px;}'
+            'h1{font-size:20px;margin:0 0 4px}'
+            '.meta{color:#666;font-size:13px;margin-bottom:12px}'
+            'table{width:100%;border-collapse:collapse;font-size:13px}'
+            'th,td{border-bottom:1px solid #ddd;padding:6px 8px;text-align:left}'
+            'th{background:#f4f4f4;font-weight:600}'
+            '@media print{body{padding:8px} .noprint{display:none}}'
+            '</style></head><body>'
+            f'<h1>📋 배송준비건 — {order_date_str}</h1>'
+            f'<div class="meta">총 {len(_prep_disp)}건</div>'
+            '<table><thead><tr>'
+            '<th>수취인명</th><th>상품명</th><th>옵션정보</th>'
+            '<th style="text-align:right">수량</th>'
+            '<th style="text-align:right">총 주문금액</th>'
+            '<th style="text-align:right">배송비</th>'
+            '<th style="text-align:right">정산예정금액</th>'
+            '</tr></thead><tbody>' + ''.join(_prep_rows_html) + '</tbody></table>'
+            '<button class="noprint" onclick="window.print()" '
+            'style="margin-top:20px;padding:10px 24px;font-size:14px;cursor:pointer">🖨 인쇄</button>'
+            '</body></html>'
+        )
+        import html as _html_lib_prep
+        import streamlit.components.v1 as _components_prep
+        _escaped_prep = _html_lib_prep.escape(_prep_html, quote=True)
+
+        _prep_b1, _prep_b2, _ = st.columns([2, 2, 4])
         if _excel_bytes:
-            st.download_button(
-                label="📥 배송준비건 엑셀 다운로드 (비밀번호 없음)",
+            _prep_b1.download_button(
+                label="📥 엑셀 다운로드",
                 data=_excel_bytes,
                 file_name=f"발주발송관리_{order_date_str}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                type="secondary"
+                use_container_width=True,
+                key="prep_excel_dl",
+            )
+        with _prep_b2:
+            _components_prep.html(
+                f'''
+                <button onclick="(function(){{
+                    var f=document.getElementById('pframe_prep');
+                    if(f && f.contentWindow){{f.contentWindow.focus();f.contentWindow.print();}}
+                }})()" style="
+                    width:100%;padding:7px 0;background:white;
+                    border:1px solid rgba(49,51,63,0.2);border-radius:8px;
+                    cursor:pointer;font-family:'Source Sans Pro',sans-serif;
+                    font-size:14px;color:rgb(49,51,63);
+                " onmouseover="this.style.borderColor='#ff4b4b';this.style.color='#ff4b4b'"
+                  onmouseout="this.style.borderColor='rgba(49,51,63,0.2)';this.style.color='rgb(49,51,63)'">
+                    🖨 배송준비건 바로 인쇄
+                </button>
+                <iframe id="pframe_prep" srcdoc="{_escaped_prep}" style="display:none"></iframe>
+                ''',
+                height=44,
             )
 
-        st.dataframe(df[['수취인명','상품명','옵션정보','수량','최종 상품별 총 주문금액','배송비 합계','정산예정금액']],
-                   use_container_width=True, hide_index=True)
+        st.dataframe(_prep_disp, use_container_width=True, hide_index=True)
 
         st.subheader("🛒 코스트코 장보기 목록")
         shop_cols = ['상품번호', '상품명', '옵션정보', '수량', '정산예정금액', '배송비 합계']
