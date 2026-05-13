@@ -1116,8 +1116,10 @@ def get_settlement_history(client_id, client_secret, start_date, end_date):
                 if isinstance(data, list):
                     return data, None
                 if isinstance(data, dict):
-                    items = (data.get('contents') or data.get('data')
-                             or data.get('items') or data.get('list') or [])
+                    # Naver pay-settle 응답은 'elements'에 들어옴 (확인됨)
+                    items = (data.get('elements') or data.get('contents')
+                             or data.get('data') or data.get('items')
+                             or data.get('list') or [])
                     if isinstance(items, list):
                         return items, None
                 return [], None
