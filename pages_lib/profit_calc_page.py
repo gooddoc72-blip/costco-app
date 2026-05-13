@@ -614,17 +614,31 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         )
                         if _btn_clicked:
                             _qty_row = max(1, int(r['수량']))
-                            # 매칭 캐시 무효화 강제 (다음 render 시 재계산 보장)
-                            st.session_state.pop('_pcalc_match_cache', None)
-                            st.session_state.pop('_pcalc_match_cache_key', None)
                             # 키워드/구입가 오버라이드 저장
                             st.session_state['kw_overrides'][key] = _in
                             st.session_state['cost_overrides'][key] = _ip * _qty_row
                             st.session_state['receipt_pick'][key] = _io
-                            # 위젯 state는 직접 못 바꿈 → 버퍼에 저장
+                            # ⚡ 캐시 in-place 업데이트 (전체 재매칭 회피 — 238행 매칭 스킵)
+                            _cached_inc = st.session_state.get('_pcalc_match_cache')
+                            if _cached_inc:
+                                try:
+                                    _row_pos = list(df.index).index(idx)
+                                    _new_cost = _ip * _qty_row
+                                    _cached_inc['costs'][_row_pos]   = _new_cost
+                                    _cached_inc['sources'][_row_pos] = '영수증'
+                                    _cached_inc['names'][_row_pos]   = _in
+                                    _cached_inc['pnos'][_row_pos]    = _io
+                                    # 캐시 키의 kw_overrides 부분을 새 값으로 재구성하여 캐시 유지
+                                    _new_kw_tuple = tuple(sorted(st.session_state['kw_overrides'].items()))
+                                    _key_list = list(_cached_inc['key'])
+                                    _key_list[-1] = _new_kw_tuple
+                                    _cached_inc['key'] = tuple(_key_list)
+                                except (ValueError, KeyError, IndexError):
+                                    # 캐시 업데이트 실패 시 안전하게 무효화
+                                    st.session_state.pop('_pcalc_match_cache', None)
+                            # 위젯 state 버퍼
                             st.session_state[f'_buf_k_{idx}'] = _in
                             st.session_state[f'_buf_c_{idx}'] = _ip * _qty_row
-                            # rerun 후 사용자에게 결과 알림
                             st.session_state['_rcpt_pick_toast'] = (
                                 f"✅ 영수증 매칭: {r['수취인명']} → {_in[:30]} "
                                 f"({_ip:,}원 × {_qty_row}개)"
@@ -634,11 +648,11 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         st.divider()
                         if st.button("❌ 매칭 해제", key=f"runpick_{idx}",
                                      use_container_width=True, type="secondary"):
-                            st.session_state.pop('_pcalc_match_cache', None)
-                            st.session_state.pop('_pcalc_match_cache_key', None)
                             st.session_state['receipt_pick'].pop(key, None)
                             st.session_state['kw_overrides'].pop(key, None)
                             st.session_state['cost_overrides'].pop(key, None)
+                            # 해제는 전체 재매칭 필요 (원래 자동 매칭 결과 복원)
+                            st.session_state.pop('_pcalc_match_cache', None)
                             st.session_state[f'_buf_k_{idx}'] = ''
                             st.session_state[f'_buf_c_{idx}'] = 0
                             st.session_state['_rcpt_pick_toast'] = (
