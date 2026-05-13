@@ -292,6 +292,8 @@ def _ensure_products_columns(conn):
         "ALTER TABLE products ADD COLUMN status TEXT DEFAULT 'SALE'",
         "ALTER TABLE products ADD COLUMN from_naver INTEGER DEFAULT 0",
         "ALTER TABLE products ADD COLUMN naver_origin_pno TEXT DEFAULT ''",
+        # 채널상품번호 — SmartStore 관리자 화면에 보이는 상품번호 (originProductNo와 다름)
+        "ALTER TABLE products ADD COLUMN naver_channel_pno TEXT DEFAULT ''",
         "ALTER TABLE products ADD COLUMN category TEXT DEFAULT ''",
         "ALTER TABLE products ADD COLUMN linked_shared_id INTEGER DEFAULT NULL",
     ]:
@@ -302,6 +304,7 @@ def _ensure_products_columns(conn):
     for idx_sql in [
         "CREATE INDEX IF NOT EXISTS idx_products_product_no ON products(product_no)",
         "CREATE INDEX IF NOT EXISTS idx_products_naver_origin ON products(naver_origin_pno)",
+        "CREATE INDEX IF NOT EXISTS idx_products_naver_channel ON products(naver_channel_pno)",
         "CREATE INDEX IF NOT EXISTS idx_products_from_naver ON products(from_naver)",
         "CREATE INDEX IF NOT EXISTS idx_products_status ON products(status)",
     ]:
@@ -371,13 +374,15 @@ def upsert_user_private(username, match_keyword, costco_name,
     existing = None
     if naver_origin_pno:
         existing = conn.execute(
-            "SELECT id, sale_price, shipping_fee, product_no, status, from_naver, naver_origin_pno, split_qty, category "
+            "SELECT id, sale_price, shipping_fee, product_no, status, from_naver, "
+            "naver_origin_pno, naver_channel_pno, split_qty, category "
             "FROM products WHERE naver_origin_pno=? AND naver_origin_pno != ''",
             (naver_origin_pno,)
         ).fetchone()
     if not existing:
         existing = conn.execute(
-            "SELECT id, sale_price, shipping_fee, product_no, status, from_naver, naver_origin_pno, split_qty, category "
+            "SELECT id, sale_price, shipping_fee, product_no, status, from_naver, "
+            "naver_origin_pno, naver_channel_pno, split_qty, category "
             "FROM products WHERE match_keyword=?",
             (match_keyword,)
         ).fetchone()
@@ -385,7 +390,9 @@ def upsert_user_private(username, match_keyword, costco_name,
     if existing:
         sale = sale_price   if sale_price   is not None else (existing['sale_price'] or 0)
         fee  = shipping_fee if shipping_fee is not None else (existing['shipping_fee'] or 0)
-        nno  = naver_product_no if naver_product_no is not None else (existing['product_no'] or '')
+        # ⚠️ 의미 정정: naver_product_no 파라미터는 채널상품번호 (SmartStore 화면 번호)
+        # product_no 컬럼(코스트코 번호) 은 절대 덮어쓰지 않음 — 별도 보존
+        ch   = naver_product_no if naver_product_no is not None else (existing['naver_channel_pno'] or '')
         st   = status if status is not None else (existing['status'] or 'SALE')
         fn   = int(from_naver) if from_naver is not None else int(existing['from_naver'] or 0)
         op   = naver_origin_pno if naver_origin_pno is not None else (existing['naver_origin_pno'] or '')
@@ -403,14 +410,14 @@ def upsert_user_private(username, match_keyword, costco_name,
             kw_to_use = existing['match_keyword'] or match_keyword
         conn.execute(
             "UPDATE products SET match_keyword=?, costco_name=?, store_product_name=?, "
-            "sale_price=?, shipping_fee=?, split_qty=?, product_no=?, status=?, from_naver=?, "
-            "naver_origin_pno=?, category=?, updated_at=? WHERE id=?",
-            (kw_to_use, costco_name, costco_name, sale, fee, sq, nno, st, fn, op, cat, now, existing['id'])
+            "sale_price=?, shipping_fee=?, split_qty=?, status=?, from_naver=?, "
+            "naver_origin_pno=?, naver_channel_pno=?, category=?, updated_at=? WHERE id=?",
+            (kw_to_use, costco_name, costco_name, sale, fee, sq, st, fn, op, ch, cat, now, existing['id'])
         )
     else:
         sale = sale_price or 0
         fee  = shipping_fee or 0
-        nno  = naver_product_no or ''
+        ch   = naver_product_no or ''   # channelProductNo
         st   = status or 'SALE'
         fn   = int(from_naver) if from_naver is not None else 0
         op   = naver_origin_pno or ''
@@ -419,9 +426,9 @@ def upsert_user_private(username, match_keyword, costco_name,
         conn.execute("""INSERT INTO products
                         (product_no, store_product_name, costco_name, match_keyword,
                          unit_price, split_qty, sale_price, shipping_fee, status, from_naver,
-                         naver_origin_pno, category, updated_at)
-                        VALUES (?,?,?,?,0,?,?,?,?,?,?,?,?)""",
-                     (nno, costco_name, costco_name, match_keyword, sq, sale, fee, st, fn, op, cat, now))
+                         naver_origin_pno, naver_channel_pno, category, updated_at)
+                        VALUES ('', ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                     (costco_name, costco_name, match_keyword, sq, sale, fee, st, fn, op, ch, cat, now))
     conn.commit()
     conn.close()
 
@@ -474,7 +481,8 @@ def get_all_products_merged(username):
             'has_detail': bool(sp.get('detail_html', '')),
             'shared_updated_by': sp.get('updated_by', ''),
             'shared_updated_at': sp.get('updated_at', ''),
-            'naver_product_no': up.get('naver_origin_pno') or up.get('product_no', '') if up else '',
+            'naver_product_no': (up.get('naver_channel_pno') or up.get('naver_origin_pno') or up.get('product_no', '')) if up else '',
+            'naver_channel_pno': up.get('naver_channel_pno', '') if up else '',
             'naver_origin_pno': up.get('naver_origin_pno', '') if up else '',
             'sale_price': int(up.get('sale_price', 0) or 0),
             'shipping_fee': int(up.get('shipping_fee', 0) or 0),
@@ -509,7 +517,8 @@ def get_all_products_merged(username):
             'has_detail': False,
             'shared_updated_by': '',
             'shared_updated_at': '',
-            'naver_product_no': up.get('naver_origin_pno') or up.get('product_no', ''),
+            'naver_product_no': up.get('naver_channel_pno') or up.get('naver_origin_pno') or up.get('product_no', ''),
+            'naver_channel_pno': up.get('naver_channel_pno', ''),
             'naver_origin_pno': up.get('naver_origin_pno', ''),
             'sale_price': int(up.get('sale_price', 0) or 0),
             'shipping_fee': int(up.get('shipping_fee', 0) or 0),

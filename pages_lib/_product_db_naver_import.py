@@ -213,15 +213,17 @@ def render_naver_import_section(USERNAME: str, api_id: str, api_secret: str,
                     _price = int(_nip.get('salePrice', 0))
                     _fee   = int(_nip.get('deliveryFee', 0))
                     _status = _norm_status(_nip.get('status'))
-                    _origin_pno = str(_nip.get('originProductNo') or '').strip()
+                    _origin_pno  = str(_nip.get('originProductNo')  or '').strip()
+                    _channel_pno = str(_nip.get('channelProductNo') or '').strip()
                     _ncat = map_naver_category(_nip.get('wholeCategoryName', ''))
                     if _pname:
                         # 재가져오기 시: naver_origin_pno로 매칭하여 기존 레코드 갱신
-                        # product_no(코스트코 상품번호)는 보존, 이름/가격/택배비/상태만 업데이트
+                        # naver_product_no = channelProductNo (스마트스토어 관리자 화면에 보이는 상품번호)
+                        # naver_origin_pno = originProductNo (API 호출용 원상품번호)
                         upsert_user_private(USERNAME, _pname, _pname,
                                             sale_price=_price,
                                             shipping_fee=_fee,
-                                            naver_product_no=None,  # None → product_no 보존
+                                            naver_product_no=_channel_pno or None,
                                             status=_status,
                                             from_naver=1,
                                             naver_origin_pno=_origin_pno,

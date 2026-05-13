@@ -901,6 +901,7 @@ def get_product_list(client_id, client_secret, channel_seller_id=""):
                 )
                 result.append({
                     "originProductNo": str(item.get("originProductNo") or cp.get("originProductNo") or ""),
+                    "channelProductNo": str(cp.get("channelProductNo") or item.get("channelProductNo") or ""),
                     "productName": cp.get("name") or item.get("name") or "",
                     "salePrice": cp.get("salePrice") or item.get("salePrice") or 0,
                     "deliveryFee": _extract_delivery_fee(item, cp),
