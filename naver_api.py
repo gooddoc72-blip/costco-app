@@ -1124,10 +1124,12 @@ def get_settlement_history(client_id, client_secret, start_date, end_date):
                     if isinstance(items, list):
                         return items, None, f"{path} [{style}] → {len(items)}건"
                 return [], None, f"{path} [{style}] → 알 수 없는 응답 구조"
-            failed.append(f"{path}?{style}: {resp.status_code}")
+            # 400은 보통 응답 본문에 정확한 누락 필드명이 들어있음
+            err_body = _format_naver_err(resp)[:300] if resp.status_code == 400 else ""
+            failed.append(f"{path}?{style}: {resp.status_code}" + (f" — {err_body}" if err_body else ""))
         except Exception as e:
             failed.append(f"{path}?{style}: EXC {str(e)[:40]}")
-    return None, "정산 endpoint 모두 실패 — " + " | ".join(failed), None
+    return None, "정산 endpoint 모두 실패 —\n\n" + "\n\n".join(failed), None
 
 
 # 정산 API — Naver Commerce 공식 path (애플리케이션 권한 그룹: 정산)
@@ -1179,7 +1181,11 @@ def _build_params(date_from, date_to, style):
 
 
 def _probe_settlement(method, url, headers, params):
-    """단일 settlement endpoint probe — GET은 query, POST는 body로 전송."""
+    """단일 settlement endpoint probe — GET은 query, POST는 body로 전송.
+    Naver API rate limit 방지를 위해 호출 사이 짧은 대기.
+    """
+    import time as _time
+    _time.sleep(0.25)
     if method == "POST":
         return requests.post(url, headers=headers, json=params, timeout=15)
     return requests.get(url, headers=headers, params=params, timeout=15)
