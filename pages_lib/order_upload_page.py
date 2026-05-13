@@ -430,10 +430,29 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         if _save_clicked:
             _s_cost = int(_gs('shipping_cost') or 1800)
             _b_cost = int(_gs('box_cost') or 300)
+            # 🔍 결제일 기준 필터: 선택한 날짜의 결제건만 daily_orders에 저장
+            _save_df = df
+            _filtered_note = ""
+            if '결제일' in df.columns:
+                _dates_norm = df['결제일'].astype(str).str.slice(0, 10).str.replace('.', '-', regex=False)
+                _mask = _dates_norm == order_date_str
+                _matched_n = int(_mask.sum())
+                if _matched_n > 0 and _matched_n < len(df):
+                    _save_df = df[_mask].copy()
+                    _filtered_note = (
+                        f"💡 전체 {len(df)}건 중 결제일={order_date_str} 인 {_matched_n}건만 저장됨 "
+                        f"(나머지 {len(df)-_matched_n}건은 다른 날짜 결제분)"
+                    )
+                elif _matched_n == 0:
+                    st.warning(
+                        f"⚠️ 결제일이 {order_date_str} 인 주문이 없습니다. "
+                        f"📅 날짜 선택을 확인하거나 전체 {len(df)}건을 저장하려면 결제일 컬럼을 무시합니다."
+                    )
+                    _save_df = df  # fallback: 전체 저장
             try:
                 from services import process_and_save_orders
                 _r = process_and_save_orders(
-                    USERNAME, df, order_date_str, _s_cost, _b_cost,
+                    USERNAME, _save_df, order_date_str, _s_cost, _b_cost,
                     save_history=True, save_daily=True,
                 )
                 if _r.get('error_orders'):
@@ -443,6 +462,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     st.session_state['order_date'] = order_date_str
                     st.session_state['orders_unsaved'] = False
                     st.success(f"✅ {order_date_str} 주문 {_r['orders']}건 저장 완료 — 수익계산에서 확인하세요")
+                    if _filtered_note:
+                        st.info(_filtered_note)
                     st.rerun()
             except Exception as _e:
                 st.error(f"저장 실패: {_e}")
