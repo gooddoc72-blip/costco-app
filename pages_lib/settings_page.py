@@ -232,13 +232,24 @@ def _render_settings_content(USERNAME: str, _gs):
     # ── 고정 비용 ─────────────────────────────────────────
     st.divider()
     st.subheader("📦 고정 비용")
-    c1, c2 = st.columns(2)
+    c1, c2, c3 = st.columns(3)
     new_ship = c1.number_input("택배비 (원)", value=int(_gs('shipping_cost') or 1800), step=100)
     new_box = c2.number_input("박스비 (원)", value=int(_gs('box_cost') or 300), step=50)
+    new_naver_ship_fee_rate = c3.number_input(
+        "네이버 배송비 수수료율 (%)",
+        value=float(_gs('naver_ship_fee_commission_rate') or 4.0),
+        min_value=0.0, max_value=20.0, step=0.1,
+        help="네이버가 고객결제 배송비에 부과하는 수수료율 (보통 3~5%). "
+             "실정산 배송비 = 고객결제 배송비 × (1 - 수수료율) 로 수익계산에 반영"
+    )
     if st.button("비용 저장", key="save_cost"):
         set_setting(USERNAME, 'shipping_cost', new_ship)
         set_setting(USERNAME, 'box_cost', new_box)
-        st.success(f"✅ 택배비 {fmt(new_ship)}원, 박스비 {fmt(new_box)}원 저장")
+        set_setting(USERNAME, 'naver_ship_fee_commission_rate', new_naver_ship_fee_rate)
+        st.success(
+            f"✅ 택배비 {fmt(new_ship)}원, 박스비 {fmt(new_box)}원, "
+            f"배송비 수수료율 {new_naver_ship_fee_rate}% 저장"
+        )
 
     # ── 가격 자동 조정 ────────────────────────────────────
     st.divider()

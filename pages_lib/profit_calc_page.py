@@ -102,7 +102,11 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     if shipping_cost > 100000: shipping_cost = 1800
     if box_cost > 10000: box_cost = 300
 
-    st.info(f"📐 수익 = (정산예정 + 고객택배비) - (구입가 + 택배비 {fmt(shipping_cost)} + 박스비 {fmt(box_cost)})")
+    _ship_fee_rate_info = float(_gs('naver_ship_fee_commission_rate') or 4.0)
+    st.info(
+        f"📐 수익 = (정산예정 + **실정산배송비**) - (구입가 + 택배비 {fmt(shipping_cost)} + 박스비 {fmt(box_cost)})  "
+        f"· 실정산배송비 = 고객택배비 × {100 - _ship_fee_rate_info:.1f}% (수수료율 {_ship_fee_rate_info}%)"
+    )
 
     col_date, _col_refresh, _col_clean, _ = st.columns([1.5, 1, 1.5, 2.5])
     with col_date:
@@ -450,8 +454,15 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 if st.session_state['cost_overrides'][key] > 0:
                     df.loc[idx, '매칭출처'] = '수동입력'
 
+        # 🚚 배송비 수수료율 적용: 네이버는 고객결제 배송비에서도 수수료를 떼고 정산
+        # 실정산 배송비 = 고객결제 배송비 × (1 - 수수료율/100)
+        _ship_fee_rate = float(_gs('naver_ship_fee_commission_rate') or 4.0)
+        _ship_settle_factor = max(0.0, 1.0 - _ship_fee_rate / 100.0)
+        df['실정산배송비'] = (df['배송비 합계'] * _ship_settle_factor).round().astype(int)
+
         # 수입 계산: 벡터화 (apply 대비 ~10배 빠름)
-        df['수입'] = (df['정산예정금액'] + df['배송비 합계']) - (df['구입가격'] + shipping_cost + box_cost)
+        # 정산예정금액(상품, 수수료 차감 후) + 실정산배송비(고객배송비 - 수수료) - 지출
+        df['수입'] = (df['정산예정금액'] + df['실정산배송비']) - (df['구입가격'] + shipping_cost + box_cost)
 
         st.caption(f"📅 {calc_date_str}")
 
@@ -847,6 +858,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         matched_df = df[df['구입가격'] > 0]
         total_settlement = matched_df['정산예정금액'].sum()
         total_cust_ship = matched_df['배송비 합계'].sum()
+        total_settled_ship = matched_df['실정산배송비'].sum() if '실정산배송비' in matched_df.columns else total_cust_ship
+        total_ship_commission = total_cust_ship - total_settled_ship
         total_cost = matched_df['구입가격'].sum()
         total_ship = len(matched_df) * shipping_cost
         total_box = len(matched_df) * box_cost
@@ -855,7 +868,15 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         c1, c2 = st.columns(2)
         with c1:
             st.markdown("**수입**")
-            st.write(f"정산예정: {fmt(total_settlement)}원 + 고객택배비: {fmt(total_cust_ship)}원 = **{fmt(total_settlement + total_cust_ship)}원**")
+            st.write(
+                f"정산예정: {fmt(total_settlement)}원 + 실정산배송비: {fmt(total_settled_ship)}원 "
+                f"= **{fmt(total_settlement + total_settled_ship)}원**"
+            )
+            if total_ship_commission > 0:
+                st.caption(
+                    f"💡 고객결제 배송비 {fmt(total_cust_ship)}원 - 네이버 수수료 {fmt(int(total_ship_commission))}원 "
+                    f"= 실정산 {fmt(total_settled_ship)}원"
+                )
         with c2:
             st.markdown("**지출**")
             st.write(f"구입가: {fmt(total_cost)}원 + 택배: {fmt(total_ship)}원 + 박스: {fmt(total_box)}원 = **{fmt(total_cost + total_ship + total_box)}원**")
