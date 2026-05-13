@@ -751,8 +751,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             kakao_api_key = _gs('kakao_api_key')
             kakao_refresh = _gs('kakao_refresh_token')
 
-            # 200자 초과 + 텔레그램 설정 시 → 텔레그램 전체 발송 + 카톡엔 알림만
-            if len(msg) > 200 and tg_token and tg_chat:
+            # 2000자 초과 + 텔레그램 설정 시 → 텔레그램 전체 발송 + 카톡엔 알림만
+            if len(msg) > 2000 and tg_token and tg_chat:
                 ok_tg, terr = naver_api.send_telegram(tg_token, tg_chat, msg)
                 if ok_tg:
                     sent_ok = True
@@ -766,7 +766,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 else:
                     st.error(f"❌ 텔레그램 실패: {terr}")
             else:
-                # 200자 이내 또는 텔레그램 미설정 → 카톡 우선
+                # 2000자 이내 또는 텔레그램 미설정 → 카톡 우선 (카톡은 200자 단위 자동 분할 발송)
                 if kakao_token:
                     ok, kerr = naver_api.send_kakao(kakao_token, msg, rest_api_key=kakao_api_key, refresh_token=kakao_refresh)
                     if ok:
