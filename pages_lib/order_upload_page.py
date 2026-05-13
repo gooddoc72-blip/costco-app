@@ -692,17 +692,31 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             except Exception as _e:
                 st.error(f"저장 실패: {_e}")
 
-        _ship_b4.download_button(
-            "🖨 인쇄용 다운로드",
-            data=_print_html.encode('utf-8'),
-            file_name=f"코스트코_장보기_{order_date_str}.html",
-            mime="text/html",
-            use_container_width=True,
-            help="HTML 파일 다운로드 → 브라우저에서 열기 → 🖨 인쇄 버튼 클릭 (또는 Ctrl+P)",
-            key="print_shopping",
-        )
+        # 🖨 바로 인쇄: 숨김 iframe에 HTML 주입 후 contentWindow.print() 호출
+        import html as _html_lib
+        import streamlit.components.v1 as _components
+        _escaped_print = _html_lib.escape(_print_html, quote=True)
+        with _ship_b4:
+            _components.html(
+                f'''
+                <button onclick="(function(){{
+                    var f=document.getElementById('pframe_shop');
+                    if(f && f.contentWindow){{f.contentWindow.focus();f.contentWindow.print();}}
+                }})()" style="
+                    width:100%;padding:7px 0;background:white;
+                    border:1px solid rgba(49,51,63,0.2);border-radius:8px;
+                    cursor:pointer;font-family:'Source Sans Pro',sans-serif;
+                    font-size:14px;color:rgb(49,51,63);
+                " onmouseover="this.style.borderColor='#ff4b4b';this.style.color='#ff4b4b'"
+                  onmouseout="this.style.borderColor='rgba(49,51,63,0.2)';this.style.color='rgb(49,51,63)'">
+                    🖨 바로 인쇄
+                </button>
+                <iframe id="pframe_shop" srcdoc="{_escaped_print}" style="display:none"></iframe>
+                ''',
+                height=44,
+            )
 
-        if _ship_b2.button("📋 장보기 목록 관리자에게 보내기", key="send_shopping_admin",
+        if _ship_b2.button("📋 장보기 목록 관리자에게 발송", key="send_shopping_admin",
                             use_container_width=True):
             _items = []
             _total_amount = 0
