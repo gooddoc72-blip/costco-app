@@ -793,16 +793,15 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         if _ship_b1.button("📱 장보기 목록 휴대폰 전송", key="send_shopping",
                             use_container_width=True):
             order_date_obj = datetime.strptime(order_date_str, "%Y-%m-%d")
-            # 표와 동일 컬럼: 상품명 - 옵션 - 수량 - 팩단가 - 예상금액 - 배송비
+            # 카톡 포맷: 상품명 - 옵션 - 수량 - 팩단가 - 배송비 (예상금액 제외)
             lines = [f"🛒 코스트코 장보기 ({order_date_obj.strftime('%m/%d')})", ""]
             for _, r in shopping.iterrows():
                 _name = str(r.get('상품명', ''))[:30]
                 _opt  = str(r.get('옵션정보', '') or '').strip() or '-'
                 _qty  = int(r.get('주문수량', 0) or 0)
                 _unit = int(r['팩단가']) if pd.notna(r.get('팩단가')) else 0
-                _est  = int(r['예상금액']) if pd.notna(r.get('예상금액')) else 0
                 _ship = int(r.get('배송비합계', 0) or 0)
-                lines.append(f"{_name} - {_opt} - {_qty} - {fmt(_unit)} - {fmt(_est)} - 배송 {fmt(_ship)}")
+                lines.append(f"{_name} - {_opt} - {_qty} - {fmt(_unit)} - 배송 {fmt(_ship)}")
             lines.append("")
             lines.append(f"💰 예상 총액: {fmt(shopping['예상금액'].dropna().sum())}원 / 📦 {len(df)}건")
             msg = "\n".join(lines)
