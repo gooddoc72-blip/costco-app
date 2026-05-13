@@ -632,7 +632,76 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         tg_token = _gs('telegram_token')
         tg_chat = _gs('telegram_chat_id')
 
-        _ship_b1, _ship_b2 = st.columns(2)
+        # ── 프린트용 HTML 생성 (코스트코 매장에서 보기 좋게) ───────────
+        _print_rows = []
+        for _, r in shopping.iterrows():
+            _print_rows.append(
+                '<tr>'
+                f'<td>{r.get("상품번호","")}</td>'
+                f'<td>{str(r.get("상품명",""))}</td>'
+                f'<td>{str(r.get("옵션정보","") or "-")}</td>'
+                f'<td style="text-align:right">{int(r.get("주문수량",0))}</td>'
+                f'<td style="text-align:right">{(fmt(int(r["팩단가"])) if pd.notna(r.get("팩단가")) else "-")}원</td>'
+                f'<td style="text-align:right;font-weight:600">{(fmt(int(r["예상금액"])) if pd.notna(r.get("예상금액")) else "-")}원</td>'
+                '</tr>'
+            )
+        _print_html = (
+            '<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8">'
+            f'<title>코스트코 장보기 — {order_date_str}</title>'
+            '<style>'
+            'body{font-family:"맑은 고딕",sans-serif;padding:24px;}'
+            'h1{font-size:20px;margin:0 0 4px}'
+            '.meta{color:#666;font-size:13px;margin-bottom:12px}'
+            'table{width:100%;border-collapse:collapse;font-size:13px}'
+            'th,td{border-bottom:1px solid #ddd;padding:6px 8px;text-align:left}'
+            'th{background:#f4f4f4;font-weight:600}'
+            '.tot{margin-top:16px;font-size:15px;font-weight:600}'
+            '@media print{body{padding:8px} .noprint{display:none}}'
+            '</style></head><body>'
+            f'<h1>🛒 코스트코 장보기 — {order_date_str}</h1>'
+            f'<div class="meta">총 {len(shopping)}종 · 예상 구매 총액 {fmt(int(shopping["예상금액"].dropna().sum()))}원</div>'
+            '<table><thead><tr>'
+            '<th>상품번호</th><th>상품명</th><th>옵션정보</th>'
+            '<th style="text-align:right">주문수량</th>'
+            '<th style="text-align:right">팩단가</th>'
+            '<th style="text-align:right">예상금액</th>'
+            '</tr></thead><tbody>' + ''.join(_print_rows) + '</tbody></table>'
+            f'<div class="tot">💰 예상 구매 총액: {fmt(int(shopping["예상금액"].dropna().sum()))}원</div>'
+            '<button class="noprint" onclick="window.print()" '
+            'style="margin-top:20px;padding:10px 24px;font-size:14px;cursor:pointer">🖨 인쇄</button>'
+            '</body></html>'
+        )
+
+        _ship_b1, _ship_b2, _ship_b3, _ship_b4 = st.columns(4)
+        if _ship_b3.button("💾 장보기 저장", key="save_shopping_local",
+                            use_container_width=True,
+                            help="이 날짜의 장보기 목록을 daily_orders에 저장 (수익계산 페이지에서 불러옴)"):
+            _s_cost = int(_gs('shipping_cost') or 1800)
+            _b_cost = int(_gs('box_cost') or 300)
+            try:
+                from services import process_and_save_orders
+                _save_r = process_and_save_orders(
+                    USERNAME, df, order_date_str, _s_cost, _b_cost,
+                    save_history=True, save_daily=True,
+                )
+                if _save_r.get('error_orders'):
+                    st.error(f"저장 실패: {_save_r['error_orders']}")
+                else:
+                    st.session_state['orders_unsaved'] = False
+                    st.success(f"✅ {order_date_str} 장보기 {_save_r['orders']}건 저장 완료")
+            except Exception as _e:
+                st.error(f"저장 실패: {_e}")
+
+        _ship_b4.download_button(
+            "🖨 인쇄용 다운로드",
+            data=_print_html.encode('utf-8'),
+            file_name=f"코스트코_장보기_{order_date_str}.html",
+            mime="text/html",
+            use_container_width=True,
+            help="HTML 파일 다운로드 → 브라우저에서 열기 → 🖨 인쇄 버튼 클릭 (또는 Ctrl+P)",
+            key="print_shopping",
+        )
+
         if _ship_b2.button("📋 장보기 목록 관리자에게 보내기", key="send_shopping_admin",
                             use_container_width=True):
             _items = []
@@ -665,33 +734,17 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         if _ship_b1.button("📱 장보기 목록 휴대폰 전송", key="send_shopping",
                             use_container_width=True):
             order_date_obj = datetime.strptime(order_date_str, "%Y-%m-%d")
-            lines = [f"🛒 코스트코 장보기 목록 ({order_date_obj.strftime('%m/%d')})", ""]
-            _has_settle = '정산금액' in shopping.columns
+            # 표와 동일한 5개 컬럼: 상품명 - 옵션정보 - 주문수량 - 팩단가 - 예상금액
+            lines = [f"🛒 코스트코 장보기 ({order_date_obj.strftime('%m/%d')})", ""]
             for _, r in shopping.iterrows():
-                opt = f"({r['옵션정보']})" if r.get('옵션정보') else ""
-                sq = int(r.get('분리수량', 1))
-                pq = int(r.get('묶음수량', 1))
-                buy_qty = int(r['코스트코구매수량'])
-                order_cnt = int(r.get('주문건수', 1))   # 실제 주문 고객 수
-                order_qty = int(r['주문수량'])           # 총 수량 합계
-                if sq > 1:
-                    qty_str = f"{buy_qty}팩 ({order_cnt}건/{order_qty}개÷{sq}소분)"
-                elif pq > 1:
-                    qty_str = f"{buy_qty}개 ({order_cnt}건×{pq}구)"
-                else:
-                    qty_str = f"{buy_qty}개 ({order_cnt}건)" if order_cnt > 1 else f"{buy_qty}개"
-                name_part = " ".join(p for p in [r['상품명'][:22], opt] if p)
-                lines.append(f"▪ {name_part} × {qty_str}")
-                if _has_settle:
-                    _settle = int(r.get('정산금액', 0) or 0)
-                    if _settle:
-                        lines.append(f"   💳 정산: {fmt(_settle)}원")
-            lines.append(f"\n💰 예상 총액: {fmt(shopping['예상금액'].dropna().sum())}원")
-            if _has_settle:
-                _total_settle = int(shopping['정산금액'].fillna(0).sum())
-                if _total_settle:
-                    lines.append(f"💳 총 정산예정: {fmt(_total_settle)}원")
-            lines.append(f"📦 총 {len(df)}건")
+                _name = str(r.get('상품명', ''))[:30]
+                _opt  = str(r.get('옵션정보', '') or '').strip() or '-'
+                _qty  = int(r.get('주문수량', 0) or 0)
+                _unit = int(r['팩단가']) if pd.notna(r.get('팩단가')) else 0
+                _est  = int(r['예상금액']) if pd.notna(r.get('예상금액')) else 0
+                lines.append(f"{_name} - {_opt} - {_qty} - {fmt(_unit)} - {fmt(_est)}")
+            lines.append("")
+            lines.append(f"💰 예상 총액: {fmt(shopping['예상금액'].dropna().sum())}원 / 📦 {len(df)}건")
             msg = "\n".join(lines)
 
             sent_ok = False
