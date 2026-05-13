@@ -1106,16 +1106,17 @@ def get_settlement_history(client_id, client_secret, start_date, end_date):
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     base = "https://api.commerce.naver.com"
     failed = []
-    for path, style in _SETTLEMENT_PATH_CANDIDATES:
+    perm_likely = True  # 모두 401/403이면 권한 문제, 404 섞이면 path 문제
+    for method, path, style in _SETTLEMENT_PATH_CANDIDATES:
         url = base + path
         params = _build_params(start_date, end_date, style)
         try:
-            resp = requests.get(url, headers=headers, params=params, timeout=20)
+            resp = _probe_settlement(method, url, headers, params)
             if resp.status_code == 200:
                 try:
                     data = resp.json()
                 except Exception:
-                    failed.append(f"{path}: 200 이지만 JSON 아님")
+                    failed.append(f"{method} {path}: 200 비-JSON")
                     continue
                 if isinstance(data, list):
                     return data, None
@@ -1123,61 +1124,81 @@ def get_settlement_history(client_id, client_secret, start_date, end_date):
                     items = data.get('contents') or data.get('data') or data.get('items') or []
                     if isinstance(items, list):
                         return items, None
-                return [], None  # 빈 응답 정상 처리
-            failed.append(f"{path}: {resp.status_code}")
+                return [], None
+            failed.append(f"{method} {path}: {resp.status_code}")
+            if resp.status_code not in (401, 403):
+                perm_likely = False
         except Exception as e:
-            failed.append(f"{path}: EXC {str(e)[:50]}")
-    return None, "모든 정산 endpoint 후보 실패 — " + " / ".join(failed)
+            failed.append(f"{method} {path}: EXC {str(e)[:40]}")
+            perm_likely = False
+    hint = (" → 모두 401/403 — API 키에 '정산 조회' 권한 추가 필요"
+            if perm_likely else
+            " → API 키에 정산 권한이 있어도 path가 다를 수 있음. Naver 문서 확인 필요")
+    return None, "정산 endpoint 모두 실패" + hint + " | " + " / ".join(failed)
 
 
-# 정산 API 후보 path들 — 200 응답하는 path를 찾으면 그것을 정답으로 사용
+# 정산 API 후보 — (method, path, param_style)
+#   param_style: 'range' = startSettleDate/endSettleDate
+#                'rangeStd' = startDate/endDate
+#                'date' = settleDate 단일
 _SETTLEMENT_PATH_CANDIDATES = [
-    # (path, param_style) — param_style: 'range' = startSettleDate/endSettleDate, 'date' = settleDate 단일
-    ("/external/v1/pay-order/seller/sales-history",                 "range"),
-    ("/external/v1/seller/sales-history",                            "range"),
-    ("/external/v1/seller-settlement/sales/sales-history",           "range"),
-    ("/external/v1/seller-settle/sales-history",                     "range"),
-    ("/external/v1/seller-settlements/sales-history",                "range"),
-    ("/external/v1/pay-order/seller/settlements",                    "range"),
-    ("/external/v1/pay-order/seller/settlement",                     "range"),
-    ("/external/v1/seller/settlements",                              "range"),
+    ("GET",  "/external/v1/pay-order/seller/sales-history",                 "range"),
+    ("GET",  "/external/v1/seller/sales-history",                            "range"),
+    ("GET",  "/external/v1/seller-settlement/sales/sales-history",           "range"),
+    ("GET",  "/external/v1/seller-settlements/sales-history",                "range"),
+    ("GET",  "/external/v1/sales-history",                                   "range"),
+    ("GET",  "/external/v1/revenue-history",                                 "rangeStd"),
+    ("GET",  "/external/v1/pay-order/seller/sales",                          "rangeStd"),
+    ("GET",  "/external/v1/pay-order/seller/settlements",                    "range"),
+    ("GET",  "/external/v1/seller/settlements",                              "range"),
+    ("POST", "/external/v1/pay-order/seller/sales-history",                  "range"),
+    ("POST", "/external/v1/pay-order/seller/sales-history/query",            "range"),
+    ("POST", "/external/v1/seller/sales-history/query",                      "range"),
 ]
 
 
 def _build_params(date_from, date_to, style):
     if style == "range":
         return {"startSettleDate": date_from, "endSettleDate": date_to}
+    if style == "rangeStd":
+        return {"startDate": date_from, "endDate": date_to}
     return {"settleDate": date_from}
 
 
+def _probe_settlement(method, url, headers, params):
+    """단일 settlement endpoint probe — GET은 query, POST는 body로 전송."""
+    if method == "POST":
+        return requests.post(url, headers=headers, json=params, timeout=15)
+    return requests.get(url, headers=headers, params=params, timeout=15)
+
+
 def debug_settlement_response(client_id, client_secret, settle_date):
-    """모든 후보 path를 probe하여 결과 dict 반환.
-    UI에서 어느 path가 200을 주는지 한눈에 확인하기 위함.
-    """
+    """모든 후보 path를 probe하여 결과 dict 반환."""
     token, err = get_token(client_id, client_secret)
     if not token:
         return None, err
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     base = "https://api.commerce.naver.com"
     probes = {}
-    for path, style in _SETTLEMENT_PATH_CANDIDATES:
+    for method, path, style in _SETTLEMENT_PATH_CANDIDATES:
+        key = f"{method} {path}"
         url = base + path
         params = _build_params(settle_date, settle_date, style)
         try:
-            resp = requests.get(url, headers=headers, params=params, timeout=15)
+            resp = _probe_settlement(method, url, headers, params)
             if resp.status_code == 200:
                 try:
                     body = resp.json()
                 except Exception:
                     body = resp.text[:300]
-                probes[path] = {"status": 200, "body": body}
+                probes[key] = {"status": 200, "body": body}
             else:
-                probes[path] = {
+                probes[key] = {
                     "status": resp.status_code,
                     "msg": _format_naver_err(resp)[:200],
                 }
         except Exception as e:
-            probes[path] = {"status": "EXC", "msg": str(e)[:200]}
+            probes[key] = {"status": "EXC", "msg": str(e)[:200]}
     return probes, None
 
 
