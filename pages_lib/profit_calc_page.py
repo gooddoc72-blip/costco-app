@@ -169,6 +169,12 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             'cost_price': '구입가격'
         }
         df = df.rename(columns=rename_map)
+        # ⚓ Phase A: DataFrame index를 DB row id 문자열로 설정
+        # → 위젯 key, override key, df.loc[sk] 모두 안정적으로 동작
+        # → 정렬/페이지 이동/DataFrame 재로드해도 같은 행 = 같은 id = 같은 키
+        if 'id' in df.columns:
+            df.index = df['id'].astype(str)
+            df.index.name = None
     else:
         df = None
 
@@ -377,21 +383,26 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         # 자동 계산된 원래 비용 보존 (위젯 값이 같은지 비교용)
         _auto_costs = {idx: int(costs[df.index.get_loc(idx)]) for idx in df.index}
 
-        # 영수증 picker 버퍼 조기 적용: session_state['c_X'], session_state['k_X']에 반영
-        for _bidx in df.index:
-            _bc_early = st.session_state.pop(f'_buf_c_{_bidx}', None)
+        # 영수증 picker 버퍼 조기 적용: session_state['c_<sk>'], session_state['k_<sk>']에 반영
+        # ⚓ stable_key(DB id) 기반 — DataFrame 위치 변경에도 안정적으로 매핑
+        _ids_for_buf = df['id'].values if 'id' in df.columns else df.index.values
+        for _bsk in (str(_i) for _i in _ids_for_buf):
+            _bc_early = st.session_state.pop(f'_buf_c_{_bsk}', None)
             if _bc_early is not None:
-                st.session_state[f'c_{_bidx}'] = _bc_early
-            _bk_early = st.session_state.pop(f'_buf_k_{_bidx}', None)
+                st.session_state[f'c_{_bsk}'] = _bc_early
+            _bk_early = st.session_state.pop(f'_buf_k_{_bsk}', None)
             if _bk_early is not None:
-                st.session_state[f'k_{_bidx}'] = _bk_early
+                st.session_state[f'k_{_bsk}'] = _bk_early
 
         # df.loc[idx,'수취인명'] 반복 lookup → numpy array로 1회 추출 (~10x 빠름)
         _recipients = df['수취인명'].values
         _products = df['상품명'].values
+        # ⚓ 안정 키: DB row id 우선 (DataFrame 위치 변경에도 안정)
+        _ids_arr = df['id'].values if 'id' in df.columns else df.index.values
         for i, idx in enumerate(df.index):
-            key = f"{_recipients[i]}_{_products[i]}_{idx}_{calc_date_str}"
-            _widget_val = st.session_state.get(f"c_{idx}")
+            sk = str(_ids_arr[i])  # stable key
+            key = f"{_recipients[i]}_{_products[i]}_{sk}_{calc_date_str}"
+            _widget_val = st.session_state.get(f"c_{sk}")
             _auto_cost = _auto_costs[idx]
             if _widget_val is not None and int(_widget_val) != _auto_cost:
                 st.session_state['cost_overrides'][key] = int(_widget_val)
@@ -430,7 +441,10 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         st.caption("🟢 영수증 | 🔵 DB-번호 (확실) | 🟠 DB-키워드 (확인 필요) | ⬜ 수동 | 🟡 미매칭")
 
         # 전체 선택 — 체크박스 대신 버튼 사용 (Streamlit 위젯 sync 이슈 회피)
-        _checked_rows = [_i for _i in df.index if st.session_state.get(f"sel_p_{_i}", False)]
+        # ⚓ stable_key 기반 (DB id 우선)
+        _ids_for_sel = df['id'].values if 'id' in df.columns else df.index.values
+        _sk_list = [str(_v) for _v in _ids_for_sel]
+        _checked_rows = [_sk for _sk in _sk_list if st.session_state.get(f"sel_p_{_sk}", False)]
         _hdr_sel_key = f'_hdr_sel_{calc_date_str}'
 
         # ── 액션 바: 3등분 균일 레이아웃 ──
@@ -459,12 +473,12 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         # 헤더 — outer column: [전체선택][표시][구입가][🧾영수증]
         _TH = "text-align:{a};padding:3px 6px;font-size:12px;color:#444;background:#fafafa;border-bottom:1px solid #dee2e6"
         _h0, _h1, _h2, _h4 = st.columns([0.3, 9, 1.5, 0.6])
-        # 전체 선택 버튼 — 클릭 시 모든 행 sel_p_X 토글
+        # 전체 선택 버튼 — 클릭 시 모든 행 sel_p_<sk> 토글
         _all_sel = len(_checked_rows) == len(df) and len(df) > 0
         if _h0.button("☑" if _all_sel else "☐", key=_hdr_sel_key, help="전체 선택/해제"):
             _new_v = not _all_sel
-            for _i in df.index:
-                st.session_state[f'sel_p_{_i}'] = _new_v
+            for _sk in _sk_list:
+                st.session_state[f'sel_p_{_sk}'] = _new_v
             st.rerun()
         _h1.markdown(
             '<table style="width:100%;border-collapse:collapse;table-layout:fixed">'
@@ -511,16 +525,19 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
 
         # 영수증 picker가 다음 rerun 직전에 위젯값을 갱신할 수 있도록 버퍼 적용
         # (위젯이 인스턴스화된 후 session_state 수정 불가 → 위젯 생성 직전에 적용)
-        for _bidx in _page_df.index:
-            _bk = st.session_state.pop(f'_buf_k_{_bidx}', None)
+        # ⚓ stable_key 기반
+        for _bri, _brow in _page_df.iterrows():
+            _bsk = str(_brow.get('id', _bri))
+            _bk = st.session_state.pop(f'_buf_k_{_bsk}', None)
             if _bk is not None:
-                st.session_state[f'k_{_bidx}'] = _bk
-            _bc = st.session_state.pop(f'_buf_c_{_bidx}', None)
+                st.session_state[f'k_{_bsk}'] = _bk
+            _bc = st.session_state.pop(f'_buf_c_{_bsk}', None)
             if _bc is not None:
-                st.session_state[f'c_{_bidx}'] = _bc
+                st.session_state[f'c_{_bsk}'] = _bc
 
         for idx, r in _page_df.iterrows():
-            key = f"{r['수취인명']}_{r['상품명']}_{idx}_{calc_date_str}"
+            sk = str(r.get('id', idx))  # ⚓ stable_key (DB row id 우선)
+            key = f"{r['수취인명']}_{r['상품명']}_{sk}_{calc_date_str}"
             _src = r['매칭출처']
             _ss  = _SRC_STYLE.get(_src, {'bg': '#ffffff', 'badge': ''})
             bg = _ss['bg']
@@ -563,12 +580,12 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 f'</tr></table>'
             )
             chk_col, disp_col, c_cost, c_rcpt = st.columns([0.3, 9, 1.5, 0.6])
-            chk_col.checkbox("", key=f"sel_p_{idx}", label_visibility="collapsed")
+            chk_col.checkbox("", key=f"sel_p_{sk}", label_visibility="collapsed")
             disp_col.markdown(row_html, unsafe_allow_html=True)
 
             current_cost = int(r['구입가격'])
             new_cost = c_cost.number_input("", value=current_cost, min_value=0, step=100,
-                                           label_visibility="collapsed", key=f"c_{idx}")
+                                           label_visibility="collapsed", key=f"c_{sk}")
             if new_cost != current_cost:
                 st.session_state['cost_overrides'][key] = new_cost
 
@@ -591,7 +608,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         st.success(f"✅ 매칭됨 — {_matched_kw[:40]} (#{_picked_now})")
                     else:
                         st.caption("아래 항목 중 하나를 클릭하면 즉시 매칭됩니다")
-                    _rq = st.text_input("검색", key=f"rq_{idx}",
+                    _rq = st.text_input("검색", key=f"rq_{sk}",
                                         placeholder="상품명 / 상품번호 검색",
                                         label_visibility="collapsed")
                     _rq_low = _rq.strip().lower() if _rq else ""
@@ -607,7 +624,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         _io = str(_item.get('상품번호', '') or '')
                         _btn_clicked = st.button(
                             f"{_in[:40]}\n💰 {_ip:,}원 · {_io}",
-                            key=f"rpick_{idx}_{_ri}_{_io}",
+                            key=f"rpick_{sk}_{_ri}_{_io}",
                             use_container_width=True,
                             # 이미 선택된 항목은 강조
                             type="primary" if _picked_now == _io else "secondary",
@@ -636,9 +653,9 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                 except (ValueError, KeyError, IndexError):
                                     # 캐시 업데이트 실패 시 안전하게 무효화
                                     st.session_state.pop('_pcalc_match_cache', None)
-                            # 위젯 state 버퍼
-                            st.session_state[f'_buf_k_{idx}'] = _in
-                            st.session_state[f'_buf_c_{idx}'] = _ip * _qty_row
+                            # 위젯 state 버퍼 (⚓ stable_key)
+                            st.session_state[f'_buf_k_{sk}'] = _in
+                            st.session_state[f'_buf_c_{sk}'] = _ip * _qty_row
                             st.session_state['_rcpt_pick_toast'] = (
                                 f"✅ 영수증 매칭: {r['수취인명']} → {_in[:30]} "
                                 f"({_ip:,}원 × {_qty_row}개)"
@@ -646,15 +663,15 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                             st.rerun()
                     if _picked_now:
                         st.divider()
-                        if st.button("❌ 매칭 해제", key=f"runpick_{idx}",
+                        if st.button("❌ 매칭 해제", key=f"runpick_{sk}",
                                      use_container_width=True, type="secondary"):
                             st.session_state['receipt_pick'].pop(key, None)
                             st.session_state['kw_overrides'].pop(key, None)
                             st.session_state['cost_overrides'].pop(key, None)
                             # 해제는 전체 재매칭 필요 (원래 자동 매칭 결과 복원)
                             st.session_state.pop('_pcalc_match_cache', None)
-                            st.session_state[f'_buf_k_{idx}'] = ''
-                            st.session_state[f'_buf_c_{idx}'] = 0
+                            st.session_state[f'_buf_k_{sk}'] = ''
+                            st.session_state[f'_buf_c_{sk}'] = 0
                             st.session_state['_rcpt_pick_toast'] = (
                                 f"❌ 매칭 해제: {r['수취인명']}"
                             )
