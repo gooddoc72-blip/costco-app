@@ -810,36 +810,33 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
 
         if st.button("💾 수정사항 반영", key="recalc", type="primary"):
             save_daily_orders(USERNAME, calc_date_str, df, shipping_cost, box_cost)
-            # Phase 1: upsert_product로 매칭 행 저장 (각각 자체 connection)
-            _pno_units = {}  # {product_no: new_unit_price} — Phase 2 일괄 동기화용
+            # ⭐ 네이버 상품번호 기반 개별 저장 (코스트코 상품번호 일괄 덮어쓰기 제거)
             for _, _r in df.iterrows():
                 _pno = str(_r.get('매칭상품번호', '') or '').strip()
                 _kw = (_r.get('매칭제품', '') or '').strip()
                 _cost = int(_r.get('구입가격', 0) or 0)
                 _qty = max(1, int(_r.get('수량', 1) or 1))
                 if _cost > 0 and (_pno or _kw):
-                    _up = next((p for p in (_preload_user or [])
-                                if (p.get('product_no') and p.get('product_no') == _pno)
-                                or p.get('match_keyword') == _kw), None)
+                    # 우선: naver_origin_pno로 매칭 (같은 코스트코 상품번호의 다른 네이버 상품과 격리)
+                    _up = next(
+                        (p for p in (_preload_user or [])
+                         if (p.get('product_no') and p.get('product_no') == _pno)
+                         or p.get('match_keyword') == _kw),
+                        None
+                    )
                     _sq = max(1, int((_up or {}).get('split_qty') or 1))
+                    _naver_origin = (_up or {}).get('naver_origin_pno', '') or ''
                     _new_unit = (_cost // _qty) * _sq
                     upsert_product(USERNAME, _kw or _pno, _kw or _pno, _new_unit,
                                     product_no=_pno, split_qty=_sq,
+                                    naver_origin_pno=_naver_origin,
                                     shipping_fee=(_up or {}).get('shipping_fee'))
-                    if _pno:
-                        _pno_units[_pno] = _new_unit
-            # Phase 2: 같은 product_no의 다른 키워드 행 일괄 동기화 (단일 connection)
-            if _pno_units:
-                _conn = get_user_db(USERNAME)
-                _now = datetime.now().strftime("%Y-%m-%d %H:%M")
-                for _pno, _unit in _pno_units.items():
-                    _conn.execute(
-                        "UPDATE products SET unit_price=?, updated_at=? WHERE product_no=?",
-                        (_unit, _now, _pno)
-                    )
-                _conn.commit()
-                _conn.close()
             invalidate_data_cache()
+            # 위젯 state 정리 → 다음 render에서 새 값 표시
+            for _k in list(st.session_state.keys()):
+                if _k.startswith('c_') or _k.startswith('k_'):
+                    st.session_state.pop(_k, None)
+            st.session_state.pop('_pcalc_match_cache', None)
             st.session_state['cost_overrides'] = {}
             st.session_state['kw_overrides'] = {}
             st.session_state['receipt_pick'] = {}
