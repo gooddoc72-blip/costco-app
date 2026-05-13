@@ -131,7 +131,6 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                      use_container_width=True,
                      help=f"{calc_date_str} daily_orders 모두 삭제. 일일 주문 수집에서 결제일 필터로 재저장 필요."):
             try:
-                from db_core import get_user_db
                 _cn = get_user_db(USERNAME)
                 _cur = _cn.execute("DELETE FROM daily_orders WHERE order_date=?", (calc_date_str,))
                 _deleted = _cur.rowcount
