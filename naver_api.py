@@ -1153,43 +1153,34 @@ _SETTLE_CASE_PATH  = "/external/v1/pay-settle/settle/case"
 _SETTLE_DAILY_PATH = "/external/v1/pay-settle/settle/daily"
 
 _SETTLEMENT_PATH_CANDIDATES = [
-    # /case — 가능한 모든 파라미터 스타일
-    ("GET", _SETTLE_CASE_PATH,  "dateRange"),               # /daily에서 성공한 스타일
-    ("GET", _SETTLE_CASE_PATH,  "dateRangeWithPage"),       # + page/size
-    ("GET", _SETTLE_CASE_PATH,  "completeRange"),
-    ("GET", _SETTLE_CASE_PATH,  "basisRange"),
-    ("GET", _SETTLE_CASE_PATH,  "expectRange"),
-    ("GET", _SETTLE_CASE_PATH,  "settleRangeWithType"),     # + searchDateType=SETTLE_COMPLETE
-    ("GET", _SETTLE_CASE_PATH,  "settleRange"),
-    ("GET", _SETTLE_CASE_PATH,  "lastChangedRange"),        # lastChangedFromDate/lastChangedToDate
-    ("GET", _SETTLE_CASE_PATH,  "payDateRange"),            # startPayDate/endPayDate
-    # /daily
+    # /case — Naver 400 응답에서 확인된 필수 파라미터: searchDate + periodType
+    # periodType 후보 (가장 가능성 높은 순)
+    ("GET", _SETTLE_CASE_PATH,  "searchDate_SETTLE_COMPLETE_DATE"),
+    ("GET", _SETTLE_CASE_PATH,  "searchDate_SETTLE_COMPLETE"),
+    ("GET", _SETTLE_CASE_PATH,  "searchDate_SETTLE_BASIS_DATE"),
+    ("GET", _SETTLE_CASE_PATH,  "searchDate_SETTLE_BASIS"),
+    ("GET", _SETTLE_CASE_PATH,  "searchDate_PAY_DATE"),
+    ("GET", _SETTLE_CASE_PATH,  "searchDate_PAYMENT_DATE"),
+    ("GET", _SETTLE_CASE_PATH,  "searchDate_SETTLE_EXPECT_DATE"),
+    # /daily (참고 - 이미 동작 확인)
     ("GET", _SETTLE_DAILY_PATH, "dateRange"),
 ]
 
 
 def _build_params(date_from, date_to, style):
+    # /case 전용: searchDate(단일 날짜) + periodType(enum) + 페이지
+    if style.startswith("searchDate_"):
+        period_type = style.replace("searchDate_", "")
+        return {
+            "searchDate": date_from,
+            "periodType": period_type,
+            "page": 1,
+            "size": 1000,
+        }
     return {
-        "dateRange":          {"startDate":        date_from, "endDate":        date_to},
-        "dateRangeWithPage":  {"startDate":        date_from, "endDate":        date_to,
-                                "page": 1, "size": 1000},
-        "completeRange":      {"startSettleCompleteDate": date_from, "endSettleCompleteDate": date_to},
-        "basisRange":         {"startSettleBasisDate":    date_from, "endSettleBasisDate":    date_to},
-        "expectRange":        {"startSettleExpectDate":   date_from, "endSettleExpectDate":   date_to},
-        "settleRangeWithType":{"startDate": date_from, "endDate": date_to,
-                                "searchDateType": "SETTLE_COMPLETE"},
-        "settleRange":        {"startSettleDate":  date_from, "endSettleDate":  date_to},
-        "lastChangedRange":   {"lastChangedFromDate": date_from, "lastChangedToDate": date_to},
-        "payDateRange":       {"startPayDate":     date_from, "endPayDate":     date_to},
-        # 호환
-        "saleRange":   {"startSaleDate":    date_from, "endSaleDate":    date_to},
-        "fromTo":      {"from":             date_from, "to":             date_to},
-        "searchRange": {"searchStartDate":  date_from, "searchEndDate":  date_to},
-        "settleDateSingle": {"settleDate":  date_from},
-        "searchDateType":   {"searchDateType": "SETTLE_COMPLETE", "startDate": date_from, "endDate": date_to},
-        "range":     {"startSettleDate": date_from, "endSettleDate": date_to},
-        "rangeStd":  {"startDate":       date_from, "endDate":       date_to},
-        "date":      {"settleDate":      date_from},
+        "dateRange":   {"startDate":       date_from, "endDate":       date_to},
+        "rangeStd":    {"startDate":       date_from, "endDate":       date_to},
+        "date":        {"settleDate":      date_from},
     }.get(style, {"startDate": date_from, "endDate": date_to})
 
 
