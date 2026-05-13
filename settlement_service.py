@@ -91,6 +91,39 @@ def match_shipped_vs_settled(shipped: List[Dict], settled: List[Dict],
     }
 
 
+def match_daily_total(dispatch_rows: List[Dict], daily_settle_total: int,
+                      tolerance: int = 10) -> Dict:
+    """일괄발송 합계 vs 일일정산 합계 매칭 (per-order productOrderId 없이 합계로만 검증).
+
+    Args:
+        dispatch_rows: dispatch_log 행 리스트 (expected_settlement 포함)
+        daily_settle_total: API /pay-settle/settle/daily 의 settleAmount
+        tolerance: 합계 차이가 이 값 이하면 일치로 간주
+
+    Returns:
+        {
+          'dispatch_count': 발송 성공 건수,
+          'expected_total': 발송건 정산예정합계,
+          'actual_total':   네이버 실제 정산합계,
+          'diff':           actual - expected (음수면 누락 가능성),
+          'match':          'OK' | 'MISMATCH',
+          'rate':           expected 대비 actual 비율 (%),
+        }
+    """
+    expected_total = sum(int(r.get('expected_settlement') or 0) for r in dispatch_rows)
+    actual_total = int(daily_settle_total or 0)
+    diff = actual_total - expected_total
+    rate = (actual_total / expected_total * 100.0) if expected_total else 0
+    return {
+        'dispatch_count': len(dispatch_rows),
+        'expected_total': expected_total,
+        'actual_total':   actual_total,
+        'diff':           diff,
+        'match':          'OK' if abs(diff) <= tolerance else 'MISMATCH',
+        'rate':           round(rate, 2),
+    }
+
+
 def shipped_orders_from_db_rows(rows: list) -> List[Dict]:
     """db_orders의 order_history 또는 daily_orders 행을 매칭 입력 dict로 변환.
 

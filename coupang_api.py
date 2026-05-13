@@ -223,6 +223,7 @@ def dispatch_orders(access_key: str, secret_key: str, vendor_id: str, ship_data:
     total_success = 0
     total_fail = 0
     fail_details = []
+    success_order_ids = []
 
     for item in ship_data:
         poid = str(item.get("productOrderId", "")).strip()
@@ -263,6 +264,7 @@ def dispatch_orders(access_key: str, secret_key: str, vendor_id: str, ship_data:
             code = str(body.get("code", ""))
             if resp.status_code == 200 and code == "200":
                 total_success += 1
+                success_order_ids.append(poid)
             else:
                 msg = body.get("message") or resp.text[:200]
                 total_fail += 1
@@ -276,6 +278,7 @@ def dispatch_orders(access_key: str, secret_key: str, vendor_id: str, ship_data:
         "fail": total_fail,
         "fail_details": fail_details,
         "sent_count": len(ship_data),
+        "success_order_ids": success_order_ids,
     }, None
 
 

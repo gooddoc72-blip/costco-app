@@ -12,9 +12,11 @@ from db import (
     save_naver_settlements, get_naver_settlements_by_date,
     delete_naver_settlements_by_date,
     search_order_history,
+    get_dispatch_log_by_date, get_dispatch_dates,
 )
 from settlement_service import (
     match_shipped_vs_settled, shipped_orders_from_db_rows,
+    match_daily_total,
 )
 from utils import fmt
 
@@ -126,9 +128,62 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             else:
                 st.success(f"✅ {settle_date_str} 정산 {saved}건 저장됨 (API 응답 {len(records)}건)")
 
-    # ── 매칭 결과 표시 ───────────────────────────────────────────
+    # ══════════════════════════════════════════════════════════════
+    # ⭐ 일괄발송 vs 일일정산 합계 매칭 (per-order /case 없이 합계로 검증)
+    # ══════════════════════════════════════════════════════════════
     st.divider()
-    st.subheader(f"📊 매칭 결과 — 발송일 {ship_date_str} ↔ 정산일 {settle_date_str}")
+    st.subheader(f"🎯 일괄발송 합계 vs 일일정산 합계 — {ship_date_str} 발송 / {settle_date_str} 정산")
+    st.caption("📌 어제 일괄발송 성공한 주문의 정산예정 합계와 오늘 네이버 일일정산 합계를 비교합니다.")
+
+    _dispatch_rows = get_dispatch_log_by_date(USERNAME, ship_date_str, platform='naver')
+    if not _dispatch_rows:
+        _avail = get_dispatch_dates(USERNAME, limit=10)
+        st.info(
+            f"❓ {ship_date_str}에 저장된 일괄발송 이력이 없습니다. "
+            f"송장번호 페이지에서 발송처리를 완료해야 자동 저장됩니다."
+            + (f"\n\n사용 가능한 발송일: {', '.join(_avail[:7])}" if _avail else "")
+        )
+    else:
+        # 일일 정산 합계 — /daily API 직접 호출 (이미 동작 확인됨)
+        with st.spinner(f"네이버 일일정산 합계 조회 중..."):
+            _records, _err, _used, _attempts = naver_api.get_settlement_history(
+                api_id, api_secret, settle_date_str, settle_date_str
+            )
+        _daily_total = 0
+        if _records:
+            # /daily 응답: elements[0].settleAmount
+            for _rec in _records:
+                _daily_total += int(_rec.get('settleAmount') or _rec.get('settle_amount') or 0)
+        if _err:
+            st.error(f"❌ 일일정산 조회 실패: {_err}")
+        else:
+            _m = match_daily_total(_dispatch_rows, _daily_total)
+            _c1, _c2, _c3, _c4 = st.columns(4)
+            _c1.metric("일괄발송 성공", f"{_m['dispatch_count']}건")
+            _c2.metric("예상 정산합계", f"{fmt(_m['expected_total'])}원")
+            _c3.metric("실제 정산합계", f"{fmt(_m['actual_total'])}원",
+                       delta=f"{fmt(_m['diff'])}원" if _m['diff'] else None)
+            _c4.metric("일치율",
+                       f"{_m['rate']:.1f}%",
+                       delta="✅ 일치" if _m['match'] == 'OK' else "⚠️ 불일치")
+
+            if _m['match'] == 'OK':
+                st.success(f"✅ 합계 일치 — 차액 {fmt(_m['diff'])}원 (허용 오차 내)")
+            else:
+                _color = "🔴" if _m['diff'] < 0 else "🔵"
+                st.error(
+                    f"⚠️ 불일치 {_color} 차액 {fmt(_m['diff'])}원 — "
+                    + ("정산 누락 가능성" if _m['diff'] < 0 else "정산 추가 입금 (이전 발송분일 가능성)")
+                )
+            with st.expander(f"📋 {ship_date_str} 발송 성공 목록 ({len(_dispatch_rows)}건)", expanded=False):
+                st.dataframe(pd.DataFrame(_dispatch_rows)[
+                    ['order_no', 'recipient', 'product_name', 'expected_settlement', 'tracking_no', 'courier']
+                ], use_container_width=True, hide_index=True)
+
+    # ── 매칭 결과 표시 (기존 per-order, /case 동작 시 사용) ─────────
+    st.divider()
+    st.subheader(f"📊 (참고) 건별 매칭 — 발송일 {ship_date_str} ↔ 정산일 {settle_date_str}")
+    st.caption("⚠️ /case API 응답 시에만 동작 — 현재 /daily만 동작하므로 결과는 비어있을 수 있습니다.")
 
     # DB에서 양쪽 데이터 로드
     settled_rows = get_naver_settlements_by_date(USERNAME, settle_date_str)

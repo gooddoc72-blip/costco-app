@@ -102,6 +102,38 @@ def _show_dispatch_result(container, result, err, total):
                 st.text(d)
 
 
+def _log_dispatch_to_db(username, result_df, success_order_ids, platform, container):
+    """발송 API 성공 결과를 dispatch_log에 저장 (정산 매칭 기준 데이터)."""
+    from db import log_dispatch_success, search_order_history
+    from datetime import datetime as _dt
+    if not success_order_ids:
+        return
+    success_set = {str(x).strip() for x in success_order_ids}
+    today = _dt.today().strftime("%Y-%m-%d")
+
+    # 정산예정금액 보강을 위해 order_history에서 매칭
+    _hist = search_order_history(username, date_from='', date_to='', limit=5000)
+    _hist_by_no = {str(r.get('order_no', '')): r for r in (_hist or [])}
+
+    rows = []
+    for _, r in result_df.iterrows():
+        po = str(r.get('상품주문번호', '')).split('.')[0].strip()
+        if po not in success_set:
+            continue
+        _h = _hist_by_no.get(po, {})
+        rows.append({
+            'order_no':            po,
+            'recipient':           _h.get('recipient') or r.get('수취인명') or '',
+            'product_name':        _h.get('product_name') or r.get('상품명') or '',
+            'expected_settlement': int(_h.get('settlement') or 0),
+            'tracking_no':         str(r.get('송장번호', '')).replace('-', '').strip(),
+            'courier':             str(r.get('택배사', '')).strip(),
+        })
+    if rows:
+        saved = log_dispatch_success(username, rows, today, platform=platform)
+        container.caption(f"💾 dispatch_log: {saved}건 저장됨 ({today}) — 정산 매칭에 사용")
+
+
 def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     """📮 송장번호 등록 탭 렌더링."""
     def _gs(k, default=""):
@@ -321,6 +353,9 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     with st.spinner(f"네이버에 {len(_items)}건 발송처리 중..."):
                         _res, _err = naver_api.ship_orders(api_id, api_secret, _items)
                     _show_dispatch_result(_dc3, _res, _err, len(_items))
+                    if _res and _res.get('success_order_ids'):
+                        _log_dispatch_to_db(USERNAME, result_df,
+                                            _res['success_order_ids'], 'naver', _dc3)
 
             elif _p["id"] == "coupang":
                 _dc3.caption("💡 쿠팡 상품주문번호 형식: `주문번호-아이템번호` — CJ 고객주문번호에 이 값 입력")
@@ -332,6 +367,9 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     with st.spinner(f"쿠팡 Wing에 {len(_items)}건 발송처리 중..."):
                         _res, _err = coupang_api.dispatch_orders(cq_access, cq_secret, cq_vendor, _items)
                     _show_dispatch_result(_dc3, _res, _err, len(_items))
+                    if _res and _res.get('success_order_ids'):
+                        _log_dispatch_to_db(USERNAME, result_df,
+                                            _res['success_order_ids'], 'coupang', _dc3)
 
     # ═══════════════════════════════════════
     # 탭 2: 영수증 등록

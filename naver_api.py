@@ -252,6 +252,7 @@ def ship_orders(client_id, client_secret, ship_data):
     total_success = 0
     total_fail = 0
     all_fail_details = []
+    success_order_ids = []
 
     try:
         for chunk in chunks:
@@ -270,6 +271,7 @@ def ship_orders(client_id, client_secret, ship_data):
                     f_list = data.get("failProductOrderInfos", [])
                     total_success += len(s_list)
                     total_fail += len(f_list)
+                    success_order_ids.extend(str(x) for x in s_list)
                     for f in f_list:
                         poid = f.get("productOrderId", "")
                         msg = f.get("message", "사유 미상")
@@ -301,6 +303,7 @@ def ship_orders(client_id, client_secret, ship_data):
             "fail": total_fail,
             "fail_details": all_fail_details,
             "sent_count": len(dispatch_list),
+            "success_order_ids": success_order_ids,
         }, None
 
     except Exception as e:
