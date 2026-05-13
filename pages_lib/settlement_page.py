@@ -9,15 +9,16 @@ import streamlit as st
 import pandas as pd
 
 from db import (
-    save_naver_settlements, get_naver_settlements_by_date,
-    delete_naver_settlements_by_date,
+    save_naver_settlements, save_naver_settlements_from_csv,
+    get_naver_settlements_by_date, delete_naver_settlements_by_date,
     search_order_history,
     get_dispatch_log_by_date, get_dispatch_dates,
 )
 from settlement_service import (
     match_shipped_vs_settled, shipped_orders_from_db_rows,
-    match_daily_total,
+    match_daily_total, analyze_shipping_commission,
 )
+from naver_settlement_parser import parse_naver_quicksettle_csv
 from utils import fmt
 
 try:
@@ -37,7 +38,40 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     api_secret = _gs("api_client_secret")
 
     st.header("💳 정산 매칭")
-    st.caption("네이버 커머스 API로 정산 내역을 수집하고 발송건과 매칭하여 누락·차액을 확인합니다.")
+    st.caption("네이버 정산 CSV 업로드 또는 API로 정산 내역을 수집하고 발송건과 매칭합니다.")
+
+    # ══════════════════════════════════════════════════════════════════
+    # ⭐ 네이버 정산 CSV 업로드 (QuickSettleByCase) — 가장 확실한 정답
+    # ══════════════════════════════════════════════════════════════════
+    with st.expander("📥 네이버 정산 CSV 업로드 (스마트스토어 → 정산관리 → 빠른정산 건별 다운로드)",
+                     expanded=True):
+        _csv_file = st.file_uploader(
+            "QuickSettleByCase.csv (EUC-KR)", type=['csv'], key='csv_settle'
+        )
+        if _csv_file is not None:
+            try:
+                _parsed = parse_naver_quicksettle_csv(_csv_file.read())
+            except Exception as _pe:
+                st.error(f"❌ 파싱 실패: {_pe}")
+                _parsed = []
+            if _parsed:
+                _saved = save_naver_settlements_from_csv(USERNAME, _parsed)
+                # 요약 카드
+                _cnt_quick = sum(1 for r in _parsed if r.get('settle_type') == '빠른정산')
+                _cnt_claim = sum(1 for r in _parsed if r.get('settle_type') == '공제')
+                _sum_prod  = sum(int(r.get('product_amount',0))  for r in _parsed)
+                _sum_ship  = sum(int(r.get('shipping_amount',0)) for r in _parsed)
+                _sum_tot   = sum(int(r.get('total_amount',0))    for r in _parsed)
+                _u1, _u2, _u3, _u4 = st.columns(4)
+                _u1.metric("주문 수", f"{len(_parsed)}건",
+                           delta=f"빠른정산 {_cnt_quick} / 공제 {_cnt_claim}")
+                _u2.metric("상품 정산", f"{fmt(_sum_prod)}원")
+                _u3.metric("배송비 정산", f"{fmt(_sum_ship)}원")
+                _u4.metric("총 정산", f"{fmt(_sum_tot)}원")
+                st.success(f"✅ CSV 파싱 완료 — {_saved}건 DB 저장")
+                with st.expander("📋 파싱 샘플 (첫 5건)", expanded=False):
+                    st.dataframe(pd.DataFrame(_parsed[:5]),
+                                 use_container_width=True, hide_index=True)
 
     if not HAS_NAVER_API:
         st.error("naver_api.py 가 로드되지 않았습니다.")
@@ -180,27 +214,33 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     ['order_no', 'recipient', 'product_name', 'expected_settlement', 'tracking_no', 'courier']
                 ], use_container_width=True, hide_index=True)
 
-    # ── 매칭 결과 표시 (기존 per-order, /case 동작 시 사용) ─────────
+    # ══════════════════════════════════════════════════════════════════
+    # 📊 건별 매칭 (CSV 데이터 기반 — dispatch_log ↔ naver_settlements)
+    # ══════════════════════════════════════════════════════════════════
     st.divider()
-    st.subheader(f"📊 (참고) 건별 매칭 — 발송일 {ship_date_str} ↔ 정산일 {settle_date_str}")
-    st.caption("⚠️ /case API 응답 시에만 동작 — 현재 /daily만 동작하므로 결과는 비어있을 수 있습니다.")
+    st.subheader(f"📊 건별 매칭 — 발송일 {ship_date_str} ↔ 정산일 {settle_date_str}")
 
-    # DB에서 양쪽 데이터 로드
+    # DB에서 양쪽 데이터 로드 — dispatch_log를 우선, 없으면 order_history fallback
     settled_rows = get_naver_settlements_by_date(USERNAME, settle_date_str)
-    _all_shipped = search_order_history(USERNAME, date_from=ship_date_str, date_to=ship_date_str, limit=5000)
-    # 네이버 정산 매칭이므로 네이버 주문만 필터 (쿠팡 order_no는 '-' 포함 형식)
-    shipped_rows = [r for r in _all_shipped if '-' not in str(r.get('order_no', ''))]
-    _coupang_count = len(_all_shipped) - len(shipped_rows)
-    if _coupang_count > 0:
-        st.caption(f"💡 발송 {len(_all_shipped)}건 중 쿠팡 {_coupang_count}건 제외 → 네이버 {len(shipped_rows)}건 매칭 대상")
+    _dispatch_for_match = get_dispatch_log_by_date(USERNAME, ship_date_str, platform='naver')
 
-    if not settled_rows and not shipped_rows:
-        st.info("선택한 날짜에 정산 내역과 발송건이 모두 없습니다. 먼저 정산 수집을 눌러주세요.")
-        return
+    if _dispatch_for_match:
+        # dispatch_log 사용 (정확한 발송 성공건만)
+        shipped_dicts = [{
+            'product_order_no':    str(d.get('order_no', '')),
+            'recipient':           d.get('recipient', ''),
+            'product_name':        d.get('product_name', ''),
+            'expected_settlement': int(d.get('expected_settlement') or 0),
+        } for d in _dispatch_for_match]
+        st.caption(f"📌 매칭 소스: dispatch_log {len(_dispatch_for_match)}건 (일괄발송 성공건)")
+    else:
+        # fallback: order_history (네이버만)
+        _all_shipped = search_order_history(USERNAME, date_from=ship_date_str, date_to=ship_date_str, limit=5000)
+        shipped_rows_fb = [r for r in _all_shipped if '-' not in str(r.get('order_no', ''))]
+        shipped_dicts = shipped_orders_from_db_rows(shipped_rows_fb)
+        if shipped_dicts:
+            st.caption(f"📌 매칭 소스: order_history (네이버만) {len(shipped_dicts)}건 — dispatch_log 비어있음")
 
-    # 비즈니스 로직: 순수 매칭 함수 호출
-    shipped_dicts = shipped_orders_from_db_rows(shipped_rows)
-    # DB rows를 매칭 함수가 기대하는 키로 변환
     settled_dicts = [{
         'product_order_no': r['product_order_no'],
         'order_no':         r.get('order_no', ''),
@@ -208,6 +248,10 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         'sales_amount':     r.get('sales_amount', 0),
         'commission':       r.get('commission', 0),
     } for r in settled_rows]
+
+    if not settled_rows and not shipped_dicts:
+        st.info("선택한 날짜에 정산 내역과 발송건이 모두 없습니다. 먼저 CSV 업로드 또는 정산 수집을 눌러주세요.")
+        return
 
     result = match_shipped_vs_settled(shipped_dicts, settled_dicts)
     s = result['summary']
@@ -254,3 +298,26 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             st.caption("💡 발송 기록은 없지만 정산된 주문 — 옛 발송분이거나 발송일 범위를 확장해야 매칭됩니다.")
         else:
             st.caption("해당 없음.")
+
+    # ══════════════════════════════════════════════════════════════════
+    # 🚚 배송비 수수료 분석 (고객결제 배송비 vs 정산받은 배송비)
+    # ══════════════════════════════════════════════════════════════════
+    if _dispatch_for_match and settled_rows:
+        st.divider()
+        st.subheader("🚚 배송비 수수료 분석")
+        st.caption("고객이 결제한 배송비와 네이버가 정산해준 배송비의 차이 = 네이버가 떼는 수수료")
+
+        _ship_analysis = analyze_shipping_commission(_dispatch_for_match, settled_rows)
+        _sa1, _sa2, _sa3, _sa4 = st.columns(4)
+        _sa1.metric("매칭 건수", f"{len(_ship_analysis['rows'])}건")
+        _sa2.metric("고객 결제 배송비 합계", f"{fmt(_ship_analysis['total_customer_shipping'])}원")
+        _sa3.metric("정산받은 배송비 합계", f"{fmt(_ship_analysis['total_settled_shipping'])}원")
+        _sa4.metric("배송비 수수료 합계",
+                    f"{fmt(_ship_analysis['total_commission'])}원",
+                    delta=f"평균 {_ship_analysis['avg_commission_rate']:.1f}%")
+
+        if _ship_analysis['rows']:
+            with st.expander(f"📋 행별 상세 ({len(_ship_analysis['rows'])}건)", expanded=False):
+                _df_ship = pd.DataFrame(_ship_analysis['rows'])
+                _df_ship.columns = ['상품주문번호', '수취인', '고객결제배송비', '정산배송비', '수수료', '수수료율(%)']
+                st.dataframe(_df_ship, use_container_width=True, hide_index=True)

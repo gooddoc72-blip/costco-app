@@ -24,6 +24,11 @@ def _ensure_table(conn):
     )""")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_dispatch_date ON dispatch_log(dispatched_at)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_dispatch_platform ON dispatch_log(platform)")
+    # 고객 결제 배송비 — 정산 매칭 시 배송비 수수료 분석에 사용
+    try:
+        conn.execute("ALTER TABLE dispatch_log ADD COLUMN customer_shipping_fee INTEGER DEFAULT 0")
+    except Exception:
+        pass
 
 
 def log_dispatch_success(username: str, orders: list, dispatched_at: str,
@@ -46,15 +51,18 @@ def log_dispatch_success(username: str, orders: list, dispatched_at: str,
             continue
         conn.execute("""INSERT OR REPLACE INTO dispatch_log
             (order_no, dispatched_at, recipient, product_name,
-             expected_settlement, tracking_no, courier, platform, created_at)
-            VALUES (?,?,?,?,?,?,?,?,?)""",
+             expected_settlement, tracking_no, courier, platform,
+             customer_shipping_fee, created_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?)""",
             (order_no, dispatched_at,
              str(o.get('recipient') or o.get('수취인명') or ''),
              str(o.get('product_name') or o.get('상품명') or ''),
              int(o.get('expected_settlement') or o.get('정산예정금액') or 0),
              str(o.get('tracking_no') or o.get('송장번호') or ''),
              str(o.get('courier') or o.get('택배사') or ''),
-             platform, now))
+             platform,
+             int(o.get('customer_shipping_fee') or o.get('배송비 합계') or 0),
+             now))
         saved += 1
     conn.commit()
     conn.close()

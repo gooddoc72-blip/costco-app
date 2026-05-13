@@ -124,6 +124,59 @@ def match_daily_total(dispatch_rows: List[Dict], daily_settle_total: int,
     }
 
 
+def analyze_shipping_commission(dispatch_rows: List[Dict],
+                                settled_rows: List[Dict]) -> Dict:
+    """배송비 수수료 분석 — 발송건의 고객결제 배송비 vs CSV 정산된 배송비.
+
+    Args:
+        dispatch_rows: dispatch_log 행 (각 행에 expected_settlement, order_no 포함)
+            * 별도 customer_shipping_fee가 있으면 사용, 없으면 order_history에서 가져와야 함
+        settled_rows: db_settlements 행 (product_amount, shipping_amount 분리)
+
+    Returns:
+        {
+          'rows': 매칭별 상세 [{po, customer_paid_shipping, settled_shipping, commission, ...}],
+          'total_customer_shipping': int,
+          'total_settled_shipping':  int,
+          'total_commission':         int,
+          'avg_commission_rate':     float,  # %
+        }
+    """
+    settled_by_po = {str(s.get('product_order_no', '')).strip(): s for s in settled_rows}
+    rows = []
+    total_cust = total_sett = 0
+    for d in dispatch_rows:
+        po = str(d.get('order_no', '')).strip()
+        if not po:
+            continue
+        s = settled_by_po.get(po)
+        if not s:
+            continue
+        cust = int(d.get('customer_shipping_fee') or 0)
+        sett = int(s.get('shipping_amount') or 0)
+        comm = cust - sett
+        total_cust += cust
+        total_sett += sett
+        rate = (comm / cust * 100) if cust > 0 else 0
+        rows.append({
+            'product_order_no': po,
+            'recipient':        d.get('recipient', ''),
+            'customer_paid':    cust,
+            'settled':          sett,
+            'commission':       comm,
+            'rate':             round(rate, 2),
+        })
+    total_comm = total_cust - total_sett
+    avg_rate = (total_comm / total_cust * 100) if total_cust > 0 else 0
+    return {
+        'rows': rows,
+        'total_customer_shipping': total_cust,
+        'total_settled_shipping':  total_sett,
+        'total_commission':         total_comm,
+        'avg_commission_rate':     round(avg_rate, 2),
+    }
+
+
 def shipped_orders_from_db_rows(rows: list) -> List[Dict]:
     """db_orders의 order_history 또는 daily_orders 행을 매칭 입력 dict로 변환.
 

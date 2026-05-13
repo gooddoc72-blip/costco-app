@@ -122,12 +122,13 @@ def _log_dispatch_to_db(username, result_df, success_order_ids, platform, contai
             continue
         _h = _hist_by_no.get(po, {})
         rows.append({
-            'order_no':            po,
-            'recipient':           _h.get('recipient') or r.get('수취인명') or '',
-            'product_name':        _h.get('product_name') or r.get('상품명') or '',
-            'expected_settlement': int(_h.get('settlement') or 0),
-            'tracking_no':         str(r.get('송장번호', '')).replace('-', '').strip(),
-            'courier':             str(r.get('택배사', '')).strip(),
+            'order_no':              po,
+            'recipient':             _h.get('recipient') or r.get('수취인명') or '',
+            'product_name':          _h.get('product_name') or r.get('상품명') or '',
+            'expected_settlement':   int(_h.get('settlement') or 0),
+            'customer_shipping_fee': int(_h.get('shipping_fee') or 0),
+            'tracking_no':           str(r.get('송장번호', '')).replace('-', '').strip(),
+            'courier':               str(r.get('택배사', '')).strip(),
         })
     if rows:
         saved = log_dispatch_success(username, rows, today, platform=platform)
