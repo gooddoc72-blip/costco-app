@@ -33,6 +33,7 @@ from db import (
     save_rank_result, get_rank_history, get_latest_ranks,
     get_daily_ranks_in_month, get_yearly_rank_history, delete_trackings_bulk,
     get_rank_drops,
+    get_dispatched_orders_with_details,
     AUTH_DB,
 )
 from services import (
@@ -140,18 +141,9 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             except Exception as _de:
                 st.error(f"삭제 실패: {_de}")
 
-    # ── 🧾 영수증 등록 (전체 기능 임베드) ──────────────────────
-    # 영수증 PDF 업로드 + 가격 변동 감지 + 공유 DB 저장 + 상품번호 자동 매칭
-    # (이전 "🧾 영수증 등록" 메뉴의 모든 기능 포함)
-    _rcpt_loaded = bool(st.session_state.get('receipt_items'))
-    _rcpt_label = (
-        f"🧾 영수증 등록 — 업로드 / 가격변동 / 상품번호 매칭"
-        + (f" (✅ {len(st.session_state.get('receipt_items', []))}개 로드됨)" if _rcpt_loaded else "")
-    )
-    with st.expander(_rcpt_label, expanded=not _rcpt_loaded):
-        # 영수증 등록 페이지의 전체 기능을 여기에 임베드
-        from pages_lib import receipt_page as _rcpt_pg
-        _rcpt_pg.render(USERNAME, IS_ADMIN, settings, embedded=True, order_date=calc_date_str)
+    # 데이터 소스 표시 (디버그/안심용)
+    if _src_label:
+        st.caption(_src_label)
 
     # ── 매칭/구입가 전체 초기화 (빠른 액션) ─────────────────────
     _kw_clear_col1, _kw_clear_col2 = st.columns([1.5, 4])
@@ -184,31 +176,44 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         st.success(f"✅ 전체 초기화 완료 ({len(_keys_to_remove)}개 위젯 state 정리) — 자동 매칭으로 재계산")
         st.rerun()
 
-    # 기존 DB에서 데이터 불러오기 (캐시 래퍼 우선, 없으면 직접 조회)
-    _get_daily = _cached_daily_orders if _cached_daily_orders else get_daily_orders
-    saved_rows = _get_daily(USERNAME, calc_date_str)
-    if saved_rows:
-        df = pd.DataFrame(saved_rows)
-        # DB 컬럼명을 UI용 컬럼명으로 매핑
-        rename_map = {
-            'recipient': '수취인명',
-            'product_name': '상품명',
-            'option_info': '옵션정보',
-            'qty': '수량',
-            'order_amount': '최종 상품별 총 주문금액',
-            'shipping_fee': '배송비 합계',
-            'settlement': '정산예정금액',
-            'cost_price': '구입가격'
-        }
+    # ⭐ 신규 데이터 소스: dispatch_log (일괄발송 성공건) + order_history JOIN
+    # → "이 날짜에 발송된 주문" = "이 날짜의 수익계산 대상" 으로 일치 보장
+    # → 결제일 필터/저장 액션 불필요, daily_orders 의존 제거
+    _src_label = None
+    _dispatched_rows = get_dispatched_orders_with_details(USERNAME, calc_date_str)
+
+    rename_map = {
+        'recipient': '수취인명',
+        'product_name': '상품명',
+        'option_info': '옵션정보',
+        'qty': '수량',
+        'order_amount': '최종 상품별 총 주문금액',
+        'shipping_fee': '배송비 합계',
+        'settlement': '정산예정금액',
+        'cost_price': '구입가격'
+    }
+
+    if _dispatched_rows:
+        df = pd.DataFrame(_dispatched_rows)
         df = df.rename(columns=rename_map)
-        # ⚓ Phase A: DataFrame index를 DB row id 문자열로 설정
-        # → 위젯 key, override key, df.loc[sk] 모두 안정적으로 동작
-        # → 정렬/페이지 이동/DataFrame 재로드해도 같은 행 = 같은 id = 같은 키
-        if 'id' in df.columns:
-            df.index = df['id'].astype(str)
+        # order_no를 stable_key 로 사용 (dispatch_log UNIQUE)
+        if 'order_no' in df.columns:
+            df.index = df['order_no'].astype(str)
             df.index.name = None
+        _src_label = f"🚀 발송 기준 ({len(df)}건) — dispatch_log"
     else:
-        df = None
+        # Fallback: 옛 daily_orders 데이터 (이전 워크플로 호환)
+        _get_daily = _cached_daily_orders if _cached_daily_orders else get_daily_orders
+        saved_rows = _get_daily(USERNAME, calc_date_str)
+        if saved_rows:
+            df = pd.DataFrame(saved_rows)
+            df = df.rename(columns=rename_map)
+            if 'id' in df.columns:
+                df.index = df['id'].astype(str)
+                df.index.name = None
+            _src_label = f"📋 옛 데이터 ({len(df)}건) — daily_orders fallback"
+        else:
+            df = None
 
     # 저장완료 토스트 (rerun 전에 큐에 저장된 메시지 표시)
     if '_profit_save_toast' in st.session_state:
@@ -855,6 +860,17 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             st.markdown("**지출**")
             st.write(f"구입가: {fmt(total_cost)}원 + 택배: {fmt(total_ship)}원 + 박스: {fmt(total_box)}원 = **{fmt(total_cost + total_ship + total_box)}원**")
         st.markdown(f"### 순수익: {'🟢' if total_profit >= 0 else '🔴'} {fmt(total_profit)}원")
+
+        st.divider()
+        # ── 🧾 영수증 등록 (하단 — 정산표 본 후 매칭 가격 보정용) ─────────
+        _rcpt_loaded = bool(st.session_state.get('receipt_items'))
+        _rcpt_label = (
+            f"🧾 영수증 등록 — 매칭 가격 보정 (선택사항)"
+            + (f" — ✅ {len(st.session_state.get('receipt_items', []))}개 로드됨" if _rcpt_loaded else "")
+        )
+        with st.expander(_rcpt_label, expanded=False):
+            from pages_lib import receipt_page as _rcpt_pg
+            _rcpt_pg.render(USERNAME, IS_ADMIN, settings, embedded=True, order_date=calc_date_str)
 
         st.divider()
         if st.button("💾 정산 데이터 저장", type="primary"):
