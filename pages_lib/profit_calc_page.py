@@ -175,6 +175,9 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     # 저장완료 토스트 (rerun 전에 큐에 저장된 메시지 표시)
     if '_profit_save_toast' in st.session_state:
         st.toast(st.session_state.pop('_profit_save_toast'), icon="✅")
+    # 영수증 picker 토스트
+    if '_rcpt_pick_toast' in st.session_state:
+        st.toast(st.session_state.pop('_rcpt_pick_toast'), icon="🧾")
 
     if df is not None and not df.empty:
         receipt_items = st.session_state.get('receipt_items', [])
@@ -582,7 +585,12 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 with c_rcpt.popover(_btn_label, use_container_width=True,
                                      help="영수증에서 정확한 항목 선택"):
                     st.caption(f"**{r['상품명'][:50]}**")
-                    st.caption("주문 상품에 매칭할 영수증 항목을 골라주세요")
+                    if _picked_now:
+                        # 이미 매칭된 경우 상단에 명확히 표시
+                        _matched_kw = st.session_state.get('kw_overrides', {}).get(key, '')
+                        st.success(f"✅ 매칭됨 — {_matched_kw[:40]} (#{_picked_now})")
+                    else:
+                        st.caption("아래 항목 중 하나를 클릭하면 즉시 매칭됩니다")
                     _rq = st.text_input("검색", key=f"rq_{idx}",
                                         placeholder="상품명 / 상품번호 검색",
                                         label_visibility="collapsed")
@@ -597,30 +605,45 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         _ip = int(_item.get('단가', 0) or 0)
                         _in = _item.get('상품명', '') or ''
                         _io = str(_item.get('상품번호', '') or '')
-                        if st.button(
+                        _btn_clicked = st.button(
                             f"{_in[:40]}\n💰 {_ip:,}원 · {_io}",
                             key=f"rpick_{idx}_{_ri}_{_io}",
-                            use_container_width=True
-                        ):
+                            use_container_width=True,
+                            # 이미 선택된 항목은 강조
+                            type="primary" if _picked_now == _io else "secondary",
+                        )
+                        if _btn_clicked:
                             _qty_row = max(1, int(r['수량']))
+                            # 매칭 캐시 무효화 강제 (다음 render 시 재계산 보장)
+                            st.session_state.pop('_pcalc_match_cache', None)
+                            st.session_state.pop('_pcalc_match_cache_key', None)
                             # 키워드/구입가 오버라이드 저장
                             st.session_state['kw_overrides'][key] = _in
                             st.session_state['cost_overrides'][key] = _ip * _qty_row
-                            st.session_state['receipt_pick'][key] = _io  # 영수증 상품번호 보관
-                            # 위젯 state는 직접 못 바꿈 → 버퍼에 저장 (다음 rerun 시 위젯 생성 직전 적용)
+                            st.session_state['receipt_pick'][key] = _io
+                            # 위젯 state는 직접 못 바꿈 → 버퍼에 저장
                             st.session_state[f'_buf_k_{idx}'] = _in
                             st.session_state[f'_buf_c_{idx}'] = _ip * _qty_row
+                            # rerun 후 사용자에게 결과 알림
+                            st.session_state['_rcpt_pick_toast'] = (
+                                f"✅ 영수증 매칭: {r['수취인명']} → {_in[:30]} "
+                                f"({_ip:,}원 × {_qty_row}개)"
+                            )
                             st.rerun()
                     if _picked_now:
                         st.divider()
                         if st.button("❌ 매칭 해제", key=f"runpick_{idx}",
                                      use_container_width=True, type="secondary"):
+                            st.session_state.pop('_pcalc_match_cache', None)
+                            st.session_state.pop('_pcalc_match_cache_key', None)
                             st.session_state['receipt_pick'].pop(key, None)
                             st.session_state['kw_overrides'].pop(key, None)
                             st.session_state['cost_overrides'].pop(key, None)
-                            # 위젯 state 초기화도 버퍼 통해 처리 (빈 문자열 / 0)
                             st.session_state[f'_buf_k_{idx}'] = ''
                             st.session_state[f'_buf_c_{idx}'] = 0
+                            st.session_state['_rcpt_pick_toast'] = (
+                                f"❌ 매칭 해제: {r['수취인명']}"
+                            )
                             st.rerun()
             else:
                 c_rcpt.markdown(
