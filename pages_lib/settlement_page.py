@@ -67,14 +67,29 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         st.write("")
         debug_clicked = st.button("🔍 응답 디버그", use_container_width=True)
 
-    # ── 디버그: raw API 응답 ────────────────────────────────────
+    # ── 디버그: 모든 후보 path 동시 probe ─────────────────────────
     if debug_clicked:
-        with st.spinner("API 응답 조회 중..."):
-            raw, err = naver_api.debug_settlement_response(api_id, api_secret, settle_date_str)
+        with st.spinner("정산 API 후보 경로들 probe 중..."):
+            probes, err = naver_api.debug_settlement_response(
+                api_id, api_secret, settle_date_str
+            )
         if err:
             st.error(f"❌ {err}")
+            return
+        # 200 응답을 먼저 표시
+        _hits = [(p, r) for p, r in (probes or {}).items() if r.get('status') == 200]
+        _miss = [(p, r) for p, r in (probes or {}).items() if r.get('status') != 200]
+        if _hits:
+            st.success(f"✅ {len(_hits)}개 path가 200 응답 — 이 path를 정답으로 사용 가능")
+            for p, r in _hits:
+                with st.expander(f"✅ 200 — {p}", expanded=True):
+                    st.json(r.get('body'))
         else:
-            st.json(raw)
+            st.error("⚠️ 어떤 path도 200을 주지 않음. API 권한(정산 조회) 또는 path 자체 문제.")
+        if _miss:
+            with st.expander(f"❌ 실패한 path ({len(_miss)}개)", expanded=not _hits):
+                for p, r in _miss:
+                    st.text(f"[{r.get('status')}] {p} — {r.get('msg', '')}")
         return
 
     # ── 정산 수집 ────────────────────────────────────────────────

@@ -1095,49 +1095,90 @@ def update_product_price(client_id, client_secret, origin_product_no, new_price)
 def get_settlement_history(client_id, client_secret, start_date, end_date):
     """네이버 커머스 API로 정산 내역 조회.
 
-    Args:
-        start_date / end_date: 'YYYY-MM-DD' 형식의 정산일 범위
+    후보 path를 순차 시도하여 첫 200 응답을 사용. 모두 실패 시 각 path의 상태코드 요약.
+
     Returns:
         (list_of_records, error_msg)
-        record dict 예시:
-          {'productOrderId': '...', 'orderId': '...', 'settleDate': '2026-05-12',
-           'salesAmount': 10000, 'commission': 1000, 'settleAmount': 9000, ...}
     """
     token, err = get_token(client_id, client_secret)
     if not token:
         return None, err
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-    url = "https://api.commerce.naver.com/external/v1/seller-settlement/sales/sales-history"
-    params = {"startSettleDate": start_date, "endSettleDate": end_date}
+    base = "https://api.commerce.naver.com"
+    failed = []
+    for path, style in _SETTLEMENT_PATH_CANDIDATES:
+        url = base + path
+        params = _build_params(start_date, end_date, style)
+        try:
+            resp = requests.get(url, headers=headers, params=params, timeout=20)
+            if resp.status_code == 200:
+                try:
+                    data = resp.json()
+                except Exception:
+                    failed.append(f"{path}: 200 이지만 JSON 아님")
+                    continue
+                if isinstance(data, list):
+                    return data, None
+                if isinstance(data, dict):
+                    items = data.get('contents') or data.get('data') or data.get('items') or []
+                    if isinstance(items, list):
+                        return items, None
+                return [], None  # 빈 응답 정상 처리
+            failed.append(f"{path}: {resp.status_code}")
+        except Exception as e:
+            failed.append(f"{path}: EXC {str(e)[:50]}")
+    return None, "모든 정산 endpoint 후보 실패 — " + " / ".join(failed)
 
-    try:
-        resp = requests.get(url, headers=headers, params=params, timeout=30)
-        if resp.status_code == 200:
-            data = resp.json()
-            # 응답 구조: { "contents": [...] } 또는 [...]
-            if isinstance(data, list):
-                return data, None
-            return data.get('contents') or data.get('data') or [], None
-        return None, f"[{resp.status_code}] {_format_naver_err(resp)}"
-    except Exception as e:
-        return None, str(e)
+
+# 정산 API 후보 path들 — 200 응답하는 path를 찾으면 그것을 정답으로 사용
+_SETTLEMENT_PATH_CANDIDATES = [
+    # (path, param_style) — param_style: 'range' = startSettleDate/endSettleDate, 'date' = settleDate 단일
+    ("/external/v1/pay-order/seller/sales-history",                 "range"),
+    ("/external/v1/seller/sales-history",                            "range"),
+    ("/external/v1/seller-settlement/sales/sales-history",           "range"),
+    ("/external/v1/seller-settle/sales-history",                     "range"),
+    ("/external/v1/seller-settlements/sales-history",                "range"),
+    ("/external/v1/pay-order/seller/settlements",                    "range"),
+    ("/external/v1/pay-order/seller/settlement",                     "range"),
+    ("/external/v1/seller/settlements",                              "range"),
+]
+
+
+def _build_params(date_from, date_to, style):
+    if style == "range":
+        return {"startSettleDate": date_from, "endSettleDate": date_to}
+    return {"settleDate": date_from}
 
 
 def debug_settlement_response(client_id, client_secret, settle_date):
-    """정산 API raw 응답 디버그용 — 페이로드 구조 확인."""
+    """모든 후보 path를 probe하여 결과 dict 반환.
+    UI에서 어느 path가 200을 주는지 한눈에 확인하기 위함.
+    """
     token, err = get_token(client_id, client_secret)
     if not token:
         return None, err
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-    url = "https://api.commerce.naver.com/external/v1/seller-settlement/sales/sales-history"
-    params = {"startSettleDate": settle_date, "endSettleDate": settle_date}
-    try:
-        resp = requests.get(url, headers=headers, params=params, timeout=30)
-        if resp.status_code != 200:
-            return None, f"[{resp.status_code}] {resp.text[:500]}"
-        return resp.json(), None
-    except Exception as e:
-        return None, str(e)
+    base = "https://api.commerce.naver.com"
+    probes = {}
+    for path, style in _SETTLEMENT_PATH_CANDIDATES:
+        url = base + path
+        params = _build_params(settle_date, settle_date, style)
+        try:
+            resp = requests.get(url, headers=headers, params=params, timeout=15)
+            if resp.status_code == 200:
+                try:
+                    body = resp.json()
+                except Exception:
+                    body = resp.text[:300]
+                probes[path] = {"status": 200, "body": body}
+            else:
+                probes[path] = {
+                    "status": resp.status_code,
+                    "msg": _format_naver_err(resp)[:200],
+                }
+        except Exception as e:
+            probes[path] = {"status": "EXC", "msg": str(e)[:200]}
+    return probes, None
 
 
 # ✅ CJ대한통운 API 접수 (가상 구현 - 실제 API 연동 시 수정 필요)
