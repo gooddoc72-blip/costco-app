@@ -758,12 +758,6 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 _save_kw = _new_kw or (_r.get('매칭제품', '') or "").strip()
                 _picked_pno = (st.session_state.get('receipt_pick', {}) or {}).get(_key, '')
                 if _save_kw and _new_cost > 0:
-                    _unit = _new_cost // _qty if _qty > 1 else _new_cost
-                    _shared_match = next(
-                        (sp for sp in (_preload_shared or []) if sp.get('match_keyword') == _save_kw),
-                        None
-                    )
-                    # ⚠️ 사용자 입력 우선 — 공유 DB 가격으로 덮어쓰는 옛 로직 제거
                     _user_match = next(
                         (up for up in (_preload_user or []) if up.get('match_keyword') == _save_kw),
                         None
@@ -771,10 +765,17 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     _keep_sq = max(1, int((_user_match or {}).get('split_qty') or 1))
                     _existing_pno = _picked_pno or (_user_match or {}).get('product_no', '') or ''
                     _existing_fee = (_user_match or {}).get('shipping_fee', None)
-                    # ⭐ 네이버 원상품번호 — 같은 코스트코 상품번호로 여러 네이버 상품이 있어도 각각 별도 저장
                     _existing_naver_origin = (_user_match or {}).get('naver_origin_pno', '') or ''
-                    # 사용자가 입력한 _new_cost (= _unit × _qty) 을 그대로 단가로 저장
-                    _save_price = _unit * _keep_sq
+                    # ⭐ sell_factor 보정: 상품명에 "x N개" 표기 시 1주문=N개
+                    # 매칭: cost = (unit_price/sq) × (qty × sell_factor)
+                    # 저장: unit_price = (사용자입력 × sq) / (qty × sell_factor)
+                    import re as _re_bs
+                    _prod_name_bs = str(_r.get('상품명', '') or '')
+                    _sm_bs = _re_bs.search(r'x\s*(\d+)\s*개', _prod_name_bs, _re_bs.IGNORECASE)
+                    _sell_val_bs = int(_sm_bs.group(1)) if _sm_bs else 1
+                    _sell_factor_bs = _sell_val_bs if 1 < _sell_val_bs <= 50 else 1
+                    _denom_bs = max(1, _qty * _sell_factor_bs)
+                    _save_price = (_new_cost * _keep_sq) // _denom_bs
                     upsert_product(USERNAME, _save_kw, _save_kw, _save_price,
                                    product_no=_existing_pno, split_qty=_keep_sq,
                                    naver_origin_pno=_existing_naver_origin,
@@ -810,14 +811,13 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
 
         if st.button("💾 수정사항 반영", key="recalc", type="primary"):
             save_daily_orders(USERNAME, calc_date_str, df, shipping_cost, box_cost)
-            # ⭐ 네이버 상품번호 기반 개별 저장 (코스트코 상품번호 일괄 덮어쓰기 제거)
+            import re as _re_save
             for _, _r in df.iterrows():
                 _pno = str(_r.get('매칭상품번호', '') or '').strip()
                 _kw = (_r.get('매칭제품', '') or '').strip()
                 _cost = int(_r.get('구입가격', 0) or 0)
                 _qty = max(1, int(_r.get('수량', 1) or 1))
                 if _cost > 0 and (_pno or _kw):
-                    # 우선: naver_origin_pno로 매칭 (같은 코스트코 상품번호의 다른 네이버 상품과 격리)
                     _up = next(
                         (p for p in (_preload_user or [])
                          if (p.get('product_no') and p.get('product_no') == _pno)
@@ -826,7 +826,15 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     )
                     _sq = max(1, int((_up or {}).get('split_qty') or 1))
                     _naver_origin = (_up or {}).get('naver_origin_pno', '') or ''
-                    _new_unit = (_cost // _qty) * _sq
+                    # ⭐ sell_factor 보정: 상품명에 "x N개" 표기 시 1주문 = N개
+                    # 매칭 공식: cost = (unit_price / sq) × (qty × sell_factor)
+                    # 저장 공식: unit_price = (cost × sq) / (qty × sell_factor)
+                    _prod_name = str(_r.get('상품명', '') or '')
+                    _sm = _re_save.search(r'x\s*(\d+)\s*개', _prod_name, _re_save.IGNORECASE)
+                    _sell_val = int(_sm.group(1)) if _sm else 1
+                    _sell_factor = _sell_val if 1 < _sell_val <= 50 else 1
+                    _denom = max(1, _qty * _sell_factor)
+                    _new_unit = (_cost * _sq) // _denom
                     upsert_product(USERNAME, _kw or _pno, _kw or _pno, _new_unit,
                                     product_no=_pno, split_qty=_sq,
                                     naver_origin_pno=_naver_origin,
