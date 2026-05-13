@@ -758,21 +758,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         (sp for sp in (_preload_shared or []) if sp.get('match_keyword') == _save_kw),
                         None
                     )
-                    if _shared_match and _unit > 0:
-                        _shared_up = int(_shared_match.get('unit_price') or 0)
-                        if _shared_up > 0:
-                            _new_sq = max(1, round(_shared_up / _unit))
-                            _user_match = next(
-                                (up for up in (_preload_user or []) if up.get('match_keyword') == _save_kw),
-                                None
-                            )
-                            _existing_pno = _picked_pno or (_user_match or {}).get('product_no', '') or ''
-                            _existing_fee = (_user_match or {}).get('shipping_fee', None)
-                            upsert_product(USERNAME, _save_kw, _save_kw, _shared_up,
-                                           product_no=_existing_pno, split_qty=_new_sq,
-                                           shipping_fee=_existing_fee)
-                            _saved_n += 1
-                            continue
+                    # ⚠️ 사용자 입력 우선 — 공유 DB 가격으로 덮어쓰는 옛 로직 제거
                     _user_match = next(
                         (up for up in (_preload_user or []) if up.get('match_keyword') == _save_kw),
                         None
@@ -780,18 +766,25 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     _keep_sq = max(1, int((_user_match or {}).get('split_qty') or 1))
                     _existing_pno = _picked_pno or (_user_match or {}).get('product_no', '') or ''
                     _existing_fee = (_user_match or {}).get('shipping_fee', None)
-                    upsert_product(USERNAME, _save_kw, _save_kw, _unit * _keep_sq,
+                    # 사용자가 입력한 _new_cost (= _unit × _qty) 을 그대로 단가로 저장
+                    # split_qty가 1이면 단가 = _new_cost / qty
+                    # split_qty가 N이면 단가 = (_new_cost / qty) × N (1박스 가격)
+                    _save_price = _unit * _keep_sq
+                    upsert_product(USERNAME, _save_kw, _save_kw, _save_price,
                                    product_no=_existing_pno, split_qty=_keep_sq,
                                    shipping_fee=_existing_fee)
                     _saved_n += 1
             invalidate_data_cache()
             for _k in list(st.session_state.keys()):
-                if _k.startswith('sel_p_'):
+                if _k.startswith('sel_p_') or _k.startswith('c_') or _k.startswith('k_'):
                     st.session_state.pop(_k, None)
             st.session_state['cost_overrides'] = {}
             st.session_state['kw_overrides'] = {}
             st.session_state['receipt_pick'] = {}
-            st.session_state['_profit_save_toast'] = f"✅ {_saved_n}개 매칭키워드 저장 완료!"
+            st.session_state.pop('_pcalc_match_cache', None)
+            st.session_state['_profit_save_toast'] = (
+                f"✅ {_saved_n}개 저장 완료! 단가가 제품 DB에 반영되었습니다."
+            )
             st.rerun()
 
         # ── 금액 일괄 적용 처리 ──
