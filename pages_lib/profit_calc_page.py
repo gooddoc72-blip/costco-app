@@ -181,9 +181,9 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
 
     if df is not None and not df.empty:
         receipt_items = st.session_state.get('receipt_items', [])
+        # 영수증이 없어도 daily_orders 가 있으면 정산표 표시 (영수증 매칭 enrichment만 비활성)
         if not receipt_items:
-            st.info("📄 영수증 PDF를 업로드하면 일별 정산표가 표시됩니다.")
-            return
+            st.caption("💡 영수증 PDF 업로드 시 영수증 매칭 기반 매입가 보정이 추가됩니다 (선택사항).")
         unique_products = df['상품명'].unique().tolist()
 
         # 제품 목록 1회 로드 (루프마다 DB 재조회 방지, 영수증 캐시보다 먼저 로드)
