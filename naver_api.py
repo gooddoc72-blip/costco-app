@@ -1093,12 +1093,8 @@ def update_product_price(client_id, client_secret, origin_product_no, new_price)
 
 # ── 정산 내역 조회 ─────────────────────────────────────────
 def get_settlement_history(client_id, client_secret, start_date, end_date):
-    """네이버 커머스 API로 정산 내역 조회.
-
-    후보 path를 순차 시도하여 첫 200 응답을 사용. 모두 실패 시 각 path의 상태코드 요약.
-
-    Returns:
-        (list_of_records, error_msg)
+    """네이버 커머스 정산 API — /external/v1/pay-settle/settle/case (건별).
+    파라미터명 후보를 순차 시도. 200 응답을 받으면 그 path/style을 사용.
     """
     token, err = get_token(client_id, client_secret)
     if not token:
@@ -1106,7 +1102,6 @@ def get_settlement_history(client_id, client_secret, start_date, end_date):
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     base = "https://api.commerce.naver.com"
     failed = []
-    perm_likely = True  # 모두 401/403이면 권한 문제, 404 섞이면 path 문제
     for method, path, style in _SETTLEMENT_PATH_CANDIDATES:
         url = base + path
         params = _build_params(start_date, end_date, style)
@@ -1116,53 +1111,58 @@ def get_settlement_history(client_id, client_secret, start_date, end_date):
                 try:
                     data = resp.json()
                 except Exception:
-                    failed.append(f"{method} {path}: 200 비-JSON")
+                    failed.append(f"{path}?{style}: 200 비-JSON")
                     continue
                 if isinstance(data, list):
                     return data, None
                 if isinstance(data, dict):
-                    items = data.get('contents') or data.get('data') or data.get('items') or []
+                    items = (data.get('contents') or data.get('data')
+                             or data.get('items') or data.get('list') or [])
                     if isinstance(items, list):
                         return items, None
                 return [], None
-            failed.append(f"{method} {path}: {resp.status_code}")
-            if resp.status_code not in (401, 403):
-                perm_likely = False
+            failed.append(f"{path}?{style}: {resp.status_code}")
         except Exception as e:
-            failed.append(f"{method} {path}: EXC {str(e)[:40]}")
-            perm_likely = False
-    hint = (" → 모두 401/403 — API 키에 '정산 조회' 권한 추가 필요"
-            if perm_likely else
-            " → API 키에 정산 권한이 있어도 path가 다를 수 있음. Naver 문서 확인 필요")
-    return None, "정산 endpoint 모두 실패" + hint + " | " + " / ".join(failed)
+            failed.append(f"{path}?{style}: EXC {str(e)[:40]}")
+    return None, "정산 endpoint 모두 실패 — " + " | ".join(failed)
 
 
-# 정산 API 후보 — (method, path, param_style)
-#   param_style: 'range' = startSettleDate/endSettleDate
-#                'rangeStd' = startDate/endDate
-#                'date' = settleDate 단일
+# 정산 API — Naver Commerce 공식 path (애플리케이션 권한 그룹: 정산)
+# 건별 정산: /external/v1/pay-settle/settle/case
+# 일별 정산: /external/v1/pay-settle/settle/daily
+# 정확한 파라미터명을 모르므로 여러 스타일 probe
+_SETTLE_CASE_PATH  = "/external/v1/pay-settle/settle/case"
+_SETTLE_DAILY_PATH = "/external/v1/pay-settle/settle/daily"
+
 _SETTLEMENT_PATH_CANDIDATES = [
-    ("GET",  "/external/v1/pay-order/seller/sales-history",                 "range"),
-    ("GET",  "/external/v1/seller/sales-history",                            "range"),
-    ("GET",  "/external/v1/seller-settlement/sales/sales-history",           "range"),
-    ("GET",  "/external/v1/seller-settlements/sales-history",                "range"),
-    ("GET",  "/external/v1/sales-history",                                   "range"),
-    ("GET",  "/external/v1/revenue-history",                                 "rangeStd"),
-    ("GET",  "/external/v1/pay-order/seller/sales",                          "rangeStd"),
-    ("GET",  "/external/v1/pay-order/seller/settlements",                    "range"),
-    ("GET",  "/external/v1/seller/settlements",                              "range"),
-    ("POST", "/external/v1/pay-order/seller/sales-history",                  "range"),
-    ("POST", "/external/v1/pay-order/seller/sales-history/query",            "range"),
-    ("POST", "/external/v1/seller/sales-history/query",                      "range"),
+    # 건별 정산 + 다양한 파라미터명
+    ("GET", _SETTLE_CASE_PATH,  "settleRange"),
+    ("GET", _SETTLE_CASE_PATH,  "saleRange"),
+    ("GET", _SETTLE_CASE_PATH,  "dateRange"),
+    ("GET", _SETTLE_CASE_PATH,  "fromTo"),
+    ("GET", _SETTLE_CASE_PATH,  "searchRange"),
+    ("GET", _SETTLE_CASE_PATH,  "settleDateSingle"),
+    # 일별 정산
+    ("GET", _SETTLE_DAILY_PATH, "settleRange"),
+    ("GET", _SETTLE_DAILY_PATH, "saleRange"),
+    ("GET", _SETTLE_DAILY_PATH, "dateRange"),
+    ("GET", _SETTLE_DAILY_PATH, "settleDateSingle"),
 ]
 
 
 def _build_params(date_from, date_to, style):
-    if style == "range":
-        return {"startSettleDate": date_from, "endSettleDate": date_to}
-    if style == "rangeStd":
-        return {"startDate": date_from, "endDate": date_to}
-    return {"settleDate": date_from}
+    return {
+        "settleRange":      {"startSettleDate":  date_from, "endSettleDate":  date_to},
+        "saleRange":        {"startSaleDate":    date_from, "endSaleDate":    date_to},
+        "dateRange":        {"startDate":        date_from, "endDate":        date_to},
+        "fromTo":           {"from":             date_from, "to":             date_to},
+        "searchRange":      {"searchStartDate":  date_from, "searchEndDate":  date_to},
+        "settleDateSingle": {"settleDate":       date_from},
+        # 호환
+        "range":     {"startSettleDate": date_from, "endSettleDate": date_to},
+        "rangeStd":  {"startDate":       date_from, "endDate":       date_to},
+        "date":      {"settleDate":      date_from},
+    }.get(style, {"startSettleDate": date_from, "endSettleDate": date_to})
 
 
 def _probe_settlement(method, url, headers, params):
@@ -1173,7 +1173,7 @@ def _probe_settlement(method, url, headers, params):
 
 
 def debug_settlement_response(client_id, client_secret, settle_date):
-    """모든 후보 path를 probe하여 결과 dict 반환."""
+    """모든 후보(path, param_style)를 probe."""
     token, err = get_token(client_id, client_secret)
     if not token:
         return None, err
@@ -1181,9 +1181,9 @@ def debug_settlement_response(client_id, client_secret, settle_date):
     base = "https://api.commerce.naver.com"
     probes = {}
     for method, path, style in _SETTLEMENT_PATH_CANDIDATES:
-        key = f"{method} {path}"
-        url = base + path
         params = _build_params(settle_date, settle_date, style)
+        key = f"{method} {path}  [{style}: {','.join(params.keys())}]"
+        url = base + path
         try:
             resp = _probe_settlement(method, url, headers, params)
             if resp.status_code == 200:
