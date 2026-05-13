@@ -1090,6 +1090,56 @@ def update_product_price(client_id, client_secret, origin_product_no, new_price)
     except Exception as e:
         return False, f"PATCH 실패({patch_status}: {patch_msg}) | PUT 예외: {e}"
 
+
+# ── 정산 내역 조회 ─────────────────────────────────────────
+def get_settlement_history(client_id, client_secret, start_date, end_date):
+    """네이버 커머스 API로 정산 내역 조회.
+
+    Args:
+        start_date / end_date: 'YYYY-MM-DD' 형식의 정산일 범위
+    Returns:
+        (list_of_records, error_msg)
+        record dict 예시:
+          {'productOrderId': '...', 'orderId': '...', 'settleDate': '2026-05-12',
+           'salesAmount': 10000, 'commission': 1000, 'settleAmount': 9000, ...}
+    """
+    token, err = get_token(client_id, client_secret)
+    if not token:
+        return None, err
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    url = "https://api.commerce.naver.com/external/v1/seller-settlement/sales/sales-history"
+    params = {"startSettleDate": start_date, "endSettleDate": end_date}
+
+    try:
+        resp = requests.get(url, headers=headers, params=params, timeout=30)
+        if resp.status_code == 200:
+            data = resp.json()
+            # 응답 구조: { "contents": [...] } 또는 [...]
+            if isinstance(data, list):
+                return data, None
+            return data.get('contents') or data.get('data') or [], None
+        return None, f"[{resp.status_code}] {_format_naver_err(resp)}"
+    except Exception as e:
+        return None, str(e)
+
+
+def debug_settlement_response(client_id, client_secret, settle_date):
+    """정산 API raw 응답 디버그용 — 페이로드 구조 확인."""
+    token, err = get_token(client_id, client_secret)
+    if not token:
+        return None, err
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    url = "https://api.commerce.naver.com/external/v1/seller-settlement/sales/sales-history"
+    params = {"startSettleDate": settle_date, "endSettleDate": settle_date}
+    try:
+        resp = requests.get(url, headers=headers, params=params, timeout=30)
+        if resp.status_code != 200:
+            return None, f"[{resp.status_code}] {resp.text[:500]}"
+        return resp.json(), None
+    except Exception as e:
+        return None, str(e)
+
+
 # ✅ CJ대한통운 API 접수 (가상 구현 - 실제 API 연동 시 수정 필요)
 def register_cj_order(api_id, api_pw, account_no, order_data):
     """

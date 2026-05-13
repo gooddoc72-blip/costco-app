@@ -89,7 +89,7 @@ from pages_lib import (
     home_page, order_upload_page, tracking_page, receipt_page,
     profit_calc_page, dashboard_page, rank_check_page, settings_page,
     product_db_page, admin_page, naver_register_page, automation_page,
-    guide_page,
+    guide_page, settlement_page,
 )
 
 # 페이지 모듈에 캐시 헬퍼 주입 (페이지 모듈이 동일한 캐시 인스턴스 공유)
@@ -264,6 +264,10 @@ def run_profit_calc():
     profit_calc_page.render(USERNAME, IS_ADMIN, settings)
 
 
+def run_settlement_match():
+    settlement_page.render(USERNAME, IS_ADMIN, settings)
+
+
 def run_dashboard():
     dashboard_page.render(USERNAME)
 
@@ -299,6 +303,7 @@ _pages = {
         st.Page(run_order_upload, title="일일 주문 수집", icon="📋"),
         st.Page(run_tracking,     title="송장번호",    icon="📮"),
         st.Page(run_profit_calc,  title="수익 계산",   icon="💰"),
+        st.Page(run_settlement_match, title="정산 매칭", icon="💳"),
         st.Page(run_dashboard,    title="대시보드",    icon="📊"),
     ],
     "상품 관리": [
