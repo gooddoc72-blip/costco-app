@@ -145,10 +145,6 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             except Exception as _de:
                 st.error(f"삭제 실패: {_de}")
 
-    # 데이터 소스 표시 (디버그/안심용)
-    if _src_label:
-        st.caption(_src_label)
-
     # ── 매칭/구입가 전체 초기화 (빠른 액션) ─────────────────────
     _kw_clear_col1, _kw_clear_col2 = st.columns([1.5, 4])
     if _kw_clear_col1.button("🗑 매칭/구입가 전체 초기화", key="clear_all_overrides",
@@ -218,6 +214,10 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             _src_label = f"📋 옛 데이터 ({len(df)}건) — daily_orders fallback"
         else:
             df = None
+
+    # 데이터 소스 표시 (디버그/안심용)
+    if _src_label:
+        st.caption(_src_label)
 
     # 저장완료 토스트 (rerun 전에 큐에 저장된 메시지 표시)
     if '_profit_save_toast' in st.session_state:
