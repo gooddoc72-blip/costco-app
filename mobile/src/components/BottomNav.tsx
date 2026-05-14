@@ -2,12 +2,13 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { Home, ShoppingBag, Receipt, Truck, Settings } from 'lucide-react';
+import { Home, ShoppingBag, Receipt, Truck, Settings, Package } from 'lucide-react';
 import clsx from 'clsx';
 
 const items = [
   { href: '/dashboard', label: '대시보드', icon: Home },
   { href: '/orders', label: '주문', icon: ShoppingBag },
+  { href: '/products', label: '제품', icon: Package },
   { href: '/tracking', label: '송장', icon: Truck },
   { href: '/profit', label: '수익', icon: Receipt },
   { href: '/settings', label: '설정', icon: Settings },

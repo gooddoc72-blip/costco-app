@@ -1,6 +1,6 @@
 'use client';
 /**
- * 일일 주문 수집 — Naver API에서 최근 주문 가져와 order_history 저장.
+ * 일일 주문 수집 — 네이버/쿠팡 API → order_history 저장.
  * 페이지는 얇은 orchestrator.
  */
 import { useState } from 'react';
@@ -9,26 +9,43 @@ import BottomNav from '@/components/BottomNav';
 import CollectControls from '@/components/orders/CollectControls';
 import CollectResults from '@/components/orders/CollectResults';
 import { useOrdersCollect } from '@/hooks/useOrdersCollect';
+import type { Platform } from '@/lib/services/orders';
 
 export default function OrdersCollectPage() {
+  const [platform, setPlatform] = useState<Platform>('naver');
   const [hoursBack, setHoursBack] = useState(48);
+  const [daysBack, setDaysBack] = useState(7);
   const [statusFilter, setStatusFilter] = useState('ALL');
   const { result, loading, error, collect } = useOrdersCollect();
 
   const handleCollect = () => {
-    const filter = statusFilter === 'ALL' ? ['PAYED', 'READY'] : [statusFilter];
-    collect(hoursBack, filter);
+    if (platform === 'coupang') {
+      const filter = statusFilter === 'ALL' ? ['ACCEPT', 'INSTRUCT'] : [statusFilter];
+      collect({ platform, daysBack, statusFilter: filter });
+    } else {
+      const filter = statusFilter === 'ALL' ? ['PAYED', 'READY'] : [statusFilter];
+      collect({ platform, hoursBack, statusFilter: filter });
+    }
+  };
+
+  const handlePlatformChange = (p: Platform) => {
+    setPlatform(p);
+    setStatusFilter('ALL');
   };
 
   return (
     <>
-      <Header title="📋 일일 주문 수집" subtitle="네이버 커머스 API → order_history" />
+      <Header title="📋 일일 주문 수집" subtitle="네이버 / 쿠팡 API → order_history" />
       <main className="px-4 pt-4 pb-32 space-y-4">
         <CollectControls
+          platform={platform}
           hoursBack={hoursBack}
+          daysBack={daysBack}
           statusFilter={statusFilter}
           loading={loading}
+          onPlatformChange={handlePlatformChange}
           onHoursChange={setHoursBack}
+          onDaysChange={setDaysBack}
           onStatusChange={setStatusFilter}
           onCollect={handleCollect}
         />

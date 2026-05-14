@@ -2,9 +2,18 @@
 import { fmt } from '@/lib/fmt';
 import type { CollectResponse } from '@/lib/client/orders';
 
+const PLATFORM_LABEL: Record<string, string> = {
+  naver: '🟢 네이버',
+  coupang: '🟡 쿠팡',
+};
+
 export default function CollectResults({ result }: { result: CollectResponse }) {
   return (
     <section className="bg-white rounded-xl p-3 shadow-sm border space-y-2">
+      <div className="flex items-center justify-between text-xs">
+        <span className="font-semibold">{PLATFORM_LABEL[result.platform] || result.platform}</span>
+        <span className="text-gray-500">매칭 {result.matched}/{result.fetched}</span>
+      </div>
       <div className="grid grid-cols-3 gap-2 text-xs">
         <Stat label="조회" value={`${result.fetched}건`} />
         <Stat label="신규" value={`${result.inserted}건`} color="text-green-600" />

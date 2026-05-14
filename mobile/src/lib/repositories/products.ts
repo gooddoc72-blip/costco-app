@@ -60,6 +60,95 @@ export function findProductByKey(
   return null;
 }
 
+export interface ProductRow {
+  id: number;
+  productNo: string;
+  storeName: string;
+  costcoName: string;
+  matchKeyword: string;
+  unitPrice: number;
+  splitQty: number;
+  salePrice: number;
+  naverOriginPno: string;
+  naverChannelPno: string;
+  updatedAt: string;
+}
+
+/** 제품 목록 조회 (검색어 부분일치, LIMIT 적용) */
+export function listProducts(
+  username: string,
+  search: string = '',
+  limit: number = 200
+): ProductRow[] {
+  const db = getUserDb(username);
+  ensureColumns(db);
+  const q = `%${search.trim()}%`;
+  const rows = (search.trim()
+    ? db.prepare(`
+        SELECT id, product_no, store_product_name, costco_name, match_keyword,
+               unit_price, split_qty, sale_price, naver_origin_pno, naver_channel_pno, updated_at
+        FROM products
+        WHERE product_no LIKE ? OR costco_name LIKE ? OR store_product_name LIKE ?
+           OR match_keyword LIKE ? OR naver_origin_pno LIKE ?
+        ORDER BY updated_at DESC LIMIT ?
+      `).all(q, q, q, q, q, limit)
+    : db.prepare(`
+        SELECT id, product_no, store_product_name, costco_name, match_keyword,
+               unit_price, split_qty, sale_price, naver_origin_pno, naver_channel_pno, updated_at
+        FROM products ORDER BY updated_at DESC LIMIT ?
+      `).all(limit)
+  ) as any[];
+  return rows.map(r => ({
+    id: r.id,
+    productNo: r.product_no || '',
+    storeName: r.store_product_name || '',
+    costcoName: r.costco_name || '',
+    matchKeyword: r.match_keyword || '',
+    unitPrice: Number(r.unit_price) || 0,
+    splitQty: Number(r.split_qty) || 1,
+    salePrice: Number(r.sale_price) || 0,
+    naverOriginPno: r.naver_origin_pno || '',
+    naverChannelPno: r.naver_channel_pno || '',
+    updatedAt: r.updated_at || '',
+  }));
+}
+
+/** 단일 제품 수정 (id 기반, 사용자 직접 편집용) */
+export function updateProductById(
+  username: string,
+  id: number,
+  fields: { unitPrice?: number; splitQty?: number; matchKeyword?: string; costcoName?: string }
+): { saved: boolean; error?: string } {
+  const db = getUserDb(username);
+  const now = new Date().toISOString().slice(0, 16).replace('T', ' ');
+  const sets: string[] = [];
+  const vals: any[] = [];
+  if (fields.unitPrice !== undefined) { sets.push('unit_price = ?'); vals.push(fields.unitPrice); }
+  if (fields.splitQty !== undefined) { sets.push('split_qty = ?'); vals.push(Math.max(1, fields.splitQty)); }
+  if (fields.matchKeyword !== undefined) { sets.push('match_keyword = ?'); vals.push(fields.matchKeyword); }
+  if (fields.costcoName !== undefined) { sets.push('costco_name = ?'); vals.push(fields.costcoName); }
+  if (sets.length === 0) return { saved: false, error: 'no fields' };
+  sets.push('updated_at = ?'); vals.push(now);
+  vals.push(id);
+  try {
+    db.prepare(`UPDATE products SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
+    return { saved: true };
+  } catch (e: any) {
+    return { saved: false, error: e.message };
+  }
+}
+
+/** 제품 삭제 */
+export function deleteProductById(username: string, id: number): { deleted: boolean; error?: string } {
+  const db = getUserDb(username);
+  try {
+    db.prepare('DELETE FROM products WHERE id = ?').run(id);
+    return { deleted: true };
+  } catch (e: any) {
+    return { deleted: false, error: e.message };
+  }
+}
+
 export function upsertProduct(username: string, p: UpsertParams): UpsertResult {
   const db = getUserDb(username);
   ensureColumns(db);
