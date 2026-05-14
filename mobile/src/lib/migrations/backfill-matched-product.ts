@@ -16,18 +16,19 @@ export interface BackfillResult {
 
 export function backfillMatchedProductId(username: string): BackfillResult {
   const db = getUserDb(username);
-  // matched_product_id가 NULL인 행만 대상
+  // matched_product_id가 NULL인 행만 대상 (네이버 식별자 컬럼도 함께 조회)
   let rows: any[];
+  const SELECT_SQL =
+    "SELECT id, product_no, naver_origin_pno, naver_channel_pno, product_name " +
+    "FROM order_history WHERE matched_product_id IS NULL";
   try {
-    rows = db.prepare(
-      "SELECT id, product_no, product_name FROM order_history WHERE matched_product_id IS NULL"
-    ).all();
+    rows = db.prepare(SELECT_SQL).all();
   } catch {
-    // 컬럼 없으면 추가 후 재시도
+    // 누락 컬럼 보강 후 재시도
     try { db.exec("ALTER TABLE order_history ADD COLUMN matched_product_id INTEGER"); } catch {}
-    rows = db.prepare(
-      "SELECT id, product_no, product_name FROM order_history WHERE matched_product_id IS NULL"
-    ).all();
+    try { db.exec("ALTER TABLE order_history ADD COLUMN naver_origin_pno TEXT DEFAULT ''"); } catch {}
+    try { db.exec("ALTER TABLE order_history ADD COLUMN naver_channel_pno TEXT DEFAULT ''"); } catch {}
+    rows = db.prepare(SELECT_SQL).all();
   }
 
   let matched = 0;
@@ -37,6 +38,8 @@ export function backfillMatchedProductId(username: string): BackfillResult {
     for (const r of rows) {
       const m = findMatchingProductId(username, {
         productNo: r.product_no,
+        naverOriginPno: r.naver_origin_pno,
+        naverChannelPno: r.naver_channel_pno,
         productName: r.product_name,
       });
       if (m.productId) {

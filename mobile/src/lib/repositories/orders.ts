@@ -9,6 +9,8 @@ export interface OrderHistoryInput {
   recipient: string;
   productName: string;
   productNo?: string;
+  naverOriginPno?: string;          // 네이버 원상품번호 (방식 A 핵심 식별자)
+  naverChannelPno?: string;         // 네이버 채널 상품번호
   optionInfo?: string;
   qty: number;
   orderAmount: number;
@@ -44,6 +46,9 @@ function ensureTable(username: string): void {
   // matched_product_id 컬럼 (구버전 DB 호환)
   try { db.exec("ALTER TABLE order_history ADD COLUMN matched_product_id INTEGER"); } catch {}
   try { db.exec("CREATE INDEX IF NOT EXISTS idx_oh_matched ON order_history(matched_product_id)"); } catch {}
+  // 네이버 원/채널 상품번호 — 방식 A 식별자
+  try { db.exec("ALTER TABLE order_history ADD COLUMN naver_origin_pno TEXT DEFAULT ''"); } catch {}
+  try { db.exec("ALTER TABLE order_history ADD COLUMN naver_channel_pno TEXT DEFAULT ''"); } catch {}
 }
 
 /** order_no UNIQUE 충돌 시 INSERT 무시 (덮어쓰지 않음 — status 보존) */
@@ -59,14 +64,18 @@ export function bulkUpsertOrders(username: string, items: OrderHistoryInput[]): 
   const findByNo = db.prepare("SELECT id, matched_product_id FROM order_history WHERE order_no = ?");
   const insertStmt = db.prepare(`
     INSERT INTO order_history
-      (order_no, order_date, recipient, product_name, product_no, option_info,
-       qty, order_amount, shipping_fee, settlement, status, matched_product_id, created_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+      (order_no, order_date, recipient, product_name, product_no,
+       naver_origin_pno, naver_channel_pno, option_info,
+       qty, order_amount, shipping_fee, settlement, status,
+       matched_product_id, created_at)
+    VALUES (?,?,?,?,?, ?,?,?, ?,?,?,?,?, ?,?)
   `);
   // UPDATE 시 matched_product_id가 NULL이 아닐 때만 갱신 (기존 매칭 보존)
   const updateStmt = db.prepare(`
     UPDATE order_history
     SET order_date = ?, recipient = ?, product_name = ?, product_no = ?,
+        naver_origin_pno  = COALESCE(NULLIF(?, ''), naver_origin_pno),
+        naver_channel_pno = COALESCE(NULLIF(?, ''), naver_channel_pno),
         option_info = ?, qty = ?, order_amount = ?, shipping_fee = ?,
         settlement = ?, status = ?,
         matched_product_id = COALESCE(?, matched_product_id)
@@ -80,6 +89,7 @@ export function bulkUpsertOrders(username: string, items: OrderHistoryInput[]): 
         if (existing) {
           updateStmt.run(
             it.orderDate, it.recipient, it.productName, it.productNo || '',
+            it.naverOriginPno || '', it.naverChannelPno || '',
             it.optionInfo || '', it.qty, it.orderAmount, it.shippingFee,
             it.settlement, it.status || '',
             it.matchedProductId ?? null,
@@ -89,7 +99,9 @@ export function bulkUpsertOrders(username: string, items: OrderHistoryInput[]): 
         } else {
           insertStmt.run(
             it.orderNo, it.orderDate, it.recipient, it.productName,
-            it.productNo || '', it.optionInfo || '', it.qty, it.orderAmount,
+            it.productNo || '',
+            it.naverOriginPno || '', it.naverChannelPno || '',
+            it.optionInfo || '', it.qty, it.orderAmount,
             it.shippingFee, it.settlement, it.status || '',
             it.matchedProductId ?? null,
             now,

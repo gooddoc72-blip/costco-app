@@ -32,9 +32,15 @@ export function fetchDispatchedRows(username: string, date: string): ProfitRow[]
     LEFT JOIN products p ON
       -- ⭐ 1순위: 주문 수집 시 저장된 영구 매칭 (상품명 변경에도 안 깨짐)
       (oh.matched_product_id IS NOT NULL AND p.id = oh.matched_product_id)
-      -- 2순위: 코스트코 상품번호
+      -- 2순위: 네이버 원상품번호 (같은 코스트코번호 다중 네이버상품 분리)
+      OR (oh.matched_product_id IS NULL AND oh.naver_origin_pno IS NOT NULL
+          AND oh.naver_origin_pno != '' AND p.naver_origin_pno = oh.naver_origin_pno)
+      -- 3순위: 네이버 채널 상품번호
+      OR (oh.matched_product_id IS NULL AND oh.naver_channel_pno IS NOT NULL
+          AND oh.naver_channel_pno != '' AND p.naver_channel_pno = oh.naver_channel_pno)
+      -- 4순위: 코스트코 상품번호 (위 모두 미매칭 시)
       OR (oh.matched_product_id IS NULL AND oh.product_no != '' AND p.product_no = oh.product_no)
-      -- 3순위: 정확한 상품명 일치 (마지막 폴백)
+      -- 5순위: 정확한 상품명 일치 (마지막 폴백)
       OR (oh.matched_product_id IS NULL AND p.match_keyword = oh.product_name)
     WHERE dl.dispatched_at = ?
     ORDER BY COALESCE(oh.product_name, dl.product_name), dl.id

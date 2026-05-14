@@ -14,14 +14,15 @@ import { getUserDb } from '@/lib/db';
 
 export interface MatchCandidate {
   /** 주문에서 추출 가능한 모든 식별자 */
-  productNo?: string;       // 코스트코 상품번호 (네이버 productNo 컬럼)
-  naverOriginPno?: string;  // 네이버 원상품번호 (있으면)
-  productName?: string;     // 주문 상품명
+  productNo?: string;        // 코스트코 상품번호 (사용자 입력)
+  naverOriginPno?: string;   // 네이버 원상품번호
+  naverChannelPno?: string;  // 네이버 채널 상품번호 (스마트스토어 productId)
+  productName?: string;      // 주문 상품명
 }
 
 export interface MatchResult {
   productId: number | null;
-  matchKey: 'naver_origin' | 'product_no' | 'costco_name' | 'match_keyword' | null;
+  matchKey: 'naver_origin' | 'naver_channel' | 'product_no' | 'costco_name' | 'match_keyword' | null;
 }
 
 /** 단일 주문에 대해 매칭되는 products.id 찾기 */
@@ -31,12 +32,20 @@ export function findMatchingProductId(
 ): MatchResult {
   const db = getUserDb(username);
 
-  // 1순위: naver_origin_pno
+  // 1순위: naver_origin_pno (네이버 원상품번호 — 가장 안정적)
   if (candidate.naverOriginPno) {
     const row = db.prepare(
       "SELECT id FROM products WHERE naver_origin_pno = ? AND naver_origin_pno != ''"
     ).get(candidate.naverOriginPno) as any;
     if (row) return { productId: row.id, matchKey: 'naver_origin' };
+  }
+
+  // 1.5순위: naver_channel_pno (스마트스토어 productId)
+  if (candidate.naverChannelPno) {
+    const row = db.prepare(
+      "SELECT id FROM products WHERE naver_channel_pno = ? AND naver_channel_pno != ''"
+    ).get(candidate.naverChannelPno) as any;
+    if (row) return { productId: row.id, matchKey: 'naver_channel' };
   }
 
   // 2순위: product_no (코스트코 상품번호)

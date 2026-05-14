@@ -7,11 +7,13 @@ import type { ProductRow } from '@/lib/client/products';
 interface Props {
   row: ProductRow;
   saving: boolean;
+  groupSize?: number;  // 같은 코스트코 번호 행 수 (>=2면 그룹 강조)
   onUpdate: (id: number, patch: Partial<ProductRow>) => void;
   onDelete: (id: number) => void;
 }
 
-export default function ProductCard({ row, saving, onUpdate, onDelete }: Props) {
+export default function ProductCard({ row, saving, groupSize = 1, onUpdate, onDelete }: Props) {
+  const grouped = groupSize >= 2;
   const [price, setPrice] = useState(row.unitPrice);
   const [split, setSplit] = useState(row.splitQty);
   const changed = price !== row.unitPrice || split !== row.splitQty;
@@ -26,13 +28,18 @@ export default function ProductCard({ row, saving, onUpdate, onDelete }: Props) 
   };
 
   return (
-    <div className="bg-white rounded-xl p-3 shadow-sm border space-y-2">
+    <div className={`bg-white rounded-xl p-3 shadow-sm border space-y-2 ${grouped ? 'border-l-4 border-l-blue-400' : ''}`}>
       <div className="text-sm font-medium text-gray-900 truncate" title={row.costcoName}>
         {row.costcoName || row.matchKeyword || '(이름없음)'}
       </div>
       <div className="flex flex-wrap gap-1 text-[10px] text-gray-500">
-        {row.productNo && <span className="bg-gray-100 px-1.5 py-0.5 rounded">코스트코 {row.productNo}</span>}
-        {row.naverOriginPno && <span className="bg-blue-50 text-blue-700 px-1.5 py-0.5 rounded">네이버 {row.naverOriginPno}</span>}
+        {row.productNo && (
+          <span className={`px-1.5 py-0.5 rounded ${grouped ? 'bg-blue-100 text-blue-800 font-semibold' : 'bg-gray-100'}`}>
+            코스트코 {row.productNo}{grouped ? ` · 그룹 ${groupSize}` : ''}
+          </span>
+        )}
+        {row.naverOriginPno && <span className="bg-blue-50 text-blue-700 px-1.5 py-0.5 rounded">네이버 원 {row.naverOriginPno}</span>}
+        {row.naverChannelPno && <span className="bg-indigo-50 text-indigo-700 px-1.5 py-0.5 rounded">네이버 채널 {row.naverChannelPno}</span>}
       </div>
       <div className="grid grid-cols-2 gap-2 text-xs">
         <label className="block">

@@ -57,7 +57,9 @@ export interface NaverOrderRow {
   orderId: string;
   recipient: string;
   productName: string;
-  productNo: string;
+  productNo: string;          // 판매자 입력 상품번호 (코스트코 번호)
+  naverOriginPno: string;     // 네이버 원상품번호 (응답에 있으면)
+  naverChannelPno: string;    // 네이버 채널 상품번호 (스마트스토어 productId)
   optionInfo: string;
   qty: number;
   orderAmount: number;
@@ -113,12 +115,19 @@ async function fetchOrderDetails(
       const np = parseInt(po.naverPayCommission || 0);
       const sales = parseInt(po.salesCommission || 0);
       const expectedSettle = parseInt(po.expectedSettlementAmount || po.settleAmount || (total - np - sales) || 0);
+      // 네이버 응답 필드명이 버전마다 다름 — 방어적으로 모두 시도
+      const channelPno = String(po.productId || po.channelProductNo || '');
+      const originPno  = String(po.originProductNo || po.originProductId || '');
+      // 판매자가 입력한 상품번호(코스트코) — productNo 또는 sellerProductCode 등
+      const sellerNo   = String(po.productNo || po.sellerProductCode || '');
       result.push({
         productOrderId: String(po.productOrderId || ''),
         orderId: String(od.orderId || ''),
         recipient: po.shippingAddress?.name || od.ordererName || '-',
         productName: po.productName || '',
-        productNo: String(po.productNo || ''),
+        productNo: sellerNo,
+        naverOriginPno: originPno,
+        naverChannelPno: channelPno,
         optionInfo: po.productOption || '',
         qty: parseInt(po.quantity || 1),
         orderAmount: parseInt(po.totalProductAmount || total || 0),

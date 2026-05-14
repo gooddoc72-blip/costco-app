@@ -16,6 +16,8 @@ export interface NormalizedOrder {
   recipient: string;
   productName: string;
   productNo: string;
+  naverOriginPno: string;     // 네이버 원상품번호 (쿠팡은 빈 문자열)
+  naverChannelPno: string;    // 네이버 채널 상품번호 (쿠팡은 빈 문자열)
   optionInfo: string;
   qty: number;
   orderAmount: number;
@@ -44,6 +46,8 @@ function saveNormalized(
   const dbItems: OrderHistoryInput[] = rows.map(r => {
     const match = findMatchingProductId(username, {
       productNo: r.productNo,
+      naverOriginPno: r.naverOriginPno,
+      naverChannelPno: r.naverChannelPno,
       productName: r.productName,
     });
     if (match.productId) matchedCount++;
@@ -53,6 +57,8 @@ function saveNormalized(
       recipient: r.recipient,
       productName: r.productName,
       productNo: r.productNo,
+      naverOriginPno: r.naverOriginPno,
+      naverChannelPno: r.naverChannelPno,
       optionInfo: r.optionInfo,
       qty: r.qty,
       orderAmount: r.orderAmount,
@@ -85,6 +91,8 @@ export async function collectNaverOrders(
     recipient: r.recipient,
     productName: r.productName,
     productNo: r.productNo,
+    naverOriginPno: r.naverOriginPno,
+    naverChannelPno: r.naverChannelPno,
     optionInfo: r.optionInfo,
     qty: r.qty,
     orderAmount: r.orderAmount,
@@ -115,6 +123,8 @@ export async function collectCoupangOrders(
     recipient: r.recipient,
     productName: r.productName,
     productNo: r.productNo,
+    naverOriginPno: '',
+    naverChannelPno: '',
     optionInfo: r.optionInfo,
     qty: r.qty,
     orderAmount: r.orderAmount,
