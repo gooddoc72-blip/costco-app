@@ -16,11 +16,13 @@
     "bcrypt": "^5.1.1",
     "lucide-react": "^0.408.0",
     "recharts": "^2.12.7",
-    "clsx": "^2.1.1"
+    "clsx": "^2.1.1",
+    "pdf-parse": "^1.1.1"
   },
   "devDependencies": {
     "@types/bcrypt": "^5.0.2",
     "@types/better-sqlite3": "^7.6.11",
+    "@types/pdf-parse": "^1.1.4",
     "@types/node": "^20.14.10",
     "@types/react": "^18.3.3",
     "@types/react-dom": "^18.3.0",
