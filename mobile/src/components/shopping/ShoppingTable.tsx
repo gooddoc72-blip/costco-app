@@ -1,4 +1,4 @@
-/** 장보기 상품 카드 리스트 (분리=하늘, 묶음=노랑) */
+/** 장보기 상품 카드 리스트 — 수량/정산금액/택배비 표시 */
 import { won } from '@/lib/fmt';
 import type { ShoppingPageData } from '@/lib/client/shopping';
 
@@ -8,47 +8,29 @@ export default function ShoppingTable({ data }: { data: ShoppingPageData }) {
   }
   return (
     <section className="space-y-2">
-      {data.items.map((it, i) => {
-        const bg = it.splitQty > 1 ? 'bg-sky-50 border-sky-200'
-                 : it.packQty > 1 ? 'bg-yellow-50 border-yellow-200'
-                 : 'bg-white border-gray-200';
-        return (
-          <div key={i} className={`rounded-xl p-3 border ${bg} space-y-1`}>
-            <div className="text-sm font-medium truncate" title={it.productName}>
-              {it.productName}
-            </div>
-            <div className="flex flex-wrap gap-1 text-[10px] text-gray-500">
-              {it.productNo && <span className="bg-white px-1.5 py-0.5 rounded border">{it.productNo}</span>}
-              {it.optionInfo && <span className="bg-white px-1.5 py-0.5 rounded border">{it.optionInfo}</span>}
-              {it.splitQty > 1 && <span className="bg-sky-100 text-sky-700 px-1.5 py-0.5 rounded">분리 {it.splitQty}</span>}
-              {it.packQty > 1 && <span className="bg-yellow-100 text-yellow-700 px-1.5 py-0.5 rounded">묶음 {it.packQty}</span>}
-            </div>
-            <div className="grid grid-cols-4 gap-1 text-xs pt-1">
-              <Cell label="주문건수" value={`${it.orderCount}`} />
-              <Cell label="주문수량" value={`${it.qty}`} />
-              <Cell label="구매수량" value={`${it.costcoQty}`} highlight />
-              <Cell label="배송비" value={`${won(it.shippingFee)}`} />
-            </div>
-            <div className="flex items-center justify-between text-xs pt-1">
-              <span className="text-gray-500">팩단가</span>
-              <span className="font-medium">{it.unitPrice == null ? '미등록' : won(it.unitPrice)}</span>
-            </div>
-            <div className="flex items-center justify-between text-sm font-bold">
-              <span className="text-gray-700">예상금액</span>
-              <span className={it.expectedCost == null ? 'text-gray-400' : 'text-red-600'}>
-                {it.expectedCost == null ? '-' : won(it.expectedCost)}
-              </span>
-            </div>
+      {data.items.map((it, i) => (
+        <div key={i} className="bg-white rounded-xl p-3 border space-y-1">
+          <div className="text-sm font-medium truncate" title={it.productName}>
+            {it.productName}
           </div>
-        );
-      })}
+          <div className="flex flex-wrap gap-1 text-[10px] text-gray-500">
+            {it.productNo && <span className="bg-gray-100 px-1.5 py-0.5 rounded">{it.productNo}</span>}
+            {it.optionInfo && <span className="bg-gray-100 px-1.5 py-0.5 rounded">{it.optionInfo}</span>}
+          </div>
+          <div className="grid grid-cols-3 gap-1 text-xs pt-1">
+            <Cell label="수량" value={`${it.qty}`} />
+            <Cell label="정산금액" value={won(it.totalSettlement)} highlight />
+            <Cell label="택배비" value={won(it.shippingFee)} />
+          </div>
+        </div>
+      ))}
     </section>
   );
 }
 
 function Cell({ label, value, highlight }: { label: string; value: string; highlight?: boolean }) {
   return (
-    <div className="text-center bg-white/70 rounded p-1">
+    <div className="text-center bg-gray-50 rounded p-1">
       <div className="text-[9px] text-gray-500">{label}</div>
       <div className={`font-semibold ${highlight ? 'text-blue-700' : 'text-gray-900'}`}>{value}</div>
     </div>

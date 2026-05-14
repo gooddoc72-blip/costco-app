@@ -212,17 +212,16 @@ export function submitToAdmin(username: string, date: string): {
   return { submissionId: id, totalItems: data.items.length, totalAmount };
 }
 
-/** 카톡/텔레그램용 메시지 문자열. (예상금액 제외, 사용자 요구사항대로) */
+/** 카톡/텔레그램용 메시지 문자열. 포맷: 상품명-옵션-수량-정산금액-택배비 */
 export function buildShoppingMessage(data: ShoppingPageData): string {
   const [, mm, dd] = data.date.split('-');
   const lines: string[] = [`🛒 코스트코 장보기 (${mm}/${dd})`, ''];
   for (const it of data.items) {
     const name = it.productName.slice(0, 30);
     const opt = (it.optionInfo || '').trim() || '-';
-    const unit = it.unitPrice ?? 0;
-    lines.push(`${name} - ${opt} - ${it.qty} - ${fmtN(unit)} - 배송 ${fmtN(it.shippingFee)}`);
+    lines.push(`${name} - ${opt} - ${it.qty} - ${fmtN(it.totalSettlement)} - 배송 ${fmtN(it.shippingFee)}`);
   }
   lines.push('');
-  lines.push(`💰 예상 총액: ${fmtN(data.totalExpected)}원 / 📦 ${data.items.length}종`);
+  lines.push(`💰 정산 총액: ${fmtN(data.totalSettlement)}원 / 📦 ${data.items.length}종`);
   return lines.join('\n');
 }

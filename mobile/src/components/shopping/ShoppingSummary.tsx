@@ -25,10 +25,9 @@ export default function ShoppingSummary(p: Props) {
   const noItems = data.items.length === 0;
   return (
     <section className="bg-white rounded-xl p-3 shadow-sm border space-y-2">
-      <div className="grid grid-cols-3 gap-2 text-xs">
+      <div className="grid grid-cols-2 gap-2 text-xs">
         <Stat label="종 수" value={`${data.items.length}종`} />
-        <Stat label="미등록" value={`${data.unregistered}종`} color="text-amber-600" />
-        <Stat label="예상총액" value={won(data.totalExpected)} color="text-red-600" />
+        <Stat label="정산총액" value={won(data.totalSettlement)} color="text-blue-700" />
       </div>
       <div className="grid grid-cols-3 gap-2">
         <button onClick={p.onSend} disabled={p.sending || noItems}

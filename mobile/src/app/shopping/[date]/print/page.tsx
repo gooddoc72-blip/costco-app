@@ -36,7 +36,7 @@ export default function ShoppingPrintPage() {
       </div>
       <h1 className="text-xl font-bold mb-1">🛒 코스트코 장보기 — {date}</h1>
       <p className="text-sm text-gray-600 mb-3">
-        총 {data.items.length}종 · 예상 구매 총액 {won(data.totalExpected)}
+        총 {data.items.length}종 · 정산 총액 {won(data.totalSettlement)}
       </p>
       <table className="w-full text-[13px] border-collapse">
         <thead>
@@ -44,11 +44,9 @@ export default function ShoppingPrintPage() {
             <th className="border-b p-2 text-left">상품번호</th>
             <th className="border-b p-2 text-left">상품명</th>
             <th className="border-b p-2 text-left">옵션정보</th>
-            <th className="border-b p-2 text-right">주문수량</th>
-            <th className="border-b p-2 text-right">구매수량</th>
-            <th className="border-b p-2 text-right">팩단가</th>
-            <th className="border-b p-2 text-right">예상금액</th>
-            <th className="border-b p-2 text-right">배송비</th>
+            <th className="border-b p-2 text-right">수량</th>
+            <th className="border-b p-2 text-right">정산금액</th>
+            <th className="border-b p-2 text-right">택배비</th>
           </tr>
         </thead>
         <tbody>
@@ -58,17 +56,13 @@ export default function ShoppingPrintPage() {
               <td className="p-2">{it.productName}</td>
               <td className="p-2">{it.optionInfo || '-'}</td>
               <td className="p-2 text-right">{it.qty}</td>
-              <td className="p-2 text-right font-semibold">{it.costcoQty}</td>
-              <td className="p-2 text-right">{it.unitPrice == null ? '-' : won(it.unitPrice)}</td>
-              <td className="p-2 text-right font-semibold">
-                {it.expectedCost == null ? '-' : won(it.expectedCost)}
-              </td>
+              <td className="p-2 text-right font-semibold">{won(it.totalSettlement)}</td>
               <td className="p-2 text-right text-gray-600">{won(it.shippingFee)}</td>
             </tr>
           ))}
         </tbody>
       </table>
-      <p className="mt-4 text-base font-bold">💰 예상 구매 총액: {won(data.totalExpected)}</p>
+      <p className="mt-4 text-base font-bold">💰 정산 총액: {won(data.totalSettlement)}</p>
     </div>
   );
 }
