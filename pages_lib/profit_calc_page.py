@@ -830,11 +830,16 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         if st.button("💾 수정사항 반영", key="recalc", type="primary"):
             save_daily_orders(USERNAME, calc_date_str, df, shipping_cost, box_cost)
             import re as _re_save
-            for _, _r in df.iterrows():
+            _overrides = st.session_state.get('cost_overrides', {}) or {}
+            for _idx_save, _r in df.iterrows():
                 _pno = str(_r.get('매칭상품번호', '') or '').strip()
                 _kw = (_r.get('매칭제품', '') or '').strip()
                 _cost = int(_r.get('구입가격', 0) or 0)
                 _qty = max(1, int(_r.get('수량', 1) or 1))
+                # 🛡 사용자가 명시적으로 수정한 행만 DB에 반영 (같은 코스트코 번호 행 가격 오염 방지)
+                _row_save_key = f"{_r['수취인명']}_{_r['상품명']}_{_idx_save}_{calc_date_str}"
+                if _row_save_key not in _overrides:
+                    continue
                 if _cost > 0 and (_pno or _kw):
                     _up = next(
                         (p for p in (_preload_user or [])
@@ -929,13 +934,17 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         st.divider()
         if st.button("💾 정산 데이터 저장", type="primary"):
             save_daily_orders(USERNAME, calc_date_str, df, shipping_cost, box_cost)
-            # Phase 1: upsert_product로 매칭 행 저장
+            # Phase 1: upsert_product로 매칭 행 저장 — 사용자가 명시적으로 수정한 행만
+            _overrides2 = st.session_state.get('cost_overrides', {}) or {}
             _pno_units = {}
-            for _, _r in df.iterrows():
+            for _idx2, _r in df.iterrows():
                 _pno = str(_r.get('매칭상품번호', '') or '').strip()
                 _kw = (_r.get('매칭제품', '') or '').strip()
                 _cost = int(_r.get('구입가격', 0) or 0)
                 _qty = max(1, int(_r.get('수량', 1) or 1))
+                _row_save_key2 = f"{_r['수취인명']}_{_r['상품명']}_{_idx2}_{calc_date_str}"
+                if _row_save_key2 not in _overrides2:
+                    continue  # 사용자가 안 건드린 행은 DB 갱신 안 함 (다른 행 가격 덮어쓰기 방지)
                 if _cost > 0 and (_pno or _kw):
                     _up = next((p for p in (_preload_user or [])
                                 if (p.get('product_no') and p.get('product_no') == _pno)
