@@ -460,10 +460,14 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             key = f"{_recipients[i]}_{_products[i]}_{sk}_{calc_date_str}"
             _widget_val = st.session_state.get(f"c_{sk}")
             _auto_cost = _auto_costs[idx]
-            if _widget_val is not None and int(_widget_val) != _auto_cost:
-                st.session_state['cost_overrides'][key] = int(_widget_val)
-            elif _widget_val is not None and int(_widget_val) == _auto_cost:
-                st.session_state['cost_overrides'].pop(key, None)
+            # widget value는 '1주문 단가'. 합계 cost로 환산해서 비교/저장.
+            _qty_for_cost = max(1, int(df.loc[idx, '수량'] or 1))
+            if _widget_val is not None:
+                _widget_cost = int(_widget_val) * _qty_for_cost
+                if _widget_cost != _auto_cost:
+                    st.session_state['cost_overrides'][key] = _widget_cost
+                else:
+                    st.session_state['cost_overrides'].pop(key, None)
             if key in st.session_state['cost_overrides']:
                 df.loc[idx, '구입가격'] = st.session_state['cost_overrides'][key]
                 if st.session_state['cost_overrides'][key] > 0:
