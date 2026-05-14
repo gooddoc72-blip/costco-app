@@ -40,17 +40,20 @@ export default function ProfitRow(p: Props) {
             <Info label="배송" value={fmt(p.row.customerShippingFee)} />
             <Info label="수익" value={(calc.profit >= 0 ? '+' : '') + fmt(calc.profit)} valueClass={`font-bold ${profitColor}`} />
           </div>
+          {/* 단가(1주문) 입력 — 수량 자동 곱셈해 합계 cost로 환산 */}
           <div className="flex items-center gap-2 mt-2">
-            <label className="text-[11px] text-gray-500">구입가</label>
+            <label className="text-[11px] text-gray-500">단가</label>
             <input
               type="number"
-              value={p.cost}
-              onChange={(e) => p.onCostChange(parseInt(e.target.value) || 0)}
+              value={Math.floor(p.cost / Math.max(1, p.row.qty))}
+              onChange={(e) => p.onCostChange((parseInt(e.target.value) || 0) * Math.max(1, p.row.qty))}
               className={`flex-1 px-2 py-1 text-sm border rounded ${p.isModified ? 'border-orange-400 bg-orange-50' : 'border-gray-200'}`}
               step={100}
               min={0}
+              title={`× 수량 ${p.row.qty} = 합계 ${fmt(p.cost)}`}
             />
-            {p.isModified && <span className="text-[10px] text-orange-600">수정됨</span>}
+            <span className="text-[10px] text-gray-500 whitespace-nowrap">×{p.row.qty} = {fmt(p.cost)}</span>
+            {p.isModified && <span className="text-[10px] text-orange-600">수정</span>}
           </div>
         </div>
       </div>

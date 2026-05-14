@@ -520,14 +520,15 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             use_container_width=True
         )
         _bulk_price_val = _act4.number_input(
-            "일괄 구입가격",
+            "일괄 단가 (1주문)",
             value=0, min_value=0, step=100,
             label_visibility="collapsed",
             key="bulk_price_input",
             disabled=not _checked_rows,
+            help="단가 입력 — 각 행에서 수량을 곱해 합계 매입가가 자동 계산됩니다.",
         )
         _bulk_apply = _act5.button(
-            f"💰 {len(_checked_rows)}개 금액 일괄적용" if _checked_rows else "💰 금액 일괄적용",
+            f"💰 {len(_checked_rows)}개 단가 일괄적용" if _checked_rows else "💰 단가 일괄적용",
             disabled=not _checked_rows or not _bulk_price_val,
             key="bulk_apply_price",
             use_container_width=True,
@@ -556,7 +557,12 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             '</tr></thead></table>',
             unsafe_allow_html=True
         )
-        _h2.markdown("<b style='font-size:13px;color:#444'>구입가격✏️</b>", unsafe_allow_html=True)
+        _h2.markdown(
+            "<b style='font-size:13px;color:#444' "
+            "title='1주문 단가 입력. 시스템이 수량을 자동 곱셈해 합계 매입가를 계산합니다.'>"
+            "단가 (× 수량)✏️</b>",
+            unsafe_allow_html=True
+        )
         _h4.markdown("<b style='font-size:13px;color:#444' title='영수증에서 수동 매칭'>🧾</b>", unsafe_allow_html=True)
 
         # 셀 기본 스타일
@@ -646,9 +652,14 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             chk_col.checkbox("", key=f"sel_p_{sk}", label_visibility="collapsed")
             disp_col.markdown(row_html, unsafe_allow_html=True)
 
+            # 입력 필드 = 단가(1주문 단가). 합계 매입가는 시스템이 qty 자동 곱셈.
             current_cost = int(r['구입가격'])
-            new_cost = c_cost.number_input("", value=current_cost, min_value=0, step=100,
-                                           label_visibility="collapsed", key=f"c_{sk}")
+            _qty_row = max(1, int(r.get('수량', 1) or 1))
+            current_unit = current_cost // _qty_row if current_cost > 0 else 0
+            new_unit_in = c_cost.number_input("", value=current_unit, min_value=0, step=100,
+                                              label_visibility="collapsed", key=f"c_{sk}",
+                                              help=f"1주문 단가 (× 수량 {_qty_row} = 합계 매입가)")
+            new_cost = new_unit_in * _qty_row
             if new_cost != current_cost:
                 st.session_state['cost_overrides'][key] = new_cost
 
@@ -795,15 +806,17 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             )
             st.rerun()
 
-        # ── 금액 일괄 적용 처리 ──
+        # ── 단가 일괄 적용 처리 — 각 행 수량 자동 곱셈 ──
         if _bulk_apply and _checked_rows:
-            _apply_price = int(st.session_state.get('bulk_price_input', 0) or 0)
-            if _apply_price > 0:
+            _apply_unit = int(st.session_state.get('bulk_price_input', 0) or 0)
+            if _apply_unit > 0:
                 for _i in _checked_rows:
                     _r = df.loc[_i]
                     _bkey = f"{_r['수취인명']}_{_r['상품명']}_{_i}_{calc_date_str}"
-                    st.session_state['cost_overrides'][_bkey] = _apply_price
-                    st.session_state[f'_buf_c_{_i}'] = _apply_price
+                    _qty_b = max(1, int(_r.get('수량', 1) or 1))
+                    _apply_cost = _apply_unit * _qty_b
+                    st.session_state['cost_overrides'][_bkey] = _apply_cost
+                    st.session_state[f'_buf_c_{_i}'] = _apply_unit  # 위젯 표시값은 단가
                 for _k in list(st.session_state.keys()):
                     if _k.startswith('sel_p_'):
                         st.session_state.pop(_k, None)
