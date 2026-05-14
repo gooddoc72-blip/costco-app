@@ -2,6 +2,8 @@
 
 import { useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';
+import Link from 'next/link';
+import { ShoppingCart } from 'lucide-react';
 import Header from '@/components/Header';
 import BottomNav from '@/components/BottomNav';
 import { apiGet } from '@/lib/api';
@@ -41,7 +43,16 @@ export default function OrderDateDetailPage() {
 
   return (
     <>
-      <Header title={date} subtitle={`${rows.length}건 · 매출 ${won(totalSales)} · 수익 ${won(totalProfit)}`} />
+      <Header
+        title={date}
+        subtitle={`${rows.length}건 · 매출 ${won(totalSales)} · 수익 ${won(totalProfit)}`}
+        right={
+          <Link href={`/shopping/${date}`}
+            className="bg-blue-600 text-white text-xs px-3 py-1.5 rounded-lg flex items-center gap-1">
+            <ShoppingCart size={12} /> 장보기
+          </Link>
+        }
+      />
       <main className="px-4 pt-3 pb-20">
         {error && (
           <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2 mb-3">
