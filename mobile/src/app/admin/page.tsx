@@ -7,6 +7,7 @@ import Header from '@/components/Header';
 import BottomNav from '@/components/BottomNav';
 import { Wrench, Play } from 'lucide-react';
 import { useAdminMigration } from '@/hooks/useAdminMigration';
+import ShoppingSubmissions from '@/components/admin/ShoppingSubmissions';
 
 const ACTIONS = [
   {
@@ -66,6 +67,8 @@ export default function AdminPage() {
             </pre>
           </section>
         )}
+
+        <ShoppingSubmissions />
       </main>
       <BottomNav />
     </>

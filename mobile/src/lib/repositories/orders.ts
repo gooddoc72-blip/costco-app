@@ -136,6 +136,41 @@ export function fetchOrdersForShopping(username: string, date: string): Shopping
   }));
 }
 
+export interface OrderRowForDump {
+  recipient: string;
+  productName: string;
+  productNo: string;
+  optionInfo: string;
+  qty: number;
+  orderAmount: number;
+  shippingFee: number;
+  settlement: number;
+  matchedProductId: number | null;
+}
+
+/** 한 날짜의 주문 전체 (daily_orders dump용 — 행 단위 보존) */
+export function fetchOrdersForDailyDump(username: string, date: string): OrderRowForDump[] {
+  const db = getUserDb(username);
+  const rows = db.prepare(`
+    SELECT recipient, product_name, product_no, option_info,
+           qty, order_amount, shipping_fee, settlement, matched_product_id
+    FROM order_history
+    WHERE order_date = ?
+    ORDER BY id
+  `).all(date) as any[];
+  return rows.map(r => ({
+    recipient: r.recipient || '',
+    productName: r.product_name || '',
+    productNo: r.product_no || '',
+    optionInfo: r.option_info || '',
+    qty: Number(r.qty) || 1,
+    orderAmount: Number(r.order_amount) || 0,
+    shippingFee: Number(r.shipping_fee) || 0,
+    settlement: Number(r.settlement) || 0,
+    matchedProductId: r.matched_product_id ?? null,
+  }));
+}
+
 export function getActiveOrders(username: string): any[] {
   const db = getUserDb(username);
   return db.prepare(`

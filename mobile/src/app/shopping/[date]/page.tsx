@@ -29,6 +29,12 @@ export default function ShoppingPage() {
               sending={s.sending}
               sendResult={s.sendResult}
               onSend={s.onSend}
+              saving={s.saving}
+              saveResult={s.saveResult}
+              onSave={s.onSave}
+              submitting={s.submitting}
+              submitResult={s.submitResult}
+              onSubmit={s.onSubmit}
             />
             <ShoppingTable data={s.data} />
           </>

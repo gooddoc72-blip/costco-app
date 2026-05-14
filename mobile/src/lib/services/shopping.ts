@@ -8,9 +8,13 @@
  *  - 예상금액 = 코스트코구매수량 × 팩단가
  */
 import { getUserDb } from '@/lib/db';
-import { fetchOrdersForShopping, type ShoppingRawRow } from '@/lib/repositories/orders';
+import { fetchOrdersForShopping, fetchOrdersForDailyDump, type ShoppingRawRow } from '@/lib/repositories/orders';
 import { findMatchingProductId } from '@/lib/services/matching';
 import { extractPackQty } from '@/lib/utils/packQty';
+import { computeCost, extractSellFactor } from '@/lib/pricing';
+import { replaceDailyOrders, type DailyOrderInput } from '@/lib/repositories/dailyOrders';
+import { loadUserSettings } from '@/lib/services/settings';
+import { submitShoppingList as repoSubmit } from '@/lib/repositories/adminShopping';
 
 export interface ShoppingItem {
   productNo: string;
@@ -144,6 +148,69 @@ export function getShoppingList(username: string, date: string): ShoppingPageDat
 
 const NF = new Intl.NumberFormat('ko-KR');
 function fmtN(n: number): string { return NF.format(n); }
+
+/** 한 날짜의 주문을 daily_orders에 dump — 수익계산 페이지의 영구 소스가 됨. */
+export function saveDailyFromOrderHistory(username: string, date: string): {
+  saved: number;
+  matched: number;
+  totalProfit: number;
+} {
+  const rows = fetchOrdersForDailyDump(username, date);
+  const settings = loadUserSettings(username);
+  const shippingCost = Number(settings.shippingCost) || 1800;
+  const boxCost = Number(settings.boxCost) || 300;
+  const db = getUserDb(username);
+
+  let matched = 0;
+  let totalProfit = 0;
+  const items: DailyOrderInput[] = rows.map(r => {
+    let prod: any = null;
+    if (r.matchedProductId) {
+      prod = db.prepare("SELECT unit_price, split_qty FROM products WHERE id = ?").get(r.matchedProductId);
+    }
+    if (!prod) {
+      const m = findMatchingProductId(username, { productNo: r.productNo, productName: r.productName });
+      if (m.productId) prod = db.prepare("SELECT unit_price, split_qty FROM products WHERE id = ?").get(m.productId);
+    }
+    const unitPrice = Number(prod?.unit_price) || 0;
+    const splitQty = Math.max(1, Number(prod?.split_qty) || 1);
+    const sellFactor = extractSellFactor(r.productName);
+    const cost = unitPrice > 0 ? computeCost(unitPrice, splitQty, r.qty, sellFactor) : 0;
+    const profit = cost > 0
+      ? (r.settlement + r.shippingFee) - (cost + shippingCost + boxCost)
+      : 0;
+    if (cost > 0) { matched++; totalProfit += profit; }
+    return {
+      orderDate: date,
+      recipient: r.recipient,
+      productName: r.productName,
+      productNo: r.productNo,
+      optionInfo: r.optionInfo,
+      qty: r.qty,
+      orderAmount: r.orderAmount,
+      shippingFee: r.shippingFee,
+      extraShipping: 0,
+      settlement: r.settlement,
+      costPrice: cost,
+      deliveryCost: shippingCost,
+      boxCost: boxCost,
+      profit,
+      matched: cost > 0 ? 1 : 0,
+    };
+  });
+  const saved = replaceDailyOrders(username, date, items);
+  return { saved, matched, totalProfit };
+}
+
+/** 장보기 목록을 관리자 DB(shopping_list_submissions)에 제출. */
+export function submitToAdmin(username: string, date: string): {
+  submissionId: number; totalItems: number; totalAmount: number;
+} {
+  const data = getShoppingList(username, date);
+  const totalAmount = data.items.reduce((s, i) => s + (i.expectedCost || 0), 0);
+  const id = repoSubmit(username, date, data.items, data.items.length, totalAmount);
+  return { submissionId: id, totalItems: data.items.length, totalAmount };
+}
 
 /** 카톡/텔레그램용 메시지 문자열. (예상금액 제외, 사용자 요구사항대로) */
 export function buildShoppingMessage(data: ShoppingPageData): string {
