@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { Home, ShoppingBag, Receipt, Truck, Settings, Package } from 'lucide-react';
+import { Home, ShoppingBag, Receipt, Truck, Settings, Package, CreditCard } from 'lucide-react';
 import clsx from 'clsx';
 
 const items = [
@@ -11,6 +11,7 @@ const items = [
   { href: '/products', label: '제품', icon: Package },
   { href: '/tracking', label: '송장', icon: Truck },
   { href: '/profit', label: '수익', icon: Receipt },
+  { href: '/settlement', label: '정산', icon: CreditCard },
   { href: '/settings', label: '설정', icon: Settings },
 ];
 
