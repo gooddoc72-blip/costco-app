@@ -5,12 +5,23 @@
  * UI: components/profit/*
  */
 import { useParams } from 'next/navigation';
+import Link from 'next/link';
+import { Receipt } from 'lucide-react';
 import Header from '@/components/Header';
 import BottomNav from '@/components/BottomNav';
 import ProfitSummary from '@/components/profit/ProfitSummary';
 import ProfitActions from '@/components/profit/ProfitActions';
 import ProfitRow from '@/components/profit/ProfitRow';
 import { useProfit } from '@/hooks/useProfit';
+
+function ReceiptBtn() {
+  return (
+    <Link href="/receipt"
+      className="bg-amber-500 text-white text-xs px-3 py-1.5 rounded-lg flex items-center gap-1">
+      <Receipt size={12} /> 영수증
+    </Link>
+  );
+}
 
 export default function ProfitDatePage() {
   const params = useParams<{ date: string }>();
@@ -31,7 +42,7 @@ export default function ProfitDatePage() {
 
   return (
     <>
-      <Header title="수익 계산" subtitle={`${date} · 발송 ${p.data.rows.length}건`} />
+      <Header title="수익 계산" subtitle={`${date} · 발송 ${p.data.rows.length}건`} right={<ReceiptBtn />} />
       <main className="px-2 pt-2 pb-32">
         {p.totals && <ProfitSummary totals={p.totals} />}
         <ProfitActions
@@ -70,7 +81,7 @@ export default function ProfitDatePage() {
 function Wrap({ date, children }: { date: string; children: React.ReactNode }) {
   return (
     <>
-      <Header title="수익 계산" subtitle={date} />
+      <Header title="수익 계산" subtitle={date} right={<ReceiptBtn />} />
       <main className="px-4 pt-4">{children}</main>
       <BottomNav />
     </>

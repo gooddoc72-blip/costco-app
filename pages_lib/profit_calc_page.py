@@ -903,7 +903,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             f"🧾 영수증 등록 — 매칭 가격 보정 (선택사항)"
             + (f" — ✅ {len(st.session_state.get('receipt_items', []))}개 로드됨" if _rcpt_loaded else "")
         )
-        with st.expander(_rcpt_label, expanded=False):
+        with st.expander(_rcpt_label, expanded=not _rcpt_loaded):
             from pages_lib import receipt_page as _rcpt_pg
             _rcpt_pg.render(USERNAME, IS_ADMIN, settings, embedded=True, order_date=calc_date_str)
 
