@@ -540,8 +540,10 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 editing_kw  = st.session_state.get('editing_product_kw')
                 editing_tab = st.session_state.get('editing_product_tab', 0)
 
-                for p in _page_prods:
+                for _idx, p in enumerate(_page_prods):
                     kw        = p['match_keyword']
+                    # 위젯 key 충돌 방지용 unique row id (같은 match_keyword 다중 행 대비)
+                    _uid      = p.get('private_id') or p.get('shared_id') or _idx
                     is_shared = p.get('shared_id') is not None
                     sq_val    = int(p.get('split_qty', 1) or 1)
                     fee_val   = int(p.get('shipping_fee', 0) or 0)
@@ -563,18 +565,18 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                 unsafe_allow_html=True
                             )
                             e_sq   = fc[1].number_input("소분", value=sq_val, min_value=1, max_value=20,
-                                                        key=f"e_sq_t{_ti}_{kw}", label_visibility="visible")
+                                                        key=f"e_sq_t{_ti}_{kw}_{_uid}", label_visibility="visible")
                             e_sale = fc[2].number_input("판매가(네이버)", value=sale_val, min_value=0, step=100,
-                                                        key=f"e_sale_t{_ti}_{kw}", label_visibility="visible")
+                                                        key=f"e_sale_t{_ti}_{kw}_{_uid}", label_visibility="visible")
                             e_fee  = fc[3].number_input("고객배송비 (0=무료)", value=fee_val, min_value=0, step=100,
-                                                        key=f"e_fee_t{_ti}_{kw}", label_visibility="visible")
+                                                        key=f"e_fee_t{_ti}_{kw}_{_uid}", label_visibility="visible")
                             _cur_ncat = p.get('naver_category_id') or ''
                             e_ncat = st.text_input(
                                 "네이버 카테고리 ID (제품별 고정, 비워두면 카테고리 기본값 사용)",
                                 value=_cur_ncat, placeholder="예: 50000803",
-                                key=f"e_ncat_t{_ti}_{kw}",
+                                key=f"e_ncat_t{_ti}_{kw}_{_uid}",
                             )
-                            if fc[4].button("✅ 저장", key=f"e_save_t{_ti}_{kw}",
+                            if fc[4].button("✅ 저장", key=f"e_save_t{_ti}_{kw}_{_uid}",
                                             use_container_width=True, type="primary"):
                                 upsert_user_private(USERNAME, kw, p['costco_name'],
                                                     sale_price=e_sale, shipping_fee=e_fee,
@@ -589,7 +591,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                 st.session_state.pop('editing_product_kw', None)
                                 st.session_state.pop('editing_product_tab', None)
                                 st.rerun()
-                            if fc[5].button("✖ 취소", key=f"e_cancel_t{_ti}_{kw}",
+                            if fc[5].button("✖ 취소", key=f"e_cancel_t{_ti}_{kw}_{_uid}",
                                             use_container_width=True):
                                 st.session_state.pop('editing_product_kw', None)
                                 st.session_state.pop('editing_product_tab', None)
@@ -598,24 +600,24 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                             fc = st.columns([0.9, 4.6, 1.3, 0.8, 1.2, 1.1, 1.0, 0.8])
                             pid_legacy = p.get('private_id')
                             e_pno  = fc[0].text_input("상품번호", value=p.get('product_no', ''),
-                                                      key=f"e_pno_t{_ti}_{kw}",
+                                                      key=f"e_pno_t{_ti}_{kw}_{_uid}",
                                                       label_visibility="collapsed", placeholder="상품번호")
                             e_name = fc[1].text_input("상품명", value=p['costco_name'],
-                                                      key=f"e_name_t{_ti}_{kw}",
+                                                      key=f"e_name_t{_ti}_{kw}_{_uid}",
                                                       label_visibility="collapsed")
                             e_price= fc[2].number_input("매입가", value=int(p.get('unit_price', 0) or 0),
-                                                        step=100, key=f"e_price_t{_ti}_{kw}",
+                                                        step=100, key=f"e_price_t{_ti}_{kw}_{_uid}",
                                                         label_visibility="collapsed")
                             e_sq   = fc[3].number_input("소분", value=sq_val, min_value=1, max_value=20,
-                                                        key=f"e_sq_t{_ti}_{kw}",
+                                                        key=f"e_sq_t{_ti}_{kw}_{_uid}",
                                                         label_visibility="collapsed")
                             e_sale = fc[4].number_input("판매가", value=sale_val, min_value=0, step=100,
-                                                        key=f"e_sale2_t{_ti}_{kw}",
+                                                        key=f"e_sale2_t{_ti}_{kw}_{_uid}",
                                                         label_visibility="collapsed")
                             e_fee  = fc[5].number_input("배송비", value=fee_val, min_value=0, step=100,
-                                                        key=f"e_fee2_t{_ti}_{kw}",
+                                                        key=f"e_fee2_t{_ti}_{kw}_{_uid}",
                                                         label_visibility="collapsed")
-                            if fc[6].button("✅ 저장", key=f"e_save2_t{_ti}_{kw}",
+                            if fc[6].button("✅ 저장", key=f"e_save2_t{_ti}_{kw}_{_uid}",
                                             use_container_width=True, type="primary"):
                                 if pid_legacy:
                                     conn_u = get_user_db(USERNAME)
@@ -629,7 +631,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                 st.session_state.pop('editing_product_kw', None)
                                 st.session_state.pop('editing_product_tab', None)
                                 st.rerun()
-                            if fc[7].button("✖", key=f"e_cancel2_t{_ti}_{kw}",
+                            if fc[7].button("✖", key=f"e_cancel2_t{_ti}_{kw}_{_uid}",
                                             use_container_width=True):
                                 st.session_state.pop('editing_product_kw', None)
                                 st.session_state.pop('editing_product_tab', None)
@@ -723,18 +725,18 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         disp_col, btn_col = st.columns([10, 2])
                         disp_col.markdown(_row_html, unsafe_allow_html=True)
                         bc1, bc2, bc3 = btn_col.columns(3)
-                        if bc1.button("✏️", key=f"edit_btn_t{_ti}_{kw}", use_container_width=True):
+                        if bc1.button("✏️", key=f"edit_btn_t{_ti}_{kw}_{_uid}", use_container_width=True):
                             st.session_state['editing_product_kw']  = kw
                             st.session_state['editing_product_tab'] = _ti
                             st.rerun()
                         _n_registered = bool(p.get('naver_product_no'))
                         _n_label = "✅" if _n_registered else "🛍"
-                        if bc2.button(_n_label, key=f"nreg_btn_t{_ti}_{kw}", use_container_width=True,
+                        if bc2.button(_n_label, key=f"nreg_btn_t{_ti}_{kw}_{_uid}", use_container_width=True,
                                       help="네이버 등록" if not _n_registered else f"등록됨 ({p.get('naver_product_no')})"):
                             st.session_state['naver_reg_sp_id'] = p.get('shared_id')
                             st.session_state['naver_reg_kw'] = kw
                             st.rerun()
-                        if bc3.button("🗑", key=f"del_btn_t{_ti}_{kw}", use_container_width=True):
+                        if bc3.button("🗑", key=f"del_btn_t{_ti}_{kw}_{_uid}", use_container_width=True):
                             pid_del = p.get('private_id')
                             if pid_del:
                                 conn_u = get_user_db(USERNAME)
