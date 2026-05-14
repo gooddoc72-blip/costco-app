@@ -16,8 +16,6 @@ export const viewport: Viewport = {
   themeColor: '#E31837',
   width: 'device-width',
   initialScale: 1,
-  maximumScale: 1,
-  userScalable: false,
   viewportFit: 'cover',
 };
 
@@ -28,7 +26,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <link rel="icon" href="/icons/icon-192.png" />
         <link rel="apple-touch-icon" href="/icons/icon-192.png" />
       </head>
-      <body className="min-h-screen safe-top safe-bottom">{children}</body>
+      <body className="min-h-screen bg-gray-100 safe-top safe-bottom">
+        <div className="mx-auto max-w-[480px] min-h-screen bg-gray-50 shadow-xl md:shadow-2xl relative">
+          {children}
+        </div>
+      </body>
     </html>
   );
 }
