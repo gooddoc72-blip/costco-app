@@ -34,7 +34,8 @@ def extract_pack_qty(option_str, name_str=""):
         if 1 < v <= 30:
             return v
     for pat in [r'(\d+)\s*구\b', r'(\d+)\s*개\s*묶음', r'(\d+)\s*개\s*세트',
-                r'(\d+)\s*p(?:ack)?\b', r'(\d+)\s*set\b']:
+                r'(\d+)\s*p(?:ack)?\b', r'(\d+)\s*set\b',
+                r'\bx\s*(\d+)(?!\d)', r'×\s*(\d+)(?!\d)']:
         m = re.search(pat, text, re.IGNORECASE)
         if m:
             v = int(m.group(1))

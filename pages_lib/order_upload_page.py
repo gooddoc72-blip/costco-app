@@ -641,25 +641,19 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             return int(row['코스트코구매수량']) * int(row['팩단가'])
         shopping['예상금액'] = shopping.apply(_expected_cost, axis=1)
 
-        # ── 표시 컬럼 구성 ──
+        # ── 표시 컬럼 구성 (요청: 수량/정산금액/택배비 중심) ──
         has_split = (shopping['분리수량'] > 1).any()
         has_multi = (shopping['묶음수량'] > 1).any()
         disp_cols = [c for c in ['상품번호', '상품명', '옵션정보'] if c in shopping.columns]
         disp_cols += ['주문수량']
-        if has_split:
-            disp_cols += ['분리수량']
-        if has_multi:
-            disp_cols += ['묶음수량']
-        if has_split or has_multi:
-            disp_cols += ['코스트코구매수량']
-        disp_cols += ['팩단가', '예상금액']
-        # 배송비 컬럼이 있으면 표시 끝에 추가
+        if '정산금액' in shopping.columns:
+            disp_cols += ['정산금액']
         if '배송비' in shopping.columns:
             disp_cols += ['배송비']
 
         # ── HTML 테이블로 렌더링 ──
-        num_cols = {'주문수량', '분리수량', '묶음수량', '코스트코구매수량', '팩단가', '예상금액', '배송비'}
-        # 분리 행: 하늘색, 묶음 행: 노란색
+        num_cols = {'주문수량', '정산금액', '배송비'}
+        # 분리/묶음 행은 배경색으로 시각 구분만 유지 (해당 컬럼은 표시 안 함)
         def _row_bg(row):
             if int(row.get('분리수량', 1)) > 1:
                 return '#d6eaf8'  # 분리판매 → 하늘색
@@ -667,12 +661,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 return '#fff3cd'  # 묶음판매 → 노란색
             return 'white'
 
-        # 코스트코구매수량 헤더: 분리 시 "팩구매수", 묶음 시 "코스트코구매수량"
         col_labels = {}
-        if has_split:
-            col_labels['코스트코구매수량'] = '코스트코팩구매'
-        if has_split:
-            col_labels['팩단가'] = '팩단가'
 
         th_cells = ''.join(
             f'<th style="background:#f8f9fa;padding:7px 12px;border-bottom:2px solid #dee2e6;'
@@ -681,9 +670,9 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             for c in disp_cols
         )
         row_htmls = []
-        for _, row in shopping[disp_cols].iterrows():
+        # 전체 row로 iterate해서 _row_bg가 분리/묶음수량을 읽을 수 있도록 함
+        for _, row in shopping.iterrows():
             bg = _row_bg(row)
-            sq = int(row.get('분리수량', 1))
             tds = []
             for c in disp_cols:
                 v = row[c]
@@ -692,12 +681,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     display = '-'
                 elif is_num:
                     try:
-                        iv = int(v)
-                        # 팩구매수에 단위 표시
-                        if c == '코스트코구매수량' and sq > 1:
-                            display = f'{iv:,}팩'
-                        else:
-                            display = f'{iv:,}'
+                        display = f'{int(v):,}'
                     except Exception:
                         display = str(v)
                 else:
@@ -727,29 +711,31 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             st.caption(cap)
 
         c1, c2 = st.columns(2)
-        c1.metric("예상 구매 총액", f"{fmt(shopping['예상금액'].dropna().sum())}원")
-        c2.metric("단가 미등록 상품", f"{shopping['팩단가'].isna().sum()}종")
+        _total_settle = int(shopping['정산금액'].sum()) if '정산금액' in shopping.columns else 0
+        c1.metric("정산 총액", f"{fmt(_total_settle)}원")
+        c2.metric("종 수", f"{len(shopping)}종")
 
         # 휴대폰으로 장보기 목록 전송
         kakao_token = _gs('kakao_access_token')
         tg_token = _gs('telegram_token')
         tg_chat = _gs('telegram_chat_id')
 
-        # ── 프린트용 HTML 생성 (코스트코 매장에서 보기 좋게) ───────────
+        # ── 프린트용 HTML (수량/정산금액/택배비) ───────────
         _print_rows = []
         for _, r in shopping.iterrows():
             _ship_v = int(r.get('배송비', 0) or 0)
+            _settle = int(r.get('정산금액', 0) or 0)
             _print_rows.append(
                 '<tr>'
                 f'<td>{r.get("상품번호","")}</td>'
                 f'<td>{str(r.get("상품명",""))}</td>'
                 f'<td>{str(r.get("옵션정보","") or "-")}</td>'
                 f'<td style="text-align:right">{int(r.get("주문수량",0))}</td>'
-                f'<td style="text-align:right">{(fmt(int(r["팩단가"])) if pd.notna(r.get("팩단가")) else "-")}원</td>'
-                f'<td style="text-align:right;font-weight:600">{(fmt(int(r["예상금액"])) if pd.notna(r.get("예상금액")) else "-")}원</td>'
+                f'<td style="text-align:right;font-weight:600">{fmt(_settle)}원</td>'
                 f'<td style="text-align:right;color:#555">{fmt(_ship_v)}원</td>'
                 '</tr>'
             )
+        _total_settle_print = int(shopping['정산금액'].sum()) if '정산금액' in shopping.columns else 0
         _print_html = (
             '<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8">'
             f'<title>코스트코 장보기 — {order_date_str}</title>'
@@ -764,15 +750,14 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             '@media print{body{padding:8px} .noprint{display:none}}'
             '</style></head><body>'
             f'<h1>🛒 코스트코 장보기 — {order_date_str}</h1>'
-            f'<div class="meta">총 {len(shopping)}종 · 예상 구매 총액 {fmt(int(shopping["예상금액"].dropna().sum()))}원</div>'
+            f'<div class="meta">총 {len(shopping)}종 · 정산 총액 {fmt(_total_settle_print)}원</div>'
             '<table><thead><tr>'
             '<th>상품번호</th><th>상품명</th><th>옵션정보</th>'
-            '<th style="text-align:right">주문수량</th>'
-            '<th style="text-align:right">팩단가</th>'
-            '<th style="text-align:right">예상금액</th>'
-            '<th style="text-align:right">배송비</th>'
+            '<th style="text-align:right">수량</th>'
+            '<th style="text-align:right">정산금액</th>'
+            '<th style="text-align:right">택배비</th>'
             '</tr></thead><tbody>' + ''.join(_print_rows) + '</tbody></table>'
-            f'<div class="tot">💰 예상 구매 총액: {fmt(int(shopping["예상금액"].dropna().sum()))}원</div>'
+            f'<div class="tot">💰 정산 총액: {fmt(_total_settle_print)}원</div>'
             '<button class="noprint" onclick="window.print()" '
             'style="margin-top:20px;padding:10px 24px;font-size:14px;cursor:pointer">🖨 인쇄</button>'
             '</body></html>'
@@ -860,17 +845,18 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         if _ship_b1.button("📱 장보기 목록 휴대폰 전송", key="send_shopping",
                             use_container_width=True):
             order_date_obj = datetime.strptime(order_date_str, "%Y-%m-%d")
-            # 카톡 포맷: 상품명 - 옵션 - 수량 - 팩단가 - 배송비 (예상금액 제외)
+            # 카톡 포맷: 상품명 - 옵션 - 수량 - 정산금액 - 배송 택배비
             lines = [f"🛒 코스트코 장보기 ({order_date_obj.strftime('%m/%d')})", ""]
             for _, r in shopping.iterrows():
                 _name = str(r.get('상품명', ''))[:30]
                 _opt  = str(r.get('옵션정보', '') or '').strip() or '-'
                 _qty  = int(r.get('주문수량', 0) or 0)
-                _unit = int(r['팩단가']) if pd.notna(r.get('팩단가')) else 0
+                _settle = int(r.get('정산금액', 0) or 0)
                 _ship = int(r.get('배송비', 0) or 0)
-                lines.append(f"{_name} - {_opt} - {_qty} - {fmt(_unit)} - 배송 {fmt(_ship)}")
+                lines.append(f"{_name} - {_opt} - {_qty} - {fmt(_settle)} - 배송 {fmt(_ship)}")
             lines.append("")
-            lines.append(f"💰 예상 총액: {fmt(shopping['예상금액'].dropna().sum())}원 / 📦 {len(df)}건")
+            _total_settle_msg = int(shopping['정산금액'].sum()) if '정산금액' in shopping.columns else 0
+            lines.append(f"💰 정산 총액: {fmt(_total_settle_msg)}원 / 📦 {len(df)}건")
             msg = "\n".join(lines)
 
             sent_ok = False
