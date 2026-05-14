@@ -4,6 +4,7 @@ DB 읽기/쓰기는 db.py를 통해, 유틸은 utils.py를 통해 처리
 """
 import re
 import io
+from functools import lru_cache
 from datetime import datetime
 
 import pandas as pd
@@ -15,6 +16,32 @@ from db import (
     save_daily_orders as _db_save_daily_orders,
     save_order_history as _db_save_order_history,
 )
+
+
+# ── 매칭 가속 — list → dict 인덱스 캐시 (id 기반) ─────────
+# 같은 list 객체에 대해 product_no/match_keyword dict을 1회만 생성하고 재사용.
+# cached_user_products / cached_shared_products의 ttl 갱신 시 list가 새로 생성되어
+# id 변경 → 자동 무효화.
+_INDEX_CACHE: dict = {}
+
+def _index_products(products: list) -> dict:
+    if not products:
+        return {'by_pno': {}, 'by_kw': {}, 'has_pno': []}
+    pid = id(products)
+    hit = _INDEX_CACHE.get(pid)
+    if hit is not None and hit.get('_n') == len(products):
+        return hit
+    out = {
+        'by_pno': {str(p.get('product_no', '') or ''): p
+                   for p in products if (p.get('product_no') or '').strip()},
+        'by_kw':  {p['match_keyword']: p for p in products if p.get('match_keyword')},
+        'has_pno': [p for p in products if (p.get('product_no') or '').strip()],
+        '_n': len(products),
+    }
+    if len(_INDEX_CACHE) > 16:  # 메모리 폭주 방지 — 16개 사용자 동시 캐시면 충분
+        _INDEX_CACHE.clear()
+    _INDEX_CACHE[pid] = out
+    return out
 
 
 # ── 비용 계산 (단일 공식) ──────────────────────────────────
@@ -117,9 +144,11 @@ def process_and_save_orders(username, df, order_date, shipping_cost, box_cost,
 
 
 # ── 상품 매칭 ─────────────────────────────────────────────
+@lru_cache(maxsize=4096)
 def _token_score(a: str, b: str) -> float:
     """가중 토큰 매칭. 짧은 한 단어 매칭(예: '주스')의 false positive 방지.
        기준: Jaccard + 사이즈 페널티 + 일반어 가중치 감소 + 부분 substring 매칭
+       lru_cache: 같은 (a,b) 쌍 반복 호출 시 즉시 반환 (영수증 매칭 등에서 동일 이름 반복 빈번).
     """
     # 일반 단어 (의미 약함) — 매칭 점수에서 가중치 낮춤
     GENERIC = {
@@ -186,19 +215,18 @@ def match_product_to_db(username, store_product_name, product_no=None,
                                _shared_prods=_shared_prods)
     if sp:
         user_prods = _user_prods if _user_prods is not None else get_all_products(username)
-        up = next((p for p in user_prods if p['match_keyword'] == sp['match_keyword']), {})
-        # 주문 product_no로 우선 탐색 (shared product의 pno와 달라도 사용자가 등록했을 수 있음)
+        u_idx = _index_products(user_prods)
+        up = u_idx['by_kw'].get(sp['match_keyword'], {})
+        # 주문 product_no로 우선 탐색 — O(1)
         if product_no:
-            _up_by_order_pno = next((p for p in user_prods
-                                     if str(p.get('product_no', '') or '') == str(product_no)), None)
+            _up_by_order_pno = u_idx['by_pno'].get(str(product_no))
             if _up_by_order_pno:
                 up = _up_by_order_pno
-        # shared product_no로도 탐색 (match_keyword가 달라도 같은 상품일 수 있음)
+        # shared product_no로도 탐색 — O(1)
         if not up:
             _sp_pno = str(sp.get('product_no', '') or '')
             if _sp_pno:
-                _up_by_pno = next((p for p in user_prods
-                                   if str(p.get('product_no', '') or '') == _sp_pno), None)
+                _up_by_pno = u_idx['by_pno'].get(_sp_pno)
                 if _up_by_pno:
                     up = _up_by_pno
         _sq_user   = int(up.get('split_qty') or 1) if up else 1
@@ -255,10 +283,12 @@ def match_shared_product(product_name, product_no=None, return_score=False,
     products = _shared_prods if _shared_prods is not None else get_shared_products()
     if not products:
         return (None, 0.0) if return_score else None
+    idx = _index_products(products)
+    # product_no 정확 일치 — O(1) dict lookup
     if product_no:
-        for p in products:
-            if str(p.get('product_no', '')) == str(product_no):
-                return (p, 1.0) if return_score else p
+        hit = idx['by_pno'].get(str(product_no))
+        if hit:
+            return (hit, 1.0) if return_score else hit
     best_score, best_p = 0.0, None
     for p in products:
         for field in ('match_keyword', 'costco_name'):

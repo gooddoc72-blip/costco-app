@@ -85,26 +85,30 @@ def invalidate_data_cache():
 
 
 # ── 페이지 모듈 임포트 ───────────────────────────────────
+# plotly 의존 모듈(automation_page, rank_check_page)은 lazy import로 첫 진입 시 1회만 로드
 from pages_lib import (
     home_page, order_upload_page, tracking_page, receipt_page,
-    profit_calc_page, dashboard_page, rank_check_page, settings_page,
-    product_db_page, admin_page, naver_register_page, automation_page,
+    profit_calc_page, dashboard_page, settings_page,
+    product_db_page, admin_page, naver_register_page,
     guide_page, settlement_page,
 )
 
 # 페이지 모듈에 캐시 헬퍼 주입 (페이지 모듈이 동일한 캐시 인스턴스 공유)
-for _mod in (
-    order_upload_page, tracking_page, receipt_page, profit_calc_page,
-    rank_check_page, product_db_page, admin_page, naver_register_page,
-    automation_page,
-):
-    if hasattr(_mod, '_set_cache_helpers'):
+def _inject_cache_helpers(_mod):
+    if hasattr(_mod, '_set_cache_helpers') and not getattr(_mod, '_cache_injected', False):
         _mod._set_cache_helpers(
             cached_shared_products, cached_user_products, cached_merged,
             invalidate_data_cache,
             cached_saved_dates=cached_saved_dates,
             cached_daily_orders=cached_daily_orders,
         )
+        _mod._cache_injected = True
+
+for _mod in (
+    order_upload_page, tracking_page, receipt_page, profit_calc_page,
+    product_db_page, admin_page, naver_register_page,
+):
+    _inject_cache_helpers(_mod)
 
 
 # ── 초기화 ──────────────────────────────────────────────
@@ -273,6 +277,8 @@ def run_dashboard():
 
 
 def run_rank_check():
+    from pages_lib import rank_check_page  # lazy: plotly import 무거움
+    _inject_cache_helpers(rank_check_page)
     rank_check_page.render(USERNAME, IS_ADMIN, settings)
 
 
@@ -289,6 +295,8 @@ def run_naver_register():
 
 
 def run_automation():
+    from pages_lib import automation_page  # lazy: plotly + subprocess 무거움
+    _inject_cache_helpers(automation_page)
     automation_page.render(USERNAME, IS_ADMIN, settings)
 
 
