@@ -779,7 +779,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     upsert_product(USERNAME, _save_kw, _save_kw, _save_price,
                                    product_no=_existing_pno, split_qty=_keep_sq,
                                    naver_origin_pno=_existing_naver_origin,
-                                   shipping_fee=_existing_fee)
+                                   shipping_fee=_existing_fee,
+                                   auto_split_costco_no=True)
                     _saved_n += 1
             invalidate_data_cache()
             for _k in list(st.session_state.keys()):
@@ -838,7 +839,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     upsert_product(USERNAME, _kw or _pno, _kw or _pno, _new_unit,
                                     product_no=_pno, split_qty=_sq,
                                     naver_origin_pno=_naver_origin,
-                                    shipping_fee=(_up or {}).get('shipping_fee'))
+                                    shipping_fee=(_up or {}).get('shipping_fee'),
+                                    auto_split_costco_no=True)
             invalidate_data_cache()
             # 위젯 state 정리 → 다음 render에서 새 값 표시
             for _k in list(st.session_state.keys()):
@@ -925,7 +927,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     _new_unit = (_cost // _qty) * _sq
                     upsert_product(USERNAME, _kw or _pno, _kw or _pno, _new_unit,
                                     product_no=_pno, split_qty=_sq,
-                                    shipping_fee=(_up or {}).get('shipping_fee'))
+                                    shipping_fee=(_up or {}).get('shipping_fee'),
+                                    auto_split_costco_no=True)
                     if _pno:
                         _pno_units[_pno] = _new_unit
             # Phase 2: 같은 product_no 일괄 동기화

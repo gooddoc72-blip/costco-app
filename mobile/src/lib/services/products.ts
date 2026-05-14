@@ -6,6 +6,7 @@ import {
   listProducts as repoList,
   updateProductById as repoUpdate,
   deleteProductById as repoDelete,
+  unlockCostcoNo as repoUnlock,
   type ProductRow,
 } from '@/lib/repositories/products';
 
@@ -38,4 +39,8 @@ export function updateProduct(
 
 export function deleteProduct(username: string, id: number) {
   return repoDelete(username, id);
+}
+
+export function unlockProductCostcoNo(username: string, id: number) {
+  return repoUnlock(username, id);
 }

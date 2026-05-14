@@ -38,6 +38,7 @@ export function saveProductPrices(username: string, items: PriceSaveItem[]): {
       productNo: it.costcoProductNo,
       naverOriginPno: it.naverOriginPno,
       detectBoxPrice: true,  // ⭐ 박스가격 안전장치 활성화
+      autoSplitCostcoNo: true,  // ⭐ 같은 코스트코번호 다중 행이면 자동 분리
     });
     if (res.saved) {
       saved++;

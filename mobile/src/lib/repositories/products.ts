@@ -13,6 +13,8 @@ interface UpsertParams {
   naverOriginPno?: string;
   /** true 시 박스가격 감지 (기존 unit_price의 5배 초과면 거부). 기본 false. */
   detectBoxPrice?: boolean;
+  /** true 시 같은 product_no를 가진 다른 행이 있으면 이 행을 분리 (product_no→costco_no_display). */
+  autoSplitCostcoNo?: boolean;
 }
 
 export interface UpsertResult {
@@ -27,6 +29,7 @@ function ensureColumns(db: any): void {
   for (const sql of [
     "ALTER TABLE products ADD COLUMN naver_origin_pno TEXT DEFAULT ''",
     "ALTER TABLE products ADD COLUMN naver_channel_pno TEXT DEFAULT ''",
+    "ALTER TABLE products ADD COLUMN costco_no_display TEXT DEFAULT ''",
   ]) {
     try { db.exec(sql); } catch {}
   }
@@ -71,6 +74,7 @@ export interface ProductRow {
   salePrice: number;
   naverOriginPno: string;
   naverChannelPno: string;
+  costcoNoDisplay: string;   // 분리된 행의 원본 코스트코 번호
   updatedAt: string;
 }
 
@@ -83,19 +87,18 @@ export function listProducts(
   const db = getUserDb(username);
   ensureColumns(db);
   const q = `%${search.trim()}%`;
+  const cols = `id, product_no, store_product_name, costco_name, match_keyword,
+                unit_price, split_qty, sale_price, naver_origin_pno, naver_channel_pno,
+                costco_no_display, updated_at`;
   const rows = (search.trim()
     ? db.prepare(`
-        SELECT id, product_no, store_product_name, costco_name, match_keyword,
-               unit_price, split_qty, sale_price, naver_origin_pno, naver_channel_pno, updated_at
-        FROM products
+        SELECT ${cols} FROM products
         WHERE product_no LIKE ? OR costco_name LIKE ? OR store_product_name LIKE ?
-           OR match_keyword LIKE ? OR naver_origin_pno LIKE ?
+           OR match_keyword LIKE ? OR naver_origin_pno LIKE ? OR costco_no_display LIKE ?
         ORDER BY updated_at DESC LIMIT ?
-      `).all(q, q, q, q, q, limit)
+      `).all(q, q, q, q, q, q, limit)
     : db.prepare(`
-        SELECT id, product_no, store_product_name, costco_name, match_keyword,
-               unit_price, split_qty, sale_price, naver_origin_pno, naver_channel_pno, updated_at
-        FROM products ORDER BY updated_at DESC LIMIT ?
+        SELECT ${cols} FROM products ORDER BY updated_at DESC LIMIT ?
       `).all(limit)
   ) as any[];
   return rows.map(r => ({
@@ -109,6 +112,7 @@ export function listProducts(
     salePrice: Number(r.sale_price) || 0,
     naverOriginPno: r.naver_origin_pno || '',
     naverChannelPno: r.naver_channel_pno || '',
+    costcoNoDisplay: r.costco_no_display || '',
     updatedAt: r.updated_at || '',
   }));
 }
@@ -135,6 +139,25 @@ export function updateProductById(
     return { saved: true };
   } catch (e: any) {
     return { saved: false, error: e.message };
+  }
+}
+
+/** 가격 분리된 행을 코스트코 번호 매칭으로 복귀 (costco_no_display → product_no) */
+export function unlockCostcoNo(username: string, id: number): { unlocked: boolean; error?: string } {
+  const db = getUserDb(username);
+  ensureColumns(db);
+  try {
+    const row = db.prepare(
+      "SELECT costco_no_display FROM products WHERE id = ?"
+    ).get(id) as any;
+    const orig = (row?.costco_no_display || '').trim();
+    if (!orig) return { unlocked: false, error: '분리된 행이 아닙니다.' };
+    db.prepare(
+      "UPDATE products SET product_no = ?, costco_no_display = '' WHERE id = ?"
+    ).run(orig, id);
+    return { unlocked: true };
+  } catch (e: any) {
+    return { unlocked: false, error: e.message };
   }
 }
 
@@ -194,6 +217,18 @@ export function upsertProduct(username: string, p: UpsertParams): UpsertResult {
         p.naverOriginPno || '',
         existing.id
       );
+
+      // ⭐ 자동 분리: 같은 product_no를 가진 다른 행이 있으면 이 행만 격리
+      if (p.autoSplitCostcoNo && p.productNo) {
+        const sibling = db.prepare(
+          "SELECT COUNT(*) as c FROM products WHERE product_no = ? AND id <> ?"
+        ).get(p.productNo, existing.id) as any;
+        if (sibling && Number(sibling.c) > 0) {
+          db.prepare(
+            "UPDATE products SET costco_no_display = ?, product_no = '' WHERE id = ?"
+          ).run(p.productNo, existing.id);
+        }
+      }
     } else {
       db.prepare(`
         INSERT INTO products

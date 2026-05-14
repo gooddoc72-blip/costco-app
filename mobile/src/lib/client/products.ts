@@ -30,3 +30,10 @@ export async function deleteProductRequest(id: number): Promise<{ deleted: boole
   if (!res.ok) throw new Error(json.error || '삭제 실패');
   return json;
 }
+
+export async function unlockProduct(id: number): Promise<{ unlocked: boolean }> {
+  const res = await fetch(`/api/products/${id}/unlock`, { method: 'POST' });
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || '해제 실패');
+  return json;
+}

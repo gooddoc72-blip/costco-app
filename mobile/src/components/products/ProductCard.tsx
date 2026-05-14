@@ -1,6 +1,6 @@
-/** 제품 1건 카드 — 단가/분할수량 인라인 편집 + 삭제 */
+/** 제품 1건 카드 — 단가/분할수량 인라인 편집 + 삭제 + 분리 해제 */
 import { useState } from 'react';
-import { Save, Trash2 } from 'lucide-react';
+import { Save, Trash2, Unlock } from 'lucide-react';
 import { fmt } from '@/lib/fmt';
 import type { ProductRow } from '@/lib/client/products';
 
@@ -10,10 +10,12 @@ interface Props {
   groupSize?: number;  // 같은 코스트코 번호 행 수 (>=2면 그룹 강조)
   onUpdate: (id: number, patch: Partial<ProductRow>) => void;
   onDelete: (id: number) => void;
+  onUnlock?: (id: number) => void;
 }
 
-export default function ProductCard({ row, saving, groupSize = 1, onUpdate, onDelete }: Props) {
+export default function ProductCard({ row, saving, groupSize = 1, onUpdate, onDelete, onUnlock }: Props) {
   const grouped = groupSize >= 2;
+  const isSplit = !!row.costcoNoDisplay && !row.productNo;
   const [price, setPrice] = useState(row.unitPrice);
   const [split, setSplit] = useState(row.splitQty);
   const changed = price !== row.unitPrice || split !== row.splitQty;
@@ -36,6 +38,11 @@ export default function ProductCard({ row, saving, groupSize = 1, onUpdate, onDe
         {row.productNo && (
           <span className={`px-1.5 py-0.5 rounded ${grouped ? 'bg-blue-100 text-blue-800 font-semibold' : 'bg-gray-100'}`}>
             코스트코 {row.productNo}{grouped ? ` · 그룹 ${groupSize}` : ''}
+          </span>
+        )}
+        {isSplit && (
+          <span className="bg-red-50 text-red-700 px-1.5 py-0.5 rounded border border-red-200" title="가격 분리됨 — 코스트코 번호 매칭 제외">
+            🔒 분리 {row.costcoNoDisplay}
           </span>
         )}
         {row.naverOriginPno && <span className="bg-blue-50 text-blue-700 px-1.5 py-0.5 rounded">네이버 원 {row.naverOriginPno}</span>}
@@ -62,6 +69,13 @@ export default function ProductCard({ row, saving, groupSize = 1, onUpdate, onDe
           className="flex-1 bg-blue-600 text-white text-xs py-1.5 rounded flex items-center justify-center gap-1 disabled:bg-gray-300">
           <Save size={12} /> {saving ? '저장…' : '저장'}
         </button>
+        {isSplit && onUnlock && (
+          <button onClick={() => onUnlock(row.id)} disabled={saving}
+            className="px-3 py-1.5 bg-amber-50 text-amber-700 text-xs rounded flex items-center gap-1 disabled:opacity-40 border border-amber-200"
+            title="분리 해제 — 코스트코 번호 매칭 복귀">
+            <Unlock size={12} />
+          </button>
+        )}
         <button onClick={handleDelete} disabled={saving}
           className="px-3 py-1.5 bg-red-50 text-red-600 text-xs rounded flex items-center gap-1 disabled:opacity-40">
           <Trash2 size={12} />

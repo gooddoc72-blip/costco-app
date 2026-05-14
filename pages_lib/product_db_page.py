@@ -548,6 +548,9 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     sq_val    = int(p.get('split_qty', 1) or 1)
                     fee_val   = int(p.get('shipping_fee', 0) or 0)
                     sale_val  = int(p.get('sale_price', 0) or 0)
+                    # 가격 분리 상태: product_no=''이고 costco_no_display 있으면 분리됨
+                    _split_disp_loop = (p.get('costco_no_display') or '').strip()
+                    _is_split_loop   = bool(_split_disp_loop) and not (p.get('product_no') or '').strip()
 
                     if editing_kw == kw and editing_tab == _ti:
                         st.markdown(
@@ -597,6 +600,29 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                 st.session_state.pop('editing_product_tab', None)
                                 st.rerun()
                         else:
+                            # 가격 분리된 행: 해제 옵션을 폼 상단에 한 줄 추가
+                            if _is_split_loop:
+                                _uc1, _uc2 = st.columns([6, 1])
+                                _uc1.warning(
+                                    f"🔒 가격 분리됨 — 코스트코 번호 매칭에서 제외 (원본: {_split_disp_loop})"
+                                )
+                                if _uc2.button("🔓 해제", key=f"unlock_t{_ti}_{kw}_{_uid}",
+                                               use_container_width=True,
+                                               help="이 행을 원래 코스트코 번호 매칭으로 복귀"):
+                                    pid_un = p.get('private_id')
+                                    if pid_un:
+                                        conn_u = get_user_db(USERNAME)
+                                        conn_u.execute(
+                                            "UPDATE products SET product_no=?, costco_no_display='' WHERE id=?",
+                                            (_split_disp_loop, pid_un)
+                                        )
+                                        conn_u.commit(); conn_u.close()
+                                        invalidate_data_cache()
+                                        st.success(f"✅ 분리 해제 — {_split_disp_loop} 매칭 복귀")
+                                        st.session_state.pop('editing_product_kw', None)
+                                        st.session_state.pop('editing_product_tab', None)
+                                        st.rerun()
+
                             fc = st.columns([0.9, 4.6, 1.3, 0.8, 1.2, 1.1, 1.0, 0.8])
                             pid_legacy = p.get('private_id')
                             e_pno  = fc[0].text_input("상품번호", value=p.get('product_no', ''),
@@ -695,16 +721,26 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                             if _naver_name and _naver_name != p['costco_name']:
                                 _display_name = f"{_naver_name} <span style='color:#aaa;font-size:12px'>({p['costco_name']})</span>"
 
+                        # 분리된 행 (product_no=''이고 costco_no_display 있음): 원본 번호 + 🔒 배지
+                        _split_disp = (p.get('costco_no_display') or '').strip()
+                        _is_split   = bool(_split_disp) and not (p.get('product_no') or '').strip()
+                        _split_badge = (
+                            "<br><span style='color:#c0392b;font-size:10px;font-weight:600;"
+                            "background:#fdeded;padding:1px 5px;border-radius:3px;border:1px solid #f5b7b1' "
+                            "title='가격 수정으로 분리된 행 — 코스트코 번호 매칭에서 제외됨'>🔒 가격분리</span>"
+                        ) if _is_split else ""
+
                         # 상품번호: 네이버 등록 필터에서는 네이버번호 + 코스트코번호 함께 표시
                         if _is_filter_naver:
                             _naver_no  = p.get('naver_product_no') or '-'
-                            _costco_no = p.get('product_no', '') or '-'
+                            _costco_no = _split_disp if _is_split else (p.get('product_no', '') or '-')
                             _no_disp   = (
                                 f"{_naver_no}"
                                 f"<br><span style='color:#aaa;font-size:11px'>{_costco_no}</span>"
+                                f"{_split_badge}"
                             )
                         else:
-                            _no_disp = p.get('product_no', '') or '-'
+                            _no_disp = (_split_disp if _is_split else (p.get('product_no', '') or '-')) + _split_badge
 
                         # 행 표시(8개 셀)을 HTML 한 덩어리로 + 액션 3 버튼은 별도 컬럼
                         row_cell_style = "padding:6px 8px;border-bottom:1px solid #f5f5f5;font-size:14px;vertical-align:middle;overflow:hidden;text-overflow:ellipsis"

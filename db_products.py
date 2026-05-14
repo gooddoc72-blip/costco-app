@@ -296,6 +296,8 @@ def _ensure_products_columns(conn):
         "ALTER TABLE products ADD COLUMN naver_channel_pno TEXT DEFAULT ''",
         "ALTER TABLE products ADD COLUMN category TEXT DEFAULT ''",
         "ALTER TABLE products ADD COLUMN linked_shared_id INTEGER DEFAULT NULL",
+        # 코스트코 번호 분리: product_no를 비우는 대신 원본은 여기에 보존 (표시·매장 식별용)
+        "ALTER TABLE products ADD COLUMN costco_no_display TEXT DEFAULT ''",
     ]:
         try:
             conn.execute(col_sql)
@@ -531,10 +533,14 @@ def get_all_products_merged(username):
 
 
 def upsert_product(username, costco_name, keyword, price, product_no='', split_qty=1,
-                   shipping_fee=None, naver_origin_pno=''):
+                   shipping_fee=None, naver_origin_pno='', auto_split_costco_no=False):
     """제품 가격/정보 upsert.
     조회 우선순위: naver_origin_pno (네이버 원상품번호) > product_no (코스트코) > match_keyword
     → 같은 코스트코 상품번호로 여러 네이버 상품이 있어도 각각 별도 가격 저장 가능.
+
+    auto_split_costco_no=True 면 가격 수정 후, 같은 product_no를 가진 다른 행이 존재할 때
+    이 행만 product_no를 비우고 원본을 costco_no_display로 옮겨 매칭에서 분리한다.
+    (수익계산 화면 등에서 한 행만 가격 수정할 때 다른 행과 섞이지 않도록.)
     """
     conn = get_user_db(username)
     _ensure_products_columns(conn)
@@ -581,6 +587,18 @@ def upsert_product(username, costco_name, keyword, price, product_no='', split_q
                         WHERE id=?""",
                      (new_price, new_name, now, product_no, split_qty, fee,
                       naver_origin_pno or '', existing['id']))
+
+        # ⭐ 자동 분리: 같은 product_no를 가진 다른 행이 있으면 이 행만 매칭에서 격리
+        if auto_split_costco_no and product_no:
+            _siblings = conn.execute(
+                "SELECT COUNT(*) FROM products WHERE product_no=? AND id<>?",
+                (product_no, existing['id'])
+            ).fetchone()
+            if _siblings and _siblings[0] > 0:
+                conn.execute(
+                    "UPDATE products SET costco_no_display=?, product_no='' WHERE id=?",
+                    (product_no, existing['id'])
+                )
     else:
         fee = shipping_fee if shipping_fee is not None else 0
         conn.execute("""INSERT INTO products

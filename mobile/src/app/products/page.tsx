@@ -56,6 +56,7 @@ export default function ProductsPage() {
               groupSize={row.productNo ? (groupCount.get(row.productNo) || 1) : 1}
               onUpdate={p.onUpdate}
               onDelete={p.onDelete}
+              onUnlock={p.onUnlock}
             />
           ))}
         </div>

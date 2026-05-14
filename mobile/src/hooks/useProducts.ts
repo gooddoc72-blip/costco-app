@@ -3,6 +3,7 @@ import {
   fetchProducts,
   patchProduct,
   deleteProductRequest,
+  unlockProduct,
   type ProductRow,
 } from '@/lib/client/products';
 
@@ -58,5 +59,18 @@ export function useProducts() {
     }
   };
 
-  return { rows, search, loading, error, saving, onSearch, onUpdate, onDelete };
+  const onUnlock = async (id: number) => {
+    setSaving(id); setError(null);
+    try {
+      await unlockProduct(id);
+      // 복귀된 원본 번호 즉시 반영을 위해 재조회
+      await load(search);
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setSaving(null);
+    }
+  };
+
+  return { rows, search, loading, error, saving, onSearch, onUpdate, onDelete, onUnlock };
 }
