@@ -102,14 +102,12 @@ def _show_dispatch_result(container, result, err, total):
                 st.text(d)
 
 
-def _log_dispatch_to_db(username, result_df, success_order_ids, platform, container):
-    """발송 API 성공 결과를 dispatch_log에 저장 (정산 매칭 기준 데이터)."""
-    from db import log_dispatch_success, search_order_history
-    from datetime import datetime as _dt
+def _prepare_dispatch_rows(username, result_df, success_order_ids):
+    """발송 성공건을 dispatch_log row 리스트로 가공 (저장 대기용)."""
+    from db import search_order_history
     if not success_order_ids:
-        return
+        return []
     success_set = {str(x).strip() for x in success_order_ids}
-    today = _dt.today().strftime("%Y-%m-%d")
 
     # 정산예정금액 보강을 위해 order_history에서 매칭
     _hist = search_order_history(username, date_from='', date_to='', limit=5000)
@@ -130,9 +128,19 @@ def _log_dispatch_to_db(username, result_df, success_order_ids, platform, contai
             'tracking_no':           str(r.get('송장번호', '')).replace('-', '').strip(),
             'courier':               str(r.get('택배사', '')).strip(),
         })
-    if rows:
-        saved = log_dispatch_success(username, rows, today, platform=platform)
-        container.caption(f"💾 dispatch_log: {saved}건 저장됨 ({today}) — 정산 매칭에 사용")
+    return rows
+
+
+def _save_dispatch_rows(username, rows, platform, container):
+    """대기 중인 row들을 dispatch_log에 실제 insert (수동 저장 버튼이 호출)."""
+    from db import log_dispatch_success
+    from datetime import datetime as _dt
+    if not rows:
+        return 0
+    today = _dt.today().strftime("%Y-%m-%d")
+    saved = log_dispatch_success(username, rows, today, platform=platform)
+    container.caption(f"💾 dispatch_log: {saved}건 저장됨 ({today}) — 정산 매칭에 사용")
+    return saved
 
 
 def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
@@ -355,8 +363,11 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         _res, _err = naver_api.ship_orders(api_id, api_secret, _items)
                     _show_dispatch_result(_dc3, _res, _err, len(_items))
                     if _res and _res.get('success_order_ids'):
-                        _log_dispatch_to_db(USERNAME, result_df,
-                                            _res['success_order_ids'], 'naver', _dc3)
+                        # 자동저장 대신 session_state에 보관 → 별도 '저장' 버튼이 commit
+                        st.session_state['dispatch_pending_naver'] = {
+                            'rows':  _prepare_dispatch_rows(USERNAME, result_df, _res['success_order_ids']),
+                            'count': int(_res.get('success', 0) or 0),
+                        }
 
             elif _p["id"] == "coupang":
                 _dc3.caption("💡 쿠팡 상품주문번호 형식: `주문번호-아이템번호` — CJ 고객주문번호에 이 값 입력")
@@ -369,8 +380,25 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         _res, _err = coupang_api.dispatch_orders(cq_access, cq_secret, cq_vendor, _items)
                     _show_dispatch_result(_dc3, _res, _err, len(_items))
                     if _res and _res.get('success_order_ids'):
-                        _log_dispatch_to_db(USERNAME, result_df,
-                                            _res['success_order_ids'], 'coupang', _dc3)
+                        st.session_state['dispatch_pending_coupang'] = {
+                            'rows':  _prepare_dispatch_rows(USERNAME, result_df, _res['success_order_ids']),
+                            'count': int(_res.get('success', 0) or 0),
+                        }
+
+            # ── 저장 대기 (수동 저장 버튼) — 같은 플랫폼 카드 안에 표시 ──
+            _pkey = f"dispatch_pending_{_p['id']}"
+            _pending = st.session_state.get(_pkey)
+            if _pending and _pending.get('rows'):
+                _sc1, _sc2 = st.columns([3, 1])
+                _sc1.info(
+                    f"💾 저장 대기 — 성공 {_pending['count']}건. "
+                    f"'저장' 버튼을 누르면 dispatch_log에 기록되어 정산 매칭에 사용됩니다."
+                )
+                _sc2.write(""); _sc2.write("")
+                if _sc2.button("💾 저장", key=f"save_{_p['id']}", type="primary", use_container_width=True):
+                    _save_dispatch_rows(USERNAME, _pending['rows'], _p['id'], _sc1)
+                    st.session_state.pop(_pkey, None)
+                    st.rerun()
 
     # ═══════════════════════════════════════
     # 탭 2: 영수증 등록
