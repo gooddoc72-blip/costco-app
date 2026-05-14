@@ -11,6 +11,16 @@ interface UpsertParams {
   splitQty: number;
   productNo?: string;
   naverOriginPno?: string;
+  /** true 시 박스가격 감지 (기존 unit_price의 5배 초과면 거부). 기본 false. */
+  detectBoxPrice?: boolean;
+}
+
+export interface UpsertResult {
+  saved: boolean;
+  error?: string;
+  /** 박스가격으로 의심되어 거부됨 */
+  rejected?: boolean;
+  warning?: string;
 }
 
 function ensureColumns(db: any): void {
@@ -50,7 +60,7 @@ export function findProductByKey(
   return null;
 }
 
-export function upsertProduct(username: string, p: UpsertParams): { saved: boolean; error?: string } {
+export function upsertProduct(username: string, p: UpsertParams): UpsertResult {
   const db = getUserDb(username);
   ensureColumns(db);
   const now = new Date().toISOString().slice(0, 16).replace('T', ' ');
@@ -60,6 +70,28 @@ export function upsertProduct(username: string, p: UpsertParams): { saved: boole
       productNo: p.productNo,
       matchKeyword: p.matchKeyword,
     });
+
+    // 🛡 박스가격 감지 — 새 가격이 기존의 5배 초과면 박스가 잘못 들어온 것으로 의심
+    let warning: string | undefined;
+    let finalUnitPrice = p.unitPrice;
+    if (p.detectBoxPrice && existing) {
+      const oldRow = db.prepare(
+        "SELECT unit_price, sale_price FROM products WHERE id = ?"
+      ).get(existing.id) as any;
+      const oldUnit = Number(oldRow?.unit_price) || 0;
+      const oldSale = Number(oldRow?.sale_price) || 0;
+      const suspicious =
+        (oldUnit > 0 && p.unitPrice > oldUnit * 5) ||
+        (oldUnit === 0 && oldSale > 0 && p.unitPrice > oldSale * 5) ||
+        (oldUnit === 0 && oldSale === 0 && p.unitPrice > 200000);
+      if (suspicious) {
+        // 거부: 기존 가격 유지
+        finalUnitPrice = oldUnit || finalUnitPrice;
+        warning = `박스가격 감지 — 새 가격 ${p.unitPrice}원이 기존 ${oldUnit || oldSale}원의 5배 초과. 기존 가격 유지.`;
+        return { saved: false, rejected: true, warning };
+      }
+    }
+
     if (existing) {
       db.prepare(`
         UPDATE products
@@ -67,7 +99,7 @@ export function upsertProduct(username: string, p: UpsertParams): { saved: boole
             naver_origin_pno = COALESCE(NULLIF(?, ''), naver_origin_pno)
         WHERE id = ?
       `).run(
-        p.unitPrice,
+        finalUnitPrice,
         Math.max(1, p.splitQty),
         now,
         p.naverOriginPno || '',
@@ -84,13 +116,13 @@ export function upsertProduct(username: string, p: UpsertParams): { saved: boole
         p.costcoName || p.matchKeyword,
         p.costcoName || p.matchKeyword,
         p.matchKeyword,
-        p.unitPrice,
+        finalUnitPrice,
         Math.max(1, p.splitQty),
         p.naverOriginPno || '',
         now
       );
     }
-    return { saved: true };
+    return { saved: true, warning };
   } catch (e: any) {
     return { saved: false, error: e.message };
   }

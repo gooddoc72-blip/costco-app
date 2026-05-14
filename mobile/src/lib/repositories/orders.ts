@@ -15,6 +15,7 @@ export interface OrderHistoryInput {
   shippingFee: number;
   settlement: number;
   status?: string;
+  matchedProductId?: number | null;  // ⭐ 매칭된 products.id (영구 링크)
 }
 
 function ensureTable(username: string): void {
@@ -40,6 +41,9 @@ function ensureTable(username: string): void {
       raw_json TEXT DEFAULT ''
     )
   `);
+  // matched_product_id 컬럼 (구버전 DB 호환)
+  try { db.exec("ALTER TABLE order_history ADD COLUMN matched_product_id INTEGER"); } catch {}
+  try { db.exec("CREATE INDEX IF NOT EXISTS idx_oh_matched ON order_history(matched_product_id)"); } catch {}
 }
 
 /** order_no UNIQUE 충돌 시 INSERT 무시 (덮어쓰지 않음 — status 보존) */
@@ -52,18 +56,20 @@ export function bulkUpsertOrders(username: string, items: OrderHistoryInput[]): 
   let inserted = 0, updated = 0;
   const errors: string[] = [];
 
-  const findByNo = db.prepare("SELECT id FROM order_history WHERE order_no = ?");
+  const findByNo = db.prepare("SELECT id, matched_product_id FROM order_history WHERE order_no = ?");
   const insertStmt = db.prepare(`
     INSERT INTO order_history
       (order_no, order_date, recipient, product_name, product_no, option_info,
-       qty, order_amount, shipping_fee, settlement, status, created_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+       qty, order_amount, shipping_fee, settlement, status, matched_product_id, created_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
   `);
+  // UPDATE 시 matched_product_id가 NULL이 아닐 때만 갱신 (기존 매칭 보존)
   const updateStmt = db.prepare(`
     UPDATE order_history
     SET order_date = ?, recipient = ?, product_name = ?, product_no = ?,
         option_info = ?, qty = ?, order_amount = ?, shipping_fee = ?,
-        settlement = ?, status = ?
+        settlement = ?, status = ?,
+        matched_product_id = COALESCE(?, matched_product_id)
     WHERE order_no = ?
   `);
 
@@ -75,14 +81,18 @@ export function bulkUpsertOrders(username: string, items: OrderHistoryInput[]): 
           updateStmt.run(
             it.orderDate, it.recipient, it.productName, it.productNo || '',
             it.optionInfo || '', it.qty, it.orderAmount, it.shippingFee,
-            it.settlement, it.status || '', it.orderNo,
+            it.settlement, it.status || '',
+            it.matchedProductId ?? null,
+            it.orderNo,
           );
           updated++;
         } else {
           insertStmt.run(
             it.orderNo, it.orderDate, it.recipient, it.productName,
             it.productNo || '', it.optionInfo || '', it.qty, it.orderAmount,
-            it.shippingFee, it.settlement, it.status || '', now,
+            it.shippingFee, it.settlement, it.status || '',
+            it.matchedProductId ?? null,
+            now,
           );
           inserted++;
         }

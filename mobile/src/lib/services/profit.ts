@@ -24,10 +24,12 @@ export function getProfitPageData(username: string, date: string): ProfitPageDat
 }
 
 export function saveProductPrices(username: string, items: PriceSaveItem[]): {
-  saved: number; errors: string[];
+  saved: number; rejected: number; errors: string[]; warnings: string[];
 } {
   let saved = 0;
+  let rejected = 0;
   const errors: string[] = [];
+  const warnings: string[] = [];
   for (const it of items) {
     const res = upsertProduct(username, {
       matchKeyword: it.matchKeyword,
@@ -35,9 +37,17 @@ export function saveProductPrices(username: string, items: PriceSaveItem[]): {
       splitQty: Math.max(1, it.splitQty),
       productNo: it.costcoProductNo,
       naverOriginPno: it.naverOriginPno,
+      detectBoxPrice: true,  // ⭐ 박스가격 안전장치 활성화
     });
-    if (res.saved) saved++;
-    else errors.push(`${it.naverOriginPno || it.matchKeyword}: ${res.error}`);
+    if (res.saved) {
+      saved++;
+      if (res.warning) warnings.push(`${it.naverOriginPno || it.matchKeyword}: ${res.warning}`);
+    } else if (res.rejected) {
+      rejected++;
+      warnings.push(`${it.naverOriginPno || it.matchKeyword}: ${res.warning}`);
+    } else {
+      errors.push(`${it.naverOriginPno || it.matchKeyword}: ${res.error}`);
+    }
   }
-  return { saved, errors };
+  return { saved, rejected, errors, warnings };
 }
