@@ -3,12 +3,25 @@
  */
 import {
   addTracking, deleteTracking, listLatestRanks, getTrackingById, saveRankResult,
-  type LatestRow,
+  dailyRanksInMonth, yearlyRankHistory,
+  type LatestRow, type DayRank, type HistoryPoint,
 } from '@/lib/repositories/rankTracking';
 import { checkKeywordRank } from '@/lib/api/naverShopSearch';
 import { loadUserSettings } from '@/lib/services/settings';
 
-export type { LatestRow };
+export type { LatestRow, DayRank, HistoryPoint };
+
+export function getMonthly(username: string, id: number, year: number, month: number)
+: { tracking: ReturnType<typeof getTrackingById>; days: Record<number, DayRank>; year: number; month: number } {
+  const tracking = getTrackingById(username, id);
+  if (!tracking) throw new Error('추적 항목이 없습니다.');
+  const days = dailyRanksInMonth(username, id, year, month);
+  return { tracking, days, year, month };
+}
+
+export function getYearly(username: string, id: number): HistoryPoint[] {
+  return yearlyRankHistory(username, id);
+}
 
 export interface RankPageData {
   rows: LatestRow[];

@@ -1,9 +1,32 @@
-import type { LatestRow } from '@/lib/services/rankCheck';
-import type { CheckSummary } from '@/lib/services/rankCheck';
+import type {
+  LatestRow, CheckSummary, DayRank, HistoryPoint,
+} from '@/lib/services/rankCheck';
+import type { TrackingRow } from '@/lib/repositories/rankTracking';
 
-export type { LatestRow, CheckSummary };
+export type { LatestRow, CheckSummary, DayRank, HistoryPoint };
 
 export interface RankPageData { rows: LatestRow[]; hasApiKey: boolean }
+
+export interface MonthlyData {
+  tracking: TrackingRow | null;
+  days: Record<number, DayRank>;
+  year: number;
+  month: number;
+}
+
+export async function fetchMonthly(id: number, year: number, month: number): Promise<MonthlyData> {
+  const res = await fetch(`/api/rank/${id}/monthly?year=${year}&month=${month}`);
+  const j = await res.json();
+  if (!res.ok) throw new Error(j.error || '조회 실패');
+  return j;
+}
+
+export async function fetchYearly(id: number): Promise<{ history: HistoryPoint[] }> {
+  const res = await fetch(`/api/rank/${id}/yearly`);
+  const j = await res.json();
+  if (!res.ok) throw new Error(j.error || '조회 실패');
+  return j;
+}
 
 export async function fetchRanks(): Promise<RankPageData> {
   const res = await fetch('/api/rank');

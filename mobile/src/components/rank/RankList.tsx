@@ -1,4 +1,5 @@
 'use client';
+import Link from 'next/link';
 import { RefreshCw, Trash2 } from 'lucide-react';
 import type { LatestRow } from '@/lib/client/rank';
 
@@ -42,11 +43,11 @@ function Row({ r, busy, onCheckOne, onDelete }: { r: LatestRow; busy: boolean; o
     : 'bg-gray-100 text-gray-700';
   return (
     <li className="bg-white rounded-xl border p-3 flex items-center gap-2">
-      <div className="flex-1 min-w-0">
-        <div className="text-sm font-medium truncate" title={r.productKeyword}>{r.productKeyword}</div>
+      <Link href={`/rank/${r.id}`} className="flex-1 min-w-0">
+        <div className="text-sm font-medium truncate text-blue-700" title={r.productKeyword}>{r.productKeyword}</div>
         <div className="text-[11px] text-gray-500 truncate">🔍 {r.searchKeyword}{r.storeName ? ` · ${r.storeName}` : ''}</div>
         {r.checkedAt && <div className="text-[10px] text-gray-400">최종: {r.checkedAt}</div>}
-      </div>
+      </Link>
       <div className={`px-2 py-1 rounded text-xs font-bold ${color}`}>
         {rank == null ? '미체크' : `${rank}위`}
         {type && <span className="ml-1 font-normal text-[10px]">({type})</span>}
