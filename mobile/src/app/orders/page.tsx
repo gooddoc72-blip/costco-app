@@ -6,6 +6,7 @@ import Header from '@/components/Header';
 import BottomNav from '@/components/BottomNav';
 import { apiGet } from '@/lib/api';
 import { won } from '@/lib/fmt';
+import { Download } from 'lucide-react';
 
 interface DateRow {
   date: string;
@@ -29,6 +30,10 @@ export default function OrdersPage() {
     <>
       <Header title="주문 내역" subtitle="날짜별로 확인" />
       <main className="px-4 pt-3 pb-20">
+        <Link href="/orders/collect"
+          className="flex items-center justify-center gap-2 bg-blue-600 text-white font-medium py-2.5 rounded-lg mb-3">
+          <Download size={16} /> API로 주문 수집하기
+        </Link>
         {error && (
           <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2 mb-3">
             {error}

@@ -1,0 +1,110 @@
+/**
+ * Orders Repository — order_history 테이블 CRUD.
+ */
+import { getUserDb } from '@/lib/db';
+
+export interface OrderHistoryInput {
+  orderNo: string;
+  orderDate: string;
+  recipient: string;
+  productName: string;
+  productNo?: string;
+  optionInfo?: string;
+  qty: number;
+  orderAmount: number;
+  shippingFee: number;
+  settlement: number;
+  status?: string;
+}
+
+function ensureTable(username: string): void {
+  const db = getUserDb(username);
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS order_history (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      order_no TEXT UNIQUE,
+      order_date TEXT,
+      recipient TEXT DEFAULT '',
+      product_name TEXT DEFAULT '',
+      product_no TEXT DEFAULT '',
+      option_info TEXT DEFAULT '',
+      qty INTEGER DEFAULT 1,
+      order_amount INTEGER DEFAULT 0,
+      shipping_fee INTEGER DEFAULT 0,
+      settlement INTEGER DEFAULT 0,
+      cost_price INTEGER DEFAULT 0,
+      profit INTEGER DEFAULT 0,
+      status TEXT DEFAULT '',
+      tracking_no TEXT DEFAULT '',
+      created_at TEXT,
+      raw_json TEXT DEFAULT ''
+    )
+  `);
+}
+
+/** order_no UNIQUE 충돌 시 INSERT 무시 (덮어쓰지 않음 — status 보존) */
+export function bulkUpsertOrders(username: string, items: OrderHistoryInput[]): {
+  inserted: number; updated: number; errors: string[];
+} {
+  ensureTable(username);
+  const db = getUserDb(username);
+  const now = new Date().toISOString().slice(0, 19).replace('T', ' ');
+  let inserted = 0, updated = 0;
+  const errors: string[] = [];
+
+  const findByNo = db.prepare("SELECT id FROM order_history WHERE order_no = ?");
+  const insertStmt = db.prepare(`
+    INSERT INTO order_history
+      (order_no, order_date, recipient, product_name, product_no, option_info,
+       qty, order_amount, shipping_fee, settlement, status, created_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+  `);
+  const updateStmt = db.prepare(`
+    UPDATE order_history
+    SET order_date = ?, recipient = ?, product_name = ?, product_no = ?,
+        option_info = ?, qty = ?, order_amount = ?, shipping_fee = ?,
+        settlement = ?, status = ?
+    WHERE order_no = ?
+  `);
+
+  const tx = db.transaction(() => {
+    for (const it of items) {
+      try {
+        const existing = findByNo.get(it.orderNo) as any;
+        if (existing) {
+          updateStmt.run(
+            it.orderDate, it.recipient, it.productName, it.productNo || '',
+            it.optionInfo || '', it.qty, it.orderAmount, it.shippingFee,
+            it.settlement, it.status || '', it.orderNo,
+          );
+          updated++;
+        } else {
+          insertStmt.run(
+            it.orderNo, it.orderDate, it.recipient, it.productName,
+            it.productNo || '', it.optionInfo || '', it.qty, it.orderAmount,
+            it.shippingFee, it.settlement, it.status || '', now,
+          );
+          inserted++;
+        }
+      } catch (e: any) {
+        errors.push(`${it.orderNo}: ${e.message}`);
+      }
+    }
+  });
+  tx();
+  return { inserted, updated, errors };
+}
+
+export function getActiveOrders(username: string): any[] {
+  const db = getUserDb(username);
+  return db.prepare(`
+    SELECT id, order_no, order_date, recipient, product_name, product_no,
+           option_info, qty, order_amount, shipping_fee, settlement,
+           status, tracking_no
+    FROM order_history
+    WHERE (tracking_no IS NULL OR tracking_no = '')
+      AND status NOT IN ('DELIVERED', 'PURCHASE_DECIDED', 'CANCELED', 'RETURNED', 'EXCHANGED')
+    ORDER BY order_date DESC, id DESC
+    LIMIT 500
+  `).all();
+}
