@@ -444,9 +444,12 @@ def upsert_product_unified(username, match_keyword, costco_name=None,
         # 이 행만 격리 — product_no에 " (N)" suffix 부여하고 원본은 costco_no_display로 보존.
         # 예: 599369 → 599369 (1), 다음 분리는 599369 (2).
         if auto_split_costco_no and final_pno:
+            # sibling = (base product_no가 같은 행) + (이미 분리된 행: costco_no_display=base)
+            # 둘 중 하나라도 있으면 이 행도 분리해 격리한다.
             _siblings = conn.execute(
-                "SELECT COUNT(*) FROM products WHERE product_no=? AND id<>?",
-                (final_pno, existing['id'])
+                "SELECT COUNT(*) FROM products "
+                "WHERE (product_no=? OR costco_no_display=?) AND id<>?",
+                (final_pno, final_pno, existing['id'])
             ).fetchone()
             if _siblings and _siblings[0] > 0:
                 # 이미 분리된 동일 base의 (N) 행 중 가장 큰 N + 1
