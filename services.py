@@ -26,7 +26,7 @@ _INDEX_CACHE: dict = {}
 
 def _index_products(products: list) -> dict:
     if not products:
-        return {'by_pno': {}, 'by_kw': {}, 'has_pno': []}
+        return {'by_pno': {}, 'by_kw': {}, 'by_naver': {}, 'has_pno': []}
     pid = id(products)
     hit = _INDEX_CACHE.get(pid)
     if hit is not None and hit.get('_n') == len(products):
@@ -35,6 +35,8 @@ def _index_products(products: list) -> dict:
         'by_pno': {str(p.get('product_no', '') or ''): p
                    for p in products if (p.get('product_no') or '').strip()},
         'by_kw':  {p['match_keyword']: p for p in products if p.get('match_keyword')},
+        'by_naver': {str(p.get('naver_origin_pno', '') or ''): p 
+                     for p in products if (p.get('naver_origin_pno') or '').strip()},
         'has_pno': [p for p in products if (p.get('product_no') or '').strip()],
         '_n': len(products),
     }
@@ -144,51 +146,50 @@ def process_and_save_orders(username, df, order_date, shipping_cost, box_cost,
 
 
 # ── 상품 매칭 ─────────────────────────────────────────────
-@lru_cache(maxsize=4096)
+# ── 상품 매칭 최적화 ───────────────────────────────────────────
+_RE_TOKEN = re.compile(r'[가-힣a-zA-Z0-9]+')
+_RE_SIZE = re.compile(r'\d+\s*(?:g|kg|ml|l|개|팩|매|장|봉)')
+_GENERIC_MATCH_WORDS = {
+    '주스','과자','음료','우유','요거트','요구르트','빵','쿠키','초콜릿','초코',
+    '코스트코','커클랜드','대용량','소용량','선물','세트','과일','채소','고기','육포',
+    '신상','특가','행사','할인','정품','한정','베스트','정도','신선','냉장','냉동'
+}
+
+@lru_cache(maxsize=8192)
 def _token_score(a: str, b: str) -> float:
-    """가중 토큰 매칭. 짧은 한 단어 매칭(예: '주스')의 false positive 방지.
-       기준: Jaccard + 사이즈 페널티 + 일반어 가중치 감소 + 부분 substring 매칭
-       lru_cache: 같은 (a,b) 쌍 반복 호출 시 즉시 반환 (영수증 매칭 등에서 동일 이름 반복 빈번).
-    """
-    # 일반 단어 (의미 약함) — 매칭 점수에서 가중치 낮춤
-    GENERIC = {
-        '주스','과자','음료','우유','요거트','요구르트','빵','쿠키','초콜릿','초코',
-        '코스트코','커클랜드','대용량','소용량','선물','세트','과일','채소','고기','육포',
-        '신상','특가','행사','할인','정품','한정','베스트','정도','신선','냉장','냉동'
-    }
-    ta = set(re.findall(r'[가-힣a-zA-Z0-9]+', a.lower()))
-    tb = set(re.findall(r'[가-힣a-zA-Z0-9]+', b.lower()))
-    if not ta or not tb:
-        return 0.0
-    # 단독 문자(x, g)·단독 숫자(4, 12) 제거 — 묶음수량/단위 표기가 false-positive 야기
+    """가중 토큰 매칭 (고속 버전)."""
+    if not a or not b: return 0.0
+    
+    ta = set(_RE_TOKEN.findall(a.lower()))
+    tb = set(_RE_TOKEN.findall(b.lower()))
+    if not ta or not tb: return 0.0
+
     _noise = {t for t in ta | tb if len(t) < 2 or t.isdigit()}
     common = ta & tb
-    # 일반어 + 노이즈 제외 후 의미있는 토큰만
-    _skip = GENERIC | _noise
-    meaningful_common = common - _skip
-    meaningful_a = ta - _skip
-    meaningful_b = tb - _skip
-    if not meaningful_a or not meaningful_b:
-        return 0.0
-    # 부분 substring 매칭 (예: '메르시' ⊂ '메르시초콜릿'): 0.5 가중
-    extra_partial = 0
-    a_left = meaningful_a - meaningful_common
-    b_left = meaningful_b - meaningful_common
+    _skip = _GENERIC_MATCH_WORDS | _noise
+    
+    m_common = common - _skip
+    m_a = ta - _skip
+    m_b = tb - _skip
+    if not m_a or not m_b: return 0.0
+
+    extra_partial = 0.0
+    a_left, b_left = m_a - m_common, m_b - m_common
     for t in a_left:
         if len(t) >= 3:
             for t2 in b_left:
                 if len(t2) >= 3 and (t in t2 or t2 in t):
                     extra_partial += 0.5
                     break
-    # Containment(짧은 쪽 기준) + 부분 매칭 가중
-    # 영수증명/네이버명 길이 차이가 클 때 짧은 쪽이 긴 쪽에 얼마나 포함되는지로 측정
-    denom = min(len(meaningful_a), len(meaningful_b))
-    score = (len(meaningful_common) + extra_partial) / max(denom, 1)
-    # 사이즈 페널티: 양쪽 사이즈 있는데 다르면 감점
-    sa = set(re.findall(r'\d+\s*(?:g|kg|ml|l|개|팩|매|장|봉)', a.lower()))
-    sb = set(re.findall(r'\d+\s*(?:g|kg|ml|l|개|팩|매|장|봉)', b.lower()))
+
+    denom = min(len(m_a), len(m_b))
+    score = (len(m_common) + extra_partial) / max(denom, 1)
+    
+    sa = set(_RE_SIZE.findall(a.lower()))
+    sb = set(_RE_SIZE.findall(b.lower()))
     if sa and sb and not (sa & sb):
         score *= 0.3
+    
     return min(1.0, score)
 
 
@@ -206,11 +207,20 @@ def _find_db_product(products, order_name: str, order_pno: str = '', pno_map: di
     return best_p if best_score >= 0.5 else None
 
 
-def match_product_to_db(username, store_product_name, product_no=None,
+def match_product_to_db(username, store_product_name, product_no=None, naver_pno=None,
                         _user_prods=None, _shared_prods=None):
-    """제품 매칭: shared_products 우선, 없으면 사용자 DB 폴백.
-    _user_prods/_shared_prods: 배치 처리 시 미리 로드된 리스트 (N+1 방지용).
+    """제품 매칭: naver_pno 우선 -> shared_products -> 사용자 DB 폴백.
     """
+    user_prods = _user_prods if _user_prods is not None else get_all_products(username)
+    u_idx = _index_products(user_prods)
+
+    # 0. 네이버 원본 상품번호(naver_pno)가 있으면 사용자 DB에서 최우선 탐색 (소분 가격 보존)
+    if naver_pno:
+        up_by_naver = u_idx['by_naver'].get(str(naver_pno).strip())
+        if up_by_naver:
+            # 네이버 번호 일치 시 무조건 사용자 전용 단가 적용 (코스트코 공용 번호보다 우선)
+            return {**up_by_naver, 'source_type': 'NAVER_PRIORITY'}
+
     sp = match_shared_product(store_product_name, product_no=product_no,
                                _shared_prods=_shared_prods)
     if sp:
