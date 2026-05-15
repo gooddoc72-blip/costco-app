@@ -26,26 +26,15 @@ _INDEX_CACHE: dict = {}
 
 def _index_products(products: list) -> dict:
     if not products:
-        return {'by_pno': {}, 'by_kw': {}, 'by_naver': {}, 'by_base_pno': {}, 'has_pno': []}
+        return {'by_pno': {}, 'by_kw': {}, 'has_pno': []}
     pid = id(products)
     hit = _INDEX_CACHE.get(pid)
     if hit is not None and hit.get('_n') == len(products):
         return hit
-    # by_base_pno: 분리 행 검색용. costco_no_display(원본 번호) → 해당 base를 가진 행 리스트
-    # 분리되지 않은 행도 (자기 product_no가 base) 포함하지 않음 — 그건 by_pno로 충분.
-    # 분리 행만 base에 매칭. fallback 검색용.
-    _by_base: dict = {}
-    for p in products:
-        _base = (p.get('costco_no_display') or '').strip()
-        if _base:
-            _by_base.setdefault(_base, []).append(p)
     out = {
         'by_pno': {str(p.get('product_no', '') or ''): p
                    for p in products if (p.get('product_no') or '').strip()},
         'by_kw':  {p['match_keyword']: p for p in products if p.get('match_keyword')},
-        'by_naver': {str(p.get('naver_origin_pno', '') or ''): p
-                     for p in products if (p.get('naver_origin_pno') or '').strip()},
-        'by_base_pno': _by_base,
         'has_pno': [p for p in products if (p.get('product_no') or '').strip()],
         '_n': len(products),
     }
@@ -155,50 +144,51 @@ def process_and_save_orders(username, df, order_date, shipping_cost, box_cost,
 
 
 # ── 상품 매칭 ─────────────────────────────────────────────
-# ── 상품 매칭 최적화 ───────────────────────────────────────────
-_RE_TOKEN = re.compile(r'[가-힣a-zA-Z0-9]+')
-_RE_SIZE = re.compile(r'\d+\s*(?:g|kg|ml|l|개|팩|매|장|봉)')
-_GENERIC_MATCH_WORDS = {
-    '주스','과자','음료','우유','요거트','요구르트','빵','쿠키','초콜릿','초코',
-    '코스트코','커클랜드','대용량','소용량','선물','세트','과일','채소','고기','육포',
-    '신상','특가','행사','할인','정품','한정','베스트','정도','신선','냉장','냉동'
-}
-
-@lru_cache(maxsize=8192)
+@lru_cache(maxsize=4096)
 def _token_score(a: str, b: str) -> float:
-    """가중 토큰 매칭 (고속 버전)."""
-    if not a or not b: return 0.0
-    
-    ta = set(_RE_TOKEN.findall(a.lower()))
-    tb = set(_RE_TOKEN.findall(b.lower()))
-    if not ta or not tb: return 0.0
-
+    """가중 토큰 매칭. 짧은 한 단어 매칭(예: '주스')의 false positive 방지.
+       기준: Jaccard + 사이즈 페널티 + 일반어 가중치 감소 + 부분 substring 매칭
+       lru_cache: 같은 (a,b) 쌍 반복 호출 시 즉시 반환 (영수증 매칭 등에서 동일 이름 반복 빈번).
+    """
+    # 일반 단어 (의미 약함) — 매칭 점수에서 가중치 낮춤
+    GENERIC = {
+        '주스','과자','음료','우유','요거트','요구르트','빵','쿠키','초콜릿','초코',
+        '코스트코','커클랜드','대용량','소용량','선물','세트','과일','채소','고기','육포',
+        '신상','특가','행사','할인','정품','한정','베스트','정도','신선','냉장','냉동'
+    }
+    ta = set(re.findall(r'[가-힣a-zA-Z0-9]+', a.lower()))
+    tb = set(re.findall(r'[가-힣a-zA-Z0-9]+', b.lower()))
+    if not ta or not tb:
+        return 0.0
+    # 단독 문자(x, g)·단독 숫자(4, 12) 제거 — 묶음수량/단위 표기가 false-positive 야기
     _noise = {t for t in ta | tb if len(t) < 2 or t.isdigit()}
     common = ta & tb
-    _skip = _GENERIC_MATCH_WORDS | _noise
-    
-    m_common = common - _skip
-    m_a = ta - _skip
-    m_b = tb - _skip
-    if not m_a or not m_b: return 0.0
-
-    extra_partial = 0.0
-    a_left, b_left = m_a - m_common, m_b - m_common
+    # 일반어 + 노이즈 제외 후 의미있는 토큰만
+    _skip = GENERIC | _noise
+    meaningful_common = common - _skip
+    meaningful_a = ta - _skip
+    meaningful_b = tb - _skip
+    if not meaningful_a or not meaningful_b:
+        return 0.0
+    # 부분 substring 매칭 (예: '메르시' ⊂ '메르시초콜릿'): 0.5 가중
+    extra_partial = 0
+    a_left = meaningful_a - meaningful_common
+    b_left = meaningful_b - meaningful_common
     for t in a_left:
         if len(t) >= 3:
             for t2 in b_left:
                 if len(t2) >= 3 and (t in t2 or t2 in t):
                     extra_partial += 0.5
                     break
-
-    denom = min(len(m_a), len(m_b))
-    score = (len(m_common) + extra_partial) / max(denom, 1)
-    
-    sa = set(_RE_SIZE.findall(a.lower()))
-    sb = set(_RE_SIZE.findall(b.lower()))
+    # Containment(짧은 쪽 기준) + 부분 매칭 가중
+    # 영수증명/네이버명 길이 차이가 클 때 짧은 쪽이 긴 쪽에 얼마나 포함되는지로 측정
+    denom = min(len(meaningful_a), len(meaningful_b))
+    score = (len(meaningful_common) + extra_partial) / max(denom, 1)
+    # 사이즈 페널티: 양쪽 사이즈 있는데 다르면 감점
+    sa = set(re.findall(r'\d+\s*(?:g|kg|ml|l|개|팩|매|장|봉)', a.lower()))
+    sb = set(re.findall(r'\d+\s*(?:g|kg|ml|l|개|팩|매|장|봉)', b.lower()))
     if sa and sb and not (sa & sb):
         score *= 0.3
-    
     return min(1.0, score)
 
 
@@ -216,85 +206,29 @@ def _find_db_product(products, order_name: str, order_pno: str = '', pno_map: di
     return best_p if best_score >= 0.5 else None
 
 
-def match_product_to_db(username, store_product_name, product_no=None, naver_pno=None,
+def match_product_to_db(username, store_product_name, product_no=None,
                         _user_prods=None, _shared_prods=None):
-    """제품 매칭: naver_pno 우선 -> shared_products -> 사용자 DB 폴백.
+    """제품 매칭: shared_products 우선, 없으면 사용자 DB 폴백.
+    _user_prods/_shared_prods: 배치 처리 시 미리 로드된 리스트 (N+1 방지용).
     """
-    user_prods = _user_prods if _user_prods is not None else get_all_products(username)
-    u_idx = _index_products(user_prods)
-
-    # 주문 상품명에서 sell_factor 추출 (분리 행 선택용)
-    _sf_match = re.search(r'x\s*(\d+)\s*개', str(store_product_name or ''), re.IGNORECASE)
-    _order_sf = int(_sf_match.group(1)) if _sf_match and 1 < int(_sf_match.group(1)) <= 50 else 1
-
-    # 0. 네이버 원본 상품번호(naver_pno)가 있으면 사용자 DB에서 최우선 탐색 (소분 가격 보존)
-    if naver_pno:
-        up_by_naver = u_idx['by_naver'].get(str(naver_pno).strip())
-        if up_by_naver:
-            return {**up_by_naver, 'source_type': 'NAVER_PRIORITY'}
-
-    # 0.5. 분리된 행 (costco_no_display) 에 같은 base가 있고 sell_factor가 일치하면 우선
-    if product_no:
-        _base_candidates = u_idx.get('by_base_pno', {}).get(str(product_no).strip(), [])
-        if _base_candidates:
-            # sell_factor 일치 행 우선
-            _matched = [p for p in _base_candidates
-                        if int(p.get('split_sell_factor') or 0) == _order_sf]
-            if _matched:
-                return {**_matched[0], 'source_type': 'SPLIT_SF_MATCH'}
-
     sp = match_shared_product(store_product_name, product_no=product_no,
                                _shared_prods=_shared_prods)
     if sp:
         user_prods = _user_prods if _user_prods is not None else get_all_products(username)
         u_idx = _index_products(user_prods)
         up = u_idx['by_kw'].get(sp['match_keyword'], {})
-        # 주문 상품명의 sell_factor (예: 'x 2개') — 분리 행 선택 시 사용
-        import re as _re_sf
-        _sf_m = _re_sf.search(r'x\s*(\d+)\s*개', store_product_name or '', _re_sf.IGNORECASE)
-        _order_sf = int(_sf_m.group(1)) if _sf_m else 1
-        if not (1 < _order_sf <= 50):
-            _order_sf = 1
-
-        def _pick_split_match(base_pno: str):
-            """base_pno에 매칭되는 분리 행 중 sell_factor 가장 일치하는 행 선택.
-            분리 행이 없으면 by_pno로 원본 행 반환."""
-            base_str = str(base_pno).strip()
-            if not base_str:
-                return None
-            # 1) by_pno 정확 일치 (분리 안 된 원본)
-            _direct = u_idx['by_pno'].get(base_str)
-            # 2) by_base_pno (분리 행들)
-            _splits = u_idx.get('by_base_pno', {}).get(base_str, [])
-            if not _splits:
-                return _direct
-            # 분리 행 중 store_product_name과 가장 유사한 행(sell_factor 일치) 우선
-            best = None
-            for sp_row in _splits:
-                _name = sp_row.get('costco_name') or sp_row.get('match_keyword') or ''
-                _sm = _re_sf.search(r'x\s*(\d+)\s*개', _name, _re_sf.IGNORECASE)
-                _row_sf = int(_sm.group(1)) if _sm else 1
-                if not (1 < _row_sf <= 50):
-                    _row_sf = 1
-                if _row_sf == _order_sf:
-                    return sp_row  # 정확 일치
-                if best is None:
-                    best = sp_row
-            # 분리 행에 일치 없으면 원본 우선, 없으면 첫 분리 행
-            return _direct or best
-
-        # 주문 product_no로 우선 탐색 (분리 행 후보 포함)
+        # 주문 product_no로 우선 탐색 — O(1)
         if product_no:
-            _up_picked = _pick_split_match(str(product_no))
-            if _up_picked:
-                up = _up_picked
-        # shared product_no로도 탐색
+            _up_by_order_pno = u_idx['by_pno'].get(str(product_no))
+            if _up_by_order_pno:
+                up = _up_by_order_pno
+        # shared product_no로도 탐색 — O(1)
         if not up:
             _sp_pno = str(sp.get('product_no', '') or '')
             if _sp_pno:
-                _up_picked = _pick_split_match(_sp_pno)
-                if _up_picked:
-                    up = _up_picked
+                _up_by_pno = u_idx['by_pno'].get(_sp_pno)
+                if _up_by_pno:
+                    up = _up_by_pno
         _sq_user   = int(up.get('split_qty') or 1) if up else 1
         _sq_shared = int(sp.get('split_qty') or 1)
         _sq = max(_sq_user, _sq_shared)   # 둘 중 명시적으로 설정된 값(>1) 우선

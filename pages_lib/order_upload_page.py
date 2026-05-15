@@ -191,7 +191,10 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     else:
                         costs.append(0)
                     if p_no and p:
-                        upsert_product(USERNAME, p['costco_name'], p['match_keyword'], p['unit_price'], product_no=p_no)
+                        try:
+                            upsert_product(USERNAME, p['costco_name'], p['match_keyword'], p['unit_price'], product_no=p_no)
+                        except Exception:
+                            pass  # UNIQUE 충돌 등 — 기존 매칭 유지하고 무시
                 df['구입가격'] = costs
 
                 # 화면용 df 저장

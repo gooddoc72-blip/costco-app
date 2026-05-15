@@ -795,8 +795,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                    product_no=_existing_pno, split_qty=_keep_sq,
                                    naver_origin_pno=_existing_naver_origin,
                                    shipping_fee=_existing_fee,
-                                   auto_split_costco_no=True,
-                                   sell_factor_hint=_sell_factor_bs)
+                                   auto_split_costco_no=False)  # 부작용으로 비활성화
                     _saved_n += 1
             invalidate_data_cache()
             for _k in list(st.session_state.keys()):
@@ -863,8 +862,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                     product_no=_pno, split_qty=_sq,
                                     naver_origin_pno=_naver_origin,
                                     shipping_fee=(_up or {}).get('shipping_fee'),
-                                    auto_split_costco_no=True,
-                                    sell_factor_hint=_sell_factor)
+                                    auto_split_costco_no=False)  # 부작용으로 비활성화
             invalidate_data_cache()
             # 위젯 state 정리 → 다음 render에서 새 값 표시
             for _k in list(st.session_state.keys()):
@@ -953,14 +951,10 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                 or p.get('match_keyword') == _kw), None)
                     _sq = max(1, int((_up or {}).get('split_qty') or 1))
                     _new_unit = (_cost // _qty) * _sq
-                    import re as _re_sf2
-                    _sm2 = _re_sf2.search(r'x\s*(\d+)\s*개', str(_r.get('상품명', '') or ''), _re_sf2.IGNORECASE)
-                    _sf_hint2 = int(_sm2.group(1)) if _sm2 and 1 < int(_sm2.group(1)) <= 50 else 1
                     upsert_product(USERNAME, _kw or _pno, _kw or _pno, _new_unit,
                                     product_no=_pno, split_qty=_sq,
                                     shipping_fee=(_up or {}).get('shipping_fee'),
-                                    auto_split_costco_no=True,
-                                    sell_factor_hint=_sf_hint2)
+                                    auto_split_costco_no=False)  # 부작용으로 비활성화
                     if _pno:
                         _pno_units[_pno] = _new_unit
             # Phase 2: 같은 product_no 일괄 동기화
