@@ -10,7 +10,6 @@ from datetime import datetime, timedelta
 from db import (
     get_user_db, get_daily_orders, save_daily_orders,
     get_dispatched_orders_with_details, upsert_product,
-    invalidate_data_cache as db_invalidate_cache
 )
 from services import match_product_to_db, _index_products
 from utils import fmt
