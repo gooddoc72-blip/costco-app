@@ -365,108 +365,168 @@ def bulk_update_category(username: str, id_category_map: dict):
     return updated
 
 
+def upsert_product_unified(username, match_keyword, costco_name=None,
+                            unit_price=None, sale_price=None, shipping_fee=None,
+                            product_no=None, naver_origin_pno=None, naver_channel_pno=None,
+                            split_qty=None, category=None, status=None, from_naver=None,
+                            auto_split_costco_no=False):
+    """
+    [통합 상품 정보 업데이트]
+    - 조회 순위: naver_origin_pno > product_no > match_keyword
+    - 안전장치: unit_price 업데이트 시 기존 가격(또는 판매가) 대비 5배 초과 시 박스 가격으로 의심하여 차단.
+    - auto_split_costco_no: 가격 수정 시 동일한 product_no를 가진 다른 행이 있으면 이 행만 격리.
+    """
+    conn = get_user_db(username)
+    _ensure_products_columns(conn)
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    
+    # 1. 대상 찾기
+    existing = None
+    if naver_origin_pno:
+        existing = conn.execute(
+            "SELECT * FROM products WHERE naver_origin_pno=? AND naver_origin_pno != ''",
+            (naver_origin_pno,)
+        ).fetchone()
+    if not existing and product_no:
+        existing = conn.execute(
+            "SELECT * FROM products WHERE product_no=? AND (naver_origin_pno='' OR naver_origin_pno IS NULL)",
+            (product_no,)
+        ).fetchone()
+    if not existing:
+        existing = conn.execute(
+            "SELECT * FROM products WHERE match_keyword=?", (match_keyword,)
+        ).fetchone()
+
+    # 2. 값 결정 (None이면 기존값 유지)
+    def _v(new, key, default=None):
+        if new is not None: return new
+        return existing[key] if existing else default
+
+    final_costco_name = costco_name or (existing['costco_name'] if existing else match_keyword)
+    final_sale        = _v(sale_price, 'sale_price', 0)
+    final_fee         = _v(shipping_fee, 'shipping_fee', 0)
+    final_sq          = max(1, int(_v(split_qty, 'split_qty', 1)))
+    final_st          = _v(status, 'status', 'SALE')
+    final_fn          = int(_v(from_naver, 'from_naver', 0))
+    final_op          = naver_origin_pno or (existing['naver_origin_pno'] if existing else '')
+    final_ch          = naver_channel_pno or (existing['naver_channel_pno'] if existing else '')
+    final_cat         = _v(category, 'category', '')
+    final_pno         = product_no or (existing['product_no'] if existing else '')
+    
+    # 매입가(unit_price) 결정 및 안전장치
+    new_unit = unit_price
+    if existing and new_unit is not None:
+        old_unit = int(existing['unit_price'] or 0)
+        old_sale = int(existing['sale_price'] or 0)
+        # 5배 초과 시 박스 가격 의심 -> 기존 가격 유지
+        if old_unit > 0 and new_unit > old_unit * 5:
+            new_unit = old_unit
+        elif old_sale > 0 and new_unit > old_sale * 5:
+            new_unit = old_unit
+    final_unit = _v(new_unit, 'unit_price', 0)
+
+    if existing:
+        conn.execute("""
+            UPDATE products SET 
+                match_keyword=?, costco_name=?, store_product_name=?, 
+                unit_price=?, sale_price=?, shipping_fee=?, split_qty=?, 
+                product_no=?, naver_origin_pno=?, naver_channel_pno=?, 
+                category=?, status=?, from_naver=?, updated_at=?
+            WHERE id=?
+        """, (match_keyword, final_costco_name, final_costco_name,
+              final_unit, final_sale, final_fee, final_sq,
+              final_pno, final_op, final_ch,
+              final_cat, final_st, final_fn, now, existing['id']))
+        
+        # 자동 분리 (隔離): 같은 base product_no를 가진 다른 행이 존재할 때
+        # 이 행만 격리 — product_no에 " (N)" suffix 부여하고 원본은 costco_no_display로 보존.
+        # 예: 599369 → 599369 (1), 다음 분리는 599369 (2).
+        if auto_split_costco_no and final_pno:
+            _siblings = conn.execute(
+                "SELECT COUNT(*) FROM products WHERE product_no=? AND id<>?",
+                (final_pno, existing['id'])
+            ).fetchone()
+            if _siblings and _siblings[0] > 0:
+                # 이미 분리된 동일 base의 (N) 행 중 가장 큰 N + 1
+                import re as _re_split
+                _split_rows = conn.execute(
+                    "SELECT product_no FROM products "
+                    "WHERE costco_no_display=? AND product_no LIKE ? AND id<>?",
+                    (final_pno, f'{final_pno} (%)', existing['id'])
+                ).fetchall()
+                _next_idx = 1
+                for _row in _split_rows:
+                    _pn = _row['product_no'] if hasattr(_row, '__getitem__') else _row[0]
+                    _m = _re_split.search(r'\((\d+)\)\s*$', str(_pn or ''))
+                    if _m:
+                        _n = int(_m.group(1))
+                        if _n >= _next_idx:
+                            _next_idx = _n + 1
+                _new_pno = f"{final_pno} ({_next_idx})"
+                conn.execute(
+                    "UPDATE products SET product_no=?, costco_no_display=? WHERE id=?",
+                    (_new_pno, final_pno, existing['id'])
+                )
+    else:
+        conn.execute("""
+            INSERT INTO products (
+                product_no, store_product_name, costco_name, match_keyword,
+                unit_price, split_qty, sale_price, shipping_fee, status, from_naver,
+                naver_origin_pno, naver_channel_pno, category, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (final_pno, final_costco_name, final_costco_name, match_keyword,
+              final_unit, final_sq, final_sale, final_fee, final_st, final_fn,
+              final_op, final_ch, final_cat, now))
+    
+    conn.commit()
+    conn.close()
+
+
 def upsert_user_private(username, match_keyword, costco_name,
                         sale_price=None, shipping_fee=None, naver_product_no=None,
                         status=None, from_naver=None, naver_origin_pno=None,
                         split_qty=None, category=None):
-    conn = get_user_db(username)
-    _ensure_products_columns(conn)
-    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    """[하위 호환]"""
+    upsert_product_unified(
+        username, match_keyword, costco_name=costco_name,
+        sale_price=sale_price, shipping_fee=shipping_fee, naver_channel_pno=naver_product_no,
+        status=status, from_naver=from_naver, naver_origin_pno=naver_origin_pno,
+        split_qty=split_qty, category=category
+    )
 
-    existing = None
-    if naver_origin_pno:
-        existing = conn.execute(
-            "SELECT id, sale_price, shipping_fee, product_no, status, from_naver, "
-            "naver_origin_pno, naver_channel_pno, split_qty, category "
-            "FROM products WHERE naver_origin_pno=? AND naver_origin_pno != ''",
-            (naver_origin_pno,)
-        ).fetchone()
-    if not existing:
-        existing = conn.execute(
-            "SELECT id, sale_price, shipping_fee, product_no, status, from_naver, "
-            "naver_origin_pno, naver_channel_pno, split_qty, category "
-            "FROM products WHERE match_keyword=?",
-            (match_keyword,)
-        ).fetchone()
-
-    if existing:
-        sale = sale_price   if sale_price   is not None else (existing['sale_price'] or 0)
-        fee  = shipping_fee if shipping_fee is not None else (existing['shipping_fee'] or 0)
-        # ⚠️ 의미 정정: naver_product_no 파라미터는 채널상품번호 (SmartStore 화면 번호)
-        # product_no 컬럼(코스트코 번호) 은 절대 덮어쓰지 않음 — 별도 보존
-        ch   = naver_product_no if naver_product_no is not None else (existing['naver_channel_pno'] or '')
-        st   = status if status is not None else (existing['status'] or 'SALE')
-        fn   = int(from_naver) if from_naver is not None else int(existing['from_naver'] or 0)
-        op   = naver_origin_pno if naver_origin_pno is not None else (existing['naver_origin_pno'] or '')
-        sq   = max(1, int(split_qty)) if split_qty is not None else int(existing['split_qty'] or 1)
-        cat  = category if category is not None else (existing['category'] or '')
-        kw_to_use = match_keyword
-        try:
-            other = conn.execute(
-                "SELECT id FROM products WHERE match_keyword=? AND id<>?",
-                (match_keyword, existing['id'])
-            ).fetchone()
-            if other:
-                kw_to_use = existing['match_keyword'] or match_keyword
-        except Exception:
-            kw_to_use = existing['match_keyword'] or match_keyword
-        conn.execute(
-            "UPDATE products SET match_keyword=?, costco_name=?, store_product_name=?, "
-            "sale_price=?, shipping_fee=?, split_qty=?, status=?, from_naver=?, "
-            "naver_origin_pno=?, naver_channel_pno=?, category=?, updated_at=? WHERE id=?",
-            (kw_to_use, costco_name, costco_name, sale, fee, sq, st, fn, op, ch, cat, now, existing['id'])
-        )
-    else:
-        sale = sale_price or 0
-        fee  = shipping_fee or 0
-        ch   = naver_product_no or ''   # channelProductNo
-        st   = status or 'SALE'
-        fn   = int(from_naver) if from_naver is not None else 0
-        op   = naver_origin_pno or ''
-        sq   = max(1, int(split_qty)) if split_qty is not None else 1
-        cat  = category or ''
-        conn.execute("""INSERT INTO products
-                        (product_no, store_product_name, costco_name, match_keyword,
-                         unit_price, split_qty, sale_price, shipping_fee, status, from_naver,
-                         naver_origin_pno, naver_channel_pno, category, updated_at)
-                        VALUES ('', ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                     (costco_name, costco_name, match_keyword, sq, sale, fee, st, fn, op, ch, cat, now))
-    conn.commit()
-    conn.close()
 
 
 def get_all_products_merged(username):
     shared = get_shared_products()
     user_prods = get_all_products(username)
-    user_by_pno    = {str(p.get('product_no') or '').strip(): p for p in user_prods
-                      if str(p.get('product_no') or '').strip()}
+    
+    # 최적화: 번호·키워드·링크 기반 맵 구축
+    user_by_pno    = {str(p.get('product_no') or '').strip(): p for p in user_prods if str(p.get('product_no') or '').strip()}
     user_by_kw     = {p['match_keyword']: p for p in user_prods}
-    user_by_linked = {str(p['linked_shared_id']): p for p in user_prods
-                      if p.get('linked_shared_id') is not None}
+    user_by_linked = {str(p['linked_shared_id']): p for p in user_prods if p.get('linked_shared_id') is not None}
+
     matched_user_ids = set()
     merged = []
     for sp in shared:
         kw = sp['match_keyword']
         sp_pno = str(sp.get('product_no') or '').strip()
-        up = user_by_pno.get(sp_pno) if sp_pno else None
-        if up is None:
-            up = user_by_kw.get(kw, {})
-        if not up:
-            up = user_by_linked.get(str(sp['id']), {})
+        
+        # 매칭: 번호 우선 -> 키워드 -> 링크
+        up = user_by_pno.get(sp_pno)
+        if up is None: up = user_by_kw.get(kw)
+        if up is None: up = user_by_linked.get(str(sp['id']), {})
+        
         if up and up.get('id'):
             matched_user_ids.add(up['id'])
+        
         from_naver = int(up.get('from_naver') or 0) if up else 0
-        if from_naver and up.get('costco_name'):
-            display_costco_name = up['costco_name']
-            naver_name = up['costco_name']
-        else:
-            display_costco_name = sp['costco_name']
-            naver_name = up.get('costco_name', '') if (up and from_naver) else ''
+        display_costco_name = (up.get('costco_name') if up and from_naver and up.get('costco_name') else sp['costco_name'])
+        
         merged.append({
             'shared_id': sp['id'],
             'product_no': sp.get('product_no', ''),
             'costco_name': display_costco_name,
-            'naver_name': naver_name,
+            'naver_name': up.get('costco_name', '') if (up and from_naver) else '',
             'match_keyword': kw,
             'unit_price': sp['unit_price'],
             'store_price':  int(sp.get('store_price') or 0),
@@ -493,16 +553,16 @@ def get_all_products_merged(username):
             'private_id': up.get('id'),
             'linked_shared_id': up.get('linked_shared_id') if up else None,
         })
+        
     for up in user_prods:
         if up['id'] in matched_user_ids:
             continue
         from_naver = int(up.get('from_naver') or 0)
-        naver_name = up['costco_name'] if from_naver else ''
         merged.append({
             'shared_id': None,
             'product_no': up.get('product_no', ''),
             'costco_name': up['costco_name'],
-            'naver_name': naver_name,
+            'naver_name': up['costco_name'] if from_naver else '',
             'match_keyword': up['match_keyword'],
             'unit_price': int(up.get('unit_price', 0) or 0),
             'store_price':  0,
@@ -532,80 +592,16 @@ def get_all_products_merged(username):
     return merged
 
 
+
 def upsert_product(username, costco_name, keyword, price, product_no='', split_qty=1,
                    shipping_fee=None, naver_origin_pno='', auto_split_costco_no=False):
-    """제품 가격/정보 upsert.
-    조회 우선순위: naver_origin_pno (네이버 원상품번호) > product_no (코스트코) > match_keyword
-    → 같은 코스트코 상품번호로 여러 네이버 상품이 있어도 각각 별도 가격 저장 가능.
-
-    auto_split_costco_no=True 면 가격 수정 후, 같은 product_no를 가진 다른 행이 존재할 때
-    이 행만 product_no를 비우고 원본을 costco_no_display로 옮겨 매칭에서 분리한다.
-    (수익계산 화면 등에서 한 행만 가격 수정할 때 다른 행과 섞이지 않도록.)
-    """
-    conn = get_user_db(username)
-    _ensure_products_columns(conn)
-    now = datetime.now().strftime("%Y-%m-%d %H:%M")
-    split_qty = max(1, int(split_qty or 1))
-    existing = None
-    # 1순위: naver_origin_pno (네이버 상품별로 고유)
-    if naver_origin_pno:
-        existing = conn.execute(
-            "SELECT id, shipping_fee, unit_price, costco_name, sale_price "
-            "FROM products WHERE naver_origin_pno=? AND naver_origin_pno != ''",
-            (naver_origin_pno,)
-        ).fetchone()
-    # 2순위: 코스트코 product_no (네이버 매핑 없는 경우)
-    if not existing and product_no:
-        existing = conn.execute(
-            "SELECT id, shipping_fee, unit_price, costco_name, sale_price "
-            "FROM products WHERE product_no=? AND (naver_origin_pno='' OR naver_origin_pno IS NULL)",
-            (product_no,)
-        ).fetchone()
-    # 3순위: match_keyword
-    if not existing:
-        existing = conn.execute(
-            "SELECT id, shipping_fee, unit_price, costco_name, sale_price "
-            "FROM products WHERE match_keyword=?", (keyword,)
-        ).fetchone()
-    if existing:
-        fee = shipping_fee if shipping_fee is not None else (existing['shipping_fee'] or 0)
-        existing_price = int(existing['unit_price'] or 0)
-        existing_sale  = int(existing['sale_price'] or 0)
-        new_price = int(price or 0)
-        new_name  = costco_name
-        is_box_suspicion = False
-        if new_price > 0 and existing_price > 0 and new_price > existing_price * 5:
-            is_box_suspicion = True
-        elif new_price > 0 and existing_sale > 0 and new_price > existing_sale * 5:
-            is_box_suspicion = True
-        if is_box_suspicion:
-            new_price = existing_price
-            new_name  = existing['costco_name'] or costco_name
-        conn.execute("""UPDATE products
-                        SET unit_price=?, costco_name=?, updated_at=?, product_no=?, split_qty=?, shipping_fee=?,
-                            naver_origin_pno=COALESCE(NULLIF(?, ''), naver_origin_pno)
-                        WHERE id=?""",
-                     (new_price, new_name, now, product_no, split_qty, fee,
-                      naver_origin_pno or '', existing['id']))
-
-        # ⭐ 자동 분리: 같은 product_no를 가진 다른 행이 있으면 이 행만 매칭에서 격리
-        if auto_split_costco_no and product_no:
-            _siblings = conn.execute(
-                "SELECT COUNT(*) FROM products WHERE product_no=? AND id<>?",
-                (product_no, existing['id'])
-            ).fetchone()
-            if _siblings and _siblings[0] > 0:
-                conn.execute(
-                    "UPDATE products SET costco_no_display=?, product_no='' WHERE id=?",
-                    (product_no, existing['id'])
-                )
-    else:
-        fee = shipping_fee if shipping_fee is not None else 0
-        conn.execute("""INSERT INTO products
-                        (product_no, store_product_name, costco_name, match_keyword,
-                         unit_price, split_qty, shipping_fee, naver_origin_pno, updated_at)
-                        VALUES (?,?,?,?,?,?,?,?,?)""",
-                     (product_no, costco_name, costco_name, keyword, price, split_qty, fee,
-                      naver_origin_pno or '', now))
-    conn.commit()
-    conn.close()
+    """[하위 호환]"""
+    upsert_product_unified(
+        username, keyword, costco_name=costco_name,
+        unit_price=price, product_no=product_no, split_qty=split_qty,
+        shipping_fee=shipping_fee, naver_origin_pno=naver_origin_pno,
+        auto_split_costco_no=auto_split_costco_no
+    )
+def upsert_user_private(username, costco_name, keyword, price, product_no='', split_qty=1, shipping_fee=None):
+    """[하위 호환]"""
+    return upsert_product(username, costco_name, keyword, price, product_no, split_qty, shipping_fee)

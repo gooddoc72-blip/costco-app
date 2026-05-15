@@ -548,9 +548,9 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     sq_val    = int(p.get('split_qty', 1) or 1)
                     fee_val   = int(p.get('shipping_fee', 0) or 0)
                     sale_val  = int(p.get('sale_price', 0) or 0)
-                    # 가격 분리 상태: product_no=''이고 costco_no_display 있으면 분리됨
+                    # 가격 분리 상태: costco_no_display 있으면 분리됨 (product_no는 'BASE (N)' suffix)
                     _split_disp_loop = (p.get('costco_no_display') or '').strip()
-                    _is_split_loop   = bool(_split_disp_loop) and not (p.get('product_no') or '').strip()
+                    _is_split_loop   = bool(_split_disp_loop)
 
                     if editing_kw == kw and editing_tab == _ti:
                         st.markdown(
@@ -721,9 +721,9 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                             if _naver_name and _naver_name != p['costco_name']:
                                 _display_name = f"{_naver_name} <span style='color:#aaa;font-size:12px'>({p['costco_name']})</span>"
 
-                        # 분리된 행 (product_no=''이고 costco_no_display 있음): 원본 번호 + 🔒 배지
+                        # 분리된 행: costco_no_display 있음 (product_no는 'BASE (N)' 형태)
                         _split_disp = (p.get('costco_no_display') or '').strip()
-                        _is_split   = bool(_split_disp) and not (p.get('product_no') or '').strip()
+                        _is_split   = bool(_split_disp)
                         _split_badge = (
                             "<br><span style='color:#c0392b;font-size:10px;font-weight:600;"
                             "background:#fdeded;padding:1px 5px;border-radius:3px;border:1px solid #f5b7b1' "
