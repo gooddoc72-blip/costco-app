@@ -298,6 +298,8 @@ def _ensure_products_columns(conn):
         "ALTER TABLE products ADD COLUMN linked_shared_id INTEGER DEFAULT NULL",
         # 코스트코 번호 분리: product_no를 비우는 대신 원본은 여기에 보존 (표시·매장 식별용)
         "ALTER TABLE products ADD COLUMN costco_no_display TEXT DEFAULT ''",
+        # 분리 행이 어떤 sell_factor용인지 힌트 (분리 호출 시 매칭된 주문의 'x N개' 패턴)
+        "ALTER TABLE products ADD COLUMN split_sell_factor INTEGER DEFAULT 0",
     ]:
         try:
             conn.execute(col_sql)
@@ -369,7 +371,7 @@ def upsert_product_unified(username, match_keyword, costco_name=None,
                             unit_price=None, sale_price=None, shipping_fee=None,
                             product_no=None, naver_origin_pno=None, naver_channel_pno=None,
                             split_qty=None, category=None, status=None, from_naver=None,
-                            auto_split_costco_no=False):
+                            auto_split_costco_no=False, sell_factor_hint=0):
     """
     [통합 상품 정보 업데이트]
     - 조회 순위: naver_origin_pno > product_no > match_keyword
@@ -464,8 +466,8 @@ def upsert_product_unified(username, match_keyword, costco_name=None,
                             _next_idx = _n + 1
                 _new_pno = f"{final_pno} ({_next_idx})"
                 conn.execute(
-                    "UPDATE products SET product_no=?, costco_no_display=? WHERE id=?",
-                    (_new_pno, final_pno, existing['id'])
+                    "UPDATE products SET product_no=?, costco_no_display=?, split_sell_factor=? WHERE id=?",
+                    (_new_pno, final_pno, int(sell_factor_hint or 0), existing['id'])
                 )
     else:
         conn.execute("""
@@ -594,13 +596,15 @@ def get_all_products_merged(username):
 
 
 def upsert_product(username, costco_name, keyword, price, product_no='', split_qty=1,
-                   shipping_fee=None, naver_origin_pno='', auto_split_costco_no=False):
+                   shipping_fee=None, naver_origin_pno='', auto_split_costco_no=False,
+                   sell_factor_hint=0):
     """[하위 호환]"""
     upsert_product_unified(
         username, keyword, costco_name=costco_name,
         unit_price=price, product_no=product_no, split_qty=split_qty,
         shipping_fee=shipping_fee, naver_origin_pno=naver_origin_pno,
-        auto_split_costco_no=auto_split_costco_no
+        auto_split_costco_no=auto_split_costco_no,
+        sell_factor_hint=sell_factor_hint,
     )
 def upsert_user_private(username, costco_name, keyword, price, product_no='', split_qty=1, shipping_fee=None):
     """[하위 호환]"""
