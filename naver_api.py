@@ -89,7 +89,10 @@ def get_new_orders(client_id, client_secret, hours_back=48, status_type="ALL"):
                 _key = f"{p_status}/{place_status}" if place_status else p_status
                 _status_dist[_key] = _status_dist.get(_key, 0) + 1
 
-                if p_status:  # 빈 status 만 제외 (모든 실제 상태는 DB에 저장)
+                # status_type 인자 활용: 호출자가 지정한 단일 상태만 통과
+                # (예: 'READY'=배송준비, 'PAYED'=결제완료). 'ALL'이거나 빈 값이면 모든 상태 허용.
+                _allowed = (not status_type) or status_type == "ALL" or (p_status == status_type)
+                if p_status and _allowed:  # 빈 status 제외 + 필터 통과만
                     sa = item.get("shippingAddress", {}) if item.get("shippingAddress") else po.get("shippingAddress", {})
                     total_payment = po.get("totalPaymentAmount", po.get("unitPrice", 0) * po.get("quantity", 1))
 
