@@ -172,6 +172,10 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 st.info(f"미발송 주문이 없습니다. (API 수집 {api_count}건)")
             else:
                 df = db_rows_to_orders_df(active_rows)
+                # 오늘 결제일 주문만 화면 표시 — 옛 미발송 누적은 송장번호 페이지에서 처리
+                _today_str = datetime.today().strftime('%Y-%m-%d')
+                if '결제일' in df.columns:
+                    df = df[df['결제일'].astype(str).str[:10] == _today_str]
                 for c in ['수량','최종 상품별 총 주문금액','배송비 합계','제주/도서 추가배송비','정산예정금액']:
                     if c in df.columns:
                         df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0).astype(int)
