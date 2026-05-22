@@ -639,7 +639,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             if sq > 1:
                 return math.ceil(int(row['주문수량']) / sq)
             return int(row['주문수량']) * pq
-        shopping['코스트코구매수량'] = shopping.apply(_costco_qty, axis=1)
+        shopping['코스트코구매수량'] = shopping.apply(_costco_qty, axis=1) if not shopping.empty else 0
 
         # ── 예상금액 계산 ──
         # 분리판매: 코스트코팩수 × 팩단가
@@ -649,7 +649,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 return None
             sq = int(row['분리수량'])
             return int(row['코스트코구매수량']) * int(row['팩단가'])
-        shopping['예상금액'] = shopping.apply(_expected_cost, axis=1)
+        shopping['예상금액'] = shopping.apply(_expected_cost, axis=1) if not shopping.empty else None
 
         # ── 표시 컬럼 구성 (요청: 수량/정산금액/택배비 중심) ──
         has_split = (shopping['분리수량'] > 1).any()
