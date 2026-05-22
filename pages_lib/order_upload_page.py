@@ -109,7 +109,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     if HAS_NAVER_API and api_id and api_secret:
         c_api1, c_api2 = st.columns([2, 1])
         with c_api1:
-            status_options = {"배송준비 (발주확인)": "READY", "결제완료 (신규주문)": "PAYED", "전체 (신규+배송준비)": "ALL"}
+            status_options = {"배송준비 (발주확인)": "PAYED", "결제완료 (신규주문)": "PAYED", "전체 (신규+배송준비)": "ALL"}
             status_label = st.selectbox("주문 상태", list(status_options.keys()), index=0)
             status_type = status_options[status_label]
         with c_api2:
