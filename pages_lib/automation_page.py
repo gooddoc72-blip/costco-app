@@ -3,9 +3,12 @@ import os
 import io
 import sys
 import json
+import platform
 import subprocess
 import sqlite3
 from datetime import datetime, timedelta
+
+_IS_WIN = platform.system() == "Windows"
 
 import streamlit as st
 import pandas as pd
@@ -90,7 +93,10 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     excel_pw = _gs("excel_password")
 
     st.header("🤖 자동화 설정")
-    st.caption("Windows 작업 스케줄러를 통해 매일 지정된 시간에 자동 실행됩니다.")
+    st.caption(
+        ("Windows 작업 스케줄러" if _IS_WIN else "Linux cron")
+        + " 을 통해 매일 지정된 시간에 자동 실행됩니다."
+    )
 
     SCRIPT_PATH = os.path.join(BASE_DIR, "auto_task.py")
     PYTHON_PATH = sys.executable
@@ -105,23 +111,54 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         except Exception as e:
             return False, str(e)
 
+    def _cron_get():
+        """현재 사용자 crontab 내용 — 없으면 빈 문자열"""
+        try:
+            r = subprocess.run(["crontab", "-l"], capture_output=True, text=True)
+            return r.stdout if r.returncode == 0 else ""
+        except Exception:
+            return ""
+
+    def _cron_set(content):
+        try:
+            r = subprocess.run(["crontab", "-"], input=content, text=True, capture_output=True)
+            return r.returncode == 0, (r.stdout + r.stderr).strip()
+        except Exception as e:
+            return False, str(e)
+
     def _register_task(task_name, task_type, time_str, user):
         cmd = f'"{PYTHON_PATH}" "{SCRIPT_PATH}" --task {task_type} --user {user}'
-        ok, out = _schtasks_run([
-            "/create", "/tn", task_name,
-            "/tr", cmd,
-            "/sc", "daily", "/st", time_str,
-            "/f"
-        ])
-        return ok, out
+        if _IS_WIN:
+            return _schtasks_run([
+                "/create", "/tn", task_name, "/tr", cmd,
+                "/sc", "daily", "/st", time_str, "/f",
+            ])
+        # Linux cron — task_name 을 마커로 사용해 중복 제거 후 추가
+        hh, mm = time_str.split(":")
+        marker = f"# COSTCO_TASK:{task_name}"
+        cron_line = f"{int(mm)} {int(hh)} * * * {cmd} {marker}"
+        cur = _cron_get()
+        kept = [ln for ln in cur.splitlines() if marker not in ln]
+        new = "\n".join(kept + [cron_line]) + "\n"
+        return _cron_set(new)
 
     def _delete_task(task_name):
-        ok, out = _schtasks_run(["/delete", "/tn", task_name, "/f"])
-        return ok, out
+        if _IS_WIN:
+            return _schtasks_run(["/delete", "/tn", task_name, "/f"])
+        marker = f"# COSTCO_TASK:{task_name}"
+        cur = _cron_get()
+        kept = [ln for ln in cur.splitlines() if marker not in ln]
+        new = ("\n".join(kept) + "\n") if kept else ""
+        return _cron_set(new)
 
     def _query_task(task_name):
-        ok, out = _schtasks_run(["/query", "/tn", task_name, "/fo", "LIST"])
-        return ok, out
+        if _IS_WIN:
+            return _schtasks_run(["/query", "/tn", task_name, "/fo", "LIST"])
+        marker = f"# COSTCO_TASK:{task_name}"
+        matching = [ln for ln in _cron_get().splitlines() if marker in ln]
+        if matching:
+            return True, "\n".join(matching)
+        return False, ""
 
     TASK1_NAME = f"CostcoHotdeal_Shopping_{USERNAME}"
     TASK2_NAME = f"CostcoHotdeal_Shipping_{USERNAME}"
