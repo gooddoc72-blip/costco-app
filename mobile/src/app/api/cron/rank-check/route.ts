@@ -6,7 +6,7 @@
  *
  * 사용 예 (Linux cron):
  *   0 12 * * * curl -fsS -X POST -H "Authorization: Bearer $CRON_SECRET" \
- *     "https://costcobiz.shop/api/cron/rank-check?user=admin"
+ *     "https://cocobiz.shop/api/cron/rank-check?user=admin"
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { checkAllRanks } from '@/lib/services/rankCheck';

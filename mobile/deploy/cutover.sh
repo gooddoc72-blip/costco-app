@@ -33,9 +33,9 @@ sudo nginx -t
 sudo systemctl reload nginx
 
 echo
-echo "✅ 완료. https://costcobiz.shop 접속해서 확인."
+echo "✅ 완료. https://cocobiz.shop 접속해서 확인."
 echo "   - 기본 페이지: Next.js (대시보드/주문/제품/송장/수익/설정)"
-echo "   - 안 옮긴 기능: https://costcobiz.shop/legacy/ — Streamlit"
+echo "   - 안 옮긴 기능: https://cocobiz.shop/legacy/ — Streamlit"
 echo
 echo "롤백:"
 echo "   sudo cp /etc/nginx/sites-available/costco-app.bak.${TS} /etc/nginx/sites-available/costco-app"

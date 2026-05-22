@@ -606,8 +606,11 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         shopping = shopping.merge(_order_cnt, on=group_cols, how='left')
 
         # ── 묶음수량 추출 (옵션/상품명 기반) ──
-        shopping['묶음수량'] = shopping.apply(
-            lambda r: extract_pack_qty(r.get('옵션정보', ''), r['상품명']), axis=1)
+        if not shopping.empty:
+            shopping['묶음수량'] = shopping.apply(
+                lambda r: extract_pack_qty(r.get('옵션정보', ''), r['상품명']), axis=1)
+        else:
+            shopping['묶음수량'] = 0
 
         # ── DB 단가 + 분리수량 조회 (DB 1회 로드) ──
         _rnd_shared = get_shared_products()

@@ -83,7 +83,7 @@ export default function LoginPage() {
       </form>
 
       <p className="text-center text-xs text-gray-400 mt-12">
-        PC 버전: <a href="https://costcobiz.shop" className="underline">costcobiz.shop</a>
+        PC 버전: <a href="https://cocobiz.shop" className="underline">cocobiz.shop</a>
       </p>
     </main>
   );

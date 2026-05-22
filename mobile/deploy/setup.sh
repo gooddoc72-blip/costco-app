@@ -30,5 +30,5 @@ sudo cp deploy/nginx-snippet.conf /etc/nginx/sites-available/costco-app
 sudo nginx -t && sudo systemctl reload nginx
 
 echo "[5/5] 완료!"
-echo "  PC:    https://costcobiz.shop"
-echo "  모바일: https://costcobiz.shop (자동 분기) 또는 https://costcobiz.shop/m/"
+echo "  PC:    https://cocobiz.shop"
+echo "  모바일: https://cocobiz.shop (자동 분기) 또는 https://cocobiz.shop/m/"
