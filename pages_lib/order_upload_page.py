@@ -168,6 +168,10 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
 
             # ── 2. DB에서 미발송 주문(active)만 추려 화면용 df 구성 ──
             active_rows = get_active_orders(USERNAME)
+            # 이번 API 응답에 있는 주문만 화면 표시 — DB 옛 stale 누적은 제외
+            if all_orders:
+                _api_ids = {str(o.get('상품주문번호', '')) for o in all_orders}
+                active_rows = [r for r in active_rows if str(r.get('order_no', '')) in _api_ids]
             if not active_rows:
                 st.info(f"미발송 주문이 없습니다. (API 수집 {api_count}건)")
             else:
