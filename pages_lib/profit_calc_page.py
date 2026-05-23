@@ -114,9 +114,9 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         calc_date_str = calc_date.strftime("%Y-%m-%d")
     with _col_refresh:
         st.write(""); st.write("")
-        if st.button("🔄 새로고침", key="profit_force_refresh",
+        if st.button("📋 조회", key="profit_force_refresh",
                      use_container_width=True,
-                     help="30초 캐시 무효화 — 일일 주문 수집에서 재저장했는데 옛 데이터가 보일 때"):
+                     help="날짜를 선택한 후 클릭하여 해당 날짜 주문 조회"):
             try:
                 if invalidate_data_cache:
                     invalidate_data_cache()
@@ -1146,6 +1146,15 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             "(결제일이 이 날짜인 주문 자동 필터링)\n"
             "2. **📮 송장번호** 페이지 → 🚀 발송처리 → dispatch_log 자동 생성"
         )
+        # 데이터 없어도 영수증 미리 업로드 가능 — 조회 후 자동 매칭
+        _rcpt_loaded = bool(st.session_state.get('receipt_items'))
+        _rcpt_label = (
+            "🧾 영수증 업로드"
+            + (f" — ✅ {len(st.session_state.get('receipt_items', []))}개 로드됨" if _rcpt_loaded else " (미리 업로드 후 조회하면 자동 매칭)")
+        )
+        with st.expander(_rcpt_label, expanded=not _rcpt_loaded):
+            from pages_lib import receipt_page as _rcpt_pg
+            _rcpt_pg.render(USERNAME, IS_ADMIN, settings, embedded=True, order_date=calc_date_str)
 
 
 
