@@ -134,7 +134,12 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             return False, "task name required"
         marker = f"# COSTCO_TASK:{name}"
         if action == "/create":
-            cmd_str = opts.get("/tr", "").strip('"')
+            import shlex as _shlex
+            raw_cmd = opts.get("/tr", "")
+            try:
+                cmd_str = " ".join(_shlex.split(raw_cmd))
+            except Exception:
+                cmd_str = raw_cmd.replace('"', '')
             time_str = opts.get("/st", "00:00")
             try:
                 hh, mm = time_str.split(":")
