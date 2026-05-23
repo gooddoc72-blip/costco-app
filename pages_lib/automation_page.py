@@ -236,12 +236,17 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         # ── 등록 실패 진단 ──
         if not _IS_WIN:
             with st.expander("🔍 cron 진단 (등록 실패 시 확인)", expanded=False):
+                import pwd as _pwd, os as _os
+                try:
+                    _proc_user = _pwd.getpwuid(_os.getuid()).pw_name
+                except Exception:
+                    _proc_user = str(_os.getuid())
                 _diag = subprocess.run(["crontab", "-l"], capture_output=True, text=True)
+                st.caption(f"**프로세스 실행 유저: `{_proc_user}`**")
                 st.caption(f"Python: `{PYTHON_PATH}`")
                 st.caption(f"Script: `{SCRIPT_PATH}`")
                 st.caption(f"crontab -l returncode: {_diag.returncode}")
                 st.code(_diag.stdout or _diag.stderr or "(비어있음)", language=None)
-                # 샘플 cron line 미리보기
                 _sample = f'0 12 * * * {PYTHON_PATH} {SCRIPT_PATH} --task orders --user {USERNAME}'
                 st.caption("등록될 cron line 형식:")
                 st.code(_sample, language=None)
