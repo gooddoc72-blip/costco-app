@@ -721,9 +721,11 @@ def check_keyword_rank(open_client_id, open_client_secret, keyword,
             return "가격비교"
         return "단독"
 
-    # ── 1단계: 모든 항목을 먼저 수집 (분류별 카운터와 함께) ──
-    collected = []  # [{cls, pos, item, mall_pid, title, mall, ptype, hp}]
-    pos_wonbu = pos_compare = pos_solo = 0
+    # ── 1단계: 모든 항목을 먼저 수집 (전체 통합 순위 기준) ──
+    # pos = API 응답 전체에서 몇 번째인지 (광고 제외, 분류 무관)
+    # 실제 네이버 웹 순위와 동일한 기준으로 계산
+    collected = []
+    overall_pos = 0
 
     for page in range(max_pages):
         start = page * 100 + 1
@@ -744,17 +746,12 @@ def check_keyword_rank(open_client_id, open_client_secret, keyword,
                 break
 
             for item in items:
+                overall_pos += 1
                 cls = _classify(item)
-                if cls == "원부":
-                    pos_wonbu += 1; cur_pos = pos_wonbu
-                elif cls == "가격비교":
-                    pos_compare += 1; cur_pos = pos_compare
-                else:
-                    pos_solo += 1; cur_pos = pos_solo
                 collected.append({
                     "cls": cls,
-                    "pos": cur_pos,
-                    "mall_pid": str(item.get("productId", "")),  # API 실제 필드명: productId (mallProductId는 빈값)
+                    "pos": overall_pos,
+                    "mall_pid": str(item.get("productId", "")),
                     "title": item.get("title", "").replace("<b>", "").replace("</b>", "").strip(),
                     "mall": item.get("mallName", ""),
                     "ptype": str(item.get("productType", "")),
