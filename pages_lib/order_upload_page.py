@@ -206,10 +206,15 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 st.session_state['order_date'] = datetime.today().strftime("%Y-%m-%d")
                 st.session_state['orders_api_count'] = api_count
 
-                # ── 송장등록/Excel 다운로드용: DB의 raw_json에서 모든 active 주문 복원 (72컬럼) ──
+                # ── 송장등록/Excel 다운로드용: DB의 raw_json에서 active 주문 복원 (72컬럼) ──
+                # 화면과 동일하게 API 응답에 있는 주문만 포함 (stale 누적 제외)
                 _excel_df = active_orders_to_naver_excel_df(USERNAME)
                 if _excel_df is not None and not _excel_df.empty:
-                    st.session_state['order_full'] = _excel_df
+                    if all_orders:
+                        _excel_df = _excel_df[
+                            _excel_df['상품주문번호'].astype(str).isin(_api_ids)
+                        ].reset_index(drop=True)
+                    st.session_state['order_full'] = _excel_df if not _excel_df.empty else df.copy()
                 else:
                     # raw_json이 아직 없는 옛 데이터만 있는 경우 → DB 변환 df라도 사용
                     st.session_state['order_full'] = df.copy()
