@@ -20,7 +20,7 @@ Task 2 (shipping) - 자동 발송처리
 """
 import sqlite3, os, sys, argparse, re, json, logging
 from logging.handlers import RotatingFileHandler
-from datetime import datetime
+from datetime import datetime, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import naver_api
@@ -510,12 +510,13 @@ def run_fetch_orders_task(username="admin"):
     cpg_secret = settings.get("coupang_secret_key", "")
     cpg_vendor = settings.get("coupang_vendor_id", "")
     if cpg_access and cpg_secret and cpg_vendor:
-        log("🛒 쿠팡 주문 조회 중...")
+        _cpg_days = 7
+        log(f"🛒 쿠팡 주문 조회 중... ({_cpg_days}일 범위, ACCEPT+INSTRUCT)")
         try:
             sys.path.insert(0, BASE_DIR)
             import coupang_api
             rows, err = coupang_api.get_orders(cpg_access, cpg_secret, cpg_vendor,
-                                               status="ALL", days_back=2)
+                                               status="ALL", days_back=_cpg_days)
             if err:
                 log(f"  ⚠️ 쿠팡 오류: {err}")
                 errors.append(f"쿠팡: {err}")
@@ -523,7 +524,8 @@ def run_fetch_orders_task(username="admin"):
                 all_orders.extend(rows)
                 log(f"  ✅ 쿠팡 {len(rows)}건 조회 완료")
             else:
-                log("  ℹ️ 쿠팡 주문 없음")
+                d_from = (datetime.now() - timedelta(days=_cpg_days)).strftime("%Y-%m-%d")
+                log(f"  ℹ️ 쿠팡 주문 없음 ({d_from} ~ 오늘, ACCEPT+INSTRUCT)")
         except Exception as e:
             log(f"  ❌ 쿠팡 예외: {e}")
             errors.append(f"쿠팡: {e}")
