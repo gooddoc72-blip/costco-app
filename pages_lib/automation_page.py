@@ -233,6 +233,19 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             else:
                 st.warning("⚠️ Task 5 미등록")
 
+        # ── 등록 실패 진단 ──
+        if not _IS_WIN:
+            with st.expander("🔍 cron 진단 (등록 실패 시 확인)", expanded=False):
+                _diag = subprocess.run(["crontab", "-l"], capture_output=True, text=True)
+                st.caption(f"Python: `{PYTHON_PATH}`")
+                st.caption(f"Script: `{SCRIPT_PATH}`")
+                st.caption(f"crontab -l returncode: {_diag.returncode}")
+                st.code(_diag.stdout or _diag.stderr or "(비어있음)", language=None)
+                # 샘플 cron line 미리보기
+                _sample = f'0 12 * * * {PYTHON_PATH} {SCRIPT_PATH} --task orders --user {USERNAME}'
+                st.caption("등록될 cron line 형식:")
+                st.code(_sample, language=None)
+
     st.divider()
 
     # ── Task 1: 장보기 목록 발송 ──
