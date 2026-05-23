@@ -544,10 +544,7 @@ def run_fetch_orders_task(username="admin"):
         saved = _save_hist(username, _df)
         log(f"💾 order_history UPSERT: {saved}건")
         # 일별 주문 통계
-        s_cost = int(settings.get('shipping_cost') or 1800)
-        b_cost = int(settings.get('box_cost') or 300)
-        today_str = datetime.now().strftime("%Y-%m-%d")
-        save_daily_orders(username, today_str, _df, s_cost, b_cost)
+        save_daily_orders(username, all_orders, settings)
     except Exception as e:
         log(f"❌ DB 저장 실패: {e}")
         return False
