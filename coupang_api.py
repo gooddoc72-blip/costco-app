@@ -75,10 +75,16 @@ def get_orders(access_key: str, secret_key: str, vendor_id: str,
         return [], "쿠팡 API 키(Access Key / Secret Key / Vendor ID)를 설정에서 먼저 입력해주세요."
 
     today = datetime.now().strftime("%Y-%m-%d")
-    d_from = date_from or (
-        datetime.now() - timedelta(days=days_back)
-    ).strftime("%Y-%m-%d")
     d_to = date_to or today
+
+    if date_from:
+        # 수동 조회: 사용자 지정 범위를 모든 상태에 동일 적용
+        d_from_normal = date_from
+        d_from_long   = date_from
+    else:
+        # 자동 조회: ACCEPT는 days_back, INSTRUCT/DEPARTURE는 30일(미처리 체류 대비)
+        d_from_normal = (datetime.now() - timedelta(days=days_back)).strftime("%Y-%m-%d")
+        d_from_long   = (datetime.now() - timedelta(days=max(days_back, 30))).strftime("%Y-%m-%d")
 
     if status == "ALL":
         statuses = ["ACCEPT", "INSTRUCT", "DEPARTURE"]
@@ -88,8 +94,9 @@ def get_orders(access_key: str, secret_key: str, vendor_id: str,
     all_rows = []
     all_errors = []
     for st in statuses:
+        _d_from = d_from_long if st in ("INSTRUCT", "DEPARTURE") else d_from_normal
         rows, err = _fetch_orders_for_status(
-            access_key, secret_key, vendor_id, st, d_from, d_to
+            access_key, secret_key, vendor_id, st, _d_from, d_to
         )
         if err:
             all_errors.append(f"{st}: {err}")
