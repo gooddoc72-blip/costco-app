@@ -309,9 +309,10 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             match_sources = _cached['sources']
             matched_names = _cached['names']
             matched_pnos = _cached['pnos']
+            matched_sqtys = _cached.get('sqtys', [1] * len(costs))
             _skip_match_loop = True
         else:
-            costs, match_sources, matched_names, matched_pnos = [], [], [], []
+            costs, match_sources, matched_names, matched_pnos, matched_sqtys = [], [], [], [], []
             _skip_match_loop = False
 
         for idx, r in (iter([]) if _skip_match_loop else df.iterrows()):
@@ -342,6 +343,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 matched_names.append(_manual_kw)
                 _picked_pno = (st.session_state.get('receipt_pick', {}) or {}).get(_row_key, '')
                 matched_pnos.append(_picked_pno or (p.get('product_no', '') if p else ''))
+                matched_sqtys.append(max(1, int((p or {}).get('split_qty', 1) or 1)))
 
             # 2. 상품번호 매칭 (주문서의 p_no 또는 DB에 저장된 p_no)
             else:
@@ -379,6 +381,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         match_sources.append("DB-번호")
                         matched_names.append(p['costco_name'])
                         matched_pnos.append(_pno1)
+                    matched_sqtys.append(sq)
 
                 # 3. 영수증 매칭 (현재 업로드된 영수증에서 상품번호/이름으로 찾기)
                 elif product in receipt_matches:
@@ -409,6 +412,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                 st.session_state['_auto_linked_pnos'].add(_link_key)
                             except Exception:
                                 pass
+                    matched_sqtys.append(_rsq)
 
                 # ── 3차: 키워드 토큰 매칭 (상품번호 미등록 DB 항목) ──
                 elif p:
@@ -418,6 +422,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     match_sources.append("DB-키워드")
                     matched_names.append(p['costco_name'])
                     matched_pnos.append('')
+                    matched_sqtys.append(sq)
 
                 else:
                     if saved_cost > 0:
@@ -430,17 +435,19 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         match_sources.append("미매칭")
                         matched_names.append("")
                         matched_pnos.append('')
+                    matched_sqtys.append(1)
 
         df['구입가격'] = costs
         df['매칭출처'] = match_sources
         df['매칭제품'] = matched_names
         df['매칭상품번호'] = matched_pnos
+        df['소분단위'] = matched_sqtys
 
         # 매칭 결과 캐시 저장 (페이지 이동 시 재계산 방지)
         if not _skip_match_loop:
             st.session_state[_mc_state] = {
                 'key': _mc_key, 'costs': costs, 'sources': match_sources,
-                'names': matched_names, 'pnos': matched_pnos,
+                'names': matched_names, 'pnos': matched_pnos, 'sqtys': matched_sqtys,
             }
 
         if 'cost_overrides' not in st.session_state:
@@ -635,10 +642,17 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 f'#{_row_pno}</span>'
                 if _row_pno else ''
             )
+            _row_sq = int(r.get('소분단위', 1) or 1)
+            _split_badge = (
+                f'<span style="background:#ede7f6;color:#6c3db7;border-radius:3px;'
+                f'padding:1px 5px;font-size:11px;font-weight:700;margin-right:3px">'
+                f'소분÷{_row_sq}</span>'
+                if _row_sq > 1 else ''
+            )
             _name_html = (
-                f"{_ss['badge']} {_pno_prefix}{_full_name}"
+                f"{_ss['badge']} {_split_badge}{_pno_prefix}{_full_name}"
                 if _ss['badge']
-                else f"{_pno_prefix}{_full_name}"
+                else f"{_split_badge}{_pno_prefix}{_full_name}"
             )
             pv = r['수입']
             try:
@@ -803,9 +817,11 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     _sell_factor_bs = _sell_val_bs if 1 < _sell_val_bs <= 50 else 1
                     _denom_bs = max(1, _qty * _sell_factor_bs)
                     _save_price = (_new_cost * _keep_sq) // _denom_bs
+                    # 주문의 네이버 상품번호를 naver_origin_pno로 저장 (소분 매칭 정확도 향상)
+                    _order_nv_pno = str(_r.get('product_no', '') or '').strip()
                     upsert_product(USERNAME, _save_kw, _save_kw, _save_price,
                                    product_no=_existing_pno, split_qty=_keep_sq,
-                                   naver_origin_pno=_existing_naver_origin,
+                                   naver_origin_pno=_order_nv_pno or _existing_naver_origin,
                                    shipping_fee=_existing_fee,
                                    auto_split_costco_no=False)  # 부작용으로 비활성화
                     _saved_n += 1
@@ -870,9 +886,10 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     _sell_factor = _sell_val if 1 < _sell_val <= 50 else 1
                     _denom = max(1, _qty * _sell_factor)
                     _new_unit = (_cost * _sq) // _denom
+                    _order_nv_pno_s = str(_r.get('product_no', '') or '').strip()
                     upsert_product(USERNAME, _kw or _pno, _kw or _pno, _new_unit,
                                     product_no=_pno, split_qty=_sq,
-                                    naver_origin_pno=_naver_origin,
+                                    naver_origin_pno=_order_nv_pno_s or _naver_origin,
                                     shipping_fee=(_up or {}).get('shipping_fee'),
                                     auto_split_costco_no=False)  # 부작용으로 비활성화
             invalidate_data_cache()

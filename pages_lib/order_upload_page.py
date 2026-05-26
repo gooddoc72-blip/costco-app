@@ -184,24 +184,33 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 df = df.sort_values('상품명').reset_index(drop=True)
 
                 # 구입가격 재계산 (DB 1회 로드)
+                import re as _re_ord
                 _all_shared = get_shared_products()
                 _all_user   = get_all_products(USERNAME)
                 costs = []
+                sqtys_ord = []
                 for _, r in df.iterrows():
                     p_no = str(r.get('상품번호', '')) if r.get('상품번호') else ''
-                    p = match_product_to_db(USERNAME, r['상품명'], product_no=p_no,
+                    _nm_o = str(r.get('상품명', '') or '')
+                    _sm_o = _re_ord.search(r'x\s*(\d+)\s*개', _nm_o, _re_ord.IGNORECASE)
+                    _sf_o = (int(_sm_o.group(1)) if _sm_o else 1)
+                    _sf_o = _sf_o if 1 < _sf_o <= 50 else 1
+                    p = match_product_to_db(USERNAME, _nm_o, product_no=p_no,
                                             _user_prods=_all_user, _shared_prods=_all_shared)
                     if p:
                         _sq = max(1, int(p.get('split_qty', 1) or 1))
-                        costs.append((p['unit_price'] // _sq) * int(r['수량']))
+                        costs.append((p['unit_price'] // _sq) * int(r['수량']) * _sf_o)
+                        sqtys_ord.append(_sq)
                     else:
                         costs.append(0)
+                        sqtys_ord.append(1)
                     if p_no and p:
                         try:
                             upsert_product(USERNAME, p['costco_name'], p['match_keyword'], p['unit_price'], product_no=p_no)
                         except Exception:
                             pass  # UNIQUE 충돌 등 — 기존 매칭 유지하고 무시
                 df['구입가격'] = costs
+                df['소분단위'] = sqtys_ord
 
                 # 화면용 df 저장
                 st.session_state['orders'] = df
@@ -549,6 +558,9 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             st.session_state['order_excel_bytes'] = _excel_bytes
         # ── 배송준비건 인쇄용 HTML 생성 ────────────────────
         _disp_base = ['수취인명','상품명','옵션정보','수량','최종 상품별 총 주문금액','배송비 합계','정산예정금액']
+        if '소분단위' in df.columns:
+            df['소분'] = df['소분단위'].apply(lambda x: f'÷{int(x)}' if int(x or 1) > 1 else '')
+            _disp_base = ['소분'] + _disp_base
         _disp_cols = (['플랫폼'] if '플랫폼' in df.columns else []) + _disp_base
         _prep_disp = df[[c for c in _disp_cols if c in df.columns]].copy()
         _prep_rows_html = []

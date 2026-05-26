@@ -26,7 +26,7 @@ _INDEX_CACHE: dict = {}
 
 def _index_products(products: list) -> dict:
     if not products:
-        return {'by_pno': {}, 'by_kw': {}, 'has_pno': []}
+        return {'by_pno': {}, 'by_kw': {}, 'has_pno': [], 'by_naver_pno': {}}
     pid = id(products)
     hit = _INDEX_CACHE.get(pid)
     if hit is not None and hit.get('_n') == len(products):
@@ -36,6 +36,9 @@ def _index_products(products: list) -> dict:
                    for p in products if (p.get('product_no') or '').strip()},
         'by_kw':  {p['match_keyword']: p for p in products if p.get('match_keyword')},
         'has_pno': [p for p in products if (p.get('product_no') or '').strip()],
+        # 네이버 상품번호(naver_origin_pno) 인덱스 — 소분/묶음 별 split_qty 정확 매칭용
+        'by_naver_pno': {str(p.get('naver_origin_pno', '') or ''): p
+                         for p in products if (p.get('naver_origin_pno') or '').strip()},
         '_n': len(products),
     }
     if len(_INDEX_CACHE) > 16:  # 메모리 폭주 방지 — 16개 사용자 동시 캐시면 충분
@@ -68,6 +71,7 @@ def compute_costs_for_df(username, df, _user_prods=None, _shared_prods=None):
     has_cost = '구입가격' in df.columns
     has_pno = '상품번호' in df.columns
     costs = []
+    sqtys = []
     for _, r in df.iterrows():
         if has_cost:
             existing = r.get('구입가격')
@@ -92,8 +96,10 @@ def compute_costs_for_df(username, df, _user_prods=None, _shared_prods=None):
         p = match_product_to_db(username, name, product_no=pno or None,
                                 _user_prods=user_prods, _shared_prods=shared_prods)
         costs.append(calc_cost(p, qty * _sell_factor) if p else 0)
+        sqtys.append(max(1, int((p or {}).get('split_qty', 1) or 1)))
     df = df.copy()
     df['구입가격'] = costs
+    df['소분단위'] = sqtys
     return df
 
 
@@ -223,9 +229,15 @@ def match_product_to_db(username, store_product_name, product_no=None,
         up = u_idx['by_kw'].get(sp['match_keyword'], {})
         # 주문 product_no로 우선 탐색 — O(1)
         if product_no:
-            _up_by_order_pno = u_idx['by_pno'].get(str(product_no))
-            if _up_by_order_pno:
-                up = _up_by_order_pno
+            # 1순위: naver_origin_pno — 소분/묶음 네이버 상품번호별 split_qty 정확 매칭
+            _up_by_naver = u_idx.get('by_naver_pno', {}).get(str(product_no))
+            if _up_by_naver:
+                up = _up_by_naver
+            else:
+                # 2순위: product_no (코스트코 상품번호)
+                _up_by_order_pno = u_idx['by_pno'].get(str(product_no))
+                if _up_by_order_pno:
+                    up = _up_by_order_pno
         # shared product_no로도 탐색 — O(1)
         if not up:
             _sp_pno = str(sp.get('product_no', '') or '')
@@ -254,6 +266,12 @@ def match_product_to_db(username, store_product_name, product_no=None,
     products = _user_prods if _user_prods is not None else get_all_products(username)
     if not products:
         return None
+    # 공유 DB 미매칭 시에도 naver_origin_pno로 탐색 (소분 상품 정확 매칭)
+    if product_no:
+        _u_idx2 = _index_products(products)
+        _by_nv2 = _u_idx2.get('by_naver_pno', {}).get(str(product_no))
+        if _by_nv2:
+            return dict(_by_nv2)
     # product_no가 없거나 불일치 시 이름/키워드 토큰 매칭 (0.5 이상)
     candidates = []
     for p in products:
