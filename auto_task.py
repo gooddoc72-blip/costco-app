@@ -470,16 +470,17 @@ def run_fetch_orders_task(username="admin"):
     api_id     = settings.get("api_client_id", "")
     api_secret = settings.get("api_client_secret", "")
     if api_id and api_secret:
-        # 마지막 동기화 시점 → 증분 hours_back 계산. 기본 36시간 (API 2번 호출).
+        # 마지막 동기화 시점 → 증분 hours_back 계산. 설정값 or 기본 36시간.
+        _default_hours = int(settings.get('orders_naver_hours_back', '') or '36')
         _last_iso = settings.get('last_order_sync', '')
         if _last_iso:
             try:
                 _delta = (datetime.now() - datetime.fromisoformat(_last_iso)).total_seconds() / 3600
-                _hours = max(36, int(_delta) + 6)
+                _hours = max(_default_hours, int(_delta) + 6)
             except Exception:
-                _hours = 36
+                _hours = _default_hours
         else:
-            _hours = 36  # 첫 실행: 36시간이면 충분
+            _hours = _default_hours  # 첫 실행
         log(f"📋 네이버 주문 조회 중... ({_hours}h 범위)")
         try:
             orders, err = naver_api.get_new_orders(api_id, api_secret,
@@ -510,8 +511,8 @@ def run_fetch_orders_task(username="admin"):
     cpg_secret = settings.get("coupang_secret_key", "")
     cpg_vendor = settings.get("coupang_vendor_id", "")
     if cpg_access and cpg_secret and cpg_vendor:
-        _cpg_days = 7
-        log(f"🛒 쿠팡 주문 조회 중... ({_cpg_days}일 범위, ACCEPT+INSTRUCT)")
+        _cpg_days = int(settings.get('orders_coupang_days_back', '') or '7')
+        log(f"🛒 쿠팡 주문 조회 중... ({_cpg_days}일 범위, ACCEPT+INSTRUCT+DEPARTURE)")
         try:
             sys.path.insert(0, BASE_DIR)
             import coupang_api

@@ -81,18 +81,23 @@ def get_orders(access_key: str, secret_key: str, vendor_id: str,
     d_to = date_to or today
 
     if status == "ALL":
-        statuses = ["ACCEPT", "INSTRUCT"]
+        statuses = ["ACCEPT", "INSTRUCT", "DEPARTURE"]
     else:
         statuses = [status]
 
     all_rows = []
+    all_errors = []
     for st in statuses:
         rows, err = _fetch_orders_for_status(
             access_key, secret_key, vendor_id, st, d_from, d_to
         )
         if err:
-            return [], err
-        all_rows.extend(rows)
+            all_errors.append(f"{st}: {err}")
+        else:
+            all_rows.extend(rows)
+
+    if not all_rows and all_errors:
+        return [], " | ".join(all_errors)
 
     # 중복 제거 (상품주문번호 기준)
     seen = set()
