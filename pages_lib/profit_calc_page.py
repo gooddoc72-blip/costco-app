@@ -177,7 +177,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         # 2) 위젯 state 키 일괄 삭제 (k_X, c_X, _buf_k_X, _buf_c_X, sel_p_X, rq_X)
         _keys_to_remove = [
             k for k in list(st.session_state.keys())
-            if k.startswith(('k_', 'c_', '_buf_k_', '_buf_c_', 'sel_p_', 'rq_'))
+            if k.startswith(('k_', 'c_', '_buf_k_', '_buf_c_', 'sel_p_', 'rq_', 'ship_', 'box_'))
         ]
         for _k in _keys_to_remove:
             try:
@@ -503,15 +503,19 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 if st.session_state['cost_overrides'][key] > 0:
                     df.loc[idx, '매칭출처'] = '수동입력'
 
-        # 🚚 배송비 수수료율 적용: 네이버는 고객결제 배송비에서도 수수료를 떼고 정산
-        # 실정산 배송비 = 고객결제 배송비 × (1 - 수수료율/100)
+        # 🚚 배송비 수수료율 적용
         _ship_fee_rate = float(_gs('naver_ship_fee_commission_rate') or 4.0)
         _ship_settle_factor = max(0.0, 1.0 - _ship_fee_rate / 100.0)
         df['실정산배송비'] = (df['배송비 합계'] * _ship_settle_factor).round().astype(int)
 
-        # 수입 계산: 벡터화 (apply 대비 ~10배 빠름)
-        # 정산예정금액(상품, 수수료 차감 후) + 실정산배송비(고객배송비 - 수수료) - 지출
-        df['수입'] = (df['정산예정금액'] + df['실정산배송비']) - (df['구입가격'] + shipping_cost + box_cost)
+        # 행별 발송비/박스비: 위젯에서 수정된 값 반영 (기본값 = 전역 설정)
+        df['택배원가'] = [int(st.session_state.get(f"ship_{str(_ids_arr[i])}", shipping_cost))
+                        for i in range(len(df))]
+        df['박스원가']  = [int(st.session_state.get(f"box_{str(_ids_arr[i])}", box_cost))
+                        for i in range(len(df))]
+
+        # 수입 계산: 행별 발송비/박스비 적용
+        df['수입'] = (df['정산예정금액'] + df['실정산배송비']) - (df['구입가격'] + df['택배원가'] + df['박스원가'])
 
         st.caption(f"📅 {calc_date_str}")
 
@@ -568,10 +572,10 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             use_container_width=True,
         )
 
-        # 헤더 — outer column: [전체선택][표시][구입가][🧾영수증]
+        # 헤더 — outer column: [전체선택][표시][구입가][발송비][박스비][🧾영수증]
         _TH = "text-align:{a};padding:3px 6px;font-size:12px;color:#444;background:#fafafa;border-bottom:1px solid #dee2e6"
-        _h0, _h1, _h2, _h4 = st.columns([0.3, 9, 1.5, 0.6])
-        # 전체 선택 버튼 — 클릭 시 모든 행 sel_p_<sk> 토글
+        _h0, _h1, _h2, _h3, _h4, _h5 = st.columns([0.3, 7.5, 1.3, 1.0, 1.0, 0.6])
+        # 전체 선택 버튼
         _all_sel = len(_checked_rows) == len(df) and len(df) > 0
         if _h0.button("☑" if _all_sel else "☐", key=_hdr_sel_key, help="전체 선택/해제"):
             _new_v = not _all_sel
@@ -584,20 +588,26 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             f'<th style="width:10%;{_TH.format(a="left")}">수취인</th>'
             f'<th style="width:44%;{_TH.format(a="left")}">상품명</th>'
             f'<th style="width:5%;{_TH.format(a="center")}">수량</th>'
-            f'<th style="width:11%;{_TH.format(a="right")}">정산예정</th>'
-            f'<th style="width:10%;{_TH.format(a="right")}">택배비</th>'
-            f'<th style="width:7%;{_TH.format(a="right")}">박스비</th>'
-            f'<th style="width:12%;{_TH.format(a="right")}">💰 수입</th>'
+            f'<th style="width:12%;{_TH.format(a="right")}">정산예정</th>'
+            f'<th style="width:10%;{_TH.format(a="right")}">고객택배비</th>'
+            f'<th style="width:6%;{_TH.format(a="right")}">박스비</th>'
+            f'<th style="width:13%;{_TH.format(a="right")}">💰 수입</th>'
             '</tr></thead></table>',
             unsafe_allow_html=True
         )
         _h2.markdown(
-            "<b style='font-size:13px;color:#444' "
-            "title='1주문 단가 입력. 시스템이 수량을 자동 곱셈해 합계 매입가를 계산합니다.'>"
-            "단가 (× 수량)✏️</b>",
+            "<b style='font-size:12px;color:#444' title='1주문 단가 입력'>단가✏️</b>",
             unsafe_allow_html=True
         )
-        _h4.markdown("<b style='font-size:13px;color:#444' title='영수증에서 수동 매칭'>🧾</b>", unsafe_allow_html=True)
+        _h3.markdown(
+            "<b style='font-size:12px;color:#555' title='택배사 발송비 (행별 변경 가능, 기본값=설정값)'>발송비✏️</b>",
+            unsafe_allow_html=True
+        )
+        _h4.markdown(
+            "<b style='font-size:12px;color:#555' title='포장 박스비 (행별 변경 가능, 기본값=설정값)'>박스비✏️</b>",
+            unsafe_allow_html=True
+        )
+        _h5.markdown("<b style='font-size:13px;color:#444' title='영수증에서 수동 매칭'>🧾</b>", unsafe_allow_html=True)
 
         # 셀 기본 스타일
         _SRC_STYLE = {
@@ -675,7 +685,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             else:
                 _pv_str = fmt(_pv_int)
                 _pv_color = '#1D9E75' if _pv_int >= 0 else '#E74C3C'
-            _box_str = fmt(box_cost) if box_cost > 0 else '-'
+            _cur_box_disp = int(r.get('박스원가', box_cost) or box_cost)
+            _box_str = fmt(_cur_box_disp) if _cur_box_disp > 0 else '-'
 
             row_html = (
                 f'<table style="width:100%;border-collapse:collapse;table-layout:fixed;background:{bg};border-radius:4px;margin-bottom:0">'
@@ -689,7 +700,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 f'<td style="{_CELL};width:12%;text-align:right;font-weight:700;color:{_pv_color}">{_pv_str}</td>'
                 f'</tr></table>'
             )
-            chk_col, disp_col, c_cost, c_rcpt = st.columns([0.3, 9, 1.5, 0.6])
+            chk_col, disp_col, c_cost, c_ship, c_box, c_rcpt = st.columns([0.3, 7.5, 1.3, 1.0, 1.0, 0.6])
             chk_col.checkbox("", key=f"sel_p_{sk}", label_visibility="collapsed")
             disp_col.markdown(row_html, unsafe_allow_html=True)
 
@@ -703,6 +714,17 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             new_cost = new_unit_in * _qty_row
             if new_cost != current_cost:
                 st.session_state['cost_overrides'][key] = new_cost
+
+            # 행별 택배원가 (발송비)
+            _cur_ship_row = int(r.get('택배원가', shipping_cost) or shipping_cost)
+            c_ship.number_input("", value=_cur_ship_row, min_value=0, step=100,
+                                label_visibility="collapsed", key=f"ship_{sk}",
+                                help=f"이 주문의 택배 발송비 (기본: {fmt(shipping_cost)}원)")
+            # 행별 박스원가
+            _cur_box_row = int(r.get('박스원가', box_cost) or box_cost)
+            c_box.number_input("", value=_cur_box_row, min_value=0, step=100,
+                               label_visibility="collapsed", key=f"box_{sk}",
+                               help=f"이 주문의 박스비 (기본: {fmt(box_cost)}원)")
 
             # 🧾 영수증 picker — 잘못된 매칭/미매칭을 영수증 항목으로 직접 매칭
             if 'receipt_pick' not in st.session_state:
@@ -906,7 +928,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             invalidate_data_cache()
             # 위젯 state 정리 → 다음 render에서 새 값 표시
             for _k in list(st.session_state.keys()):
-                if _k.startswith('c_') or _k.startswith('k_'):
+                if _k.startswith(('c_', 'k_', 'ship_', 'box_')):
                     st.session_state.pop(_k, None)
             st.session_state.pop('_pcalc_match_cache', None)
             st.session_state['cost_overrides'] = {}
@@ -939,8 +961,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         total_settled_ship = matched_df['실정산배송비'].sum() if '실정산배송비' in matched_df.columns else total_cust_ship
         total_ship_commission = total_cust_ship - total_settled_ship
         total_cost = matched_df['구입가격'].sum()
-        total_ship = len(matched_df) * shipping_cost
-        total_box = len(matched_df) * box_cost
+        total_ship = matched_df['택배원가'].sum() if '택배원가' in matched_df.columns else len(matched_df) * shipping_cost
+        total_box = matched_df['박스원가'].sum() if '박스원가' in matched_df.columns else len(matched_df) * box_cost
         total_profit = matched_df['수입'].sum() if len(matched_df) > 0 else 0
 
         c1, c2 = st.columns(2)
