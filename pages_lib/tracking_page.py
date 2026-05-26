@@ -401,5 +401,85 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     st.rerun()
 
     # ═══════════════════════════════════════
+    # 수동 송장 입력 — 미발송 주문에 직접 입력 → dispatch_log 저장
+    # ═══════════════════════════════════════
+    st.divider()
+    st.subheader("✏️ 수동 송장 입력")
+    st.caption("미발송 주문 목록에 송장번호를 직접 입력합니다. 저장하면 dispatch_log에 기록되어 **정산 매칭**에 사용됩니다.")
+
+    from db import get_active_orders, db_rows_to_orders_df, log_dispatch_success
+    from db_core import get_user_db as _get_user_db
+
+    _active_rows = get_active_orders(USERNAME)
+    if not _active_rows:
+        st.info("미발송 주문이 없습니다. 주문 수집 탭에서 먼저 주문을 수집해주세요.")
+    else:
+        _mdf = db_rows_to_orders_df(_active_rows)
+        _show = ['상품주문번호', '수취인명', '상품명', '수량', '정산예정금액']
+        _edit_df = _mdf[[c for c in _show if c in _mdf.columns]].copy()
+        _edit_df['택배사'] = courier
+        _edit_df['송장번호'] = ''
+
+        _edited = st.data_editor(
+            _edit_df,
+            column_config={
+                '상품주문번호': st.column_config.TextColumn("주문번호", disabled=True, width='medium'),
+                '수취인명':    st.column_config.TextColumn("수취인", disabled=True),
+                '상품명':      st.column_config.TextColumn("상품명", disabled=True, width='large'),
+                '수량':        st.column_config.NumberColumn("수량", disabled=True, width='small'),
+                '정산예정금액': st.column_config.NumberColumn("정산예정", disabled=True),
+                '택배사':      st.column_config.TextColumn("택배사", width='small'),
+                '송장번호':    st.column_config.TextColumn("송장번호", width='medium'),
+            },
+            hide_index=True,
+            use_container_width=True,
+            key="manual_tracking_editor",
+        )
+
+        _filled = _edited[_edited['송장번호'].astype(str).str.strip().str.len() > 5].copy()
+        if not _filled.empty:
+            _mi1, _mi2 = st.columns([3, 1])
+            _mi1.info(f"송장번호 입력된 주문 **{len(_filled)}건** — 저장하면 정산 매칭에 활용됩니다.")
+            _mi2.write(""); _mi2.write("")
+            if _mi2.button("💾 발송 완료 저장", type="primary", use_container_width=True, key="manual_disp_save"):
+                _today = datetime.today().strftime("%Y-%m-%d")
+                _save_rows = []
+                for _, _r in _filled.iterrows():
+                    _pno = str(_r.get('상품주문번호', '')).strip()
+                    _trk = str(_r.get('송장번호', '')).replace('-', '').strip()
+                    if not _pno or not _trk:
+                        continue
+                    _save_rows.append({
+                        'order_no':              _pno,
+                        'recipient':             str(_r.get('수취인명', '')),
+                        'product_name':          str(_r.get('상품명', '')),
+                        'expected_settlement':   int(_r.get('정산예정금액', 0) or 0),
+                        'customer_shipping_fee': 0,
+                        'tracking_no':           _trk,
+                        'courier':               str(_r.get('택배사', '')).strip(),
+                    })
+                if _save_rows:
+                    # 플랫폼 판별: 쿠팡은 '-' 포함
+                    _has_naver   = any('-' not in r['order_no'] for r in _save_rows)
+                    _has_coupang = any('-' in r['order_no']     for r in _save_rows)
+                    _plat = 'naver' if _has_naver and not _has_coupang else \
+                            'coupang' if _has_coupang and not _has_naver else 'mixed'
+                    _saved = log_dispatch_success(USERNAME, _save_rows, _today, platform=_plat)
+                    # order_history.tracking_no 갱신
+                    _conn = _get_user_db(USERNAME)
+                    for _r in _save_rows:
+                        try:
+                            _conn.execute(
+                                "UPDATE order_history SET tracking_no=?, courier=? WHERE order_no=?",
+                                (_r['tracking_no'], _r['courier'], _r['order_no'])
+                            )
+                        except Exception:
+                            pass
+                    _conn.commit()
+                    _conn.close()
+                    st.success(f"✅ {_saved}건 저장 완료 ({_today}) — 정산 매칭 탭에서 {_today} 발송일로 조회하세요.")
+                    st.rerun()
+
+    # ═══════════════════════════════════════
     # 탭 2: 영수증 등록
     # ═══════════════════════════════════════
