@@ -517,20 +517,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     _t5_c1, _t5_c2 = st.columns([1, 2])
     new_t5_en   = _t5_c1.checkbox("활성화", value=task5_en, key="t5_en")
     new_t5_time = _t5_c2.time_input("실행 시간", value=dtime(t5h, t5m), key="t5_time")
-
-    _t5_c3, _t5_c4 = st.columns(2)
-    _naver_hours_val = int(_gs('orders_naver_hours_back') or '36')
-    _cpg_days_val    = int(_gs('orders_coupang_days_back') or '7')
-    new_naver_hours = _t5_c3.number_input(
-        "네이버 수집 기간 (시간)", value=_naver_hours_val,
-        min_value=6, max_value=168, step=6, key="t5_naver_hours",
-        help="최근 N시간 내 주문 조회 (기본 36시간 = 1.5일)",
-    )
-    new_cpg_days = _t5_c4.number_input(
-        "쿠팡 수집 기간 (일)", value=_cpg_days_val,
-        min_value=1, max_value=30, step=1, key="t5_cpg_days",
-        help="최근 N일 내 쿠팡 주문 조회 (기본 7일)",
-    )
+    st.caption("자동 수집 기간: 네이버 48시간 / 쿠팡 7일 고정. 수동 수집은 일일주문 탭에서 기간 선택.")
 
     _naver_ok   = bool(_gs('api_client_id'))
     _coupang_ok = bool(_gs('coupang_access_key'))
@@ -542,8 +529,6 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         t5_str = new_t5_time.strftime("%H:%M")
         set_setting(USERNAME, 'auto_orders_enabled', '1' if new_t5_en else '0')
         set_setting(USERNAME, 'auto_orders_time', t5_str)
-        set_setting(USERNAME, 'orders_naver_hours_back', str(int(new_naver_hours)))
-        set_setting(USERNAME, 'orders_coupang_days_back', str(int(new_cpg_days)))
         if new_t5_en:
             _cmd5 = f'"{PYTHON_PATH}" "{SCRIPT_PATH}" --task orders --user {USERNAME}'
             ok, out = _schtasks_run(["/create", "/tn", TASK5_NAME, "/tr", _cmd5,

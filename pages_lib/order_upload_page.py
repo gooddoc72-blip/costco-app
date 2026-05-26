@@ -107,28 +107,29 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
 
     # ── API 자동 조회 ──
     if HAS_NAVER_API and api_id and api_secret:
-        c_api1, c_api2 = st.columns([2, 1])
-        with c_api1:
+        _nav_r1c1, _nav_r1c2, _nav_r1c3, _nav_r1c4 = st.columns([2, 1.2, 1.2, 1])
+        with _nav_r1c1:
             status_options = {"배송준비 (발주확인)": "PAYED", "결제완료 (신규주문)": "PAYED", "전체 (신규+배송준비)": "ALL"}
             status_label = st.selectbox("주문 상태", list(status_options.keys()), index=0)
             status_type = status_options[status_label]
-        with c_api2:
+        with _nav_r1c2:
+            _nav_date_from = st.date_input(
+                "시작일", value=datetime.today() - timedelta(days=2),
+                key="nav_date_from",
+            )
+        with _nav_r1c3:
+            _nav_date_to = st.date_input(
+                "종료일", value=datetime.today(),
+                key="nav_date_to",
+            )
+        with _nav_r1c4:
             st.write("")
             st.write("")
-            fetch_btn = st.button("🔄 API로 주문 자동 조회", type="primary", key="api_fetch")
-        # 마지막 동기화 시점 → 증분 hours_back 자동 계산. 기본 48시간이면 충분.
-        # 안전 마진 24h: last-changed-statuses API가 상태 변경 안 된 주문은 누락하므로
-        # 마지막 sync 시점 ± 24h 범위까지 재조회하여 누락 방지 (병렬 호출이라 속도 영향 미미)
+            fetch_btn = st.button("🔄 네이버 주문 조회", type="primary", key="api_fetch")
+        # 선택 날짜 범위 → hours_back 변환 (안전 마진 +24h)
         from datetime import datetime as _dt
-        _last_iso = _gs('last_order_sync')
-        if not _last_iso:
-            hours = 48  # 첫 조회: 48시간
-        else:
-            try:
-                _delta = (_dt.now() - _dt.fromisoformat(_last_iso)).total_seconds() / 3600
-                hours = max(48, int(_delta) + 24)  # 마지막 sync 이후 + 24h 안전 마진, 최소 48h
-            except Exception:
-                hours = 48
+        _nav_delta_h = int((_dt.now() - _dt.combine(_nav_date_from, _dt.min.time())).total_seconds() / 3600) + 24
+        hours = max(48, _nav_delta_h)
         if fetch_btn:
             all_orders = []
             types_to_query = ["READY", "PAYED"] if status_type == "ALL" else [status_type]
@@ -265,9 +266,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     cq_vendor = _gs('coupang_vendor_id')
 
     if HAS_COUPANG_API and cq_access and cq_secret and cq_vendor:
-        cq_c1, cq_c2 = st.columns([2, 1])
+        cq_c1, cq_c2, cq_c3, cq_c4 = st.columns([2, 1.2, 1.2, 1])
         with cq_c1:
-            # ⭐ 기본값 ALL: 결제완료(신규)와 상품준비중(발주확인 후) 모두 수집
             _cq_status_opts = {
                 "신규 + 상품준비중 (전체) ⭐":  "ALL",
                 "결제완료 (신규주문)":           "ACCEPT",
@@ -279,16 +279,29 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             )
             _cq_status = _cq_status_opts[_cq_status_label]
         with cq_c2:
+            _cq_date_from = st.date_input(
+                "시작일", value=datetime.today() - timedelta(days=7),
+                key="cq_date_from",
+            )
+        with cq_c3:
+            _cq_date_to = st.date_input(
+                "종료일", value=datetime.today(),
+                key="cq_date_to",
+            )
+        with cq_c4:
             st.write("")
             st.write("")
             cq_fetch_btn = st.button("🛒 쿠팡 주문 조회", type="primary", key="cq_fetch")
 
         if cq_fetch_btn:
-            with st.spinner("쿠팡 Wing API에서 주문을 조회 중..."):
-                # days_back=7: 상품준비중에서 며칠 정체된 주문까지 포함
+            _cq_from_str = _cq_date_from.strftime("%Y-%m-%d")
+            _cq_to_str   = _cq_date_to.strftime("%Y-%m-%d")
+            with st.spinner(f"쿠팡 Wing API 조회 중... ({_cq_from_str} ~ {_cq_to_str})"):
                 cq_rows, cq_err = coupang_api.get_orders(
                     cq_access, cq_secret, cq_vendor,
-                    status=_cq_status, days_back=7,
+                    status=_cq_status,
+                    date_from=_cq_from_str,
+                    date_to=_cq_to_str,
                 )
             if cq_err:
                 st.error(f"❌ {cq_err}")
