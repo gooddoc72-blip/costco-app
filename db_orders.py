@@ -25,7 +25,10 @@ def save_daily_orders(username, order_date, orders_df, shipping_cost, box_cost):
         cost = r.get('구입가격', 0) or 0
         ship_fee = int(r['배송비 합계'])
         settlement = int(r['정산예정금액'])
-        profit = (settlement + ship_fee) - (int(cost) + shipping_cost + box_cost)
+        # 행별 택배원가/박스원가 우선 사용 (정산표에서 개별 수정된 값 보존)
+        per_ship = int(r.get('택배원가', shipping_cost) or shipping_cost)
+        per_box  = int(r.get('박스원가',  box_cost)      or box_cost)
+        profit = (settlement + ship_fee) - (int(cost) + per_ship + per_box)
         p_no = r.get('상품번호', '')
         conn.execute("""INSERT INTO daily_orders
             (order_date,recipient,product_name,product_no,option_info,qty,
@@ -35,7 +38,7 @@ def save_daily_orders(username, order_date, orders_df, shipping_cost, box_cost):
             (order_date, r['수취인명'], r['상품명'], str(p_no), r.get('옵션정보', ''),
              int(r['수량']), int(r['최종 상품별 총 주문금액']), ship_fee,
              int(r.get('제주/도서 추가배송비', 0)), settlement,
-             int(cost), shipping_cost, box_cost, profit, 1 if cost > 0 else 0, now))
+             int(cost), per_ship, per_box, profit, 1 if cost > 0 else 0, now))
     conn.commit()
     conn.close()
     return len(orders_df)

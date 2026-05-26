@@ -266,6 +266,39 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             st.caption("💡 영수증 PDF 업로드 시 영수증 매칭 기반 매입가 보정이 추가됩니다 (선택사항).")
         unique_products = df['상품명'].unique().tolist()
 
+        # ── 정산 저장 데이터 복원 (세션 첫 진입 시 daily_orders → session_state) ──
+        _restore_flag = f"_do_restored_{calc_date_str}"
+        if not st.session_state.get(_restore_flag):
+            _saved_daily = get_daily_orders(USERNAME, calc_date_str)
+            if _saved_daily:
+                _sv_map = {}
+                for _sd in _saved_daily:
+                    _k = (str(_sd.get('recipient', '')), str(_sd.get('product_name', '')))
+                    _sv_map[_k] = _sd
+                if _sv_map:
+                    _ids_restore = df['id'].values if 'id' in df.columns else df.index.values
+                    if 'cost_overrides' not in st.session_state:
+                        st.session_state['cost_overrides'] = {}
+                    for _ri, (_ridx, _rrow) in enumerate(df.iterrows()):
+                        _rsk = str(_ids_restore[_ri])
+                        _rk = (str(_rrow.get('수취인명', '')), str(_rrow.get('상품명', '')))
+                        _sv = _sv_map.get(_rk)
+                        if not _sv:
+                            continue
+                        # 발송비/박스비 복원
+                        _per_ship = int(_sv.get('delivery_cost', 0) or 0)
+                        _per_box  = int(_sv.get('box_cost', 0) or 0)
+                        if _per_ship > 0:
+                            st.session_state[f"ship_{_rsk}"] = _per_ship
+                        if _per_box > 0:
+                            st.session_state[f"box_{_rsk}"] = _per_box
+                        # 구입가격 복원 → cost_overrides
+                        _cp = int(_sv.get('cost_price', 0) or 0)
+                        if _cp > 0:
+                            _rkey = f"{_rrow['수취인명']}_{_rrow['상품명']}_{_rsk}_{calc_date_str}"
+                            st.session_state['cost_overrides'][_rkey] = _cp
+            st.session_state[_restore_flag] = True
+
         # 제품 목록 1회 로드 (루프마다 DB 재조회 방지, 영수증 캐시보다 먼저 로드)
         _preload_user = cached_user_products(USERNAME)
         _preload_shared = cached_shared_products()
