@@ -95,17 +95,28 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     excel_pw = _gs("excel_password")
 
     st.header("💰 수익 계산")
-    shipping_cost = int(_gs('shipping_cost') or 1800)
-    box_cost = int(_gs('box_cost') or 300)
-    
-    # ⚠️ 설정값 이상치 체크 (비정상적으로 큰 값 방지)
-    if shipping_cost > 100000: shipping_cost = 1800
-    if box_cost > 10000: box_cost = 300
+    _ship_default = int(_gs('shipping_cost') or 1800)
+    _box_default  = int(_gs('box_cost') or 300)
+    if _ship_default > 100000: _ship_default = 1800
+    if _box_default  > 10000:  _box_default  = 300
 
     _ship_fee_rate_info = float(_gs('naver_ship_fee_commission_rate') or 4.0)
-    st.info(
-        f"📐 수익 = (정산예정 + **실정산배송비**) - (구입가 + 택배비 {fmt(shipping_cost)} + 박스비 {fmt(box_cost)})  "
-        f"· 실정산배송비 = 고객택배비 × {100 - _ship_fee_rate_info:.1f}% (수수료율 {_ship_fee_rate_info}%)"
+
+    # 택배비 / 박스비 인라인 수정 (설정 탭 이동 없이 직접 변경)
+    _fc1, _fc2, _fc3 = st.columns([1.3, 1.3, 4])
+    shipping_cost = int(_fc1.number_input(
+        "📦 기본 택배비 (원)", value=_ship_default, min_value=0, step=100,
+        key="profit_ship_cost",
+        help="이 화면에서만 임시 변경. 기본값은 설정 탭에서 수정하세요."
+    ))
+    box_cost = int(_fc2.number_input(
+        "📦 박스비 (원)", value=_box_default, min_value=0, step=100,
+        key="profit_box_cost",
+        help="이 화면에서만 임시 변경. 기본값은 설정 탭에서 수정하세요."
+    ))
+    _fc3.info(
+        f"📐 수익 = (정산예정 + 실정산배송비) − (구입가 + 택배비 **{fmt(shipping_cost)}** + 박스비 **{fmt(box_cost)}**)  "
+        f"· 실정산배송비 = 고객택배비 × {100 - _ship_fee_rate_info:.1f}%"
     )
 
     col_date, _col_refresh, _col_clean, _ = st.columns([1.5, 1, 1.5, 2.5])
