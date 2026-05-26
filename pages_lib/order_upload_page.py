@@ -422,7 +422,31 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 if notes:
                     st.caption(f"💡 제품 DB: {' / '.join(notes)}")
 
-    if 'orders' in st.session_state and st.session_state['orders'] is not None:
+    # ── 세션 없으면 DB에서 미발송 주문 자동 복원 (페이지 재진입 / 서버 재시작 대비) ──
+    if st.session_state.get('orders') is None:
+        _db_rows = get_active_orders(USERNAME)
+        if _db_rows:
+            _db_df = db_rows_to_orders_df(_db_rows)
+            _db_df['플랫폼'] = _db_df['상품주문번호'].apply(
+                lambda x: '🟡 쿠팡' if '-' in str(x) else '🟢 네이버'
+            )
+            for c in ['수량','최종 상품별 총 주문금액','배송비 합계','제주/도서 추가배송비','정산예정금액']:
+                if c in _db_df.columns:
+                    _db_df[c] = pd.to_numeric(_db_df[c], errors='coerce').fillna(0).astype(int)
+            _db_df = _db_df.sort_values('상품명').reset_index(drop=True)
+            st.session_state['orders']        = _db_df
+            st.session_state['orders_unsaved'] = False
+            st.session_state.pop('orders_api_count', None)
+            if 'order_date' not in st.session_state:
+                st.session_state['order_date'] = datetime.today().strftime("%Y-%m-%d")
+            # 엑셀 다운로드용 full df 복원 (raw_json 기반)
+            if st.session_state.get('order_full') is None:
+                _xl_df = active_orders_to_naver_excel_df(USERNAME)
+                if _xl_df is not None and not _xl_df.empty:
+                    st.session_state['order_full'] = _xl_df
+                    st.session_state['order_excel_bytes'] = None  # lazy 재생성
+
+    if st.session_state.get('orders') is not None:
         df = st.session_state['orders']
         _default_date_str = st.session_state.get('order_date', datetime.today().strftime("%Y-%m-%d"))
 
