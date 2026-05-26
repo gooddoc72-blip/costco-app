@@ -962,7 +962,13 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                 if (p.get('product_no') and p.get('product_no') == _pno)
                                 or p.get('match_keyword') == _kw), None)
                     _sq = max(1, int((_up or {}).get('split_qty') or 1))
-                    _new_unit = (_cost // _qty) * _sq
+                    import re as _re_s2
+                    _prod_name_s2 = str(_r.get('상품명', '') or '')
+                    _sm_s2 = _re_s2.search(r'x\s*(\d+)\s*개', _prod_name_s2, _re_s2.IGNORECASE)
+                    _sell_val_s2 = int(_sm_s2.group(1)) if _sm_s2 else 1
+                    _sell_factor_s2 = _sell_val_s2 if 1 < _sell_val_s2 <= 50 else 1
+                    _denom_s2 = max(1, _qty * _sell_factor_s2)
+                    _new_unit = (_cost * _sq) // _denom_s2
                     upsert_product(USERNAME, _kw or _pno, _kw or _pno, _new_unit,
                                     product_no=_pno, split_qty=_sq,
                                     shipping_fee=(_up or {}).get('shipping_fee'),

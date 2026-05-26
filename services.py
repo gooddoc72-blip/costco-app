@@ -85,9 +85,13 @@ def compute_costs_for_df(username, df, _user_prods=None, _shared_prods=None):
             qty = max(1, int(r.get('수량', 1) or 1))
         except (TypeError, ValueError):
             pass
+        # sell_factor: 상품명 "x N개" 표기 시 1주문 = N개 (profit_calc_page와 동일 로직)
+        _sell_m = re.search(r'x\s*(\d+)\s*개', name, re.IGNORECASE)
+        _sell_val = int(_sell_m.group(1)) if _sell_m else 1
+        _sell_factor = _sell_val if 1 < _sell_val <= 50 else 1
         p = match_product_to_db(username, name, product_no=pno or None,
                                 _user_prods=user_prods, _shared_prods=shared_prods)
-        costs.append(calc_cost(p, qty) if p else 0)
+        costs.append(calc_cost(p, qty * _sell_factor) if p else 0)
     df = df.copy()
     df['구입가격'] = costs
     return df
@@ -231,7 +235,9 @@ def match_product_to_db(username, store_product_name, product_no=None,
                     up = _up_by_pno
         _sq_user   = int(up.get('split_qty') or 1) if up else 1
         _sq_shared = int(sp.get('split_qty') or 1)
-        _sq = max(_sq_user, _sq_shared)   # 둘 중 명시적으로 설정된 값(>1) 우선
+        # 사용자 DB 항목이 있으면 사용자 split_qty 우선 (소분/묶음 개별 설정 존중)
+        # 항목 없으면 공유 DB 값 사용
+        _sq = _sq_user if up else _sq_shared
         # 상품명/키워드의 "x N개" 패턴 자동 추출 제거 — 상품 속성과 주문 처리 변수 분리
         # split_qty는 오직 명시적으로 등록된 DB 값만 사용
         # unit_price: 사용자 DB 값 우선, 없으면 공유 DB 값 사용 (박스 단가 덮어쓰기 방지)
