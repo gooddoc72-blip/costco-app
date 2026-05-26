@@ -551,11 +551,12 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         # ── 액션 바: 3등분 균일 레이아웃 ──
         _act1, _act4, _act5 = st.columns([2, 2, 2])
         _bulk_save = _act1.button(
-            f"💾 선택 {len(_checked_rows)}개 저장" if _checked_rows else "💾 선택 저장",
+            f"📊 {len(_checked_rows)}개 정산저장" if _checked_rows else "📊 정산저장",
             type="primary",
             disabled=not _checked_rows,
             key="bulk_save_kw",
-            use_container_width=True
+            use_container_width=True,
+            help="수익계산 데이터 저장 (제품가격DB 변경 없음)"
         )
         _bulk_price_val = _act4.number_input(
             "일괄 단가 (1주문)",
@@ -820,54 +821,14 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     unsafe_allow_html=True
                 )
 
-        # ── 일괄 저장 처리 ──
+        # ── 정산저장 처리 (수익계산 기록 보존 — 제품가격DB 변경 없음) ──
         if _bulk_save and _checked_rows:
-            _saved_n = 0
-            for _i in _checked_rows:
-                _r = df.loc[_i]
-                _key = f"{_r['수취인명']}_{_r['상품명']}_{_i}_{calc_date_str}"
-                _new_cost = st.session_state.get(f"c_{_i}", int(_r['구입가격']))
-                _new_kw   = st.session_state.get(f"k_{_i}", _r['매칭제품'] or "").strip()
-                _qty = int(_r['수량'])
-                _save_kw = _new_kw or (_r.get('매칭제품', '') or "").strip()
-                _picked_pno = (st.session_state.get('receipt_pick', {}) or {}).get(_key, '')
-                if _save_kw and _new_cost > 0:
-                    _user_match = next(
-                        (up for up in (_preload_user or []) if up.get('match_keyword') == _save_kw),
-                        None
-                    )
-                    _keep_sq = max(1, int((_user_match or {}).get('split_qty') or 1))
-                    _existing_pno = _picked_pno or (_user_match or {}).get('product_no', '') or ''
-                    _existing_fee = (_user_match or {}).get('shipping_fee', None)
-                    _existing_naver_origin = (_user_match or {}).get('naver_origin_pno', '') or ''
-                    # ⭐ sell_factor 보정: 상품명에 "x N개" 표기 시 1주문=N개
-                    # 매칭: cost = (unit_price/sq) × (qty × sell_factor)
-                    # 저장: unit_price = (사용자입력 × sq) / (qty × sell_factor)
-                    import re as _re_bs
-                    _prod_name_bs = str(_r.get('상품명', '') or '')
-                    _sm_bs = _re_bs.search(r'x\s*(\d+)\s*개', _prod_name_bs, _re_bs.IGNORECASE)
-                    _sell_val_bs = int(_sm_bs.group(1)) if _sm_bs else 1
-                    _sell_factor_bs = _sell_val_bs if 1 < _sell_val_bs <= 50 else 1
-                    _denom_bs = max(1, _qty * _sell_factor_bs)
-                    _save_price = (_new_cost * _keep_sq) // _denom_bs
-                    # 주문의 네이버 상품번호를 naver_origin_pno로 저장 (소분 매칭 정확도 향상)
-                    _order_nv_pno = str(_r.get('product_no', '') or '').strip()
-                    upsert_product(USERNAME, _save_kw, _save_kw, _save_price,
-                                   product_no=_existing_pno, split_qty=_keep_sq,
-                                   naver_origin_pno=_order_nv_pno or _existing_naver_origin,
-                                   shipping_fee=_existing_fee,
-                                   auto_split_costco_no=False)  # 부작용으로 비활성화
-                    _saved_n += 1
-            invalidate_data_cache()
+            save_daily_orders(USERNAME, calc_date_str, df, shipping_cost, box_cost)
             for _k in list(st.session_state.keys()):
-                if _k.startswith('sel_p_') or _k.startswith('c_') or _k.startswith('k_'):
+                if _k.startswith('sel_p_'):
                     st.session_state.pop(_k, None)
-            st.session_state['cost_overrides'] = {}
-            st.session_state['kw_overrides'] = {}
-            st.session_state['receipt_pick'] = {}
-            st.session_state.pop('_pcalc_match_cache', None)
             st.session_state['_profit_save_toast'] = (
-                f"✅ {_saved_n}개 저장 완료! 단가가 제품 DB에 반영되었습니다."
+                f"✅ {len(_checked_rows)}개 정산 데이터 저장 완료 (제품가격DB 미변경)"
             )
             st.rerun()
 
@@ -888,7 +849,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 st.session_state['_profit_save_toast'] = f"✅ {len(_checked_rows)}개 항목에 {fmt(_apply_price)}원 일괄 적용 완료!"
                 st.rerun()
 
-        if st.button("💾 수정사항 반영", key="recalc", type="primary"):
+        if st.button("💾 제품가격 DB 저장", key="recalc", type="primary",
+                     help="단가 수정사항을 제품가격 DB에 반영합니다"):
             save_daily_orders(USERNAME, calc_date_str, df, shipping_cost, box_cost)
             import re as _re_save
             _overrides = st.session_state.get('cost_overrides', {}) or {}
@@ -934,7 +896,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             st.session_state['cost_overrides'] = {}
             st.session_state['kw_overrides'] = {}
             st.session_state['receipt_pick'] = {}
-            st.session_state['_profit_save_toast'] = f"✅ {calc_date_str} 수정사항 + 제품DB 매입가 저장 완료!"
+            st.session_state['_profit_save_toast'] = f"✅ {calc_date_str} 제품가격 DB 저장 완료!"
             st.rerun()
 
         # ── 페이지 네비게이션 ──
