@@ -177,6 +177,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 st.info(f"미발송 주문이 없습니다. (API 수집 {api_count}건)")
             else:
                 df = db_rows_to_orders_df(active_rows)
+                df['플랫폼'] = '🟢 네이버'
                 for c in ['수량','최종 상품별 총 주문금액','배송비 합계','제주/도서 추가배송비','정산예정금액']:
                     if c in df.columns:
                         df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0).astype(int)
@@ -328,6 +329,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     save_daily=False,  # 사용자가 💾 저장 버튼 눌러야 daily_orders 반영
                 )
                 cq_df = _cq_result['df']  # 구입가격 채워진 df
+                cq_df['플랫폼'] = '🟡 쿠팡'
 
                 # 송장용 전체 저장 + Excel bytes 미리 생성
                 st.session_state['order_full'] = cq_df.copy()
@@ -522,7 +524,9 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             _excel_bytes = _tmp.getvalue()
             st.session_state['order_excel_bytes'] = _excel_bytes
         # ── 배송준비건 인쇄용 HTML 생성 ────────────────────
-        _prep_disp = df[['수취인명','상품명','옵션정보','수량','최종 상품별 총 주문금액','배송비 합계','정산예정금액']].copy()
+        _disp_base = ['수취인명','상품명','옵션정보','수량','최종 상품별 총 주문금액','배송비 합계','정산예정금액']
+        _disp_cols = (['플랫폼'] if '플랫폼' in df.columns else []) + _disp_base
+        _prep_disp = df[[c for c in _disp_cols if c in df.columns]].copy()
         _prep_rows_html = []
         for _, _pr in _prep_disp.iterrows():
             _prep_rows_html.append(
