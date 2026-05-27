@@ -78,11 +78,11 @@ def get_orders(access_key: str, secret_key: str, vendor_id: str,
     d_to = date_to or today
 
     if date_from:
-        # 수동 조회: 사용자 지정 범위를 모든 상태에 동일 적용
+        # 수동 조회: 사용자 지정 날짜 기준, ACCEPT/INSTRUCT/DEPARTURE는 30일 연장 적용
         d_from_normal = date_from
-        d_from_long   = date_from
+        d_from_long   = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
     else:
-        # 자동 조회: ACCEPT는 days_back, INSTRUCT/DEPARTURE는 30일(미처리 체류 대비)
+        # 자동 조회: 전체 상태 30일 기준
         d_from_normal = (datetime.now() - timedelta(days=days_back)).strftime("%Y-%m-%d")
         d_from_long   = (datetime.now() - timedelta(days=max(days_back, 30))).strftime("%Y-%m-%d")
 
@@ -94,7 +94,8 @@ def get_orders(access_key: str, secret_key: str, vendor_id: str,
     all_rows = []
     all_errors = []
     for st in statuses:
-        _d_from = d_from_long if st in ("INSTRUCT", "DEPARTURE") else d_from_normal
+        # ACCEPT(주문중) 포함 — 미처리 체류 30일 대비
+        _d_from = d_from_long if st in ("ACCEPT", "INSTRUCT", "DEPARTURE") else d_from_normal
         rows, err = _fetch_orders_for_status(
             access_key, secret_key, vendor_id, st, _d_from, d_to
         )
@@ -183,8 +184,9 @@ def _parse_order(order: dict) -> list:
 
     rows = []
     for idx, item in enumerate(items):
-        # 취소 아이템 제외
-        if item.get("cancelType"):
+        # 취소 아이템 제외 (cancelType이 null/""/NONE이 아닌 실제 취소 코드일 때만)
+        _cancel = str(item.get("cancelType") or "").strip().upper()
+        if _cancel and _cancel != "NONE":
             continue
 
         qty        = int(item.get("quantity") or 1)

@@ -290,7 +290,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             _cq_status = _cq_status_opts[_cq_status_label]
         with cq_c2:
             _cq_date_from = st.date_input(
-                "시작일", value=datetime.today() - timedelta(days=7),
+                "시작일", value=datetime.today() - timedelta(days=30),
                 key="cq_date_from",
             )
         with cq_c3:
