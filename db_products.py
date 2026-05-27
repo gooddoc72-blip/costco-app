@@ -254,6 +254,12 @@ def init_user_db(username):
             c.execute(col_sql)
         except Exception:
             pass
+    # profit_settlements + settlement_overrides 테이블
+    try:
+        from db_profit_calc import _ensure_tables as _pf_ensure
+        _pf_ensure(conn)
+    except Exception:
+        pass
     conn.commit()
     conn.close()
 

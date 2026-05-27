@@ -25,6 +25,7 @@ from db import (
     upsert_user_private, get_all_products_merged, upsert_product,
     get_product_detail,
     save_daily_orders, get_daily_orders, save_order_history, search_order_history,
+    save_profit_settlements, get_profit_settlements, get_settlement_overrides_map, save_settlement_override,
     save_receipt_items, get_recent_receipt_items, delete_receipt_items_by_date, get_receipt_dates,
     get_date_range_stats, get_monthly_stats, get_product_ranking, get_saved_dates,
     get_dashboard_kpi, get_daily_profit_trend, get_week_best_products,
@@ -266,37 +267,78 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             st.caption("💡 영수증 PDF 업로드 시 영수증 매칭 기반 매입가 보정이 추가됩니다 (선택사항).")
         unique_products = df['상품명'].unique().tolist()
 
-        # ── 정산 저장 데이터 복원 (세션 첫 진입 시 daily_orders → session_state) ──
+        # ── 정산 저장 데이터 복원 (세션 첫 진입 시 profit_settlements → session_state) ──
         _restore_flag = f"_do_restored_{calc_date_str}"
         if not st.session_state.get(_restore_flag):
-            _saved_daily = get_daily_orders(USERNAME, calc_date_str)
-            if _saved_daily:
-                _sv_map = {}
-                for _sd in _saved_daily:
-                    _k = (str(_sd.get('recipient', '')), str(_sd.get('product_name', '')))
-                    _sv_map[_k] = _sd
-                if _sv_map:
-                    _ids_restore = df['id'].values if 'id' in df.columns else df.index.values
-                    if 'cost_overrides' not in st.session_state:
-                        st.session_state['cost_overrides'] = {}
+            _ids_restore = df['id'].values if 'id' in df.columns else df.index.values
+            if 'cost_overrides' not in st.session_state:
+                st.session_state['cost_overrides'] = {}
+            if 'kw_overrides' not in st.session_state:
+                st.session_state['kw_overrides'] = {}
+
+            # 1순위: profit_settlements (새 DB)
+            _saved_ps = get_profit_settlements(USERNAME, calc_date_str)
+            if _saved_ps:
+                _sv_map = {(str(_sd['recipient']), str(_sd['product_name'])): _sd
+                           for _sd in _saved_ps}
+                for _ri, (_ridx, _rrow) in enumerate(df.iterrows()):
+                    _rsk = str(_ids_restore[_ri])
+                    _rk = (str(_rrow.get('수취인명', '')), str(_rrow.get('상품명', '')))
+                    _sv = _sv_map.get(_rk)
+                    if not _sv:
+                        continue
+                    _per_ship = int(_sv.get('delivery_cost', 0) or 0)
+                    _per_box  = int(_sv.get('box_cost', 0) or 0)
+                    if _per_ship > 0:
+                        st.session_state[f"ship_{_rsk}"] = _per_ship
+                    if _per_box > 0:
+                        st.session_state[f"box_{_rsk}"] = _per_box
+                    _cp = int(_sv.get('cost_price', 0) or 0)
+                    if _cp > 0:
+                        _rkey = f"{_rrow['수취인명']}_{_rrow['상품명']}_{_rsk}_{calc_date_str}"
+                        st.session_state['cost_overrides'][_rkey] = _cp
+                    _kw_saved = str(_sv.get('matched_keyword', '') or '')
+                    if _kw_saved:
+                        st.session_state['kw_overrides'][_rsk] = _kw_saved
+            else:
+                # 2순위 fallback: daily_orders (구 DB 호환)
+                _saved_daily = get_daily_orders(USERNAME, calc_date_str)
+                if _saved_daily:
+                    _sv_map = {(str(_sd.get('recipient', '')), str(_sd.get('product_name', ''))): _sd
+                               for _sd in _saved_daily}
                     for _ri, (_ridx, _rrow) in enumerate(df.iterrows()):
                         _rsk = str(_ids_restore[_ri])
                         _rk = (str(_rrow.get('수취인명', '')), str(_rrow.get('상품명', '')))
                         _sv = _sv_map.get(_rk)
                         if not _sv:
                             continue
-                        # 발송비/박스비 복원
                         _per_ship = int(_sv.get('delivery_cost', 0) or 0)
                         _per_box  = int(_sv.get('box_cost', 0) or 0)
                         if _per_ship > 0:
                             st.session_state[f"ship_{_rsk}"] = _per_ship
                         if _per_box > 0:
                             st.session_state[f"box_{_rsk}"] = _per_box
-                        # 구입가격 복원 → cost_overrides
                         _cp = int(_sv.get('cost_price', 0) or 0)
                         if _cp > 0:
                             _rkey = f"{_rrow['수취인명']}_{_rrow['상품명']}_{_rsk}_{calc_date_str}"
                             st.session_state['cost_overrides'][_rkey] = _cp
+
+            # 영구 정산매칭 오버라이드 적용 (저장된 값 없는 행에만)
+            _so_map = get_settlement_overrides_map(USERNAME)
+            if _so_map:
+                for _ri, (_ridx, _rrow) in enumerate(df.iterrows()):
+                    _rsk = str(_ids_restore[_ri])
+                    _rk = (str(_rrow.get('수취인명', '')), str(_rrow.get('상품명', '')))
+                    _so = _so_map.get(_rk)
+                    if not _so:
+                        continue
+                    if _so.get('override_keyword') and _rsk not in st.session_state['kw_overrides']:
+                        st.session_state['kw_overrides'][_rsk] = _so['override_keyword']
+                    if int(_so.get('override_cost', 0) or 0) > 0:
+                        _rkey = f"{_rrow['수취인명']}_{_rrow['상품명']}_{_rsk}_{calc_date_str}"
+                        if _rkey not in st.session_state['cost_overrides']:
+                            st.session_state['cost_overrides'][_rkey] = _so['override_cost']
+
             st.session_state[_restore_flag] = True
 
         # 제품 목록 1회 로드 (루프마다 DB 재조회 방지, 영수증 캐시보다 먼저 로드)
@@ -856,7 +898,58 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
 
         # ── 정산저장 처리 (수익계산 기록 보존 — 제품가격DB 변경 없음) ──
         if _bulk_save and _checked_rows:
-            save_daily_orders(USERNAME, calc_date_str, df, shipping_cost, box_cost)
+            _ps_save_rows = []
+            _cost_ov_s = st.session_state.get('cost_overrides', {}) or {}
+            _kw_ov_s   = st.session_state.get('kw_overrides', {}) or {}
+            _ids_save  = df['id'].values if 'id' in df.columns else df.index.values
+            import re as _re_ps
+            for _si, (_sidx, _sr) in enumerate(df.iterrows()):
+                _ssk  = str(_ids_save[_si])
+                _skey = f"{_sr['수취인명']}_{_sr['상품명']}_{_ssk}_{calc_date_str}"
+                _cost = _cost_ov_s.get(_skey, int(_sr.get('구입가격', 0) or 0))
+                _per_ship = int(st.session_state.get(f"ship_{_ssk}", shipping_cost) or shipping_cost)
+                _per_box  = int(st.session_state.get(f"box_{_ssk}", box_cost) or box_cost)
+                _kw_s     = _kw_ov_s.get(_ssk) or str(_sr.get('매칭제품', '') or '')
+                _qty_s    = max(1, int(_sr.get('수량', 1) or 1))
+                _settle_s = int(_sr.get('정산예정금액', 0) or 0)
+                _ship_s   = int(_sr.get('배송비 합계', 0) or 0)
+                _profit_s = (_settle_s + _ship_s) - (_cost + _per_ship + _per_box)
+                # sell_factor (상품명 "x N개" 패턴)
+                _sm_ps = _re_ps.search(r'x\s*(\d+)\s*개', str(_sr.get('상품명', '') or ''), _re_ps.IGNORECASE)
+                _sf_ps = int(_sm_ps.group(1)) if _sm_ps and 1 < int(_sm_ps.group(1)) <= 50 else 1
+                _ps_save_rows.append({
+                    'order_no':           str(_sidx),
+                    'recipient':          str(_sr.get('수취인명', '') or ''),
+                    'product_name':       str(_sr.get('상품명', '') or ''),
+                    'product_no':         str(_sr.get('상품번호', '') or _sr.get('product_no', '') or ''),
+                    'option_info':        str(_sr.get('옵션정보', '') or ''),
+                    'qty':                _qty_s,
+                    'order_amount':       int(_sr.get('최종 상품별 총 주문금액', 0) or 0),
+                    'shipping_fee':       _ship_s,
+                    'extra_shipping':     int(_sr.get('제주/도서 추가배송비', 0) or 0),
+                    'settlement_amount':  _settle_s,
+                    'cost_price':         _cost,
+                    'delivery_cost':      _per_ship,
+                    'box_cost':           _per_box,
+                    'profit':             _profit_s,
+                    'matched_keyword':    _kw_s,
+                    'matched_product_no': str(_sr.get('매칭상품번호', '') or ''),
+                    'match_source':       str(_sr.get('매칭출처', '') or ''),
+                    'split_qty':          int(_sr.get('소분단위', 1) or 1),
+                    'sell_factor':        _sf_ps,
+                })
+                # 수동 오버라이드는 영구 저장 (정산매칭 DB)
+                _has_kw_ov_s  = _ssk in _kw_ov_s
+                _has_cost_ov_s = _skey in _cost_ov_s
+                if _has_kw_ov_s or _has_cost_ov_s:
+                    save_settlement_override(
+                        USERNAME,
+                        str(_sr.get('수취인명', '') or ''),
+                        str(_sr.get('상품명', '') or ''),
+                        keyword=_kw_s if _has_kw_ov_s else '',
+                        cost=_cost if _has_cost_ov_s else 0,
+                    )
+            save_profit_settlements(USERNAME, calc_date_str, _ps_save_rows)
             for _k in list(st.session_state.keys()):
                 if _k.startswith('sel_p_'):
                     st.session_state.pop(_k, None)
@@ -885,6 +978,39 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         if st.button("💾 제품가격 DB 저장", key="recalc", type="primary",
                      help="단가 수정사항을 제품가격 DB에 반영합니다"):
             save_daily_orders(USERNAME, calc_date_str, df, shipping_cost, box_cost)
+            # 수익계산 결과도 함께 저장 (profit_settlements)
+            _ps_rc_rows = []
+            _ids_rc = df['id'].values if 'id' in df.columns else df.index.values
+            _kw_ov_rc = st.session_state.get('kw_overrides', {}) or {}
+            _co_rc = st.session_state.get('cost_overrides', {}) or {}
+            import re as _re_rc
+            for _rci, (_rcidx, _rcr) in enumerate(df.iterrows()):
+                _rcsk   = str(_ids_rc[_rci])
+                _rckey  = f"{_rcr['수취인명']}_{_rcr['상품명']}_{_rcsk}_{calc_date_str}"
+                _rccost = _co_rc.get(_rckey, int(_rcr.get('구입가격', 0) or 0))
+                _rcship = int(st.session_state.get(f"ship_{_rcsk}", shipping_cost) or shipping_cost)
+                _rcbox  = int(st.session_state.get(f"box_{_rcsk}", box_cost) or box_cost)
+                _rckw   = _kw_ov_rc.get(_rcsk) or str(_rcr.get('매칭제품', '') or '')
+                _rcsettle = int(_rcr.get('정산예정금액', 0) or 0)
+                _rcshipf  = int(_rcr.get('배송비 합계', 0) or 0)
+                _sm_rc  = _re_rc.search(r'x\s*(\d+)\s*개', str(_rcr.get('상품명', '') or ''), _re_rc.IGNORECASE)
+                _sf_rc  = int(_sm_rc.group(1)) if _sm_rc and 1 < int(_sm_rc.group(1)) <= 50 else 1
+                _ps_rc_rows.append({
+                    'order_no': str(_rcidx), 'recipient': str(_rcr.get('수취인명', '') or ''),
+                    'product_name': str(_rcr.get('상품명', '') or ''),
+                    'product_no': str(_rcr.get('상품번호', '') or _rcr.get('product_no', '') or ''),
+                    'option_info': str(_rcr.get('옵션정보', '') or ''),
+                    'qty': max(1, int(_rcr.get('수량', 1) or 1)),
+                    'order_amount': int(_rcr.get('최종 상품별 총 주문금액', 0) or 0),
+                    'shipping_fee': _rcshipf, 'extra_shipping': int(_rcr.get('제주/도서 추가배송비', 0) or 0),
+                    'settlement_amount': _rcsettle, 'cost_price': _rccost,
+                    'delivery_cost': _rcship, 'box_cost': _rcbox,
+                    'profit': (_rcsettle + _rcshipf) - (_rccost + _rcship + _rcbox),
+                    'matched_keyword': _rckw, 'matched_product_no': str(_rcr.get('매칭상품번호', '') or ''),
+                    'match_source': str(_rcr.get('매칭출처', '') or ''),
+                    'split_qty': int(_rcr.get('소분단위', 1) or 1), 'sell_factor': _sf_rc,
+                })
+            save_profit_settlements(USERNAME, calc_date_str, _ps_rc_rows)
             import re as _re_save
             _overrides = st.session_state.get('cost_overrides', {}) or {}
             for _idx_save, _r in df.iterrows():
@@ -991,6 +1117,39 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         st.divider()
         if st.button("💾 정산 데이터 저장", type="primary"):
             save_daily_orders(USERNAME, calc_date_str, df, shipping_cost, box_cost)
+            # 수익계산 결과 profit_settlements에도 저장
+            _ps_all_rows = []
+            _ids_all = df['id'].values if 'id' in df.columns else df.index.values
+            _kw_ov_all = st.session_state.get('kw_overrides', {}) or {}
+            _co_all = st.session_state.get('cost_overrides', {}) or {}
+            import re as _re_all
+            for _alli, (_allidx, _allr) in enumerate(df.iterrows()):
+                _allsk  = str(_ids_all[_alli])
+                _allkey = f"{_allr['수취인명']}_{_allr['상품명']}_{_allsk}_{calc_date_str}"
+                _allcost = _co_all.get(_allkey, int(_allr.get('구입가격', 0) or 0))
+                _allship = int(st.session_state.get(f"ship_{_allsk}", shipping_cost) or shipping_cost)
+                _allbox  = int(st.session_state.get(f"box_{_allsk}", box_cost) or box_cost)
+                _allkw   = _kw_ov_all.get(_allsk) or str(_allr.get('매칭제품', '') or '')
+                _alls    = int(_allr.get('정산예정금액', 0) or 0)
+                _allsf_m = _re_all.search(r'x\s*(\d+)\s*개', str(_allr.get('상품명', '') or ''), _re_all.IGNORECASE)
+                _allsf   = int(_allsf_m.group(1)) if _allsf_m and 1 < int(_allsf_m.group(1)) <= 50 else 1
+                _allshipf = int(_allr.get('배송비 합계', 0) or 0)
+                _ps_all_rows.append({
+                    'order_no': str(_allidx), 'recipient': str(_allr.get('수취인명', '') or ''),
+                    'product_name': str(_allr.get('상품명', '') or ''),
+                    'product_no': str(_allr.get('상품번호', '') or _allr.get('product_no', '') or ''),
+                    'option_info': str(_allr.get('옵션정보', '') or ''),
+                    'qty': max(1, int(_allr.get('수량', 1) or 1)),
+                    'order_amount': int(_allr.get('최종 상품별 총 주문금액', 0) or 0),
+                    'shipping_fee': _allshipf, 'extra_shipping': int(_allr.get('제주/도서 추가배송비', 0) or 0),
+                    'settlement_amount': _alls, 'cost_price': _allcost,
+                    'delivery_cost': _allship, 'box_cost': _allbox,
+                    'profit': (_alls + _allshipf) - (_allcost + _allship + _allbox),
+                    'matched_keyword': _allkw, 'matched_product_no': str(_allr.get('매칭상품번호', '') or ''),
+                    'match_source': str(_allr.get('매칭출처', '') or ''),
+                    'split_qty': int(_allr.get('소분단위', 1) or 1), 'sell_factor': _allsf,
+                })
+            save_profit_settlements(USERNAME, calc_date_str, _ps_all_rows)
             # Phase 1: upsert_product로 매칭 행 저장 — 사용자가 명시적으로 수정한 행만
             _overrides2 = st.session_state.get('cost_overrides', {}) or {}
             _pno_units = {}
