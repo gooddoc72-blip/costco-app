@@ -212,6 +212,15 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 df['구입가격'] = costs
                 df['소분단위'] = sqtys_ord
 
+                # 기존 쿠팡 주문 보존 후 병합 (상품주문번호에 '-' 포함 = 쿠팡)
+                _prev_orders = st.session_state.get('orders')
+                if _prev_orders is not None and not _prev_orders.empty:
+                    _coupang_prev = _prev_orders[
+                        _prev_orders['상품주문번호'].astype(str).str.contains('-', na=False)
+                    ]
+                    if not _coupang_prev.empty:
+                        df = pd.concat([df, _coupang_prev], ignore_index=True).sort_values('상품명').reset_index(drop=True)
+
                 # 화면용 df 저장
                 st.session_state['orders'] = df
                 st.session_state['order_date'] = datetime.today().strftime("%Y-%m-%d")
@@ -348,6 +357,16 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 with pd.ExcelWriter(_cq_xl, engine='openpyxl') as _w:
                     cq_df.to_excel(_w, index=False)
                 st.session_state['order_excel_bytes'] = _cq_xl.getvalue()
+
+                # 기존 네이버 주문 보존 후 병합 (상품주문번호에 '-' 없음 = 네이버)
+                _prev_orders = st.session_state.get('orders')
+                if _prev_orders is not None and not _prev_orders.empty:
+                    _naver_prev = _prev_orders[
+                        ~_prev_orders['상품주문번호'].astype(str).str.contains('-', na=False)
+                    ]
+                    if not _naver_prev.empty:
+                        cq_df = pd.concat([_naver_prev, cq_df], ignore_index=True).sort_values('상품명').reset_index(drop=True)
+
                 st.session_state['orders'] = cq_df
                 st.session_state['order_date'] = datetime.today().strftime("%Y-%m-%d")
                 st.session_state['orders_unsaved'] = True  # 저장 대기 상태
@@ -361,6 +380,13 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
 
                 st.success(f"✅ 쿠팡 주문 {len(cq_df)}건 조회 완료!")
                 st.rerun()
+
+        # 로드된 쿠팡 주문 수 표시
+        _cq_loaded = st.session_state.get('orders')
+        if _cq_loaded is not None and not _cq_loaded.empty:
+            _cq_cnt = int(('플랫폼' in _cq_loaded.columns and _cq_loaded['플랫폼'].str.contains('쿠팡', na=False).sum()) or 0)
+            if _cq_cnt > 0:
+                st.success(f"✅ 쿠팡 주문 {_cq_cnt}건 로드됨 — 아래 **📦 주문 목록** 섹션에서 확인·저장하세요")
 
         # 진단 정보 (rerun 후에도 유지 — session_state 기반)
         _last_dbg = st.session_state.get('_cq_last_debug')
