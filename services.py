@@ -73,15 +73,12 @@ def compute_costs_for_df(username, df, _user_prods=None, _shared_prods=None):
     costs = []
     sqtys = []
     for _, r in df.iterrows():
+        _existing_int = 0
         if has_cost:
-            existing = r.get('구입가격')
             try:
-                existing_int = int(existing or 0)
+                _existing_int = int(r.get('구입가격') or 0)
             except (TypeError, ValueError):
-                existing_int = 0
-            if existing_int > 0:
-                costs.append(existing_int)
-                continue
+                _existing_int = 0
         name = str(r.get('상품명', '') or '')
         pno = str(r.get('상품번호', '') or '').strip() if has_pno else ''
         qty = 1
@@ -95,7 +92,8 @@ def compute_costs_for_df(username, df, _user_prods=None, _shared_prods=None):
         _sell_factor = _sell_val if 1 < _sell_val <= 50 else 1
         p = match_product_to_db(username, name, product_no=pno or None,
                                 _user_prods=user_prods, _shared_prods=shared_prods)
-        costs.append(calc_cost(p, qty * _sell_factor) if p else 0)
+        # 기존 구입가격이 있으면 그대로 사용 (sqtys는 항상 append — 길이 불일치 방지)
+        costs.append(_existing_int if _existing_int > 0 else (calc_cost(p, qty * _sell_factor) if p else 0))
         sqtys.append(max(1, int((p or {}).get('split_qty', 1) or 1)))
     df = df.copy()
     df['구입가격'] = costs
