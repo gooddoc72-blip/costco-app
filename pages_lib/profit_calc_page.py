@@ -215,7 +215,54 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         'cost_price': '구입가격'
     }
 
-    if _dispatched_rows:
+    # 0순위: profit_settlements (정산저장된 확정 데이터 — 최우선)
+    _ps_rows_src = get_profit_settlements(USERNAME, calc_date_str)
+    if _ps_rows_src:
+        df = pd.DataFrame(_ps_rows_src)
+        _ps_col_map = {
+            'recipient': '수취인명', 'product_name': '상품명',
+            'option_info': '옵션정보', 'qty': '수량',
+            'order_amount': '최종 상품별 총 주문금액',
+            'shipping_fee': '배송비 합계',
+            'extra_shipping': '제주/도서 추가배송비',
+            'settlement_amount': '정산예정금액',
+            'cost_price': '구입가격',
+            'delivery_cost': '택배원가',
+            'box_cost': '박스원가',
+        }
+        df = df.rename(columns=_ps_col_map)
+        if 'id' in df.columns:
+            df = df.drop(columns=['id'])  # profit_settlements PK 제거 — order_no를 stable_key로 사용
+        if 'order_no' in df.columns:
+            df.index = df['order_no'].astype(str)
+            df.index.name = None
+        _src_label = f"✅ 정산완료 ({len(df)}건) — profit_settlements"
+        # session_state에 저장값 복합키로 직접 주입 (kw/cost/ship/box 모두)
+        _restore_flag_ps = f"_do_restored_{calc_date_str}"
+        if not st.session_state.get(_restore_flag_ps):
+            if 'cost_overrides' not in st.session_state:
+                st.session_state['cost_overrides'] = {}
+            if 'kw_overrides' not in st.session_state:
+                st.session_state['kw_overrides'] = {}
+            _ids_ps = df.index.values
+            for _pi, (_pidx, _pr) in enumerate(df.iterrows()):
+                _psk = str(_ids_ps[_pi])
+                _pkey = f"{_pr.get('수취인명', '')}_{_pr.get('상품명', '')}_{_psk}_{calc_date_str}"
+                _pcp = int(_pr.get('구입가격', 0) or 0)
+                if _pcp > 0:
+                    st.session_state['cost_overrides'][_pkey] = _pcp
+                _pship = int(_pr.get('택배원가', 0) or 0)
+                if _pship > 0:
+                    st.session_state[f"ship_{_psk}"] = _pship
+                _pbox = int(_pr.get('박스원가', 0) or 0)
+                if _pbox > 0:
+                    st.session_state[f"box_{_psk}"] = _pbox
+                _pkw = str(_pr.get('matched_keyword') or '')
+                if _pkw:
+                    st.session_state['kw_overrides'][_pkey] = _pkw
+            st.session_state[_restore_flag_ps] = True
+
+    elif _dispatched_rows:
         df = pd.DataFrame(_dispatched_rows)
         df = df.rename(columns=rename_map)
         # order_no를 stable_key 로 사용 (dispatch_log UNIQUE)
