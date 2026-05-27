@@ -93,19 +93,22 @@ def get_orders(access_key: str, secret_key: str, vendor_id: str,
 
     all_rows = []
     all_errors = []
+    per_status = {}  # 진단 정보: {status: {"count", "error", "from", "to", "debug"}}
     for st in statuses:
         # ACCEPT(주문중) 포함 — 미처리 체류 30일 대비
         _d_from = d_from_long if st in ("ACCEPT", "INSTRUCT", "DEPARTURE") else d_from_normal
-        rows, err = _fetch_orders_for_status(
+        rows, err, debug_info = _fetch_orders_for_status(
             access_key, secret_key, vendor_id, st, _d_from, d_to
         )
+        per_status[st] = {"count": len(rows), "error": err,
+                          "from": _d_from, "to": d_to, "debug": debug_info}
         if err:
             all_errors.append(f"{st}: {err}")
         else:
             all_rows.extend(rows)
 
     if not all_rows and all_errors:
-        return [], " | ".join(all_errors)
+        return [], " | ".join(all_errors), per_status
 
     # 중복 제거 (상품주문번호 기준)
     seen = set()
@@ -116,15 +119,18 @@ def get_orders(access_key: str, secret_key: str, vendor_id: str,
             seen.add(key)
             deduped.append(r)
 
-    return deduped, None
+    return deduped, None, per_status
 
 
 def _fetch_orders_for_status(access_key, secret_key, vendor_id,
                               status, d_from, d_to):
-    """단일 상태 주문 목록 페이지네이션 조회."""
+    """단일 상태 주문 목록 페이지네이션 조회.
+    Returns: (rows, error_or_None, first_page_debug_or_None)
+    """
     path = f"/v2/providers/openapi/apis/api/v4/vendors/{vendor_id}/ordersheets"
     rows = []
     next_token = None
+    _first_debug = None
 
     while True:
         params = {
@@ -146,7 +152,7 @@ def _fetch_orders_for_status(access_key, secret_key, vendor_id,
         try:
             resp = requests.get(_prep.url, headers=headers, timeout=30)
         except requests.exceptions.RequestException as e:
-            return [], f"네트워크 오류: {e}"
+            return [], f"네트워크 오류: {e}", _first_debug
 
         if resp.status_code != 200:
             try:
@@ -154,11 +160,28 @@ def _fetch_orders_for_status(access_key, secret_key, vendor_id,
                 msg = body.get("message") or body.get("errorMessage") or resp.text[:400]
             except Exception:
                 msg = resp.text[:400]
-            return [], f"API 오류 [{resp.status_code}]: {msg}"
+            return [], f"API 오류 [{resp.status_code}]: {msg}", _first_debug
 
         body = resp.json()
+
+        # 첫 응답 진단 정보 수집 (디버그용)
+        if _first_debug is None:
+            _data_sample = body.get("data")
+            _first_order = (_data_sample[0] if isinstance(_data_sample, list) and _data_sample else {})
+            _first_debug = {
+                "code": body.get("code"),
+                "message": body.get("message"),
+                "data_type": type(_data_sample).__name__,
+                "data_count": len(_data_sample) if isinstance(_data_sample, list) else "not-list",
+                "first_order_keys": list(_first_order.keys()) if _first_order else [],
+                "items_field": ("items" if "items" in _first_order
+                                else "orderItems" if "orderItems" in _first_order
+                                else "없음"),
+                "raw_snippet": str(body)[:600],
+            }
+
         if str(body.get("code", "")) != "200":
-            return [], f"쿠팡 응답 오류: {body.get('message', body)}"
+            return [], f"쿠팡 응답 오류: {body.get('message', body)}", _first_debug
 
         data = body.get("data") or []
         for order in data:
@@ -169,7 +192,7 @@ def _fetch_orders_for_status(access_key, secret_key, vendor_id,
         if not next_token or not data:
             break
 
-    return rows, None
+    return rows, None, _first_debug
 
 
 def _parse_order(order: dict) -> list:
@@ -180,7 +203,11 @@ def _parse_order(order: dict) -> list:
 
     # 주문 레벨 배송비 (아이템이 여러 개면 첫 아이템에만 부과, 나머지 0)
     order_ship = int(order.get("shippingPrice") or 0)
-    items = order.get("items") or []
+    # 필드명 fallback: "items" / "orderItems" / "orderItem" (API 버전마다 상이)
+    items = (order.get("items")
+             or order.get("orderItems")
+             or order.get("orderItem")
+             or [])
 
     rows = []
     for idx, item in enumerate(items):
@@ -305,7 +332,7 @@ def test_connection(access_key: str, secret_key: str, vendor_id: str):
         (ok: bool, message: str)
     """
     today = datetime.now().strftime("%Y-%m-%d")
-    rows, err = _fetch_orders_for_status(
+    rows, err, _ = _fetch_orders_for_status(
         access_key, secret_key, vendor_id, "ACCEPT", today, today
     )
     if err:

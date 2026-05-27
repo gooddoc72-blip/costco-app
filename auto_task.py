@@ -515,8 +515,8 @@ def run_fetch_orders_task(username="admin"):
         try:
             sys.path.insert(0, BASE_DIR)
             import coupang_api
-            rows, err = coupang_api.get_orders(cpg_access, cpg_secret, cpg_vendor,
-                                               status="ALL", days_back=_cpg_days)
+            rows, err, _ = coupang_api.get_orders(cpg_access, cpg_secret, cpg_vendor,
+                                                  status="ALL", days_back=_cpg_days)
             if err:
                 log(f"  ⚠️ 쿠팡 오류: {err}")
                 errors.append(f"쿠팡: {err}")

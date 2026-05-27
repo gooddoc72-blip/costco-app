@@ -307,7 +307,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             _cq_from_str = _cq_date_from.strftime("%Y-%m-%d")
             _cq_to_str   = _cq_date_to.strftime("%Y-%m-%d")
             with st.spinner(f"쿠팡 Wing API 조회 중... ({_cq_from_str} ~ {_cq_to_str})"):
-                cq_rows, cq_err = coupang_api.get_orders(
+                cq_rows, cq_err, cq_debug = coupang_api.get_orders(
                     cq_access, cq_secret, cq_vendor,
                     status=_cq_status,
                     date_from=_cq_from_str,
@@ -317,6 +317,28 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 st.error(f"❌ {cq_err}")
             elif not cq_rows:
                 st.info("조회된 쿠팡 주문이 없습니다.")
+            # 진단 정보 (항상 표시 — 결과 있어도 표시)
+            if cq_debug:
+                with st.expander("🔍 쿠팡 API 조회 진단", expanded=not cq_rows):
+                    for _st_k, _st_v in cq_debug.items():
+                        _cnt = _st_v.get("count", 0)
+                        _err = _st_v.get("error")
+                        _frm = _st_v.get("from", "")
+                        _to  = _st_v.get("to", "")
+                        if _err:
+                            st.error(f"**{_st_k}**: ❌ {_err} ({_frm}~{_to})")
+                        else:
+                            st.write(f"**{_st_k}**: {_cnt}건 ({_frm} ~ {_to})")
+                        _dbg = _st_v.get("debug") or {}
+                        if _dbg:
+                            st.caption(
+                                f"응답 code={_dbg.get('code')} | "
+                                f"data_type={_dbg.get('data_type')} | "
+                                f"data_count={_dbg.get('data_count')} | "
+                                f"items_field={_dbg.get('items_field')}"
+                            )
+                            if not _cnt:
+                                st.code(_dbg.get("raw_snippet", ""), language="json")
             else:
                 cq_df = pd.DataFrame(cq_rows)
                 # 숫자 컬럼 정수 변환
