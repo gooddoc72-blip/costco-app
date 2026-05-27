@@ -612,7 +612,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         # ── 배송준비건 인쇄용 HTML 생성 ────────────────────
         _disp_base = ['수취인명','상품명','옵션정보','수량','최종 상품별 총 주문금액','배송비 합계','정산예정금액']
         if '소분단위' in df.columns:
-            df['소분'] = df['소분단위'].apply(lambda x: f'÷{int(x)}' if int(x or 1) > 1 else '')
+            df['소분'] = df['소분단위'].apply(lambda x: f'÷{int(x)}' if pd.notna(x) and int(x) > 1 else '')
             _disp_base = ['소분'] + _disp_base
         _disp_cols = (['플랫폼'] if '플랫폼' in df.columns else []) + _disp_base
         _prep_disp = df[[c for c in _disp_cols if c in df.columns]].copy()
