@@ -85,15 +85,36 @@ split_qty = 소분 단위 (코스트코 묶음을 N개로 나눠 판매)
 
 | 버튼 | 역할 |
 |------|------|
-| **📊 정산저장** (체크박스 선택 후) | 현재 정산 데이터를 `daily_orders` DB에 저장. 제품가격DB 미변경. |
-| **💾 제품가격 DB 저장** (하단) | 수동 수정된 단가를 `products` DB에 반영. |
-| **💾 정산 데이터 저장** (최하단) | `daily_orders` + 수정된 `products` 동시 저장. |
+| **📊 정산저장** (체크박스 선택 후) | `profit_settlements` + `settlement_overrides` 저장. 제품가격DB 미변경. |
+| **💾 제품가격 DB 저장** (하단) | 수동 수정된 단가를 `products` DB에 반영 + `profit_settlements` 동시 저장. |
+| **💾 정산 데이터 저장** (최하단) | `daily_orders` + `products` + `profit_settlements` 동시 저장. |
 
 ### 정산저장 후 복원 메커니즘
-- `save_daily_orders`: 행별 `택배원가`/`박스원가` DB 저장 (전역값 아님)
-- 페이지 재진입 시: `daily_orders` → `session_state` 자동 복원
-  - `ship_{sk}` / `box_{sk}`: 행별 발송비/박스비
-  - `cost_overrides[key]`: 저장된 구입가격
+- 복원 순서: `profit_settlements` 1순위 → `daily_orders` fallback (하위호환)
+- `settlement_overrides` 영구 오버라이드 자동 적용 (저장값 없는 행에만)
+- 복원 데이터: `ship_{sk}`, `box_{sk}`, `cost_overrides[key]`, `kw_overrides[sk]`
+- `_do_restored_{date}` 플래그로 세션당 1회 실행
+
+---
+
+## 수익 계산 DB 구조 (db_profit_calc.py)
+
+### profit_settlements — 수익계산 결과 (날짜별)
+| 컬럼 | 설명 |
+|------|------|
+| settlement_date | 정산 날짜 (YYYY-MM-DD) |
+| order_no | 상품주문번호 |
+| recipient, product_name | 복합 UNIQUE 키 |
+| cost_price, delivery_cost, box_cost | 행별 비용 |
+| matched_keyword, match_source | 매칭 정보 |
+| split_qty, sell_factor | 소분/묶음 정보 |
+
+### settlement_overrides — 정산매칭 오버라이드 (영구)
+| 컬럼 | 설명 |
+|------|------|
+| recipient, product_name | 영구 UNIQUE 키 |
+| override_keyword | 수동 키워드 매핑 |
+| override_cost | 수동 단가 |
 
 ---
 
@@ -142,7 +163,9 @@ split_qty = 소분 단위 (코스트코 묶음을 N개로 나눠 판매)
 - `ssh_key`: `C:/Users/blocklabs02/.ssh/costco_key`
 
 ### DB 스키마
-- `daily_orders`: `delivery_cost`(행별 택배원가), `box_cost`(행별 박스원가) 컬럼 있음
+- `profit_settlements`: `UNIQUE(settlement_date, recipient, product_name)` — 수익계산 결과
+- `settlement_overrides`: `UNIQUE(recipient, product_name)` — 영구 오버라이드
+- `daily_orders`: `delivery_cost`(행별 택배원가), `box_cost`(행별 박스원가) — 하위호환용
 - `products`: `naver_origin_pno` 컬럼 — 소분 매칭용 네이버 상품번호
 - `dispatch_log`: 발송 처리 기록, `order_no` 기준
 
