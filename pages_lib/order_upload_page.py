@@ -318,7 +318,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             _cq_from_str = _cq_date_from.strftime("%Y-%m-%d")
             _cq_to_str   = _cq_date_to.strftime("%Y-%m-%d")
             with st.spinner(f"쿠팡 Wing API 조회 중... ({_cq_from_str} ~ {_cq_to_str})"):
-                cq_rows, cq_err, cq_debug = coupang_api.get_orders(
+                cq_rows, cq_err, cq_debug, cq_excel_rows = coupang_api.get_orders(
                     cq_access, cq_secret, cq_vendor,
                     status=_cq_status,
                     date_from=_cq_from_str,
@@ -353,14 +353,22 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 cq_df = _cq_result['df']  # 구입가격 채워진 df
                 cq_df['플랫폼'] = '🟡 쿠팡'
 
-                # 송장용 전체 저장 + Excel bytes 미리 생성
+                # 송장용 전체 저장
                 st.session_state['order_full'] = cq_df.copy()
-                st.session_state['order_full_coupang'] = cq_df.copy()
-                _cq_xl = io.BytesIO()
-                with pd.ExcelWriter(_cq_xl, engine='openpyxl') as _w:
+                # 쿠팡 Wing 배송준비 리스트 형식으로 Excel 생성
+                if cq_excel_rows:
+                    _cq_excel_df = pd.DataFrame(cq_excel_rows)[coupang_api._COUPANG_EXCEL_COLS]
+                    _cq_xl = io.BytesIO()
+                    with pd.ExcelWriter(_cq_xl, engine='openpyxl') as _w:
+                        _cq_excel_df.to_excel(_w, index=False)
+                    st.session_state['order_full_coupang'] = _cq_excel_df
+                    st.session_state['order_excel_bytes_coupang'] = _cq_xl.getvalue()
+                else:
+                    st.session_state['order_full_coupang'] = cq_df.copy()
+                _cq_xl_unified = io.BytesIO()
+                with pd.ExcelWriter(_cq_xl_unified, engine='openpyxl') as _w:
                     cq_df.to_excel(_w, index=False)
-                st.session_state['order_excel_bytes'] = _cq_xl.getvalue()
-                st.session_state['order_excel_bytes_coupang'] = _cq_xl.getvalue()
+                st.session_state['order_excel_bytes'] = _cq_xl_unified.getvalue()
 
                 # 기존 네이버 주문 보존 후 병합 (상품주문번호에 '-' 없음 = 네이버)
                 _prev_orders = st.session_state.get('orders')

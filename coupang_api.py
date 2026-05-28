@@ -91,13 +91,12 @@ def get_orders(access_key: str, secret_key: str, vendor_id: str,
     else:
         statuses = [status]
 
-    all_rows = []
+    all_pairs  = []   # [(unified_row, excel_row), ...]
     all_errors = []
     per_status = {}  # 진단 정보: {status: {"count", "error", "from", "to", "debug"}}
     for st in statuses:
-        # ACCEPT(주문중) 포함 — 미처리 체류 30일 대비
         _d_from = d_from_long if st in ("ACCEPT", "INSTRUCT", "DEPARTURE") else d_from_normal
-        rows, err, debug_info = _fetch_orders_for_status(
+        rows, coupang_rows, err, debug_info = _fetch_orders_for_status(
             access_key, secret_key, vendor_id, st, _d_from, d_to
         )
         per_status[st] = {"count": len(rows), "error": err,
@@ -105,30 +104,37 @@ def get_orders(access_key: str, secret_key: str, vendor_id: str,
         if err:
             all_errors.append(f"{st}: {err}")
         else:
-            all_rows.extend(rows)
+            all_pairs.extend(zip(rows, coupang_rows))
 
-    if not all_rows and all_errors:
-        return [], " | ".join(all_errors), per_status
+    if not all_pairs and all_errors:
+        return [], " | ".join(all_errors), per_status, []
 
-    # 중복 제거 (상품주문번호 기준)
+    # 중복 제거 (상품주문번호 기준) — unified/excel 동시 처리
     seen = set()
     deduped = []
-    for r in all_rows:
-        key = r["상품주문번호"]
+    deduped_coupang = []
+    for u, c in all_pairs:
+        key = u["상품주문번호"]
         if key not in seen:
             seen.add(key)
-            deduped.append(r)
+            deduped.append(u)
+            deduped_coupang.append(c)
 
-    return deduped, None, per_status
+    # 번호 재정렬 (중복 제거 후 연속 번호 보장)
+    for i, c in enumerate(deduped_coupang):
+        c["번호"] = i + 1
+
+    return deduped, None, per_status, deduped_coupang
 
 
 def _fetch_orders_for_status(access_key, secret_key, vendor_id,
                               status, d_from, d_to):
     """단일 상태 주문 목록 페이지네이션 조회.
-    Returns: (rows, error_or_None, first_page_debug_or_None)
+    Returns: (unified_rows, coupang_excel_rows, error_or_None, first_page_debug_or_None)
     """
     path = f"/v2/providers/openapi/apis/api/v4/vendors/{vendor_id}/ordersheets"
     rows = []
+    coupang_rows = []
     next_token = None
     _first_debug = None
 
@@ -160,7 +166,7 @@ def _fetch_orders_for_status(access_key, secret_key, vendor_id,
                 msg = body.get("message") or body.get("errorMessage") or resp.text[:400]
             except Exception:
                 msg = resp.text[:400]
-            return [], f"API 오류 [{resp.status_code}]: {msg}", _first_debug
+            return [], [], f"API 오류 [{resp.status_code}]: {msg}", _first_debug
 
         body = resp.json()
 
@@ -181,37 +187,71 @@ def _fetch_orders_for_status(access_key, secret_key, vendor_id,
             }
 
         if str(body.get("code", "")) != "200":
-            return [], f"쿠팡 응답 오류: {body.get('message', body)}", _first_debug
+            return [], [], f"쿠팡 응답 오류: {body.get('message', body)}", _first_debug
 
         data = body.get("data") or []
         for order in data:
-            parsed = _parse_order(order)
-            rows.extend(parsed)
+            seq = len(rows) + 1
+            unified, excel = _parse_order_and_excel(order, seq)
+            rows.extend(unified)
+            coupang_rows.extend(excel)
 
         next_token = body.get("nextToken")
         if not next_token or not data:
             break
 
-    return rows, None, _first_debug
+    return rows, coupang_rows, None, _first_debug
 
 
-def _parse_order(order: dict) -> list:
-    """주문 1건 → 아이템별 행 리스트 변환 (기존 네이버 컬럼 구조 호환)."""
+# 쿠팡 배송준비 리스트 엑셀 컬럼 순서 (Wing 어드민 다운로드 형식과 동일)
+_COUPANG_EXCEL_COLS = [
+    "번호", "묶음배송번호", "주문번호", "택배사", "운송장번호",
+    "분리배송 Y/N", "분리배송 출고예정일", "주문시 출고예정일", "출고일(발송일)", "주문일",
+    "등록상품명", "등록옵션명", "노출상품명(옵션명)", "노출상품ID", "옵션ID",
+    "최초등록등록상품명/옵션명", "업체상품코드", "바코드",
+    "결제액", "배송비구분", "배송비", "도서산간 추가배송비", "구매수(수량)", " ",
+    "구매자", "구매자전화번호", "수취인이름", "수취인전화번호", "우편번호", "수취인 주소",
+    "배송메세지", "상품별 추가메시지", "주문자 추가메시지", "배송완료일", "구매확정일자",
+    "개인통관번호(PCCC)", "통관용수취인전화번호", "기타", "결제위치", "배송유형",
+]
+
+
+def _parse_order_and_excel(order: dict, seq_no: int) -> tuple:
+    """주문 1건 → (unified_rows, coupang_excel_rows) 병렬 반환."""
     receiver  = order.get("receiver") or {}
-    recv_name = receiver.get("name") or order.get("orderer", {}).get("name", "-")
+    orderer   = order.get("orderer") or {}
+    recv_name = receiver.get("name") or orderer.get("name") or "-"
     status    = order.get("status", "")
-
-    # 주문 레벨 배송비 (아이템이 여러 개면 첫 아이템에만 부과, 나머지 0)
     order_ship = int(order.get("shippingPrice") or 0)
-    # 필드명 fallback: "items" / "orderItems" / "orderItem" (API 버전마다 상이)
+
     items = (order.get("items")
              or order.get("orderItems")
              or order.get("orderItem")
              or [])
 
-    rows = []
+    # 주소 조합
+    addr1     = receiver.get("addr1") or receiver.get("addr", "") or ""
+    addr2     = receiver.get("addr2") or ""
+    full_addr = (addr1 + (" " + addr2 if addr2 else "")).strip()
+
+    # 전화번호 (안전번호 우선)
+    recv_phone  = receiver.get("safeNumber") or receiver.get("phoneNumber") or ""
+    buyer_phone = orderer.get("safeNumber") or orderer.get("phoneNumber") or ""
+
+    # 주문일 포맷 (ISO → 공백 구분)
+    ordered_at = order.get("orderedAt") or order.get("createdAt") or ""
+    if ordered_at and "T" in str(ordered_at):
+        ordered_at = str(ordered_at).replace("T", " ").rstrip("Z").strip()
+
+    bundle_id = (order.get("bundleShippingOrderId")
+                 or order.get("shippingOrderId")
+                 or order.get("orderId")
+                 or "")
+
+    unified_rows = []
+    excel_rows   = []
+
     for idx, item in enumerate(items):
-        # 취소 아이템 제외 (cancelType이 null/""/NONE이 아닌 실제 취소 코드일 때만)
         _cancel = str(item.get("cancelType") or "").strip().upper()
         if _cancel and _cancel != "NONE":
             continue
@@ -221,10 +261,14 @@ def _parse_order(order: dict) -> list:
         settlement = int(item.get("shippingCountPriceWithCommission") or 0)
         ship_fee   = order_ship if idx == 0 else 0
 
-        rows.append({
+        item_name   = item.get("vendorItemName") or ""
+        option_name = item.get("vendorOptionName") or item.get("optionName") or ""
+        exposed_nm  = f"{item_name} ({option_name})" if option_name else item_name
+
+        unified_rows.append({
             "상품주문번호": f"{order.get('orderId')}-{item.get('orderItemId')}",
             "수취인명":     recv_name,
-            "상품명":       item.get("vendorItemName") or "",
+            "상품명":       item_name,
             "옵션정보":     item.get("externalVendorSkuCode") or "",
             "수량":         qty,
             "최종 상품별 총 주문금액": unit_price * qty,
@@ -234,7 +278,56 @@ def _parse_order(order: dict) -> list:
             "주문상태":     status,
             "플랫폼":       "쿠팡",
         })
-    return rows
+        excel_rows.append({
+            "번호":                    seq_no + len(excel_rows),
+            "묶음배송번호":             bundle_id,
+            "주문번호":                 order.get("orderId") or "",
+            "택배사":                   "",
+            "운송장번호":               "",
+            "분리배송 Y/N":             "분리배송불가",
+            "분리배송 출고예정일":       "",
+            "주문시 출고예정일":         order.get("shippingDueDate") or "",
+            "출고일(발송일)":           "",
+            "주문일":                   ordered_at,
+            "등록상품명":               item_name,
+            "등록옵션명":               option_name,
+            "노출상품명(옵션명)":        exposed_nm,
+            "노출상품ID":               item.get("productId") or item.get("vendorId") or "",
+            "옵션ID":                   item.get("vendorItemId") or item.get("orderItemId") or "",
+            "최초등록등록상품명/옵션명": f"{item_name},{option_name}",
+            "업체상품코드":              item.get("externalVendorSkuCode") or "",
+            "바코드":                   item.get("barcode") or "",
+            "결제액":                   unit_price * qty,
+            "배송비구분":               "무료" if ship_fee == 0 else "유료",
+            "배송비":                   ship_fee,
+            "도서산간 추가배송비":       0,
+            "구매수(수량)":             qty,
+            " ":                       "",
+            "구매자":                   orderer.get("name") or "",
+            "구매자전화번호":           buyer_phone,
+            "수취인이름":               recv_name,
+            "수취인전화번호":           recv_phone,
+            "우편번호":                 receiver.get("postCode") or receiver.get("zipCode") or "",
+            "수취인 주소":              full_addr,
+            "배송메세지":               receiver.get("message") or "",
+            "상품별 추가메시지":         item.get("additionalMessage") or "",
+            "주문자 추가메시지":         order.get("ordererMessage") or "",
+            "배송완료일":               "",
+            "구매확정일자":             "",
+            "개인통관번호(PCCC)":       item.get("personalCustomsClearanceCode") or "",
+            "통관용수취인전화번호":      "",
+            "기타":                     "",
+            "결제위치":                 order.get("deviceType") or order.get("ordererDeviceName") or "",
+            "배송유형":                 "판매자 배송",
+        })
+
+    return unified_rows, excel_rows
+
+
+def _parse_order(order: dict) -> list:
+    """하위호환용 래퍼."""
+    unified, _ = _parse_order_and_excel(order, 1)
+    return unified
 
 
 # ── 일괄 발송처리 ──────────────────────────────────────────────────────────
@@ -332,7 +425,7 @@ def test_connection(access_key: str, secret_key: str, vendor_id: str):
         (ok: bool, message: str)
     """
     today = datetime.now().strftime("%Y-%m-%d")
-    rows, err, _ = _fetch_orders_for_status(
+    rows, _, err, _ = _fetch_orders_for_status(
         access_key, secret_key, vendor_id, "ACCEPT", today, today
     )
     if err:
