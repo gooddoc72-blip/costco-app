@@ -498,7 +498,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     st.caption(f"💡 제품 DB: {' / '.join(notes)}")
 
     # ── 세션 없으면 DB에서 미발송 주문 자동 복원 (페이지 재진입 / 서버 재시작 대비) ──
-    if st.session_state.get('orders') is None:
+    # _orders_cleared: 지우기 버튼으로 명시적으로 초기화한 경우 — DB 재복원 건너뜀
+    if st.session_state.get('orders') is None and not st.session_state.get('_orders_cleared'):
         _db_rows = get_active_orders(USERNAME)
         if _db_rows:
             _db_df = db_rows_to_orders_df(_db_rows)
@@ -609,6 +610,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             for _k in ['orders', 'order_date', 'order_full', 'order_full_naver', 'order_full_coupang',
                         'order_excel_bytes', 'order_excel_bytes_coupang', 'orders_unsaved', '_naver_status_dist']:
                 st.session_state.pop(_k, None)
+            st.session_state['_orders_cleared'] = True  # DB 자동복원 방지
             st.rerun()
 
         # 디버그: API status 분포 (수량 안 맞을 때 원인 추적용)
