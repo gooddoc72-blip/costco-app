@@ -235,9 +235,11 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                             _excel_df['상품주문번호'].astype(str).isin(_api_ids)
                         ].reset_index(drop=True)
                     st.session_state['order_full'] = _excel_df if not _excel_df.empty else df.copy()
+                    st.session_state['order_full_naver'] = st.session_state['order_full']
                 else:
                     # raw_json이 아직 없는 옛 데이터만 있는 경우 → DB 변환 df라도 사용
                     st.session_state['order_full'] = df.copy()
+                    st.session_state['order_full_naver'] = df.copy()
                 # Excel bytes는 렌더 시 lazy 생성
                 st.session_state['order_excel_bytes'] = None
 
@@ -353,10 +355,12 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
 
                 # 송장용 전체 저장 + Excel bytes 미리 생성
                 st.session_state['order_full'] = cq_df.copy()
+                st.session_state['order_full_coupang'] = cq_df.copy()
                 _cq_xl = io.BytesIO()
                 with pd.ExcelWriter(_cq_xl, engine='openpyxl') as _w:
                     cq_df.to_excel(_w, index=False)
                 st.session_state['order_excel_bytes'] = _cq_xl.getvalue()
+                st.session_state['order_excel_bytes_coupang'] = _cq_xl.getvalue()
 
                 # 기존 네이버 주문 보존 후 병합 (상품주문번호에 '-' 없음 = 네이버)
                 _prev_orders = st.session_state.get('orders')
@@ -442,6 +446,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 # 송장번호 등록용 전체 데이터 저장 + Excel bytes 미리 생성
                 if '상품주문번호' in df.columns:
                     st.session_state['order_full'] = df.copy()
+                    st.session_state['order_full_naver'] = df.copy()
                     _ful_xl = io.BytesIO()
                     with pd.ExcelWriter(_ful_xl, engine='openpyxl') as _w:
                         df.to_excel(_w, index=False)
@@ -506,6 +511,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 _xl_df = active_orders_to_naver_excel_df(USERNAME)
                 if _xl_df is not None and not _xl_df.empty:
                     st.session_state['order_full'] = _xl_df
+                    st.session_state['order_full_naver'] = _xl_df
                     st.session_state['order_excel_bytes'] = None  # lazy 재생성
 
     if st.session_state.get('orders') is not None:
@@ -592,7 +598,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             except Exception as _e:
                 st.error(f"저장 실패: {_e}")
         if _clear_clicked:
-            for _k in ['orders', 'order_date', 'order_full', 'order_excel_bytes', 'orders_unsaved', '_naver_status_dist']:
+            for _k in ['orders', 'order_date', 'order_full', 'order_full_naver', 'order_full_coupang',
+                        'order_excel_bytes', 'order_excel_bytes_coupang', 'orders_unsaved', '_naver_status_dist']:
                 st.session_state.pop(_k, None)
             st.rerun()
 
@@ -601,94 +608,148 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         if _dist_str:
             st.caption(f"🔍 네이버 API 상태 분포: {_dist_str}")
 
-        _excel_bytes = st.session_state.get('order_excel_bytes')
-        if not _excel_bytes and st.session_state.get('order_full') is not None:
-            # 세션에 bytes 없으면 1회 생성 후 캐시
-            _tmp = io.BytesIO()
-            with pd.ExcelWriter(_tmp, engine='openpyxl') as _w:
-                st.session_state['order_full'].to_excel(_w, index=False)
-            _excel_bytes = _tmp.getvalue()
-            st.session_state['order_excel_bytes'] = _excel_bytes
-        # ── 배송준비건 인쇄용 HTML 생성 ────────────────────
-        _disp_base = ['수취인명','상품명','옵션정보','수량','최종 상품별 총 주문금액','배송비 합계','정산예정금액']
+        # ── 플랫폼별 분리 ────────────────────────────────────────────
         if '소분단위' in df.columns:
             df['소분'] = df['소분단위'].apply(lambda x: f'÷{int(x)}' if pd.notna(x) and int(x) > 1 else '')
+        _disp_base = ['수취인명','상품명','옵션정보','수량','최종 상품별 총 주문금액','배송비 합계','정산예정금액']
+        if '소분' in df.columns:
             _disp_base = ['소분'] + _disp_base
-        _disp_cols = (['플랫폼'] if '플랫폼' in df.columns else []) + _disp_base
-        _prep_disp = df[[c for c in _disp_cols if c in df.columns]].copy()
-        _prep_rows_html = []
-        for _, _pr in _prep_disp.iterrows():
-            _prep_rows_html.append(
-                '<tr>'
-                f'<td>{str(_pr.get("수취인명",""))}</td>'
-                f'<td>{str(_pr.get("상품명",""))}</td>'
-                f'<td>{str(_pr.get("옵션정보","") or "-")}</td>'
-                f'<td style="text-align:right">{int(_pr.get("수량",0))}</td>'
-                f'<td style="text-align:right">{fmt(int(_pr.get("최종 상품별 총 주문금액",0) or 0))}원</td>'
-                f'<td style="text-align:right;color:#555">{fmt(int(_pr.get("배송비 합계",0) or 0))}원</td>'
-                f'<td style="text-align:right;font-weight:600">{fmt(int(_pr.get("정산예정금액",0) or 0))}원</td>'
-                '</tr>'
-            )
-        _prep_html = (
-            '<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8">'
-            f'<title>배송준비건 — {order_date_str}</title>'
-            '<style>'
-            'body{font-family:"맑은 고딕",sans-serif;padding:24px;}'
-            'h1{font-size:20px;margin:0 0 4px}'
-            '.meta{color:#666;font-size:13px;margin-bottom:12px}'
-            'table{width:100%;border-collapse:collapse;font-size:13px}'
-            'th,td{border-bottom:1px solid #ddd;padding:6px 8px;text-align:left}'
-            'th{background:#f4f4f4;font-weight:600}'
-            '@media print{body{padding:8px} .noprint{display:none}}'
-            '</style></head><body>'
-            f'<h1>📋 배송준비건 — {order_date_str}</h1>'
-            f'<div class="meta">총 {len(_prep_disp)}건</div>'
-            '<table><thead><tr>'
-            '<th>수취인명</th><th>상품명</th><th>옵션정보</th>'
-            '<th style="text-align:right">수량</th>'
-            '<th style="text-align:right">총 주문금액</th>'
-            '<th style="text-align:right">배송비</th>'
-            '<th style="text-align:right">정산예정금액</th>'
-            '</tr></thead><tbody>' + ''.join(_prep_rows_html) + '</tbody></table>'
-            '<button class="noprint" onclick="window.print()" '
-            'style="margin-top:20px;padding:10px 24px;font-size:14px;cursor:pointer">🖨 인쇄</button>'
-            '</body></html>'
-        )
-        import html as _html_lib_prep
-        import streamlit.components.v1 as _components_prep
-        _escaped_prep = _html_lib_prep.escape(_prep_html, quote=True)
 
-        _prep_b1, _prep_b2, _ = st.columns([2, 2, 4])
-        if _excel_bytes:
-            _prep_b1.download_button(
-                label="📥 엑셀 다운로드",
-                data=_excel_bytes,
-                file_name=f"발주발송관리_{order_date_str}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True,
-                key="prep_excel_dl",
-            )
-        with _prep_b2:
-            _components_prep.html(
-                f'''
-                <button onclick="(function(){{
-                    var f=document.getElementById('pframe_prep');
-                    if(f && f.contentWindow){{f.contentWindow.focus();f.contentWindow.print();}}
-                }})()" style="
-                    width:100%;padding:7px 0;background:white;
-                    border:1px solid rgba(49,51,63,0.2);border-radius:8px;
-                    cursor:pointer;font-family:'Source Sans Pro',sans-serif;
-                    font-size:14px;color:rgb(49,51,63);
-                " onmouseover="this.style.borderColor='#ff4b4b';this.style.color='#ff4b4b'"
-                  onmouseout="this.style.borderColor='rgba(49,51,63,0.2)';this.style.color='rgb(49,51,63)'">
-                    🖨 배송준비건 바로 인쇄
-                </button>
-                <iframe id="pframe_prep" srcdoc="{_escaped_prep}" style="display:none"></iframe>
-                ''',
-                height=44,
-            )
+        _naver_df = df[~df['상품주문번호'].astype(str).str.contains('-', na=False)].copy() if '상품주문번호' in df.columns else df.copy()
+        _coupang_df = df[df['상품주문번호'].astype(str).str.contains('-', na=False)].copy() if '상품주문번호' in df.columns else pd.DataFrame()
 
-        st.dataframe(_prep_disp, use_container_width=True, hide_index=True)
+        _nv_cnt = len(_naver_df)
+        _cq_cnt_tab = len(_coupang_df)
+        _tab_labels = [f"🟢 네이버 {_nv_cnt}건", f"🟡 쿠팡 {_cq_cnt_tab}건"]
+        _tab_naver, _tab_coupang = st.tabs(_tab_labels)
+
+        # ── 네이버 탭 ─────────────────────────────────────────────────
+        with _tab_naver:
+            _nv_disp_cols = [c for c in _disp_base if c in _naver_df.columns]
+            _prep_naver = _naver_df[_nv_disp_cols].copy()
+
+            # 네이버 엑셀 bytes
+            _excel_bytes_nv = st.session_state.get('order_excel_bytes')
+            if not _excel_bytes_nv and st.session_state.get('order_full_naver') is not None:
+                _tmp_nv = io.BytesIO()
+                with pd.ExcelWriter(_tmp_nv, engine='openpyxl') as _w:
+                    st.session_state['order_full_naver'].to_excel(_w, index=False)
+                _excel_bytes_nv = _tmp_nv.getvalue()
+                st.session_state['order_excel_bytes'] = _excel_bytes_nv
+            elif not _excel_bytes_nv and st.session_state.get('order_full') is not None:
+                _tmp_nv = io.BytesIO()
+                with pd.ExcelWriter(_tmp_nv, engine='openpyxl') as _w:
+                    st.session_state['order_full'].to_excel(_w, index=False)
+                _excel_bytes_nv = _tmp_nv.getvalue()
+                st.session_state['order_excel_bytes'] = _excel_bytes_nv
+
+            # 인쇄용 HTML
+            _prep_rows_html = []
+            for _, _pr in _prep_naver.iterrows():
+                _prep_rows_html.append(
+                    '<tr>'
+                    f'<td>{str(_pr.get("수취인명",""))}</td>'
+                    f'<td>{str(_pr.get("상품명",""))}</td>'
+                    f'<td>{str(_pr.get("옵션정보","") or "-")}</td>'
+                    f'<td style="text-align:right">{int(_pr.get("수량",0))}</td>'
+                    f'<td style="text-align:right">{fmt(int(_pr.get("최종 상품별 총 주문금액",0) or 0))}원</td>'
+                    f'<td style="text-align:right;color:#555">{fmt(int(_pr.get("배송비 합계",0) or 0))}원</td>'
+                    f'<td style="text-align:right;font-weight:600">{fmt(int(_pr.get("정산예정금액",0) or 0))}원</td>'
+                    '</tr>'
+                )
+            _prep_html = (
+                '<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8">'
+                f'<title>배송준비건 — {order_date_str}</title>'
+                '<style>'
+                'body{font-family:"맑은 고딕",sans-serif;padding:24px;}'
+                'h1{font-size:20px;margin:0 0 4px}'
+                '.meta{color:#666;font-size:13px;margin-bottom:12px}'
+                'table{width:100%;border-collapse:collapse;font-size:13px}'
+                'th,td{border-bottom:1px solid #ddd;padding:6px 8px;text-align:left}'
+                'th{background:#f4f4f4;font-weight:600}'
+                '@media print{body{padding:8px} .noprint{display:none}}'
+                '</style></head><body>'
+                f'<h1>📋 네이버 배송준비건 — {order_date_str}</h1>'
+                f'<div class="meta">총 {len(_prep_naver)}건</div>'
+                '<table><thead><tr>'
+                '<th>수취인명</th><th>상품명</th><th>옵션정보</th>'
+                '<th style="text-align:right">수량</th>'
+                '<th style="text-align:right">총 주문금액</th>'
+                '<th style="text-align:right">배송비</th>'
+                '<th style="text-align:right">정산예정금액</th>'
+                '</tr></thead><tbody>' + ''.join(_prep_rows_html) + '</tbody></table>'
+                '<button class="noprint" onclick="window.print()" '
+                'style="margin-top:20px;padding:10px 24px;font-size:14px;cursor:pointer">🖨 인쇄</button>'
+                '</body></html>'
+            )
+            import html as _html_lib_prep
+            import streamlit.components.v1 as _components_prep
+            _escaped_prep = _html_lib_prep.escape(_prep_html, quote=True)
+
+            _nv_b1, _nv_b2, _ = st.columns([2, 2, 4])
+            if _excel_bytes_nv:
+                _nv_b1.download_button(
+                    label="📥 네이버 엑셀 다운로드",
+                    data=_excel_bytes_nv,
+                    file_name=f"발주발송관리_{order_date_str}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True,
+                    key="naver_excel_dl",
+                )
+            with _nv_b2:
+                _components_prep.html(
+                    f'''
+                    <button onclick="(function(){{
+                        var f=document.getElementById('pframe_prep');
+                        if(f && f.contentWindow){{f.contentWindow.focus();f.contentWindow.print();}}
+                    }})()" style="
+                        width:100%;padding:7px 0;background:white;
+                        border:1px solid rgba(49,51,63,0.2);border-radius:8px;
+                        cursor:pointer;font-family:'Source Sans Pro',sans-serif;
+                        font-size:14px;color:rgb(49,51,63);
+                    " onmouseover="this.style.borderColor='#ff4b4b';this.style.color='#ff4b4b'"
+                      onmouseout="this.style.borderColor='rgba(49,51,63,0.2)';this.style.color='rgb(49,51,63)'">
+                        🖨 배송준비건 바로 인쇄
+                    </button>
+                    <iframe id="pframe_prep" srcdoc="{_escaped_prep}" style="display:none"></iframe>
+                    ''',
+                    height=44,
+                )
+            st.dataframe(_prep_naver, use_container_width=True, hide_index=True)
+
+        # ── 쿠팡 탭 ─────────────────────────────────────────────────
+        with _tab_coupang:
+            if _coupang_df.empty:
+                st.info("조회된 쿠팡 주문이 없습니다. 위 **쿠팡 주문 조회** 버튼을 눌러주세요.")
+            else:
+                _cq_disp_cols = [c for c in _disp_base if c in _coupang_df.columns]
+                _prep_coupang = _coupang_df[_cq_disp_cols].copy()
+
+                # 쿠팡 엑셀 bytes (수집된 원본 형식)
+                _excel_bytes_cq = st.session_state.get('order_excel_bytes_coupang')
+                if not _excel_bytes_cq and st.session_state.get('order_full_coupang') is not None:
+                    _tmp_cq = io.BytesIO()
+                    with pd.ExcelWriter(_tmp_cq, engine='openpyxl') as _w:
+                        st.session_state['order_full_coupang'].to_excel(_w, index=False)
+                    _excel_bytes_cq = _tmp_cq.getvalue()
+                    st.session_state['order_excel_bytes_coupang'] = _excel_bytes_cq
+                elif not _excel_bytes_cq:
+                    # fallback: 현재 화면 데이터로 생성
+                    _tmp_cq = io.BytesIO()
+                    with pd.ExcelWriter(_tmp_cq, engine='openpyxl') as _w:
+                        _coupang_df.to_excel(_w, index=False)
+                    _excel_bytes_cq = _tmp_cq.getvalue()
+
+                if _excel_bytes_cq:
+                    st.download_button(
+                        label="📥 쿠팡 엑셀 다운로드",
+                        data=_excel_bytes_cq,
+                        file_name=f"쿠팡주문_{order_date_str}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=False,
+                        key="coupang_excel_dl",
+                    )
+                st.dataframe(_prep_coupang, use_container_width=True, hide_index=True)
 
         st.subheader("🛒 코스트코 장보기 목록")
         shop_cols = ['상품번호', '상품명', '옵션정보', '수량', '정산예정금액', '배송비 합계']
