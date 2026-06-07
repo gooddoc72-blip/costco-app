@@ -1126,14 +1126,15 @@ def update_product_price(client_id, client_secret, origin_product_no, new_price,
 
     try:
         g = _get(pno)
-        # 404 → channelProductNo로 간주, originProductNo 변환 후 재조회
-        if g.status_code == 404:
+        # 404/403 → channelProductNo로 간주, originProductNo 변환 후 재조회
+        # (채널번호를 origin-products로 조회하면 404 또는 403(FORBIDDEN)이 올 수 있음)
+        if g.status_code in (403, 404):
             new_origin, rerr = resolve_origin_product_no(client_id, client_secret, pno)
             if new_origin and new_origin != pno:
                 pno = new_origin
                 g = _get(pno)
             else:
-                return False, f"원상품번호를 찾지 못했습니다(404). {rerr or ''}".strip(), None
+                return False, f"원상품번호를 찾지 못했습니다({g.status_code}). {rerr or ''}".strip(), None
         if g.status_code != 200:
             return False, f"상품 조회 실패({g.status_code}: {_format_naver_err(g)})", None
 
