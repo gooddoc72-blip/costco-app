@@ -140,14 +140,26 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             _prod_q = _rk_c1.text_input("상품 검색 (네이버 등록 상품)", placeholder="상품명 또는 키워드 입력", key="rk_prod_q")
             search_kw = _rk_c2.text_input("네이버 검색 키워드", placeholder="예: 코스트코 견과류", key="rk_kw")
 
-            # 검색어로 필터링
+            # 검색어로 필터링 — 토큰(단어) 기반: 통째 부분일치 안 돼도 단어 겹치면 매칭
             if _prod_q.strip():
                 _q_lower = _prod_q.strip().lower()
-                _filtered = [
-                    p for p in all_prods
-                    if _q_lower in (p.get('costco_name') or '').lower()
-                    or _q_lower in (p.get('match_keyword') or '').lower()
-                ]
+                _q_tokens = [t for t in _q_lower.split() if len(t) >= 2]
+
+                def _rk_score(p):
+                    _txt = ((p.get('costco_name') or '') + ' '
+                            + (p.get('match_keyword') or '')).lower()
+                    if _q_lower in _txt:
+                        return 1000  # 통째 부분일치 최우선
+                    if not _q_tokens:
+                        return 1 if _q_lower in _txt else 0
+                    return sum(1 for t in _q_tokens if t in _txt)
+
+                _need = max(1, len(_q_tokens) // 2)  # 검색어 단어 절반 이상 일치
+                _scored = sorted(
+                    ((p, _rk_score(p)) for p in all_prods),
+                    key=lambda x: -x[1]
+                )
+                _filtered = [p for p, s in _scored if s >= _need][:30]
             else:
                 _filtered = []
 
