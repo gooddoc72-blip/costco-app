@@ -115,8 +115,9 @@ def send_notification(settings, msg, username=None):
             except Exception as e:
                 log(f"⚠️ 카카오 토큰 갱신 저장 실패: {e}")
 
-    # 2000자 초과 + 텔레그램 설정 시 → 텔레그램 전체 + 카톡 알림
-    if len(msg) > 2000 and tg_token and tg_chat:
+    # 7000자 초과 + 텔레그램 설정 시 → 텔레그램 전체 + 카톡 알림
+    # (카카오 단건 한도 실측 8000자↑ → 그 이내는 카톡도 전체 목록 1건 발송)
+    if len(msg) > 7000 and tg_token and tg_chat:
         ok, err = naver_api.send_telegram(tg_token, tg_chat, msg)
         if ok:
             if kakao_token:
@@ -248,7 +249,7 @@ def run_shopping_task(username="admin"):
             shopping_orders = orders
 
         from collections import defaultdict
-        shopping = defaultdict(lambda: {"주문수량": 0, "정산금액": 0, "상품명": "", "옵션": "", "상품번호": ""})
+        shopping = defaultdict(lambda: {"주문수량": 0, "정산금액": 0, "배송비합": 0, "상품명": "", "옵션": "", "상품번호": ""})
         for o in shopping_orders:
             pno = str(o.get("상품번호", ""))
             name = o.get("상품명", "")
@@ -257,6 +258,7 @@ def run_shopping_task(username="admin"):
             shopping[key]["주문수량"] += int(o.get("수량", 1))
             shopping[key]["주문건수"] = shopping[key].get("주문건수", 0) + 1
             shopping[key]["정산금액"] += int(o.get("정산예정금액") or 0)
+            shopping[key]["배송비합"] += int(o.get("배송비 합계") or 0)
             shopping[key]["상품명"] = name
             shopping[key]["옵션"] = opt
             shopping[key]["상품번호"] = pno
@@ -287,20 +289,19 @@ def run_shopping_task(username="admin"):
             total_settlement += settlement
             total_costco_qty += costco_qty
 
-            # 카드 형식: 상품명 줄 + 상세 줄
-            name_line = f"[{idx}] {name}"
+            # 카드 형식: 상품명 줄(• 제품명 × 총수량) + 상세 줄(옵션 · 정산 · 택배)
+            order_cnt  = item.get("주문건수", order_qty)
+            ship_total = item.get("배송비합", 0)
+            ship_each  = round(ship_total / order_cnt) if order_cnt else ship_total
+            name_line = f"• {name} × {costco_qty}개 ({order_cnt}건)"
             detail_parts = []
             if opt:
-                detail_parts.append(f"옵션: {opt}")
-            order_cnt = item.get("주문건수", order_qty)
-            if pack > 1:
-                detail_parts.append(f"구매: {costco_qty}개 ({order_cnt}건×{pack}구)")
-            else:
-                detail_parts.append(f"구매: {costco_qty}개 ({order_cnt}건)")
+                detail_parts.append(f"옵션 {opt}")
             if settlement:
-                detail_parts.append(f"정산: {fmt(settlement)}원")
+                detail_parts.append(f"정산 {fmt(settlement)}원")
+            detail_parts.append(f"택배 {fmt(ship_each)}원")
             item_lines.append(name_line)
-            item_lines.append("   " + " │ ".join(detail_parts))
+            item_lines.append("  " + " · ".join(detail_parts))
 
         divider = "─" * 24
         lines = [

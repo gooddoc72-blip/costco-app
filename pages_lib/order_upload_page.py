@@ -1042,15 +1042,22 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         if _ship_b1.button("📱 장보기 목록 휴대폰 전송", key="send_shopping",
                             use_container_width=True):
             order_date_obj = datetime.strptime(order_date_str, "%Y-%m-%d")
-            # 카톡 포맷: 상품명 - 옵션 - 수량 - 정산금액 - 배송 택배비
+            # 카톡 포맷: 2줄 카드형 — • 제품명 × 총수량(건) / 옵션 · 정산 · 택배
             lines = [f"🛒 코스트코 장보기 ({order_date_obj.strftime('%m/%d')})", ""]
             for _, r in shopping.iterrows():
-                _name = str(r.get('상품명', ''))[:30]
-                _opt  = str(r.get('옵션정보', '') or '').strip() or '-'
-                _qty  = int(r.get('주문수량', 0) or 0)
+                _name = str(r.get('상품명', ''))[:40]
+                _opt  = str(r.get('옵션정보', '') or '').strip()
+                _qty  = int(r.get('코스트코구매수량', r.get('주문수량', 0)) or 0)
+                _cnt  = int(r.get('주문건수', 0) or 0)
                 _settle = int(r.get('정산금액', 0) or 0)
                 _ship = int(r.get('배송비', 0) or 0)
-                lines.append(f"{_name} - {_opt} - {_qty} - {fmt(_settle)} - 배송 {fmt(_ship)}")
+                lines.append(f"• {_name} × {_qty}개 ({_cnt}건)")
+                _detail = []
+                if _opt:
+                    _detail.append(f"옵션 {_opt}")
+                _detail.append(f"정산 {fmt(_settle)}원")
+                _detail.append(f"택배 {fmt(_ship)}원")
+                lines.append("  " + " · ".join(_detail))
             lines.append("")
             _total_settle_msg = int(shopping['정산금액'].sum()) if '정산금액' in shopping.columns else 0
             lines.append(f"💰 정산 총액: {fmt(_total_settle_msg)}원 / 📦 {len(df)}건")
@@ -1060,8 +1067,9 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             kakao_api_key = _gs('kakao_api_key')
             kakao_refresh = _gs('kakao_refresh_token')
 
-            # 2000자 초과 + 텔레그램 설정 시 → 텔레그램 전체 발송 + 카톡엔 알림만
-            if len(msg) > 2000 and tg_token and tg_chat:
+            # 7000자 초과 + 텔레그램 설정 시 → 텔레그램 전체 + 카톡엔 알림만
+            # (카카오 단건 한도 실측 8000자↑ → 그 이내는 카톡도 전체 목록 1건 발송)
+            if len(msg) > 7000 and tg_token and tg_chat:
                 ok_tg, terr = naver_api.send_telegram(tg_token, tg_chat, msg)
                 if ok_tg:
                     sent_ok = True
