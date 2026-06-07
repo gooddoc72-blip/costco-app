@@ -1306,6 +1306,36 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 with st.expander(
                     f"{'🔴' if _profit < 0 else '🟢'} {_disp_name[:50]}  |  "
                     f"현재수익 {fmt(_profit)}원 ({_qty}개)", expanded=True):
+                    # ── 현황 카드 (현재 판매가 · 정산금액 · 고객택배비 · 구매가격 · 현재 수익) ──
+                    _pf_bg = '#ffe0e0' if _profit < 0 else '#e8f8f0'
+                    _pf_bd = '#faa' if _profit < 0 else '#9adcc0'
+                    _pf_col = '#E74C3C' if _profit < 0 else '#1D9E75'
+                    _card = (
+                        '<div style="display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap">'
+                        f'<div style="flex:1;min-width:90px;background:#f8f8f8;border:1px solid #eee;'
+                        f'border-radius:6px;padding:8px 10px;text-align:center">'
+                        f'<div style="font-size:11px;color:#888;margin-bottom:2px">현재 판매가</div>'
+                        f'<div style="font-size:15px;font-weight:700;color:#333">{fmt(_cur_sale)}원</div></div>'
+                        f'<div style="flex:1;min-width:90px;background:#f8f8f8;border:1px solid #eee;'
+                        f'border-radius:6px;padding:8px 10px;text-align:center">'
+                        f'<div style="font-size:11px;color:#888;margin-bottom:2px">정산금액</div>'
+                        f'<div style="font-size:15px;font-weight:600">{fmt(_settle)}원</div></div>'
+                        f'<div style="flex:1;min-width:90px;background:#f8f8f8;border:1px solid #eee;'
+                        f'border-radius:6px;padding:8px 10px;text-align:center">'
+                        f'<div style="font-size:11px;color:#888;margin-bottom:2px">고객택배비</div>'
+                        f'<div style="font-size:15px;font-weight:600">{fmt(_cfee)}원</div></div>'
+                        f'<div style="flex:1;min-width:90px;background:#f8f8f8;border:1px solid #eee;'
+                        f'border-radius:6px;padding:8px 10px;text-align:center">'
+                        f'<div style="font-size:11px;color:#888;margin-bottom:2px">구매가격</div>'
+                        f'<div style="font-size:15px;font-weight:600">{fmt(_cost)}원</div></div>'
+                        f'<div style="flex:1;min-width:90px;background:{_pf_bg};border:1px solid {_pf_bd};'
+                        f'border-radius:6px;padding:8px 10px;text-align:center">'
+                        f'<div style="font-size:11px;color:#888;margin-bottom:2px">현재 수익</div>'
+                        f'<div style="font-size:15px;font-weight:700;color:{_pf_col}">{fmt(_profit)}원</div></div>'
+                        '</div>'
+                    )
+                    st.markdown(_card, unsafe_allow_html=True)
+
                     _ca, _cb, _cd, _cc = st.columns([1, 3, 2, 1])
                     _do = _ca.checkbox("적용", value=True, key=f"np_chk_{_nei}")
                     _new_price = _cb.number_input("🔧 수정 판매가 (원)", value=_suggested,
