@@ -101,6 +101,7 @@ def send_notification(settings, msg, username=None):
     kakao_token = settings.get("kakao_access_token", "")
     kakao_api_key = settings.get("kakao_api_key", "")
     kakao_refresh = settings.get("kakao_refresh_token", "")
+    kakao_secret = settings.get("kakao_client_secret", "")
     tg_token = settings.get("telegram_token", "")
     tg_chat = settings.get("telegram_chat_id", "")
 
@@ -124,7 +125,8 @@ def send_notification(settings, msg, username=None):
                 short = f"📱 알림 발송됨 ({len(msg):,}자)\n자세한 내역은 텔레그램에서 확인하세요."
                 ok_k, kerr = naver_api.send_kakao(kakao_token, short,
                                                    rest_api_key=kakao_api_key,
-                                                   refresh_token=kakao_refresh)
+                                                   refresh_token=kakao_refresh,
+                                                   client_secret=kakao_secret)
                 if ok_k: _save_refreshed_token(kerr)
             return True
         log(f"  텔레그램 실패: {err}")
@@ -133,7 +135,8 @@ def send_notification(settings, msg, username=None):
     if kakao_token:
         ok, err = naver_api.send_kakao(kakao_token, msg,
                                        rest_api_key=kakao_api_key,
-                                       refresh_token=kakao_refresh)
+                                       refresh_token=kakao_refresh,
+                                       client_secret=kakao_secret)
         if ok:
             _save_refreshed_token(err)
             return True

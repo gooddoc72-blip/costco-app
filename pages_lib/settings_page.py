@@ -123,16 +123,25 @@ def _render_settings_content(USERNAME: str, _gs):
     st.caption("장보기 목록을 카카오톡(나에게 보내기)으로 전송합니다.")
 
     kakao_api_key = _gs('kakao_api_key')
+    kakao_secret = _gs('kakao_client_secret')
     kakao_token = _gs('kakao_access_token')
     kakao_refresh = _gs('kakao_refresh_token')
 
     new_kakao_api_key = st.text_input("REST API 키", value=kakao_api_key, key="kakao_api_key_input",
-                                       help="카카오 개발자 콘솔 > 플랫폼 키에서 확인")
+                                       help="카카오 개발자 콘솔 > 앱 > 플랫폼 키 > REST API 키")
+    new_kakao_secret = st.text_input(
+        "Client Secret (선택)", value=kakao_secret, key="kakao_client_secret_input",
+        type="password",
+        help="앱에 Client Secret이 '사용함'이면 입력하세요 (카카오 로그인 > 보안/고급). "
+             "'사용 안 함'이면 비워두면 됩니다. 미입력+사용함이면 KOE010 오류 발생."
+    )
 
     if st.button("REST API 키 저장", key="save_kakao_api_key"):
-        set_setting(USERNAME, 'kakao_api_key', new_kakao_api_key)
+        set_setting(USERNAME, 'kakao_api_key', new_kakao_api_key.strip())
+        set_setting(USERNAME, 'kakao_client_secret', new_kakao_secret.strip())
         st.success("✅ REST API 키 저장!")
-        kakao_api_key = new_kakao_api_key
+        kakao_api_key = new_kakao_api_key.strip()
+        kakao_secret = new_kakao_secret.strip()
 
     if kakao_api_key:
         # 인가 코드 발급 링크
@@ -144,7 +153,8 @@ def _render_settings_content(USERNAME: str, _gs):
         if st.button("🔑 토큰 발급받기", key="kakao_get_token"):
             if auth_code and HAS_NAVER_API:
                 with st.spinner("토큰 발급 중..."):
-                    access, refresh, err = naver_api.get_kakao_token_by_code(kakao_api_key, auth_code)
+                    access, refresh, err = naver_api.get_kakao_token_by_code(
+                        kakao_api_key, auth_code, client_secret=kakao_secret)
                 if access:
                     set_setting(USERNAME, 'kakao_access_token', access)
                     set_setting(USERNAME, 'kakao_refresh_token', refresh or '')
@@ -165,7 +175,8 @@ def _render_settings_content(USERNAME: str, _gs):
     if st.button("🔔 카카오톡 테스트 전송", key="test_kakao"):
         if kakao_token and HAS_NAVER_API:
             ok, err = naver_api.send_kakao(kakao_token, "✅ 코스트코핫딜 알림 테스트 성공!",
-                                            rest_api_key=kakao_api_key, refresh_token=kakao_refresh)
+                                            rest_api_key=kakao_api_key, refresh_token=kakao_refresh,
+                                            client_secret=kakao_secret)
             if ok:
                 if err and "__TOKEN_REFRESHED__" in str(err):
                     parts = str(err).replace("__TOKEN_REFRESHED__", "").split("||")

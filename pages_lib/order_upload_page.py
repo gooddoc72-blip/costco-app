@@ -1066,6 +1066,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             sent_ok = False
             kakao_api_key = _gs('kakao_api_key')
             kakao_refresh = _gs('kakao_refresh_token')
+            kakao_secret = _gs('kakao_client_secret')
 
             # 7000자 초과 + 텔레그램 설정 시 → 텔레그램 전체 + 카톡엔 알림만
             # (카카오 단건 한도 실측 8000자↑ → 그 이내는 카톡도 전체 목록 1건 발송)
@@ -1075,7 +1076,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     sent_ok = True
                     if kakao_token:
                         short_msg = f"🛒 코스트코 장보기 알림 발송됨\n총 {len(df)}건 ({len(msg):,}자)\n자세한 내역은 텔레그램에서 확인하세요."
-                        ok_k, kerr = naver_api.send_kakao(kakao_token, short_msg, rest_api_key=kakao_api_key, refresh_token=kakao_refresh)
+                        ok_k, kerr = naver_api.send_kakao(kakao_token, short_msg, rest_api_key=kakao_api_key, refresh_token=kakao_refresh, client_secret=kakao_secret)
                         if ok_k and kerr and "__TOKEN_REFRESHED__" in str(kerr):
                             parts = str(kerr).replace("__TOKEN_REFRESHED__", "").split("||")
                             set_setting(USERNAME, 'kakao_access_token', parts[0])
@@ -1085,7 +1086,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             else:
                 # 2000자 이내 또는 텔레그램 미설정 → 카톡 우선 (카톡은 200자 단위 자동 분할 발송)
                 if kakao_token:
-                    ok, kerr = naver_api.send_kakao(kakao_token, msg, rest_api_key=kakao_api_key, refresh_token=kakao_refresh)
+                    ok, kerr = naver_api.send_kakao(kakao_token, msg, rest_api_key=kakao_api_key, refresh_token=kakao_refresh, client_secret=kakao_secret)
                     if ok:
                         sent_ok = True
                         if kerr and "__TOKEN_REFRESHED__" in str(kerr):

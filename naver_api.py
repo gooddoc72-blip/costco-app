@@ -329,9 +329,10 @@ def send_telegram(tok, cid, msg):
         return False, str(e)
 
 # ✅ 카카오톡 나에게 보내기 (REST API)
-def send_kakao(access_token, msg, rest_api_key=None, refresh_token=None):
+def send_kakao(access_token, msg, rest_api_key=None, refresh_token=None, client_secret=None):
     """카카오톡 메모. 1차로 전체를 '한 건'에 담아 발송(분리 없음).
-    길이 초과 등으로 1차가 실패할 때만 200자 단위로 나눠 남은 부분까지 이어 발송."""
+    길이 초과 등으로 1차가 실패할 때만 200자 단위로 나눠 남은 부분까지 이어 발송.
+    client_secret: 앱에 Client Secret '사용함'이면 토큰 갱신 시 함께 전송."""
     import time as _t
     url = "https://kapi.kakao.com/v2/api/talk/memo/default/send"
     headers = {"Authorization": f"Bearer {access_token}"}
@@ -347,7 +348,7 @@ def send_kakao(access_token, msg, rest_api_key=None, refresh_token=None):
         })}
         resp = requests.post(url, headers=headers, data=payload, timeout=15)
         if resp.status_code == 401 and refresh_token and rest_api_key:
-            new_token, new_refresh, err = refresh_kakao_token(rest_api_key, refresh_token)
+            new_token, new_refresh, err = refresh_kakao_token(rest_api_key, refresh_token, client_secret)
             if not new_token:
                 return resp, f"토큰 갱신 실패: {err}"
             headers["Authorization"] = f"Bearer {new_token}"
@@ -387,14 +388,17 @@ def send_kakao(access_token, msg, rest_api_key=None, refresh_token=None):
             return False, f"카카오 발송 예외 (성공 {sent}/{total}): {e}"
     return True, state["refreshed"]
 
-def refresh_kakao_token(rest_api_key, refresh_token):
-    """카카오 refresh_token으로 새 access_token 발급"""
+def refresh_kakao_token(rest_api_key, refresh_token, client_secret=None):
+    """카카오 refresh_token으로 새 access_token 발급.
+    앱에 Client Secret이 '사용함'이면 client_secret도 함께 보내야 함(KOE010 방지)."""
     url = "https://kauth.kakao.com/oauth/token"
     data = {
         "grant_type": "refresh_token",
         "client_id": rest_api_key,
         "refresh_token": refresh_token
     }
+    if client_secret:
+        data["client_secret"] = client_secret
     try:
         resp = requests.post(url, data=data, timeout=10)
         if resp.status_code == 200:
@@ -407,8 +411,10 @@ def refresh_kakao_token(rest_api_key, refresh_token):
     except Exception as e:
         return None, None, str(e)
 
-def get_kakao_token_by_code(rest_api_key, auth_code, redirect_uri="http://localhost"):
-    """인가 코드로 카카오 access_token + refresh_token 발급"""
+def get_kakao_token_by_code(rest_api_key, auth_code, redirect_uri="http://localhost",
+                            client_secret=None):
+    """인가 코드로 카카오 access_token + refresh_token 발급.
+    앱에 Client Secret이 '사용함'이면 client_secret도 함께 보내야 함(KOE010 방지)."""
     url = "https://kauth.kakao.com/oauth/token"
     data = {
         "grant_type": "authorization_code",
@@ -416,6 +422,8 @@ def get_kakao_token_by_code(rest_api_key, auth_code, redirect_uri="http://localh
         "redirect_uri": redirect_uri,
         "code": auth_code
     }
+    if client_secret:
+        data["client_secret"] = client_secret
     try:
         resp = requests.post(url, data=data, timeout=10)
         if resp.status_code == 200:

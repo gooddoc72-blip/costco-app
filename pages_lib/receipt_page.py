@@ -255,7 +255,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict, embedded: bool = False
                     if HAS_NAVER_API and kakao_token:
                         kakao_key = _gs('kakao_api_key')
                         kakao_refresh = _gs('kakao_refresh_token')
-                        ok, kerr = naver_api.send_kakao(kakao_token, alert_msg, rest_api_key=kakao_key, refresh_token=kakao_refresh)
+                        kakao_secret = _gs('kakao_client_secret')
+                        ok, kerr = naver_api.send_kakao(kakao_token, alert_msg, rest_api_key=kakao_key, refresh_token=kakao_refresh, client_secret=kakao_secret)
                         if ok:
                             sent_ok = True
                             if kerr and "__TOKEN_REFRESHED__" in str(kerr):
