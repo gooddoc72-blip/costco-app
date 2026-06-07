@@ -503,7 +503,10 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         _ri1 = _rcpt_by_pno[_pno1]
                         # ⚠️ 최신 영수증 단가 우선 (saved_cost는 fallback)
                         # 사용자가 단가 수정 후 저장 → DB에 반영 → 다음 render 시 새 값 사용
-                        _computed = (_ri1['단가'] // sq) * _aq
+                        # 영수증 단가는 "묶음(x N개)" 통가격 → split_qty 미설정(1)이면
+                        # sell_factor로 나눠 이중계산 방지 (예: 17990(2팩) → //2 후 ×2 = 17990)
+                        _eff_sq = sq if sq > 1 else _sell_factor
+                        _computed = (_ri1['단가'] // _eff_sq) * _aq
                         costs.append(_computed if _computed > 0 else saved_cost)
                         match_sources.append("영수증")
                         matched_names.append(_ri1['상품명'])
