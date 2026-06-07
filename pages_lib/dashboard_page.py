@@ -132,25 +132,25 @@ def _render_calendar(USERNAME: str, today: datetime):
         for i, d in enumerate(week):
             if d.month != m:
                 cells.append('<td style="border:1px solid #f1f3f5;background:#fcfcfc;'
-                             'height:88px;vertical-align:top"></td>')
+                             'height:120px;vertical-align:top"></td>')
                 continue
             ds = d.strftime("%Y-%m-%d")
             s = by_date.get(ds)
             daycol = "#E74C3C" if i == 0 else "#3477eb" if i == 6 else "#333"
             bg = "#f0fbf6" if ds == today.strftime("%Y-%m-%d") else "white"
-            inner = f'<div style="font-weight:700;color:{daycol}">{d.day}</div>'
+            inner = f'<div style="font-weight:700;font-size:18px;color:{daycol}">{d.day}</div>'
             if s:
                 cnt = int(s.get('cnt') or 0)
                 pf = int(s.get('total_profit') or 0)
                 se = int(s.get('total_settlement') or 0)
                 pfcol = "#1D9E75" if pf >= 0 else "#E74C3C"
                 inner += (
-                    f'<div style="font-size:11px;color:#555">🧾 {cnt}건</div>'
-                    f'<div style="font-size:11px;color:{pfcol};font-weight:600">💰 {pf:,}</div>'
-                    f'<div style="font-size:11px;color:#777">📋 {se:,}</div>'
+                    f'<div style="font-size:16px;color:#555">🧾 {cnt}건</div>'
+                    f'<div style="font-size:16px;color:{pfcol};font-weight:600">💰 {pf:,}</div>'
+                    f'<div style="font-size:16px;color:#777">📋 {se:,}</div>'
                 )
             cells.append(f'<td style="border:1px solid #e9ecef;background:{bg};'
-                         f'height:88px;vertical-align:top;padding:4px">{inner}</td>')
+                         f'height:120px;vertical-align:top;padding:4px">{inner}</td>')
         rows.append('<tr>' + ''.join(cells) + '</tr>')
 
     st.markdown(
