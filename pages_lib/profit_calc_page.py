@@ -674,8 +674,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         _checked_rows = [_sk for _sk in _sk_list if st.session_state.get(f"sel_p_{_sk}", False)]
         _hdr_sel_key = f'_hdr_sel_{calc_date_str}'
 
-        # ── 액션 바: 3등분 균일 레이아웃 ──
-        _act1, _act4, _act5 = st.columns([2, 2, 2])
+        # ── 액션 바: 4등분 균일 레이아웃 ──
+        _act1, _act4, _act5, _act6 = st.columns([2, 2, 2, 2])
         _bulk_save = _act1.button(
             f"📊 {len(_checked_rows)}개 정산저장" if _checked_rows else "📊 정산저장",
             type="primary",
@@ -698,6 +698,14 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             key="bulk_apply_price",
             use_container_width=True,
         )
+        if _act6.button(
+            f"🛒 {len(_checked_rows)}개 네이버 가격수정" if _checked_rows else "🛒 네이버 가격수정",
+            disabled=not _checked_rows,
+            key="bulk_naver_edit",
+            use_container_width=True,
+            help="선택한 행의 네이버 판매가/택배비를 수정합니다 (아래 패널에서 확인 후 적용)",
+        ):
+            st.session_state['_show_naver_edit'] = True
 
         # 헤더 — outer column: [전체선택][표시][구입가][발송비][박스비][🧾영수증]
         _TH = "text-align:{a};padding:3px 6px;font-size:12px;color:#444;background:#fafafa;border-bottom:1px solid #dee2e6"
@@ -1243,6 +1251,116 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 _conn.close()
             invalidate_data_cache()
             st.success(f"✅ {calc_date_str} 저장 완료! (제품DB 매입가도 갱신)")
+
+        # ── 🛒 선택 상품 네이버 가격 수정 (체크박스 선택분) ──
+        if st.session_state.get('_show_naver_edit') and _checked_rows:
+            st.divider()
+            _neh1, _neh2 = st.columns([5, 1])
+            _neh1.subheader(f"🛒 선택 상품 네이버 가격 수정 ({len(_checked_rows)}건 선택)")
+            if _neh2.button("✖ 닫기", key="naver_edit_close", use_container_width=True):
+                st.session_state['_show_naver_edit'] = False
+                st.rerun()
+            _ne_margin = int(_gs('target_margin') or 10) / 100
+
+            # 주문상품명 기준 de-dup (같은 상품 여러 수취인 → 1회만)
+            # sk(=stable key) → row 매핑 ('id' 컬럼 유무와 무관하게 안전)
+            _sk_to_row = {str(_ids_for_sel[_ix]): df.iloc[_ix] for _ix in range(len(df))}
+            _ne_seen = {}
+            for _csk in _checked_rows:
+                _crow = _sk_to_row.get(_csk)
+                if _crow is None:
+                    continue
+                _dk = (str(_crow.get('상품명', '') or '').strip()
+                       or str(_crow.get('매칭제품', '') or '').strip())
+                if _dk and _dk not in _ne_seen:
+                    _ne_seen[_dk] = _crow
+
+            _ne_apply = []
+            for _nei, (_dk, _row) in enumerate(_ne_seen.items()):
+                _mkw = str(_row.get('매칭제품', '') or '').strip()
+                _qty = max(1, int(_row.get('수량', 1) or 1))
+                _settle = int(_row.get('정산예정금액', 0) or 0)
+                _cfee = int(_row.get('배송비 합계', 0) or 0)
+                _cost = int(_row.get('구입가격', 0) or 0)
+                _profit = int(_row.get('수입', 0) or 0)
+                _unit_cost = _cost // _qty
+                _unit_settle = _settle // _qty
+                _cur_sale = max(100, int(_unit_settle / 0.945 / 100) * 100)
+                _min_needed = _unit_cost + shipping_cost + box_cost - _cfee / _qty
+                _suggested = max(int(_min_needed * (1 + _ne_margin) / 0.945 / 100) * 100,
+                                 _cur_sale + 100)
+
+                def _ne_ismatch(p, _dk=_dk, _mkw=_mkw):
+                    _mk = (p.get('match_keyword', '') or '').strip()
+                    _cn = (p.get('costco_name', '') or '').strip()
+                    return ((_dk and (_mk == _dk or _cn == _dk))
+                            or (_mkw and (_mk == _mkw or _cn == _mkw)))
+                _up_rec = next((p for p in _preload_user
+                                if _ne_ismatch(p) and p.get('naver_origin_pno')), None)
+                if not _up_rec:
+                    _up_rec = next((p for p in _preload_user if _ne_ismatch(p)), None)
+                _nv_pno = (_up_rec or {}).get('naver_origin_pno', '') or ''
+                _is_naver = int((_up_rec or {}).get('from_naver') or 0) == 1
+                _disp_name = (_up_rec.get('costco_name', '') if _up_rec and _is_naver else '') or _dk
+
+                with st.expander(
+                    f"{'🔴' if _profit < 0 else '🟢'} {_disp_name[:50]}  |  "
+                    f"현재수익 {fmt(_profit)}원 ({_qty}개)", expanded=True):
+                    _ca, _cb, _cd, _cc = st.columns([1, 3, 2, 1])
+                    _do = _ca.checkbox("적용", value=True, key=f"np_chk_{_nei}")
+                    _new_price = _cb.number_input("🔧 수정 판매가 (원)", value=_suggested,
+                                                  min_value=100, step=100, key=f"np_price_{_nei}")
+                    _new_cfee = _cd.number_input("🔧 수정 택배비 (원)", value=int(_cfee),
+                                                 min_value=0, step=100, key=f"np_cfee_{_nei}")
+                    _new_settle = int(_new_price * 0.945)
+                    _new_profit = (_new_settle * _qty + _new_cfee) - (_cost + shipping_cost + box_cost)
+                    if _new_profit < 0:
+                        _cc.error(f"❌ {fmt(_new_profit)}원")
+                    else:
+                        _cc.success(f"✅ +{fmt(_new_profit)}원")
+                    _pno = st.text_input(
+                        ("✅ 네이버 상품번호 (자동 입력됨)" if _nv_pno
+                         else "⚠️ 네이버 상품번호 (미입력 — 직접 입력 필요)"),
+                        value=_nv_pno, key=f"np_pno_{_nei}",
+                        placeholder="네이버 originProductNo / channelProductNo")
+                    if _do:
+                        _ne_apply.append({
+                            'display_name': _disp_name,
+                            'new_sale_price': _new_price,
+                            'new_shipping_fee': _new_cfee,
+                            'product_no': _pno,
+                            'product_id': (_up_rec or {}).get('id'),
+                        })
+
+            if _ne_apply and st.button(
+                    f"✅ 선택 {len(_ne_apply)}개 네이버 판매가 적용",
+                    type="primary", key="ne_naver_apply", use_container_width=True):
+                if not api_id or not api_secret:
+                    st.error("설정 탭에서 네이버 API 키를 등록해주세요.")
+                elif not HAS_NAVER_API:
+                    st.error("naver_api.py 모듈이 없습니다.")
+                else:
+                    _ok_names, _fail_msgs = [], []
+                    for t in _ne_apply:
+                        if not t['product_no']:
+                            _fail_msgs.append(f"{t['display_name'][:20]}: 상품번호 미입력")
+                            continue
+                        _r_ok, _r_err, _used_pno = naver_api.update_product_price(
+                            api_id, api_secret, t['product_no'], t['new_sale_price'],
+                            t.get('new_shipping_fee'))
+                        if _r_ok:
+                            _ok_names.append(t['display_name'])
+                            if _used_pno and _used_pno != str(t['product_no']) and t.get('product_id'):
+                                try:
+                                    set_naver_origin_pno(USERNAME, t['product_id'], _used_pno)
+                                except Exception:
+                                    pass
+                        else:
+                            _fail_msgs.append(f"{t['display_name'][:20]}: {_r_err}")
+                    if _ok_names:
+                        st.success(f"✅ 네이버 판매가 적용 완료: {', '.join(_ok_names)}")
+                    for _fm in _fail_msgs:
+                        st.error(f"❌ {_fm}")
 
         # ── 수익 마이너스 — 네이버 판매가 검토 및 적용 ──
         loss_df = df[(df['구입가격'] > 0) & (df['수입'] < 0)].copy()
