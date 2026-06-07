@@ -1,4 +1,5 @@
 """📊 대시보드 — 기간별 통계 + 차트."""
+import calendar as _calendar
 from datetime import datetime, timedelta
 
 import streamlit as st
@@ -32,6 +33,8 @@ def render(USERNAME: str):
     c1.metric("오늘 주문", f"{today_stat['cnt']}건" if today_stat else "0건")
     c2.metric("오늘 매출", f"{fmt(today_stat['total_sales'])}원" if today_stat else "0원")
     c3.metric("오늘 순수익", f"{fmt(today_stat['total_profit'])}원" if today_stat else "0원")
+
+    _render_calendar(USERNAME, today)
 
     st.subheader("일별 수익 추이")
     chart_df = pd.DataFrame(stats)
@@ -92,3 +95,71 @@ def render(USERNAME: str):
             rdf.style.format({'매출': '{:,.0f}', '순수익': '{:,.0f}'}),
             use_container_width=True,
         )
+
+
+def _render_calendar(USERNAME: str, today: datetime):
+    """📅 월별 달력 — 각 날짜에 주문건/수익금/정산금 표시."""
+    st.subheader("📅 달력 (일별 주문 · 수익 · 정산)")
+
+    # 월 선택 (데이터 있는 월 + 현재 월)
+    _months = [m['month'] for m in (get_monthly_stats(USERNAME) or [])]
+    cur_month = today.strftime("%Y-%m")
+    if cur_month not in _months:
+        _months.append(cur_month)
+    _months = sorted(set(_months), reverse=True)
+    sel_month = st.selectbox("월 선택", _months,
+                             index=_months.index(cur_month) if cur_month in _months else 0,
+                             key="dash_cal_month", label_visibility="collapsed")
+
+    y, m = int(sel_month[:4]), int(sel_month[5:7])
+    last_day = _calendar.monthrange(y, m)[1]
+    stats = get_date_range_stats(USERNAME, f"{sel_month}-01", f"{sel_month}-{last_day:02d}")
+    by_date = {s['order_date']: s for s in stats}
+
+    # 헤더 (일~토)
+    week_hdr = ['일', '월', '화', '수', '목', '금', '토']
+    hdr = ''.join(
+        f'<th style="padding:6px;border:1px solid #e9ecef;background:#f8f9fa;'
+        f'color:{"#E74C3C" if i == 0 else "#3477eb" if i == 6 else "#333"};'
+        f'font-weight:600;width:14.28%">{d}</th>'
+        for i, d in enumerate(week_hdr)
+    )
+
+    cal = _calendar.Calendar(firstweekday=6)  # 일요일 시작
+    rows = []
+    for week in cal.monthdatescalendar(y, m):
+        cells = []
+        for i, d in enumerate(week):
+            if d.month != m:
+                cells.append('<td style="border:1px solid #f1f3f5;background:#fcfcfc;'
+                             'height:88px;vertical-align:top"></td>')
+                continue
+            ds = d.strftime("%Y-%m-%d")
+            s = by_date.get(ds)
+            daycol = "#E74C3C" if i == 0 else "#3477eb" if i == 6 else "#333"
+            bg = "#f0fbf6" if ds == today.strftime("%Y-%m-%d") else "white"
+            inner = f'<div style="font-weight:700;color:{daycol}">{d.day}</div>'
+            if s:
+                cnt = int(s.get('cnt') or 0)
+                pf = int(s.get('total_profit') or 0)
+                se = int(s.get('total_settlement') or 0)
+                pfcol = "#1D9E75" if pf >= 0 else "#E74C3C"
+                inner += (
+                    f'<div style="font-size:11px;color:#555">🧾 {cnt}건</div>'
+                    f'<div style="font-size:11px;color:{pfcol};font-weight:600">💰 {pf:,}</div>'
+                    f'<div style="font-size:11px;color:#777">📋 {se:,}</div>'
+                )
+            cells.append(f'<td style="border:1px solid #e9ecef;background:{bg};'
+                         f'height:88px;vertical-align:top;padding:4px">{inner}</td>')
+        rows.append('<tr>' + ''.join(cells) + '</tr>')
+
+    st.markdown(
+        '<table style="width:100%;border-collapse:collapse;table-layout:fixed">'
+        f'<thead><tr>{hdr}</tr></thead><tbody>{"".join(rows)}</tbody></table>',
+        unsafe_allow_html=True,
+    )
+
+    m_cnt = sum(int(s.get('cnt') or 0) for s in stats)
+    m_pf = sum(int(s.get('total_profit') or 0) for s in stats)
+    m_se = sum(int(s.get('total_settlement') or 0) for s in stats)
+    st.caption(f"📆 {sel_month} 합계 — 주문 {m_cnt}건 · 수익 {fmt(m_pf)}원 · 정산 {fmt(m_se)}원")

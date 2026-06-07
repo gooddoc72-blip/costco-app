@@ -13,7 +13,8 @@ from utils import get_week_range, get_month_range
 def get_date_range_stats(username, start_date, end_date):
     conn = get_user_db(username)
     rows = conn.execute("""SELECT order_date, COUNT(*) as cnt, SUM(qty) as total_qty,
-        SUM(order_amount) as total_sales, SUM(profit) as total_profit
+        SUM(order_amount) as total_sales, SUM(profit) as total_profit,
+        COALESCE(SUM(settlement), 0) as total_settlement
         FROM daily_orders WHERE order_date BETWEEN ? AND ?
         GROUP BY order_date ORDER BY order_date""", (start_date, end_date)).fetchall()
     conn.close()
