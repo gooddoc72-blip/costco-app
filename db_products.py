@@ -357,6 +357,19 @@ def unlink_naver_from_shared(username: str, user_product_id: int):
     conn.close()
 
 
+def set_naver_origin_pno(username: str, user_product_id: int, origin_pno: str):
+    """가격수정 성공 시 변환된 originProductNo를 영구 저장 (다음부터 변환 생략)."""
+    if not user_product_id or not origin_pno:
+        return False
+    conn = get_user_db(username)
+    _ensure_products_columns(conn)
+    conn.execute("UPDATE products SET naver_origin_pno=? WHERE id=?",
+                 (str(origin_pno), user_product_id))
+    conn.commit()
+    conn.close()
+    return True
+
+
 def bulk_update_category(username: str, id_category_map: dict):
     if not id_category_map:
         return 0

@@ -1070,43 +1070,78 @@ def _sanitize_for_put(d: dict) -> dict:
     return out
 
 
+def resolve_origin_product_no(client_id, client_secret, channel_product_no):
+    """channelProductNo(스토어 노출 상품번호)로 originProductNo(원상품번호)를 찾는다.
+    가격수정 API는 originProductNo만 받으므로, 저장된 번호가 채널번호일 때 변환용.
+    반환: (origin_no, err)"""
+    token, err = get_token(client_id, client_secret)
+    if not token:
+        return None, err
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    url = "https://api.commerce.naver.com/external/v1/products/search"
+    target = str(channel_product_no).strip()
+    for status in ("SALE", "OUTOFSTOCK", "SUSPENSION", "WAIT", "PROHIBITION"):
+        for page in range(1, 21):
+            body = {"searchKeywordType": "", "productStatusTypes": [status],
+                    "page": page, "size": 100, "orderType": "NO", "periodType": "PROD_REG_DAY"}
+            try:
+                resp = requests.post(url, headers=headers, json=body, timeout=20)
+            except Exception as e:
+                return None, f"상품검색 네트워크 오류: {e}"
+            if resp.status_code != 200:
+                break
+            data = resp.json()
+            contents = data.get("contents") or data.get("content") or data.get("products") or []
+            for it in contents:
+                origin = str(it.get("originProductNo") or "")
+                for cp in (it.get("channelProducts") or []):
+                    if str(cp.get("channelProductNo") or "") == target and origin:
+                        return origin, None
+            if len(contents) < 100:
+                break
+    return None, "채널 상품번호에 해당하는 원상품번호를 찾지 못했습니다."
+
+
 def update_product_price(client_id, client_secret, origin_product_no, new_price):
     """스마트스토어 상품 판매가 수정.
-
-    전략: PATCH(부분갱신) → 실패 시 GET으로 본문 받아 read-only 필드 제거 후 PUT.
+    GET origin-products/{번호} → read-only 필드 제거 → salePrice 교체 → PUT.
+    번호가 channelProductNo면 GET이 404 → originProductNo로 변환 후 재조회.
+    (PATCH는 게이트웨이 미지원(GW.NOT_FOUND)이라 사용하지 않음)
+    반환: (ok, err, used_origin_no)  # used_origin_no: 실제 적용에 쓴 원번호(변환됐으면 새 번호)
     """
     token, err = get_token(client_id, client_secret)
     if not token:
-        return False, err
+        return False, err, None
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-    base_url = f"https://api.commerce.naver.com/external/v2/products/origin-products/{origin_product_no}"
+    pno = str(origin_product_no).strip()
+    if not pno:
+        return False, "상품번호가 비어 있습니다.", None
 
-    # 1차: PATCH
-    try:
-        resp = requests.patch(base_url, headers=headers,
-                              json={"originProduct": {"salePrice": int(new_price)}}, timeout=15)
-        if resp.status_code == 200:
-            return True, None
-        patch_status = resp.status_code
-        patch_msg = _format_naver_err(resp)
-    except Exception as e:
-        patch_status, patch_msg = 'EXC', str(e)
+    def _get(p):
+        return requests.get(
+            f"https://api.commerce.naver.com/external/v2/products/origin-products/{p}",
+            headers=headers, timeout=15)
 
-    # 2차: GET → read-only 필드 제거 → salePrice 교체 → PUT
     try:
-        g = requests.get(base_url, headers=headers, timeout=15)
+        g = _get(pno)
+        # 404 → channelProductNo로 간주, originProductNo 변환 후 재조회
+        if g.status_code == 404:
+            new_origin, rerr = resolve_origin_product_no(client_id, client_secret, pno)
+            if new_origin and new_origin != pno:
+                pno = new_origin
+                g = _get(pno)
+            else:
+                return False, f"원상품번호를 찾지 못했습니다(404). {rerr or ''}".strip(), None
         if g.status_code != 200:
-            return False, (f"PATCH 실패({patch_status}: {patch_msg}) | "
-                           f"GET도 실패({g.status_code}: {_format_naver_err(g)})")
+            return False, f"상품 조회 실패({g.status_code}: {_format_naver_err(g)})", None
+
         data = g.json()
         origin_product = data.get('originProduct') or {}
         if not origin_product:
-            return False, f"GET 응답에 originProduct 없음: {str(data)[:200]}"
+            return False, f"GET 응답에 originProduct 없음: {str(data)[:200]}", None
 
         # read-only 제거 + unitCapacity / sellerTags 같은 검증 유발 필드 정리
         origin_product = _sanitize_for_put(dict(origin_product))
-
-        # salePrice 교체
         origin_product['salePrice'] = int(new_price)
 
         put_body = {"originProduct": origin_product}
@@ -1114,13 +1149,14 @@ def update_product_price(client_id, client_secret, origin_product_no, new_price)
         if smartstore:
             put_body["smartstoreChannelProduct"] = _sanitize_for_put(dict(smartstore))
 
-        put_resp = requests.put(base_url, headers=headers, json=put_body, timeout=20)
+        put_resp = requests.put(
+            f"https://api.commerce.naver.com/external/v2/products/origin-products/{pno}",
+            headers=headers, json=put_body, timeout=20)
         if put_resp.status_code == 200:
-            return True, None
-        return False, (f"PATCH 실패({patch_status}: {patch_msg}) | "
-                       f"PUT도 실패({put_resp.status_code}: {_format_naver_err(put_resp)})")
+            return True, None, pno
+        return False, f"판매가 수정 실패({put_resp.status_code}: {_format_naver_err(put_resp)})", None
     except Exception as e:
-        return False, f"PATCH 실패({patch_status}: {patch_msg}) | PUT 예외: {e}"
+        return False, f"판매가 수정 예외: {e}", None
 
 
 # ── 정산 내역 조회 ─────────────────────────────────────────

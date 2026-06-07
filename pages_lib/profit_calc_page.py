@@ -23,6 +23,7 @@ from db import (
     get_shared_products, upsert_shared_product, delete_shared_product, upsert_shared_store_price,
     get_user_db, init_user_db, get_setting, set_setting, get_all_settings, get_all_products,
     upsert_user_private, get_all_products_merged, upsert_product,
+    set_naver_origin_pno,
     get_product_detail,
     save_daily_orders, get_daily_orders, save_order_history, search_order_history,
     save_profit_settlements, get_profit_settlements, get_settlement_overrides_map, save_settlement_override,
@@ -1373,6 +1374,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                             'new_sale_price': _new_price,
                             'new_shipping_fee': _new_cfee,
                             'product_no': _pno,
+                            'product_id': (_up_rec or {}).get('id'),
                             'new_profit': _new_profit,
                         })
 
@@ -1396,11 +1398,17 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                             if not t['product_no']:
                                 _fail_msgs.append(f"{t['display_name'][:20]}: 상품번호 미입력")
                                 continue
-                            _r_ok, _r_err = naver_api.update_product_price(
+                            _r_ok, _r_err, _used_pno = naver_api.update_product_price(
                                 api_id, api_secret, t['product_no'], t['new_sale_price']
                             )
                             if _r_ok:
                                 _ok_names.append(t['display_name'])
+                                # 채널번호 → 원번호 변환됐으면 DB에 영구 저장 (다음부터 변환 생략)
+                                if _used_pno and _used_pno != str(t['product_no']) and t.get('product_id'):
+                                    try:
+                                        set_naver_origin_pno(USERNAME, t['product_id'], _used_pno)
+                                    except Exception:
+                                        pass
                             else:
                                 _fail_msgs.append(f"{t['display_name'][:20]}: {_r_err}")
                         if _ok_names:
