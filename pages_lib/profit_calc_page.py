@@ -1399,7 +1399,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                 _fail_msgs.append(f"{t['display_name'][:20]}: 상품번호 미입력")
                                 continue
                             _r_ok, _r_err, _used_pno = naver_api.update_product_price(
-                                api_id, api_secret, t['product_no'], t['new_sale_price']
+                                api_id, api_secret, t['product_no'], t['new_sale_price'],
+                                t.get('new_shipping_fee')
                             )
                             if _r_ok:
                                 _ok_names.append(t['display_name'])

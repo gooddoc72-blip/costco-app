@@ -1102,11 +1102,13 @@ def resolve_origin_product_no(client_id, client_secret, channel_product_no):
     return None, "채널 상품번호에 해당하는 원상품번호를 찾지 못했습니다."
 
 
-def update_product_price(client_id, client_secret, origin_product_no, new_price):
-    """스마트스토어 상품 판매가 수정.
-    GET origin-products/{번호} → read-only 필드 제거 → salePrice 교체 → PUT.
+def update_product_price(client_id, client_secret, origin_product_no, new_price,
+                         new_shipping_fee=None):
+    """스마트스토어 상품 판매가(+배송비) 수정.
+    GET origin-products/{번호} → read-only 필드 제거 → salePrice/배송비 교체 → PUT.
     번호가 channelProductNo면 GET이 404 → originProductNo로 변환 후 재조회.
-    (PATCH는 게이트웨이 미지원(GW.NOT_FOUND)이라 사용하지 않음)
+    new_shipping_fee가 None이 아니면 deliveryInfo.deliveryFee.baseFee도 갱신
+    (0 이하면 무료배송 전환). (PATCH는 게이트웨이 미지원(GW.NOT_FOUND)이라 사용 안 함)
     반환: (ok, err, used_origin_no)  # used_origin_no: 실제 적용에 쓴 원번호(변환됐으면 새 번호)
     """
     token, err = get_token(client_id, client_secret)
@@ -1143,6 +1145,21 @@ def update_product_price(client_id, client_secret, origin_product_no, new_price)
         # read-only 제거 + unitCapacity / sellerTags 같은 검증 유발 필드 정리
         origin_product = _sanitize_for_put(dict(origin_product))
         origin_product['salePrice'] = int(new_price)
+
+        # 배송비(택배비) 반영 — 제공된 경우에만
+        if new_shipping_fee is not None:
+            _di = origin_product.get('deliveryInfo')
+            if isinstance(_di, dict):
+                _dfee = _di.get('deliveryFee')
+                if isinstance(_dfee, dict):
+                    _nf = int(new_shipping_fee)
+                    if _nf <= 0:
+                        _dfee['deliveryFeeType'] = 'FREE'
+                        _dfee['baseFee'] = 0
+                    else:
+                        if _dfee.get('deliveryFeeType') in (None, '', 'FREE'):
+                            _dfee['deliveryFeeType'] = 'PAID'
+                        _dfee['baseFee'] = _nf
 
         put_body = {"originProduct": origin_product}
         smartstore = data.get('smartstoreChannelProduct')
