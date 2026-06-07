@@ -199,41 +199,51 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     if not trackings:
         st.info("추적 중인 키워드가 없습니다. 위에서 추가하세요.")
     else:
+        # ── 순위 체크 실행 헬퍼 (전체/선택 공용) ──────────────
+        _rk_api_ready = HAS_NAVER_API and open_cid and open_csec
+
+        def _run_rank_check(_targets):
+            _targets = [t for t in (_targets or []) if t]
+            if not _targets:
+                st.warning("체크할 대상이 없습니다.")
+                return
+            _prog = st.progress(0, text="순위 체크 중...")
+            _rk_errs = []
+            _matched_n = 0
+            _notfound_n = 0
+            for _ri, _rt in enumerate(_targets):
+                _prog.progress((_ri + 1) / len(_targets),
+                               text=f"'{_rt['search_keyword']}' 확인 중... ({_ri+1}/{len(_targets)})")
+                _r_wonbu, _r_compare, _r_solo, _rerr = naver_api.check_keyword_rank(
+                    open_cid, open_csec, _rt['search_keyword'],
+                    our_product_name=_rt['product_keyword'],
+                    naver_product_no=_rt.get('naver_product_no', ''),
+                    store_name=_rt.get('store_name', ''),
+                )
+                save_rank_result(USERNAME, _rt['id'], _r_wonbu, _r_solo, _r_compare)
+                if _rerr:
+                    _rk_errs.append(f"'{_rt['search_keyword']}': {_rerr}")
+                elif _r_wonbu is not None or _r_compare is not None or _r_solo is not None:
+                    _matched_n += 1
+                    _info = naver_api.get_last_match_info()
+                    if _info:
+                        _rk_errs.append(f"ℹ️ {_info}")
+                else:
+                    _notfound_n += 1
+            _prog.empty()
+            _summary = f"✅ 체크 완료 — 매칭 성공 {_matched_n}건 / 미발견 {_notfound_n}건"
+            if _rk_errs:
+                st.session_state['_rk_check_log'] = _summary + "\n\n" + "\n".join(_rk_errs)
+            else:
+                st.session_state['_rk_check_log'] = _summary
+            st.rerun()
+
         # ── 전체 순위 체크 버튼 ────────────────────────────
         _rk_h1, _rk_h2 = st.columns([4, 1])
         _rk_h1.subheader("📊 현재 순위 현황")
-        if HAS_NAVER_API and open_cid and open_csec:
+        if _rk_api_ready:
             if _rk_h2.button("🔄 전체 체크", type="primary", use_container_width=True, key="rk_check_all"):
-                _prog = st.progress(0, text="순위 체크 중...")
-                _rk_errs = []
-                _matched_n = 0
-                _notfound_n = 0
-                for _ri, _rt in enumerate(trackings):
-                    _prog.progress((_ri + 1) / len(trackings),
-                                   text=f"'{_rt['search_keyword']}' 확인 중... ({_ri+1}/{len(trackings)})")
-                    _r_wonbu, _r_compare, _r_solo, _rerr = naver_api.check_keyword_rank(
-                        open_cid, open_csec, _rt['search_keyword'],
-                        our_product_name=_rt['product_keyword'],
-                        naver_product_no=_rt.get('naver_product_no', ''),
-                        store_name=_rt.get('store_name', ''),
-                    )
-                    save_rank_result(USERNAME, _rt['id'], _r_wonbu, _r_solo, _r_compare)
-                    if _rerr:
-                        _rk_errs.append(f"'{_rt['search_keyword']}': {_rerr}")
-                    elif _r_wonbu is not None or _r_compare is not None or _r_solo is not None:
-                        _matched_n += 1
-                        _info = naver_api.get_last_match_info()
-                        if _info:
-                            _rk_errs.append(f"ℹ️ {_info}")
-                    else:
-                        _notfound_n += 1
-                _prog.empty()
-                _summary = f"✅ 체크 완료 — 매칭 성공 {_matched_n}건 / 미발견 {_notfound_n}건"
-                if _rk_errs:
-                    st.session_state['_rk_check_log'] = _summary + "\n\n" + "\n".join(_rk_errs)
-                else:
-                    st.session_state['_rk_check_log'] = _summary
-                st.rerun()
+                _run_rank_check(trackings)
         elif not open_cid:
             _rk_h2.caption("API 키 미등록")
 
@@ -255,7 +265,12 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
 
         # 상단 액션 바
         _act1, _act2, _act3 = st.columns([2, 2, 6])
-        if _act1.button(f"🗑 선택 삭제 ({len(_sel_ids)})",
+        if _act1.button(f"✅ 선택 체크 ({len(_sel_ids)})",
+                         disabled=not _sel_ids or not _rk_api_ready, key="rk_check_sel",
+                         type="primary", use_container_width=True,
+                         help="체크한 항목만 순위 확인"):
+            _run_rank_check([t for t in trackings if t['id'] in _sel_ids])
+        if _act2.button(f"🗑 선택 삭제 ({len(_sel_ids)})",
                          disabled=not _sel_ids, key="rk_bulk_del",
                          use_container_width=True):
             delete_trackings_bulk(USERNAME, _sel_ids)
