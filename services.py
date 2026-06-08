@@ -1100,3 +1100,41 @@ def read_excel_auto(uploaded_file, password=""):
     if decrypt_error:
         return None, f"비밀번호 해제 실패: {decrypt_error}"
     return None, f"파일 읽기 실패: {last_error or '알 수 없는 오류'}"
+
+
+# ── 발송상태 동기화 ─────────────────────────────────────────
+def sync_active_order_status(username, client_id, client_secret):
+    """미발송(active)으로 잡힌 주문의 실제 네이버 상태를 조회해 로컬 order_history를 갱신.
+    이미 발송/완료된 건은 상태가 갱신되어 미발송 목록에서 자동 제외된다.
+    반환: dict(checked, updated, cleared, error)
+      - checked: 네이버에서 조회된 건수
+      - updated: 로컬 갱신된 행 수
+      - cleared: 발송/완료 상태로 바뀌어 미발송에서 빠진 건수
+    """
+    from db import get_active_orders, update_order_status_bulk
+    import naver_api as _na
+
+    active = get_active_orders(username)
+    ids = [str(r.get('order_no', '') or '') for r in active if r.get('order_no')]
+    ids = [i for i in ids if i]
+    if not ids:
+        return {'checked': 0, 'updated': 0, 'cleared': 0, 'error': None}
+
+    rows, err = _na.fetch_order_details_by_ids(client_id, client_secret, ids)
+    if (err and not rows):
+        return {'checked': 0, 'updated': 0, 'cleared': 0, 'error': err}
+
+    _ACTIVE = {"PAYED", "INSTRUCT", "PRODUCT_READY", "결제완료", "발주확인", "발송대기"}
+    status_map = {}
+    cleared = 0
+    for r in rows:
+        ono = str(r.get('상품주문번호', '') or '')
+        stt = str(r.get('주문상태', '') or '')
+        tno = str(r.get('송장번호', '') or '')
+        if not ono or not stt:
+            continue
+        status_map[ono] = {'status': stt, 'tracking_no': tno}
+        if stt not in _ACTIVE:
+            cleared += 1
+    updated = update_order_status_bulk(username, status_map)
+    return {'checked': len(rows), 'updated': updated, 'cleared': cleared, 'error': None}

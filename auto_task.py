@@ -208,6 +208,17 @@ def run_shopping_task(username="admin"):
         log("❌ 네이버 API 키 미설정 → 앱 설정에서 등록 필요")
         return False
 
+    # 발송상태 동기화: 미발송으로 잡힌 주문의 실제 상태를 갱신(이미 발송된 건 제외)
+    try:
+        from services import sync_active_order_status
+        _sy = sync_active_order_status(username, api_id, api_secret)
+        if _sy.get('error'):
+            log(f"⚠️ 발송상태 동기화 경고: {_sy['error']}")
+        elif _sy.get('checked'):
+            log(f"🚚 발송상태 동기화 — 조회 {_sy['checked']} / 갱신 {_sy['updated']} / 발송완료 제외 {_sy['cleared']}")
+    except Exception as e:
+        log(f"⚠️ 발송상태 동기화 실패(계속 진행): {e}")
+
     log("📋 배송준비(READY) 주문 조회 중...")
     orders, err = naver_api.get_new_orders(api_id, api_secret,
                                            hours_back=48, status_type="READY")

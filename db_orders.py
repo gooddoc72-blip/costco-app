@@ -217,6 +217,32 @@ def get_active_orders(username):
     return [dict(r) for r in rows]
 
 
+def update_order_status_bulk(username, status_map):
+    """order_history의 status(및 송장)를 order_no 기준으로 일괄 갱신.
+    status_map: {order_no: {'status': ..., 'tracking_no': ...}} 또는 {order_no: status}.
+    반환: 갱신된 행 수."""
+    if not status_map:
+        return 0
+    conn = get_user_db(username)
+    updated = 0
+    for order_no, info in status_map.items():
+        if isinstance(info, dict):
+            st = info.get('status'); tno = info.get('tracking_no') or ''
+        else:
+            st = info; tno = ''
+        if not st:
+            continue
+        cur = conn.execute(
+            "UPDATE order_history SET status=?, "
+            "tracking_no=COALESCE(NULLIF(?, ''), tracking_no) WHERE order_no=?",
+            (st, tno, str(order_no)),
+        )
+        updated += cur.rowcount
+    conn.commit()
+    conn.close()
+    return updated
+
+
 _NAVER_EXCEL_COLUMNS = [
     "상품주문번호", "주문번호", "배송속성", "풀필먼트사(주문 기준)", "택배사(주문 기준)", "배송방법(구매자 요청)",
     "배송방법", "택배사", "송장번호", "발송일", "판매채널", "구매자명", "구매자ID", "수취인명", "주문상태",

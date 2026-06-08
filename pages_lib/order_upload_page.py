@@ -126,6 +126,25 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             st.write("")
             st.write("")
             fetch_btn = st.button("🔄 네이버 주문 조회", type="primary", key="api_fetch")
+
+        # 🚚 발송상태 동기화 — 미발송으로 잡힌 주문의 실제 네이버 상태를 받아와 갱신
+        if st.button("🚚 발송상태 동기화 (이미 발송된 건 미발송에서 제외)", key="sync_ship_status",
+                     help="미발송으로 표시된 주문의 실제 네이버 상태를 조회해 갱신합니다. 이미 발송/완료된 건은 목록에서 빠집니다."):
+            from services import sync_active_order_status
+            with st.spinner("발송상태 동기화 중... (주문 수가 많으면 시간이 걸립니다)"):
+                _sync = sync_active_order_status(USERNAME, api_id, api_secret)
+            if _sync.get('error'):
+                st.error(f"❌ 동기화 실패: {_sync['error']}")
+            else:
+                st.success(f"✅ 동기화 완료 — 조회 {_sync['checked']}건 / 갱신 {_sync['updated']}건 / "
+                           f"발송완료로 제외 {_sync['cleared']}건")
+                for _k in ['orders', 'orders_unsaved', 'orders_api_count']:
+                    st.session_state.pop(_k, None)
+                if invalidate_data_cache:
+                    try: invalidate_data_cache()
+                    except Exception: pass
+                st.rerun()
+
         # 선택 날짜 범위 → hours_back 변환 (안전 마진 +24h)
         from datetime import datetime as _dt
         _nav_delta_h = int((_dt.now() - _dt.combine(_nav_date_from, _dt.min.time())).total_seconds() / 3600) + 24
