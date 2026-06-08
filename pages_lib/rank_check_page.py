@@ -86,6 +86,12 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
 
     st.header("📈 키워드 순위 체크")
     st.caption("네이버 쇼핑에서 우리 상품이 특정 키워드 검색 결과 몇 위에 노출되는지 매일 추적합니다.")
+    st.info(
+        "ℹ️ **순위는 네이버 쇼핑 검색 API의 '정확도순' 기준**입니다. "
+        "실제 검색 화면 기본값인 **'랭킹순'(인기·리뷰·광고 반영)과는 순위가 다를 수 있습니다.** "
+        "비교하실 땐 네이버쇼핑에서 정렬을 **'정확도순'으로 바꿔** 확인하시면 가장 비슷합니다. "
+        "(절대 순위보다 **매일 변동 추세** 파악용으로 보세요)"
+    )
 
     open_cid  = _gs('naver_open_client_id')
     open_csec = _gs('naver_open_client_secret')
