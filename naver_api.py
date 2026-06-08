@@ -330,8 +330,8 @@ def send_telegram(tok, cid, msg):
 
 # ✅ 카카오톡 나에게 보내기 (REST API)
 def send_kakao(access_token, msg, rest_api_key=None, refresh_token=None, client_secret=None):
-    """카카오톡 메모. 줄 단위로 안전 크기(1000자)로 나눠 전부 발송 → 긴 목록 잘림 방지.
-    짧으면 1건, 길면 여러 건(모두 전달). 실패한 청크가 있어도 나머지는 계속 발송.
+    """카카오톡 메모. 7500자 이하면 한 건으로 발송(보통 목록), 초과 시에만 줄 단위로
+    나눠 전부 발송 → 긴 목록 잘림 방지. 실패한 청크가 있어도 나머지는 계속 발송.
     client_secret: 앱에 Client Secret '사용함'이면 토큰 갱신 시 함께 전송."""
     import time as _t
     url = "https://kapi.kakao.com/v2/api/talk/memo/default/send"
@@ -358,9 +358,9 @@ def send_kakao(access_token, msg, rest_api_key=None, refresh_token=None, client_
 
     text = msg or ''
 
-    # 카카오 텍스트 템플릿은 길면 200을 주면서도 뒷부분을 잘라서 전달 → 잘림 방지 위해
-    # 처음부터 줄 단위로 안전 크기(MAX)로 나눠 전부 발송. 짧으면 1건, 길면 여러 건.
-    MAX = 1000
+    # 카카오 텍스트 템플릿 실측 한도 ~8000자(그 이내는 한 건으로 정상 수신).
+    # MAX 이하면 1건으로 발송(보통 목록은 여기 해당), 초과 시에만 줄 단위로 나눠 전부 발송.
+    MAX = 7500
 
     def _chunk_by_lines(s, limit):
         chunks, cur = [], ""
