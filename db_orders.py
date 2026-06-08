@@ -161,8 +161,9 @@ def save_order_history(username, full_df, cost_df=None):
         profit = (settle + ship) - (cost_price + s_cost + b_cost) if cost_price > 0 else 0
         try:
             import json as _json
+            # raw_json엔 송장등록 표준 컬럼만 저장 (가공 컬럼[구입가격/소분/플랫폼/id 등] 제외)
             _raw_dict = {k: ('' if pd.isna(v) else (int(v) if hasattr(v, 'item') else v))
-                         for k, v in r.to_dict().items()}
+                         for k, v in r.to_dict().items() if k in _NAVER_EXCEL_COLUMNS}
             raw_json_str = _json.dumps(_raw_dict, default=str, ensure_ascii=False)
         except Exception:
             raw_json_str = ''
@@ -318,7 +319,11 @@ def active_orders_to_naver_excel_df(username):
             except Exception:
                 pass
         records.append(_db_row_to_naver_excel_row(r))
-    return _pd.DataFrame(records)
+    df = _pd.DataFrame(records)
+    # 송장등록 양식 표준화: 표준 72컬럼만, 표준 순서로 출력
+    # (raw_json에 가공 컬럼[플랫폼/구입가격/소분/id 등]이 섞여 있어도 방어)
+    df = df.reindex(columns=_NAVER_EXCEL_COLUMNS, fill_value="")
+    return df
 
 
 def db_rows_to_orders_df(rows):
