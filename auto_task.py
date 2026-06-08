@@ -96,8 +96,8 @@ def save_daily_orders(username, orders, settings):
 
 
 def send_notification(settings, msg, username=None):
-    """2000자 초과 + 텔레그램 설정 시 → 텔레그램 전체 발송 + 카톡엔 알림만.
-    그 외엔 카톡 우선, 실패 시 텔레그램 fallback."""
+    """카카오 + 텔레그램 둘 다에 '전체' 메시지 발송.
+    카카오는 길면(7500자 초과) 자동으로 나눠 전부 발송(잘림 없음)."""
     kakao_token = settings.get("kakao_access_token", "")
     kakao_api_key = settings.get("kakao_api_key", "")
     kakao_refresh = settings.get("kakao_refresh_token", "")
@@ -116,39 +116,26 @@ def send_notification(settings, msg, username=None):
             except Exception as e:
                 log(f"⚠️ 카카오 토큰 갱신 저장 실패: {e}")
 
-    # 7000자 초과 + 텔레그램 설정 시 → 텔레그램 전체 + 카톡 알림
-    # (카카오 단건 한도 실측 8000자↑ → 그 이내는 카톡도 전체 목록 1건 발송)
-    if len(msg) > 7000 and tg_token and tg_chat:
-        ok, err = naver_api.send_telegram(tg_token, tg_chat, msg)
-        if ok:
-            if kakao_token:
-                short = f"📱 알림 발송됨 ({len(msg):,}자)\n자세한 내역은 텔레그램에서 확인하세요."
-                ok_k, kerr = naver_api.send_kakao(kakao_token, short,
-                                                   rest_api_key=kakao_api_key,
-                                                   refresh_token=kakao_refresh,
-                                                   client_secret=kakao_secret)
-                if ok_k: _save_refreshed_token(kerr)
-            return True
-        log(f"  텔레그램 실패: {err}")
-
-    # 2000자 이내 또는 텔레그램 미설정 → 카톡 우선 (카톡은 200자 단위 자동 분할 발송)
+    # 카카오 + 텔레그램 둘 다에 '전체' 발송.
+    # 카카오는 7500자 초과 시 자동으로 줄 단위 분할해 전부 발송 → 잘림 없음.
+    sent_any = False
     if kakao_token:
-        ok, err = naver_api.send_kakao(kakao_token, msg,
-                                       rest_api_key=kakao_api_key,
-                                       refresh_token=kakao_refresh,
-                                       client_secret=kakao_secret)
-        if ok:
-            _save_refreshed_token(err)
-            return True
-        log(f"  카카오톡 실패: {err}")
-
+        ok_k, kerr = naver_api.send_kakao(kakao_token, msg,
+                                          rest_api_key=kakao_api_key,
+                                          refresh_token=kakao_refresh,
+                                          client_secret=kakao_secret)
+        if ok_k:
+            _save_refreshed_token(kerr)
+            sent_any = True
+        else:
+            log(f"  카카오톡 실패: {kerr}")
     if tg_token and tg_chat:
-        ok, err = naver_api.send_telegram(tg_token, tg_chat, msg)
-        if ok:
-            return True
-        log(f"  텔레그램 실패: {err}")
-
-    return False
+        ok_t, terr = naver_api.send_telegram(tg_token, tg_chat, msg)
+        if ok_t:
+            sent_any = True
+        else:
+            log(f"  텔레그램 실패: {terr}")
+    return sent_any
 
 
 # ── Task 3: 정기 크롤링 ──────────────────────────
