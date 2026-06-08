@@ -330,8 +330,8 @@ def send_telegram(tok, cid, msg):
 
 # ✅ 카카오톡 나에게 보내기 (REST API)
 def send_kakao(access_token, msg, rest_api_key=None, refresh_token=None, client_secret=None):
-    """카카오톡 메모. 1차로 전체를 '한 건'에 담아 발송(분리 없음).
-    길이 초과 등으로 1차가 실패할 때만 200자 단위로 나눠 남은 부분까지 이어 발송.
+    """카카오톡 메모. 줄 단위로 안전 크기(1000자)로 나눠 전부 발송 → 긴 목록 잘림 방지.
+    짧으면 1건, 길면 여러 건(모두 전달). 실패한 청크가 있어도 나머지는 계속 발송.
     client_secret: 앱에 Client Secret '사용함'이면 토큰 갱신 시 함께 전송."""
     import time as _t
     url = "https://kapi.kakao.com/v2/api/talk/memo/default/send"
@@ -358,35 +358,49 @@ def send_kakao(access_token, msg, rest_api_key=None, refresh_token=None, client_
 
     text = msg or ''
 
-    # 1차: 전체를 한 건으로 발송 시도 (성공 시 단일 메시지 → 분리 없음)
-    try:
-        resp, tok_err = _post(text)
-        if tok_err:
-            return False, tok_err
-        if resp.status_code == 200:
-            return True, state["refreshed"]
-    except Exception as e:
-        return False, f"카카오 발송 예외: {e}"
+    # 카카오 텍스트 템플릿은 길면 200을 주면서도 뒷부분을 잘라서 전달 → 잘림 방지 위해
+    # 처음부터 줄 단위로 안전 크기(MAX)로 나눠 전부 발송. 짧으면 1건, 길면 여러 건.
+    MAX = 1000
 
-    # 1차 실패 시 fallback → 큰 단위로만 나눠 남은 부분까지 이어 발송
-    # (카카오 memo/default text는 실측 8000자 이상도 단건 허용 → 분할은 거의 안 일어남)
-    MAX = 3500
-    chunks = [text[i:i+MAX] for i in range(0, len(text), MAX)] if text else ['']
+    def _chunk_by_lines(s, limit):
+        chunks, cur = [], ""
+        for line in s.split('\n'):
+            # 한 줄 자체가 limit 초과면 강제 분할
+            while len(line) > limit:
+                if cur:
+                    chunks.append(cur); cur = ""
+                chunks.append(line[:limit]); line = line[limit:]
+            if not cur:
+                cur = line
+            elif len(cur) + 1 + len(line) <= limit:
+                cur = cur + '\n' + line
+            else:
+                chunks.append(cur); cur = line
+        if cur or not chunks:
+            chunks.append(cur)
+        return chunks
+
+    chunks = _chunk_by_lines(text, MAX)
     total = len(chunks)
     sent = 0
+    fails = []
     for ci, chunk in enumerate(chunks):
         if ci > 0:
             _t.sleep(0.5)  # 청크 사이 sleep — rate limit/순서 보장
         try:
             resp, tok_err = _post(chunk)
             if tok_err:
-                return False, f"{tok_err} ({ci+1}/{total} 발송 중)"
-            if resp.status_code != 200:
-                return False, f"카카오 발송 실패 (성공 {sent}/{total}, 청크 {ci+1} 실패 {resp.status_code}): {resp.text[:120]}"
-            sent += 1
+                fails.append(f"청크{ci+1}: {tok_err}")
+                continue
+            if resp.status_code == 200:
+                sent += 1
+            else:
+                fails.append(f"청크{ci+1}({resp.status_code}): {resp.text[:80]}")
         except Exception as e:
-            return False, f"카카오 발송 예외 (성공 {sent}/{total}): {e}"
-    return True, state["refreshed"]
+            fails.append(f"청크{ci+1} 예외: {e}")
+    if sent == total and total > 0:
+        return True, state["refreshed"]
+    return False, f"카카오 발송 {sent}/{total} 성공" + (f" — 실패: {'; '.join(fails)[:200]}" if fails else "")
 
 def refresh_kakao_token(rest_api_key, refresh_token, client_secret=None):
     """카카오 refresh_token으로 새 access_token 발급.
