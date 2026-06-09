@@ -552,7 +552,8 @@ def get_all_products_merged(username):
 
 
 def upsert_product(username, costco_name, keyword, price, product_no='', split_qty=1,
-                   shipping_fee=None, naver_origin_pno='', auto_split_costco_no=False):
+                   shipping_fee=None, naver_origin_pno='', auto_split_costco_no=False,
+                   manual=False):
     """제품 가격/정보 upsert.
     조회 우선순위: naver_origin_pno (네이버 원상품번호) > product_no (코스트코) > match_keyword
     → 같은 코스트코 상품번호로 여러 네이버 상품이 있어도 각각 별도 가격 저장 가능.
@@ -592,11 +593,14 @@ def upsert_product(username, costco_name, keyword, price, product_no='', split_q
         existing_sale  = int(existing['sale_price'] or 0)
         new_price = int(price or 0)
         new_name  = costco_name
+        # 박스단가 보호: 자동(크롤링/영수증) 갱신만 적용. manual=True(사용자 직접 수정)면
+        # 기존값이 비정상으로 낮아도 사용자가 입력한 값을 그대로 반영(보호 우회).
         is_box_suspicion = False
-        if new_price > 0 and existing_price > 0 and new_price > existing_price * 5:
-            is_box_suspicion = True
-        elif new_price > 0 and existing_sale > 0 and new_price > existing_sale * 5:
-            is_box_suspicion = True
+        if not manual:
+            if new_price > 0 and existing_price > 0 and new_price > existing_price * 5:
+                is_box_suspicion = True
+            elif new_price > 0 and existing_sale > 0 and new_price > existing_sale * 5:
+                is_box_suspicion = True
         if is_box_suspicion:
             new_price = existing_price
             new_name  = existing['costco_name'] or costco_name
