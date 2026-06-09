@@ -178,10 +178,11 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             except Exception:
                 pass
 
-            # ── 1-B. raw_json 없는 옛 주문 보완 (주소/연락처 등 복원) ──
-            _no_rj_ids = [r['order_no'] for r in get_active_orders(USERNAME) if not r.get('raw_json')]
+            # ── 1-B. raw_json 없거나 '주소 빠진' 주문 보완 (주소/연락처 복원) ──
+            _no_rj_ids = [r['order_no'] for r in get_active_orders(USERNAME)
+                          if not r.get('raw_json') or '통합배송지' not in (r.get('raw_json') or '')]
             if _no_rj_ids:
-                with st.spinner(f"기존 주문 데이터 보완 중... ({len(_no_rj_ids)}건)"):
+                with st.spinner(f"주소/연락처 보완 중... ({len(_no_rj_ids)}건)"):
                     _detail_rows, _ = naver_api.fetch_order_details_by_ids(api_id, api_secret, _no_rj_ids)
                 if _detail_rows:
                     save_order_history(USERNAME, pd.DataFrame(_detail_rows))

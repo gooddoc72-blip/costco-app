@@ -161,10 +161,17 @@ def save_order_history(username, full_df, cost_df=None):
         profit = (settle + ship) - (cost_price + s_cost + b_cost) if cost_price > 0 else 0
         try:
             import json as _json
-            # raw_json엔 송장등록 표준 컬럼만 저장 (가공 컬럼[구입가격/소분/플랫폼/id 등] 제외)
-            _raw_dict = {k: ('' if pd.isna(v) else (int(v) if hasattr(v, 'item') else v))
-                         for k, v in r.to_dict().items() if k in _NAVER_EXCEL_COLUMNS}
-            raw_json_str = _json.dumps(_raw_dict, default=str, ensure_ascii=False)
+            # 주소·연락처가 있는 '완전한' 행에서만 raw_json 기록 → 주소 없는 축약 df
+            # (DB복원/수익계산 df)가 raw_json을 덮어써 송장등록 주소가 사라지는 것 방지.
+            # 표준 컬럼만 저장(가공 컬럼 제외).
+            _has_addr = bool(str(r.get('통합배송지', '') or r.get('기본배송지', '')
+                                 or r.get('수취인연락처1', '') or '').strip())
+            if _has_addr:
+                _raw_dict = {k: ('' if pd.isna(v) else (int(v) if hasattr(v, 'item') else v))
+                             for k, v in r.to_dict().items() if k in _NAVER_EXCEL_COLUMNS}
+                raw_json_str = _json.dumps(_raw_dict, default=str, ensure_ascii=False)
+            else:
+                raw_json_str = ''  # 주소 없는 행 → raw_json 안 건드림(COALESCE로 기존 보존)
         except Exception:
             raw_json_str = ''
         try:
