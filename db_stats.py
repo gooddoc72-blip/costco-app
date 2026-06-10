@@ -10,33 +10,53 @@ from utils import get_week_range, get_month_range
 
 # ── 통계 ─────────────────────────────────────────────────
 
+# 대시보드 통계는 '정산저장'된 데이터(profit_settlements) 기준 → 수익계산 페이지와 일치.
+# 수익은 실정산배송비(고객배송비×(1-네이버수수료율))로 계산하고 구입가 0(미산정) 행은 제외.
+_PS_PROFIT_EXPR = (
+    "CASE WHEN cost_price>0 THEN settlement_amount "
+    "+ CAST(ROUND(COALESCE(shipping_fee,0)*?) AS INT) "
+    "- cost_price - COALESCE(delivery_cost,0) - COALESCE(box_cost,0) ELSE 0 END"
+)
+
+
 def get_date_range_stats(username, start_date, end_date):
+    from db_orders import _ship_settle_factor
     conn = get_user_db(username)
-    rows = conn.execute("""SELECT order_date, COUNT(*) as cnt, SUM(qty) as total_qty,
-        SUM(order_amount) as total_sales, SUM(profit) as total_profit,
-        COALESCE(SUM(settlement), 0) as total_settlement
-        FROM daily_orders WHERE order_date BETWEEN ? AND ?
-        GROUP BY order_date ORDER BY order_date""", (start_date, end_date)).fetchall()
+    factor = _ship_settle_factor(conn)
+    rows = conn.execute(f"""SELECT settlement_date as order_date, COUNT(*) as cnt,
+        SUM(qty) as total_qty, COALESCE(SUM(order_amount),0) as total_sales,
+        COALESCE(SUM({_PS_PROFIT_EXPR}),0) as total_profit,
+        COALESCE(SUM(settlement_amount),0) as total_settlement
+        FROM profit_settlements WHERE settlement_date BETWEEN ? AND ?
+        GROUP BY settlement_date ORDER BY settlement_date""",
+        (factor, start_date, end_date)).fetchall()
     conn.close()
     return [dict(r) for r in rows]
 
 
 def get_monthly_stats(username):
+    from db_orders import _ship_settle_factor
     conn = get_user_db(username)
-    rows = conn.execute("""SELECT substr(order_date, 1, 7) as month, COUNT(*) as cnt,
-        SUM(order_amount) as total_sales, SUM(profit) as total_profit
-        FROM daily_orders GROUP BY substr(order_date, 1, 7) ORDER BY month""").fetchall()
+    factor = _ship_settle_factor(conn)
+    rows = conn.execute(f"""SELECT substr(settlement_date, 1, 7) as month, COUNT(*) as cnt,
+        COALESCE(SUM(order_amount),0) as total_sales,
+        COALESCE(SUM({_PS_PROFIT_EXPR}),0) as total_profit
+        FROM profit_settlements GROUP BY substr(settlement_date, 1, 7) ORDER BY month""",
+        (factor,)).fetchall()
     conn.close()
     return [dict(r) for r in rows]
 
 
 def get_product_ranking(username, year_month=None):
+    from db_orders import _ship_settle_factor
     conn = get_user_db(username)
-    where = "WHERE substr(order_date, 1, 7) = ?" if year_month else ""
-    params = (year_month,) if year_month else ()
+    factor = _ship_settle_factor(conn)
+    where = "WHERE substr(settlement_date, 1, 7) = ?" if year_month else ""
+    params = (factor,) + ((year_month,) if year_month else ())
     rows = conn.execute(f"""SELECT product_name, SUM(qty) as total_qty,
-        SUM(order_amount) as total_sales, SUM(profit) as total_profit
-        FROM daily_orders {where} GROUP BY product_name ORDER BY total_profit DESC LIMIT 10""",
+        COALESCE(SUM(order_amount),0) as total_sales,
+        COALESCE(SUM({_PS_PROFIT_EXPR}),0) as total_profit
+        FROM profit_settlements {where} GROUP BY product_name ORDER BY total_profit DESC LIMIT 10""",
         params).fetchall()
     conn.close()
     return [dict(r) for r in rows]
