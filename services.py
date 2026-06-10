@@ -969,10 +969,11 @@ def apply_receipt_to_unmatched_daily_orders(username, unmatched_receipt_items, o
                 VALUES (?,?,?,?,?,1,0,?)""",
                 (order_pno or receipt_pno, receipt_name, receipt_name, receipt_name, receipt_price, now))
 
-        # daily_orders cost_price 재계산
+        # daily_orders cost_price 재계산 (실정산배송비 = 네이버 수수료 차감 → 수익계산과 일치)
         settlement = int(best_order.get('settlement') or 0)
         ship_fee   = int(best_order.get('shipping_fee') or 0)
-        profit     = (settlement + ship_fee) - (receipt_price + shipping_cost + box_cost)
+        from db_orders import _ship_settle_factor as _ssf
+        profit     = (settlement + round(ship_fee * _ssf(conn))) - (receipt_price + shipping_cost + box_cost)
         conn.execute("UPDATE daily_orders SET cost_price=?, profit=?, matched=1 WHERE id=?",
                      (receipt_price, profit, best_order['id']))
         used_order_ids.add(best_order['id'])

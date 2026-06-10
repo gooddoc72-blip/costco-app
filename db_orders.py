@@ -8,6 +8,19 @@ from datetime import datetime
 from db_core import get_user_db
 
 
+def _ship_settle_factor(conn):
+    """네이버 배송비 결제수수료 차감 후 실정산배송비 비율 = (1 - 수수료율%). 기본 4%.
+    수익계산 페이지와 동일하게 profit = 정산 + 배송비×factor - 원가 - 발송 - 박스."""
+    try:
+        row = conn.execute(
+            "SELECT value FROM settings WHERE key='naver_ship_fee_commission_rate'"
+        ).fetchone()
+        rate = float(row[0]) if row and row[0] not in (None, '') else 4.0
+    except Exception:
+        rate = 4.0
+    return max(0.0, 1.0 - rate / 100.0)
+
+
 # ── 일별 주문 (수익 계산용) ──────────────────────────────
 
 def save_daily_orders(username, order_date, orders_df, shipping_cost, box_cost):
@@ -18,6 +31,7 @@ def save_daily_orders(username, order_date, orders_df, shipping_cost, box_cost):
     """
     conn = get_user_db(username)
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    _factor = _ship_settle_factor(conn)  # 실정산배송비 비율(네이버 수수료 차감)
 
     conn.execute("DELETE FROM daily_orders WHERE order_date=?", (order_date,))
 
@@ -28,7 +42,8 @@ def save_daily_orders(username, order_date, orders_df, shipping_cost, box_cost):
         # 행별 택배원가/박스원가 우선 사용 (정산표에서 개별 수정된 값 보존)
         per_ship = int(r.get('택배원가', shipping_cost) or shipping_cost)
         per_box  = int(r.get('박스원가',  box_cost)      or box_cost)
-        profit = (settlement + ship_fee) - (int(cost) + per_ship + per_box)
+        # 실정산배송비(고객배송비 - 네이버 수수료)로 수익 계산 → 수익계산 페이지와 일치
+        profit = (settlement + round(ship_fee * _factor)) - (int(cost) + per_ship + per_box)
         p_no = r.get('상품번호', '')
         conn.execute("""INSERT INTO daily_orders
             (order_date,recipient,product_name,product_no,option_info,qty,
@@ -72,6 +87,7 @@ def recalc_daily_orders_for_products(username, product_nos):
         shipping_cost, box_cost = 1800, 300
 
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    _factor = _ship_settle_factor(conn)  # 실정산배송비 비율
     cnt = 0
     for pno in pnos:
         p_row = conn.execute(
@@ -102,7 +118,7 @@ def recalc_daily_orders_for_products(username, product_nos):
             d_cost     = int(r[4] or shipping_cost)
             b_cost     = int(r[5] or box_cost)
             new_cost   = _calc_cost(_product, qty)
-            new_profit = (settlement + ship_fee) - (new_cost + d_cost + b_cost)
+            new_profit = (settlement + round(ship_fee * _factor)) - (new_cost + d_cost + b_cost)
             conn.execute(
                 "UPDATE daily_orders SET cost_price=?, profit=?, matched=1, created_at=? WHERE id=?",
                 (new_cost, new_profit, now, r[0])
