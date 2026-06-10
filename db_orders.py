@@ -42,8 +42,10 @@ def save_daily_orders(username, order_date, orders_df, shipping_cost, box_cost):
         # 행별 택배원가/박스원가 우선 사용 (정산표에서 개별 수정된 값 보존)
         per_ship = int(r.get('택배원가', shipping_cost) or shipping_cost)
         per_box  = int(r.get('박스원가',  box_cost)      or box_cost)
-        # 실정산배송비(고객배송비 - 네이버 수수료)로 수익 계산 → 수익계산 페이지와 일치
-        profit = (settlement + round(ship_fee * _factor)) - (int(cost) + per_ship + per_box)
+        # 실정산배송비(고객배송비 - 네이버 수수료)로 수익 계산 → 수익계산 페이지와 일치.
+        # 구입가 미산정(0)인 행은 수익 0 처리 (페이지 합계가 제외하는 것과 동일).
+        profit = ((settlement + round(ship_fee * _factor)) - (int(cost) + per_ship + per_box)
+                  if int(cost) > 0 else 0)
         p_no = r.get('상품번호', '')
         conn.execute("""INSERT INTO daily_orders
             (order_date,recipient,product_name,product_no,option_info,qty,
@@ -118,7 +120,8 @@ def recalc_daily_orders_for_products(username, product_nos):
             d_cost     = int(r[4] or shipping_cost)
             b_cost     = int(r[5] or box_cost)
             new_cost   = _calc_cost(_product, qty)
-            new_profit = (settlement + round(ship_fee * _factor)) - (new_cost + d_cost + b_cost)
+            new_profit = ((settlement + round(ship_fee * _factor)) - (new_cost + d_cost + b_cost)
+                          if new_cost > 0 else 0)
             conn.execute(
                 "UPDATE daily_orders SET cost_price=?, profit=?, matched=1, created_at=? WHERE id=?",
                 (new_cost, new_profit, now, r[0])
