@@ -71,11 +71,13 @@ def get_dashboard_kpi(username):
     lm_last  = today.replace(day=1) - timedelta(days=1)
     lm_start = lm_last.replace(day=1).strftime("%Y-%m-%d")
     lm_end   = lm_last.strftime("%Y-%m-%d")
+    from db_orders import _ship_settle_factor
     conn = get_user_db(username)
+    factor = _ship_settle_factor(conn)
     def q(s, e):
-        r = conn.execute("""SELECT COUNT(*) as cnt, COALESCE(SUM(qty),0) as qty,
-            COALESCE(SUM(order_amount),0) as sales, COALESCE(SUM(profit),0) as profit
-            FROM daily_orders WHERE order_date BETWEEN ? AND ?""", (s, e)).fetchone()
+        r = conn.execute(f"""SELECT COUNT(*) as cnt, COALESCE(SUM(qty),0) as qty,
+            COALESCE(SUM(order_amount),0) as sales, COALESCE(SUM({_PS_PROFIT_EXPR}),0) as profit
+            FROM profit_settlements WHERE settlement_date BETWEEN ? AND ?""", (factor, s, e)).fetchone()
         return dict(r) if r else {'cnt': 0, 'qty': 0, 'sales': 0, 'profit': 0}
     kpi = {
         'week': q(w_start, w_end), 'month': q(m_start, m_end),
@@ -94,8 +96,8 @@ def get_cumulative_sales(username, until_date=None):
     r = conn.execute(
         """SELECT COALESCE(SUM(order_amount), 0) as total_sales,
                   COALESCE(COUNT(*), 0) as total_cnt
-           FROM daily_orders
-           WHERE order_date BETWEEN ? AND ?""",
+           FROM profit_settlements
+           WHERE settlement_date BETWEEN ? AND ?""",
         (month_start, until_date)
     ).fetchone()
     conn.close()
@@ -106,13 +108,15 @@ def get_cumulative_sales(username, until_date=None):
 
 
 def get_daily_profit_trend(username, days=14):
+    from db_orders import _ship_settle_factor
     end   = datetime.today().strftime("%Y-%m-%d")
     start = (datetime.today() - timedelta(days=days - 1)).strftime("%Y-%m-%d")
     conn  = get_user_db(username)
-    rows  = conn.execute("""SELECT order_date, COUNT(*) as cnt, SUM(qty) as total_qty,
-        SUM(order_amount) as total_sales, SUM(profit) as total_profit
-        FROM daily_orders WHERE order_date BETWEEN ? AND ?
-        GROUP BY order_date ORDER BY order_date""", (start, end)).fetchall()
+    factor = _ship_settle_factor(conn)
+    rows  = conn.execute(f"""SELECT settlement_date as order_date, COUNT(*) as cnt, SUM(qty) as total_qty,
+        COALESCE(SUM(order_amount),0) as total_sales, COALESCE(SUM({_PS_PROFIT_EXPR}),0) as total_profit
+        FROM profit_settlements WHERE settlement_date BETWEEN ? AND ?
+        GROUP BY settlement_date ORDER BY settlement_date""", (factor, start, end)).fetchall()
     conn.close()
     return [dict(r) for r in rows]
 
