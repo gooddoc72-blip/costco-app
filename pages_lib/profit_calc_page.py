@@ -1268,7 +1268,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             if _neh2.button("✖ 닫기", key="naver_edit_close", use_container_width=True):
                 st.session_state['_show_naver_edit'] = False
                 st.rerun()
-            _ne_margin = int(_gs('target_margin') or 10) / 100
+            _ne_margin = int(_gs('target_margin') or 5) / 100
 
             # 주문상품명 기준 de-dup (같은 상품 여러 수취인 → 1회만)
             # sk(=stable key) → row 매핑 ('id' 컬럼 유무와 무관하게 안전)
@@ -1434,7 +1434,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         if len(loss_df) > 0:
             st.divider()
             st.subheader("🔴 수익 마이너스 — 네이버 판매가 검토 및 적용")
-            _margin_rate = int(_gs('target_margin') or 10) / 100
+            _margin_rate = int(_gs('target_margin') or 5) / 100
 
             # 상품명(네이버 주문명) 기준 de-dup → 사용자가 인식할 수 있는 이름으로 표시
             # _loss_seen: 표시명 → (row, 매칭키워드)
