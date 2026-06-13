@@ -1323,8 +1323,11 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                             _up_rec = max(_cands, key=lambda x: x[1])[0]
                     except Exception:
                         pass
-                # 표시번호 = channel(스토어에서 보이는 번호) 우선, 없으면 origin
-                _nv_pno = ((_up_rec or {}).get('naver_channel_pno', '') or ''
+                # 표시번호 = 주문 자체의 네이버 상품번호(productId=channel) 최우선 →
+                # 없을 때만 매칭 레코드 channel/origin (fuzzy 매칭 오선택 방지)
+                _order_nv = str(_row.get('product_no', '') or '').strip()
+                _nv_pno = (_order_nv
+                           or (_up_rec or {}).get('naver_channel_pno', '') or ''
                            or (_up_rec or {}).get('naver_origin_pno', '') or '')
                 _is_naver = int((_up_rec or {}).get('from_naver') or 0) == 1
                 _disp_name = (_up_rec.get('costco_name', '') if _up_rec and _is_naver else '') or _dk
@@ -1483,8 +1486,11 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                             _up_rec = max(_c, key=lambda x: x[1])[0]
                     except Exception:
                         pass
-                # 표시번호 = channel(스토어 번호) 우선, 없으면 origin
-                _nv_pno = ((_up_rec or {}).get('naver_channel_pno', '') or ''
+                # 표시번호 = 주문 자체의 네이버 상품번호(productId=channel) 최우선 →
+                # 없을 때만 매칭 레코드의 channel/origin 사용 (fuzzy 매칭 오선택 방지)
+                _order_nv = str(_row.get('product_no', '') or '').strip()
+                _nv_pno = (_order_nv
+                           or (_up_rec or {}).get('naver_channel_pno', '') or ''
                            or (_up_rec or {}).get('naver_origin_pno', '') or '')
                 # 네이버 상품명: from_naver=1이면 costco_name이 네이버 상품명
                 _is_naver = int((_up_rec or {}).get('from_naver') or 0) == 1
