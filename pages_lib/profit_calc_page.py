@@ -1380,7 +1380,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     _pno = st.text_input(
                         ("✅ 네이버 상품번호 (자동 입력됨)" if _nv_pno
                          else "⚠️ 네이버 상품번호 (미입력 — 직접 입력 필요)"),
-                        value=_nv_pno, key=f"np_pno_{_nei}",
+                        value=_nv_pno, key=f"np_pno_{_nei}_{_nv_pno}",
                         placeholder="네이버 originProductNo / channelProductNo")
                     if _do:
                         _ne_apply.append({
@@ -1492,12 +1492,6 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 _nv_pno = (_order_nv
                            or (_up_rec or {}).get('naver_channel_pno', '') or ''
                            or (_up_rec or {}).get('naver_origin_pno', '') or '')
-                # [임시 디버그] 라이브 값 확인용
-                st.caption(
-                    f"🐞 src={_src_label} | row.product_no={repr(_row.get('product_no'))} | "
-                    f"order_nv={repr(_order_nv)} | up_rec_id={(_up_rec or {}).get('id')} | nv_pno={_nv_pno} | "
-                    f"cols={'product_no' in (_row.index if hasattr(_row,'index') else {})}"
-                )
                 # 네이버 상품명: from_naver=1이면 costco_name이 네이버 상품명
                 _is_naver = int((_up_rec or {}).get('from_naver') or 0) == 1
                 _nv_name  = (_up_rec.get('costco_name', '') if _up_rec and _is_naver else '') or ''
@@ -1569,7 +1563,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     _pno = st.text_input(
                         _pno_label,
                         value=_nv_pno,
-                        key=f"lp_pno_{_li}",
+                        key=f"lp_pno_{_li}_{_nv_pno}",
                         placeholder="네이버 originProductNo — 미입력 시 API 적용 불가"
                     )
                     if _do:
