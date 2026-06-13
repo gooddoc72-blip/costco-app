@@ -1347,20 +1347,20 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         f'<div style="font-size:15px;font-weight:700;color:#333">{fmt(_cur_sale)}원</div></div>'
                         f'<div style="flex:1;min-width:90px;background:#f8f8f8;border:1px solid #eee;'
                         f'border-radius:6px;padding:8px 10px;text-align:center">'
-                        f'<div style="font-size:11px;color:#888;margin-bottom:2px">정산금액</div>'
-                        f'<div style="font-size:15px;font-weight:600">{fmt(_settle)}원</div></div>'
+                        f'<div style="font-size:11px;color:#888;margin-bottom:2px">정산금액(1개)</div>'
+                        f'<div style="font-size:15px;font-weight:600">{fmt(_unit_settle)}원</div></div>'
                         f'<div style="flex:1;min-width:90px;background:#f8f8f8;border:1px solid #eee;'
                         f'border-radius:6px;padding:8px 10px;text-align:center">'
-                        f'<div style="font-size:11px;color:#888;margin-bottom:2px">고객택배비</div>'
-                        f'<div style="font-size:15px;font-weight:600">{fmt(_cfee)}원</div></div>'
+                        f'<div style="font-size:11px;color:#888;margin-bottom:2px">고객택배비(1개)</div>'
+                        f'<div style="font-size:15px;font-weight:600">{fmt(_cfee // _qty)}원</div></div>'
                         f'<div style="flex:1;min-width:90px;background:#f8f8f8;border:1px solid #eee;'
                         f'border-radius:6px;padding:8px 10px;text-align:center">'
                         f'<div style="font-size:11px;color:#888;margin-bottom:2px">구매가격(1개)</div>'
                         f'<div style="font-size:15px;font-weight:600">{fmt(_unit_cost)}원</div></div>'
                         f'<div style="flex:1;min-width:90px;background:{_pf_bg};border:1px solid {_pf_bd};'
                         f'border-radius:6px;padding:8px 10px;text-align:center">'
-                        f'<div style="font-size:11px;color:#888;margin-bottom:2px">현재 수익</div>'
-                        f'<div style="font-size:15px;font-weight:700;color:{_pf_col}">{fmt(_profit)}원</div></div>'
+                        f'<div style="font-size:11px;color:#888;margin-bottom:2px">현재 수익(1개)</div>'
+                        f'<div style="font-size:15px;font-weight:700;color:{_pf_col}">{fmt(_profit // _qty)}원</div></div>'
                         '</div>'
                     )
                     st.markdown(_card, unsafe_allow_html=True)
@@ -1373,10 +1373,11 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                                  min_value=0, step=100, key=f"np_cfee_{_nei}")
                     _new_settle = int(_new_price * 0.945)
                     _new_profit = (_new_settle * _qty + _new_cfee) - (_cost + shipping_cost + box_cost)
-                    if _new_profit < 0:
-                        _cc.error(f"❌ {fmt(_new_profit)}원")
+                    _new_profit_unit = _new_profit // _qty
+                    if _new_profit_unit < 0:
+                        _cc.error(f"❌ {fmt(_new_profit_unit)}원")
                     else:
-                        _cc.success(f"✅ +{fmt(_new_profit)}원")
+                        _cc.success(f"✅ +{fmt(_new_profit_unit)}원")
                     _pno = st.text_input(
                         ("✅ 네이버 상품번호 (자동 입력됨)" if _nv_pno
                          else "⚠️ 네이버 상품번호 (미입력 — 직접 입력 필요)"),
@@ -1512,13 +1513,13 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         f'</div>'
                         f'<div style="flex:1;min-width:90px;background:#f8f8f8;border:1px solid #eee;'
                         f'border-radius:6px;padding:8px 10px;text-align:center">'
-                        f'<div style="font-size:11px;color:#888;margin-bottom:2px">정산금액</div>'
-                        f'<div style="font-size:15px;font-weight:600">{fmt(_settle)}원</div>'
+                        f'<div style="font-size:11px;color:#888;margin-bottom:2px">정산금액(1개)</div>'
+                        f'<div style="font-size:15px;font-weight:600">{fmt(_unit_settle)}원</div>'
                         f'</div>'
                         f'<div style="flex:1;min-width:90px;background:#f8f8f8;border:1px solid #eee;'
                         f'border-radius:6px;padding:8px 10px;text-align:center">'
-                        f'<div style="font-size:11px;color:#888;margin-bottom:2px">고객택배비</div>'
-                        f'<div style="font-size:15px;font-weight:600">{fmt(_cfee)}원</div>'
+                        f'<div style="font-size:11px;color:#888;margin-bottom:2px">고객택배비(1개)</div>'
+                        f'<div style="font-size:15px;font-weight:600">{fmt(_cfee // _qty)}원</div>'
                         f'</div>'
                         f'<div style="flex:1;min-width:90px;background:#f8f8f8;border:1px solid #eee;'
                         f'border-radius:6px;padding:8px 10px;text-align:center">'
@@ -1527,8 +1528,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         f'</div>'
                         f'<div style="flex:1;min-width:90px;background:#ffe0e0;border:1px solid #faa;'
                         f'border-radius:6px;padding:8px 10px;text-align:center">'
-                        f'<div style="font-size:11px;color:#888;margin-bottom:2px">현재 수익</div>'
-                        f'<div style="font-size:15px;font-weight:700;color:#E74C3C">{fmt(_profit)}원</div>'
+                        f'<div style="font-size:11px;color:#888;margin-bottom:2px">현재 수익(1개)</div>'
+                        f'<div style="font-size:15px;font-weight:700;color:#E74C3C">{fmt(_profit // _qty)}원</div>'
                         f'</div>'
                         f'</div>'
                     )
@@ -1549,10 +1550,11 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     )
                     _new_settle = int(_new_price * 0.945)
                     _new_profit = (_new_settle * _qty + _new_cfee) - (_cost + shipping_cost + box_cost)
-                    if _new_profit < 0:
-                        _cc.error(f"❌ {fmt(_new_profit)}원")
+                    _new_profit_unit = _new_profit // _qty
+                    if _new_profit_unit < 0:
+                        _cc.error(f"❌ {fmt(_new_profit_unit)}원")
                     else:
-                        _cc.success(f"✅ +{fmt(_new_profit)}원")
+                        _cc.success(f"✅ +{fmt(_new_profit_unit)}원")
 
                     # ── 네이버 상품번호 ──
                     _pno_label = (
