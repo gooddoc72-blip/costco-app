@@ -1167,7 +1167,22 @@ def update_product_price(client_id, client_secret, origin_product_no, new_price,
 
         # read-only 제거 + unitCapacity / sellerTags 같은 검증 유발 필드 정리
         origin_product = _sanitize_for_put(dict(origin_product))
-        origin_product['salePrice'] = int(new_price)
+
+        # new_price = 고객이 실제로 결제할 '최종 판매가' 목표.
+        # 즉시할인이 걸려 있으면 할인 구조는 그대로 두고, 정가(salePrice)를 보정해
+        # (정가 − 할인) = new_price 가 되도록 한다. 할인이 없으면 정가 = new_price.
+        _target = int(new_price)
+        origin_product['salePrice'] = _target
+        _cb = origin_product.get('customerBenefit')
+        _disc = ((_cb or {}).get('immediateDiscountPolicy') or {}).get('discountMethod') \
+            if isinstance(_cb, dict) else None
+        if isinstance(_disc, dict) and _disc.get('value'):
+            _dv = int(_disc.get('value') or 0)
+            _du = (_disc.get('unitType') or '').upper()
+            if _du == 'WON' and _dv > 0:
+                origin_product['salePrice'] = _target + _dv          # 정가 = 목표 + 할인액
+            elif _du == 'PERCENT' and 0 < _dv < 100:
+                origin_product['salePrice'] = int(round(_target / (1 - _dv / 100.0)))  # 정가 = 목표 ÷ (1−할인율)
 
         # 배송비(택배비) 반영 — 제공된 경우에만
         if new_shipping_fee is not None:
