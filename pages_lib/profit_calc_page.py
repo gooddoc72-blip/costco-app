@@ -1371,8 +1371,11 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                                   min_value=100, step=100, key=f"np_price_{_nei}")
                     _new_cfee = _cd.number_input("🔧 수정 택배비 (원)", value=int(_cfee),
                                                  min_value=0, step=100, key=f"np_cfee_{_nei}")
+                    _per_ship_nv = int(_row.get('택배원가', shipping_cost) or shipping_cost)
+                    _per_box_nv  = int(_row.get('박스원가', box_cost) or box_cost)
                     _new_settle = int(_new_price * 0.945)
-                    _new_profit = (_new_settle * _qty + _new_cfee) - (_cost + shipping_cost + box_cost)
+                    # 실제 수익 공식과 일치: 배송비에 네이버 수수료(_ship_settle_factor) 적용 + 행별 원가 사용
+                    _new_profit = (_new_settle * _qty + round(_new_cfee * _ship_settle_factor)) - (_cost + _per_ship_nv + _per_box_nv)
                     _new_profit_unit = _new_profit // _qty
                     if _new_profit_unit < 0:
                         _cc.error(f"❌ {fmt(_new_profit_unit)}원")
@@ -1548,8 +1551,11 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         value=int(_cfee), min_value=0, step=100,
                         key=f"lp_cfee_{_li}"
                     )
+                    _per_ship_nv = int(_row.get('택배원가', shipping_cost) or shipping_cost)
+                    _per_box_nv  = int(_row.get('박스원가', box_cost) or box_cost)
                     _new_settle = int(_new_price * 0.945)
-                    _new_profit = (_new_settle * _qty + _new_cfee) - (_cost + shipping_cost + box_cost)
+                    # 실제 수익 공식과 일치: 배송비에 네이버 수수료(_ship_settle_factor) 적용 + 행별 원가 사용
+                    _new_profit = (_new_settle * _qty + round(_new_cfee * _ship_settle_factor)) - (_cost + _per_ship_nv + _per_box_nv)
                     _new_profit_unit = _new_profit // _qty
                     if _new_profit_unit < 0:
                         _cc.error(f"❌ {fmt(_new_profit_unit)}원")
