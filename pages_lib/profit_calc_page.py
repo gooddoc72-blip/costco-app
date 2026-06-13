@@ -1012,6 +1012,9 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             for _k in list(st.session_state.keys()):
                 if _k.startswith('sel_p_'):
                     st.session_state.pop(_k, None)
+            # 저장 후 매칭 캐시·복원플래그 초기화 → 다음 render에서 최신 매칭/저장값으로 재구성
+            st.session_state.pop('_pcalc_match_cache', None)
+            st.session_state.pop(f"_do_restored_{calc_date_str}", None)
             st.session_state['_profit_save_toast'] = (
                 f"✅ {len(_checked_rows)}개 정산 데이터 저장 완료 (제품가격DB 미변경)"
             )
@@ -1112,6 +1115,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 if _k.startswith(('c_', 'k_', 'ship_', 'box_')):
                     st.session_state.pop(_k, None)
             st.session_state.pop('_pcalc_match_cache', None)
+            st.session_state.pop(f"_do_restored_{calc_date_str}", None)
             st.session_state['cost_overrides'] = {}
             st.session_state['kw_overrides'] = {}
             st.session_state['receipt_pick'] = {}
@@ -1252,6 +1256,9 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 _conn.commit()
                 _conn.close()
             invalidate_data_cache()
+            # 저장 후 매칭 캐시·복원플래그 초기화 → 최신 매칭/저장값 재구성
+            st.session_state.pop('_pcalc_match_cache', None)
+            st.session_state.pop(f"_do_restored_{calc_date_str}", None)
             st.success(f"✅ {calc_date_str} 저장 완료! (제품DB 매입가도 갱신)")
 
         # ── 🛒 선택 상품 네이버 가격 수정 (체크박스 선택분) ──
