@@ -168,8 +168,10 @@ def _token_score(a: str, b: str) -> float:
     tb = set(re.findall(r'[가-힣a-zA-Z0-9]+', b.lower()))
     if not ta or not tb:
         return 0.0
-    # 단독 문자(x, g)·단독 숫자(4, 12) 제거 — 묶음수량/단위 표기가 false-positive 야기
-    _noise = {t for t in ta | tb if len(t) < 2 or t.isdigit()}
+    # 단독 문자(x, g)·숫자로 시작하는 토큰(4, 12, 5kg, 40g, 12개 등 수량/용량) 제거.
+    # → '5kg' 같은 용량 토큰이 우연히 겹쳐 무관한 짧은-이름 상품(배 7.5kg ↔ 커피사탕 1.5kg)이
+    #    1.0 점수로 오매칭되는 것을 방지 (용량 일치 여부는 아래 사이즈 페널티에서 별도 처리).
+    _noise = {t for t in ta | tb if len(t) < 2 or t[0].isdigit()}
     common = ta & tb
     # 일반어 + 노이즈 제외 후 의미있는 토큰만
     _skip = GENERIC | _noise
