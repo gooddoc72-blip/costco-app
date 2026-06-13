@@ -11,7 +11,7 @@ from utils import get_week_range, get_month_range
 # ── 통계 ─────────────────────────────────────────────────
 
 # 대시보드 통계는 '정산저장'된 데이터(profit_settlements) 기준 → 수익계산 페이지와 일치.
-# 수익은 실정산배송비(고객배송비×(1-네이버수수료율))로 계산하고 구입가 0(미산정) 행은 제외.
+# 고객배송비는 수수료 차감 없이 전액 정산(factor=1.0). 구입가 0(미산정) 행은 제외.
 _PS_PROFIT_EXPR = (
     "CASE WHEN cost_price>0 THEN settlement_amount "
     "+ CAST(ROUND(COALESCE(shipping_fee,0)*?) AS INT) "

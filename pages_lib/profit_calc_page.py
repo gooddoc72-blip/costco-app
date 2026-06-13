@@ -117,8 +117,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         help="이 화면에서만 임시 변경. 기본값은 설정 탭에서 수정하세요."
     ))
     _fc3.info(
-        f"📐 수익 = (정산예정 + 실정산배송비) − (구입가 + 택배비 **{fmt(shipping_cost)}** + 박스비 **{fmt(box_cost)}**)  "
-        f"· 실정산배송비 = 고객택배비 × {100 - _ship_fee_rate_info:.1f}%"
+        f"📐 수익 = (정산예정 + 고객배송비) − (구입가 + 택배비 **{fmt(shipping_cost)}** + 박스비 **{fmt(box_cost)}**)  "
+        f"· 고객배송비는 수수료 차감 없이 전액 정산 (수수료 5.5%는 판매가에만 적용 → 정산예정에 반영)"
     )
 
     col_date, _col_refresh, _col_clean, _ = st.columns([1.5, 1, 1.5, 2.5])
@@ -629,10 +629,9 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 if st.session_state['cost_overrides'][key] > 0:
                     df.loc[idx, '매칭출처'] = '수동입력'
 
-        # 🚚 배송비 수수료율 적용
-        _ship_fee_rate = float(_gs('naver_ship_fee_commission_rate') or 4.0)
-        _ship_settle_factor = max(0.0, 1.0 - _ship_fee_rate / 100.0)
-        df['실정산배송비'] = (df['배송비 합계'] * _ship_settle_factor).round().astype(int)
+        # 🚚 고객배송비는 수수료 차감 없이 전액 정산 (수수료 5.5%는 판매가에만 적용 → 정산예정금액에 이미 반영)
+        _ship_settle_factor = 1.0
+        df['실정산배송비'] = df['배송비 합계'].fillna(0).round().astype(int)
 
         # 행별 발송비/박스비: 위젯에서 수정된 값 반영 (기본값 = 전역 설정)
         df['택배원가'] = [int(st.session_state.get(f"ship_{str(_ids_arr[i])}", shipping_cost))
@@ -1374,7 +1373,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     _per_ship_nv = int(_row.get('택배원가', shipping_cost) or shipping_cost)
                     _per_box_nv  = int(_row.get('박스원가', box_cost) or box_cost)
                     _new_settle = int(_new_price * 0.945)
-                    # 실제 수익 공식과 일치: 배송비에 네이버 수수료(_ship_settle_factor) 적용 + 행별 원가 사용
+                    # 실제 수익 공식과 일치: 고객배송비 전액 정산(_ship_settle_factor=1.0) + 행별 원가 사용
                     _new_profit = (_new_settle * _qty + round(_new_cfee * _ship_settle_factor)) - (_cost + _per_ship_nv + _per_box_nv)
                     _new_profit_unit = _new_profit // _qty
                     if _new_profit_unit < 0:
@@ -1554,7 +1553,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     _per_ship_nv = int(_row.get('택배원가', shipping_cost) or shipping_cost)
                     _per_box_nv  = int(_row.get('박스원가', box_cost) or box_cost)
                     _new_settle = int(_new_price * 0.945)
-                    # 실제 수익 공식과 일치: 배송비에 네이버 수수료(_ship_settle_factor) 적용 + 행별 원가 사용
+                    # 실제 수익 공식과 일치: 고객배송비 전액 정산(_ship_settle_factor=1.0) + 행별 원가 사용
                     _new_profit = (_new_settle * _qty + round(_new_cfee * _ship_settle_factor)) - (_cost + _per_ship_nv + _per_box_nv)
                     _new_profit_unit = _new_profit // _qty
                     if _new_profit_unit < 0:

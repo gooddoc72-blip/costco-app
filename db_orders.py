@@ -9,16 +9,10 @@ from db_core import get_user_db
 
 
 def _ship_settle_factor(conn):
-    """네이버 배송비 결제수수료 차감 후 실정산배송비 비율 = (1 - 수수료율%). 기본 4%.
-    수익계산 페이지와 동일하게 profit = 정산 + 배송비×factor - 원가 - 발송 - 박스."""
-    try:
-        row = conn.execute(
-            "SELECT value FROM settings WHERE key='naver_ship_fee_commission_rate'"
-        ).fetchone()
-        rate = float(row[0]) if row and row[0] not in (None, '') else 4.0
-    except Exception:
-        rate = 4.0
-    return max(0.0, 1.0 - rate / 100.0)
+    """고객배송비 정산 비율. 정책: 배송비는 네이버 수수료 차감 없이 전액 정산 → 1.0.
+    (네이버 수수료 5.5%는 판매가에만 적용되며, 수집된 정산예정금액에 이미 반영됨)
+    수익 = 정산예정 + 배송비(전액) - 구입가 - 발송 - 박스."""
+    return 1.0
 
 
 # ── 일별 주문 (수익 계산용) ──────────────────────────────
