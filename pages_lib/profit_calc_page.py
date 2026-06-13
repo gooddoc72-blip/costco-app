@@ -1293,6 +1293,10 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 _profit = int(_row.get('수입', 0) or 0)
                 _unit_cost = _cost // _qty
                 _unit_settle = _settle // _qty
+                _unit_cfee = _cfee // _qty
+                _per_ship_u = int(_row.get('택배원가', shipping_cost) or shipping_cost)
+                _per_box_u  = int(_row.get('박스원가', box_cost) or box_cost)
+                _profit_unit_cur = _unit_settle + _unit_cfee - _unit_cost - _per_ship_u - _per_box_u
                 _cur_sale = max(100, int(_unit_settle / 0.945 / 100) * 100)
                 _min_needed = _unit_cost + shipping_cost + box_cost - _cfee / _qty
                 _suggested = max(int(_min_needed * (1 + _ne_margin) / 0.945 / 100) * 100,
@@ -1351,7 +1355,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         f'<div style="flex:1;min-width:90px;background:#f8f8f8;border:1px solid #eee;'
                         f'border-radius:6px;padding:8px 10px;text-align:center">'
                         f'<div style="font-size:11px;color:#888;margin-bottom:2px">고객택배비(1개)</div>'
-                        f'<div style="font-size:15px;font-weight:600">{fmt(_cfee // _qty)}원</div></div>'
+                        f'<div style="font-size:15px;font-weight:600">{fmt(_unit_cfee)}원</div></div>'
                         f'<div style="flex:1;min-width:90px;background:#f8f8f8;border:1px solid #eee;'
                         f'border-radius:6px;padding:8px 10px;text-align:center">'
                         f'<div style="font-size:11px;color:#888;margin-bottom:2px">구매가격(1개)</div>'
@@ -1359,7 +1363,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         f'<div style="flex:1;min-width:90px;background:{_pf_bg};border:1px solid {_pf_bd};'
                         f'border-radius:6px;padding:8px 10px;text-align:center">'
                         f'<div style="font-size:11px;color:#888;margin-bottom:2px">현재 수익(1개)</div>'
-                        f'<div style="font-size:15px;font-weight:700;color:{_pf_col}">{fmt(_profit // _qty)}원</div></div>'
+                        f'<div style="font-size:15px;font-weight:700;color:{_pf_col}">{fmt(_profit_unit_cur)}원</div></div>'
                         '</div>'
                     )
                     st.markdown(_card, unsafe_allow_html=True)
@@ -1368,14 +1372,12 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     _do = _ca.checkbox("적용", value=True, key=f"np_chk_{_nei}")
                     _new_price = _cb.number_input("🔧 수정 판매가 (원)", value=_suggested,
                                                   min_value=100, step=100, key=f"np_price_{_nei}")
-                    _new_cfee = _cd.number_input("🔧 수정 택배비 (원)", value=int(_cfee),
-                                                 min_value=0, step=100, key=f"np_cfee_{_nei}")
-                    _per_ship_nv = int(_row.get('택배원가', shipping_cost) or shipping_cost)
-                    _per_box_nv  = int(_row.get('박스원가', box_cost) or box_cost)
-                    _new_settle = int(_new_price * 0.945)
-                    # 실제 수익 공식과 일치: 고객배송비 전액 정산(_ship_settle_factor=1.0) + 행별 원가 사용
-                    _new_profit = (_new_settle * _qty + round(_new_cfee * _ship_settle_factor)) - (_cost + _per_ship_nv + _per_box_nv)
-                    _new_profit_unit = _new_profit // _qty
+                    _new_cfee = _cd.number_input("🔧 수정 택배비 (원)", value=_unit_cfee,
+                                                 min_value=0, step=100, key=f"np_cfee_{_nei}",
+                                                 help="1개 기준 고객택배비")
+                    # 1개 단위 수익: 정산(판매가×0.945) + 고객배송비 − 구입가 − 택배비 − 박스비 (모두 1개 기준)
+                    _new_settle = int(round(_new_price * 0.945))
+                    _new_profit_unit = _new_settle + _new_cfee - _unit_cost - _per_ship_u - _per_box_u
                     if _new_profit_unit < 0:
                         _cc.error(f"❌ {fmt(_new_profit_unit)}원")
                     else:
@@ -1451,7 +1453,12 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
 
                 _unit_cost   = _cost // _qty
                 _unit_settle = _settle // _qty
+                _unit_cfee   = _cfee // _qty
                 _cur_sale    = max(100, int(_unit_settle / 0.945 / 100) * 100)
+                # 1개 단위 계산: 택배비/박스비도 1개 기준(개당 비용)으로 사용
+                _per_ship_u  = int(_row.get('택배원가', shipping_cost) or shipping_cost)
+                _per_box_u   = int(_row.get('박스원가', box_cost) or box_cost)
+                _profit_unit_cur = _unit_settle + _unit_cfee - _unit_cost - _per_ship_u - _per_box_u
 
                 # 권장가: 손익분기 + 목표마진
                 _min_needed = _unit_cost + shipping_cost + box_cost - _cfee / _qty
@@ -1521,7 +1528,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         f'<div style="flex:1;min-width:90px;background:#f8f8f8;border:1px solid #eee;'
                         f'border-radius:6px;padding:8px 10px;text-align:center">'
                         f'<div style="font-size:11px;color:#888;margin-bottom:2px">고객택배비(1개)</div>'
-                        f'<div style="font-size:15px;font-weight:600">{fmt(_cfee // _qty)}원</div>'
+                        f'<div style="font-size:15px;font-weight:600">{fmt(_unit_cfee)}원</div>'
                         f'</div>'
                         f'<div style="flex:1;min-width:90px;background:#f8f8f8;border:1px solid #eee;'
                         f'border-radius:6px;padding:8px 10px;text-align:center">'
@@ -1531,7 +1538,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         f'<div style="flex:1;min-width:90px;background:#ffe0e0;border:1px solid #faa;'
                         f'border-radius:6px;padding:8px 10px;text-align:center">'
                         f'<div style="font-size:11px;color:#888;margin-bottom:2px">현재 수익(1개)</div>'
-                        f'<div style="font-size:15px;font-weight:700;color:#E74C3C">{fmt(_profit // _qty)}원</div>'
+                        f'<div style="font-size:15px;font-weight:700;color:#E74C3C">{fmt(_profit_unit_cur)}원</div>'
                         f'</div>'
                         f'</div>'
                     )
@@ -1547,15 +1554,13 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     )
                     _new_cfee = _cd.number_input(
                         "🔧 수정 택배비 (원)",
-                        value=int(_cfee), min_value=0, step=100,
-                        key=f"lp_cfee_{_li}"
+                        value=_unit_cfee, min_value=0, step=100,
+                        key=f"lp_cfee_{_li}",
+                        help="1개 기준 고객택배비"
                     )
-                    _per_ship_nv = int(_row.get('택배원가', shipping_cost) or shipping_cost)
-                    _per_box_nv  = int(_row.get('박스원가', box_cost) or box_cost)
-                    _new_settle = int(_new_price * 0.945)
-                    # 실제 수익 공식과 일치: 고객배송비 전액 정산(_ship_settle_factor=1.0) + 행별 원가 사용
-                    _new_profit = (_new_settle * _qty + round(_new_cfee * _ship_settle_factor)) - (_cost + _per_ship_nv + _per_box_nv)
-                    _new_profit_unit = _new_profit // _qty
+                    # 1개 단위 수익: 정산(판매가×0.945) + 고객배송비 − 구입가 − 택배비 − 박스비 (모두 1개 기준)
+                    _new_settle = int(round(_new_price * 0.945))
+                    _new_profit_unit = _new_settle + _new_cfee - _unit_cost - _per_ship_u - _per_box_u
                     if _new_profit_unit < 0:
                         _cc.error(f"❌ {fmt(_new_profit_unit)}원")
                     else:
@@ -1581,7 +1586,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                             'new_shipping_fee': _new_cfee,
                             'product_no': _pno,
                             'product_id': (_up_rec or {}).get('id'),
-                            'new_profit': _new_profit,
+                            'new_profit': _new_profit_unit,
                         })
 
             if _loss_apply:
