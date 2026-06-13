@@ -278,7 +278,27 @@ def match_product_to_db(username, store_product_name, product_no=None,
         _by_nv2 = (_u_idx2.get('by_naver_channel', {}).get(str(product_no))
                    or _u_idx2.get('by_naver_pno', {}).get(str(product_no)))
         if _by_nv2:
-            return dict(_by_nv2)
+            _m_nv = dict(_by_nv2)
+            # 네이버 listing 레코드(from_naver=1)는 매입가가 0인 경우가 많음 →
+            # 같은 코스트코번호(product_no)의 매입가 레코드 / 공유상품에서 단가 보완
+            if int(_m_nv.get('unit_price') or 0) == 0 and _m_nv.get('product_no'):
+                _pno_key = str(_m_nv['product_no'])
+                _cost_rec = next((p for p in products
+                                  if str(p.get('product_no', '') or '') == _pno_key
+                                  and int(p.get('unit_price') or 0) > 0), None)
+                if _cost_rec:
+                    _m_nv['unit_price'] = int(_cost_rec.get('unit_price') or 0)
+                    if not _m_nv.get('split_qty') or int(_m_nv.get('split_qty') or 1) == 1:
+                        _m_nv['split_qty'] = int(_cost_rec.get('split_qty') or 1)
+                else:
+                    _shared_p = _shared_prods if _shared_prods is not None else get_shared_products()
+                    for sp in (_shared_p or []):
+                        if str(sp.get('product_no', '') or '') == _pno_key:
+                            _m_nv['unit_price'] = int(sp.get('unit_price') or 0)
+                            if not _m_nv.get('split_qty') or int(_m_nv.get('split_qty') or 1) == 1:
+                                _m_nv['split_qty'] = int(sp.get('split_qty') or 1)
+                            break
+            return _m_nv
     # product_no가 없거나 불일치 시 이름/키워드 토큰 매칭 (0.5 이상)
     candidates = []
     for p in products:
