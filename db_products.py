@@ -395,14 +395,14 @@ def upsert_user_private(username, match_keyword, costco_name,
     existing = None
     if naver_origin_pno:
         existing = conn.execute(
-            "SELECT id, sale_price, shipping_fee, product_no, status, from_naver, "
+            "SELECT id, match_keyword, sale_price, shipping_fee, product_no, status, from_naver, "
             "naver_origin_pno, naver_channel_pno, split_qty, category "
             "FROM products WHERE naver_origin_pno=? AND naver_origin_pno != ''",
             (naver_origin_pno,)
         ).fetchone()
     if not existing:
         existing = conn.execute(
-            "SELECT id, sale_price, shipping_fee, product_no, status, from_naver, "
+            "SELECT id, match_keyword, sale_price, shipping_fee, product_no, status, from_naver, "
             "naver_origin_pno, naver_channel_pno, split_qty, category "
             "FROM products WHERE match_keyword=?",
             (match_keyword,)
