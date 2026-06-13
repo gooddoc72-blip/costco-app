@@ -26,7 +26,7 @@ _INDEX_CACHE: dict = {}
 
 def _index_products(products: list) -> dict:
     if not products:
-        return {'by_pno': {}, 'by_kw': {}, 'has_pno': [], 'by_naver_pno': {}}
+        return {'by_pno': {}, 'by_kw': {}, 'has_pno': [], 'by_naver_pno': {}, 'by_naver_channel': {}}
     pid = id(products)
     hit = _INDEX_CACHE.get(pid)
     if hit is not None and hit.get('_n') == len(products):
@@ -36,9 +36,12 @@ def _index_products(products: list) -> dict:
                    for p in products if (p.get('product_no') or '').strip()},
         'by_kw':  {p['match_keyword']: p for p in products if p.get('match_keyword')},
         'has_pno': [p for p in products if (p.get('product_no') or '').strip()],
-        # 네이버 상품번호(naver_origin_pno) 인덱스 — 소분/묶음 별 split_qty 정확 매칭용
+        # 네이버 origin번호 인덱스 — 하위호환(소분/묶음 split_qty 정확 매칭용)
         'by_naver_pno': {str(p.get('naver_origin_pno', '') or ''): p
                          for p in products if (p.get('naver_origin_pno') or '').strip()},
+        # 네이버 channel번호 인덱스 — 주문(productId=channel) 정확 매칭용 (수익계산 1순위)
+        'by_naver_channel': {str(p.get('naver_channel_pno', '') or ''): p
+                             for p in products if (p.get('naver_channel_pno') or '').strip()},
         '_n': len(products),
     }
     if len(_INDEX_CACHE) > 16:  # 메모리 폭주 방지 — 16개 사용자 동시 캐시면 충분
@@ -229,12 +232,15 @@ def match_product_to_db(username, store_product_name, product_no=None,
         up = u_idx['by_kw'].get(sp['match_keyword'], {})
         # 주문 product_no로 우선 탐색 — O(1)
         if product_no:
-            # 1순위: naver_origin_pno — 소분/묶음 네이버 상품번호별 split_qty 정확 매칭
-            _up_by_naver = u_idx.get('by_naver_pno', {}).get(str(product_no))
+            # 1순위: naver_channel_pno — 주문 productId(=channel번호) 정확 매칭
+            _up_by_naver = u_idx.get('by_naver_channel', {}).get(str(product_no))
+            # 2순위: naver_origin_pno — 하위호환(과거 origin 저장분)
+            if not _up_by_naver:
+                _up_by_naver = u_idx.get('by_naver_pno', {}).get(str(product_no))
             if _up_by_naver:
                 up = _up_by_naver
             else:
-                # 2순위: product_no (코스트코 상품번호)
+                # 3순위: product_no (코스트코 상품번호)
                 _up_by_order_pno = u_idx['by_pno'].get(str(product_no))
                 if _up_by_order_pno:
                     up = _up_by_order_pno
@@ -266,10 +272,11 @@ def match_product_to_db(username, store_product_name, product_no=None,
     products = _user_prods if _user_prods is not None else get_all_products(username)
     if not products:
         return None
-    # 공유 DB 미매칭 시에도 naver_origin_pno로 탐색 (소분 상품 정확 매칭)
+    # 공유 DB 미매칭 시에도 네이버 번호로 탐색 (channel 우선, origin 하위호환)
     if product_no:
         _u_idx2 = _index_products(products)
-        _by_nv2 = _u_idx2.get('by_naver_pno', {}).get(str(product_no))
+        _by_nv2 = (_u_idx2.get('by_naver_channel', {}).get(str(product_no))
+                   or _u_idx2.get('by_naver_pno', {}).get(str(product_no)))
         if _by_nv2:
             return dict(_by_nv2)
     # product_no가 없거나 불일치 시 이름/키워드 토큰 매칭 (0.5 이상)
@@ -308,9 +315,11 @@ def match_shared_product(product_name, product_no=None, return_score=False,
     if not products:
         return (None, 0.0) if return_score else None
     idx = _index_products(products)
-    # product_no 정확 일치 — O(1) dict lookup
+    # 정확 일치 — O(1) dict lookup (코스트코번호 → 네이버 channel → origin 순)
     if product_no:
-        hit = idx['by_pno'].get(str(product_no))
+        hit = (idx['by_pno'].get(str(product_no))
+               or idx.get('by_naver_channel', {}).get(str(product_no))
+               or idx.get('by_naver_pno', {}).get(str(product_no)))
         if hit:
             return (hit, 1.0) if return_score else hit
     best_score, best_p = 0.0, None

@@ -1297,24 +1297,28 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     _cn = (p.get('costco_name', '') or '').strip()
                     return ((_dk and (_mk == _dk or _cn == _dk))
                             or (_mkw and (_mk == _mkw or _cn == _mkw)))
+                def _has_nv(p):
+                    return (p.get('naver_channel_pno') or '') or (p.get('naver_origin_pno') or '')
                 _up_rec = next((p for p in _preload_user
-                                if _ne_ismatch(p) and p.get('naver_origin_pno')), None)
+                                if _ne_ismatch(p) and _has_nv(p)), None)
                 if not _up_rec:
                     _up_rec = next((p for p in _preload_user if _ne_ismatch(p)), None)
-                # 이름 유사도 fallback: 정확 매칭이 없거나 origin번호가 없으면,
-                # 주문명과 가장 비슷한(≥0.5) 네이버 등록상품(origin 보유)을 자동 선택
-                if not _up_rec or not (_up_rec.get('naver_origin_pno') or ''):
+                # 이름 유사도 fallback: 정확 매칭이 없거나 네이버번호가 없으면,
+                # 주문명과 가장 비슷한(≥0.5) 네이버 등록상품(channel/origin 보유)을 자동 선택
+                if not _up_rec or not _has_nv(_up_rec):
                     try:
                         from services import _token_score as _ts
                         _cands = [(p, max(_ts(_dk, p.get('costco_name', '') or ''),
                                           _ts(_dk, p.get('match_keyword', '') or '')))
-                                  for p in _preload_user if (p.get('naver_origin_pno') or '')]
+                                  for p in _preload_user if _has_nv(p)]
                         _cands = [(p, s) for p, s in _cands if s >= 0.5]
                         if _cands:
                             _up_rec = max(_cands, key=lambda x: x[1])[0]
                     except Exception:
                         pass
-                _nv_pno = (_up_rec or {}).get('naver_origin_pno', '') or ''
+                # 표시번호 = channel(스토어에서 보이는 번호) 우선, 없으면 origin
+                _nv_pno = ((_up_rec or {}).get('naver_channel_pno', '') or ''
+                           or (_up_rec or {}).get('naver_origin_pno', '') or '')
                 _is_naver = int((_up_rec or {}).get('from_naver') or 0) == 1
                 _disp_name = (_up_rec.get('costco_name', '') if _up_rec and _is_naver else '') or _dk
 
@@ -1453,24 +1457,28 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     if _match_kw and (_mk == _match_kw or _cn == _match_kw.strip()):
                         return True
                     return False
-                # 1순위: 매칭 + naver_origin_pno 있음
-                _up_rec = next((p for p in _preload_user if _is_match(p) and p.get('naver_origin_pno')), None)
+                def _has_nv2(p):
+                    return (p.get('naver_channel_pno') or '') or (p.get('naver_origin_pno') or '')
+                # 1순위: 매칭 + 네이버번호 있음
+                _up_rec = next((p for p in _preload_user if _is_match(p) and _has_nv2(p)), None)
                 # 2순위: 매칭 (PNO 없어도)
                 if not _up_rec:
                     _up_rec = next((p for p in _preload_user if _is_match(p)), None)
                 # 3순위: 이름 유사도(≥0.5) — 정확 매칭 실패 시 가장 비슷한 등록상품
-                if not _up_rec or not (_up_rec.get('naver_origin_pno') or ''):
+                if not _up_rec or not _has_nv2(_up_rec):
                     try:
                         from services import _token_score as _ts
                         _c = [(p, max(_ts(_disp_key, p.get('costco_name', '') or ''),
                                       _ts(_disp_key, p.get('match_keyword', '') or '')))
-                              for p in _preload_user if (p.get('naver_origin_pno') or '')]
+                              for p in _preload_user if _has_nv2(p)]
                         _c = [(p, s) for p, s in _c if s >= 0.5]
                         if _c:
                             _up_rec = max(_c, key=lambda x: x[1])[0]
                     except Exception:
                         pass
-                _nv_pno = (_up_rec or {}).get('naver_origin_pno', '') or ''
+                # 표시번호 = channel(스토어 번호) 우선, 없으면 origin
+                _nv_pno = ((_up_rec or {}).get('naver_channel_pno', '') or ''
+                           or (_up_rec or {}).get('naver_origin_pno', '') or '')
                 # 네이버 상품명: from_naver=1이면 costco_name이 네이버 상품명
                 _is_naver = int((_up_rec or {}).get('from_naver') or 0) == 1
                 _nv_name  = (_up_rec.get('costco_name', '') if _up_rec and _is_naver else '') or ''

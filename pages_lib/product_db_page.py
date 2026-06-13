@@ -740,7 +740,12 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                 f"{_split_badge}"
                             )
                         else:
-                            _no_disp = (_split_disp if _is_split else (p.get('product_no', '') or '-')) + _split_badge
+                            _costco_no = _split_disp if _is_split else (p.get('product_no', '') or '-')
+                            # 네이버번호(channel 우선) 있으면 코스트코번호 아래 함께 표시
+                            _nv_no = (p.get('naver_channel_pno') or p.get('naver_origin_pno') or '').strip()
+                            _nv_line = (f"<br><span style='color:#3498db;font-size:11px' title='네이버 스토어 상품번호'>🛍 {_nv_no}</span>"
+                                        if _nv_no else "")
+                            _no_disp = f"{_costco_no}{_nv_line}{_split_badge}"
 
                         # 행 표시(8개 셀)을 HTML 한 덩어리로 + 액션 3 버튼은 별도 컬럼
                         row_cell_style = "padding:6px 8px;border-bottom:1px solid #f5f5f5;font-size:14px;vertical-align:middle;overflow:hidden;text-overflow:ellipsis"
