@@ -380,13 +380,21 @@ def send_kakao(access_token, msg, rest_api_key=None, refresh_token=None, client_
             chunks.append(cur)
         return chunks
 
-    chunks = _chunk_by_lines(text, MAX)
+    # 파트 번호를 붙이려면 먼저 분할 → 헤더 길이만큼 여유를 두고 재분할
+    _pre = _chunk_by_lines(text, MAX)
+    if len(_pre) > 1:
+        # "(i/N)\n" 헤더 자리 확보 후 재분할 → 헤더 포함해도 MAX 이하 보장
+        chunks = _chunk_by_lines(text, MAX - 12)
+        total = len(chunks)
+        chunks = [f"({i+1}/{total})\n{c}" for i, c in enumerate(chunks)]
+    else:
+        chunks = _pre
     total = len(chunks)
     sent = 0
     fails = []
     for ci, chunk in enumerate(chunks):
         if ci > 0:
-            _t.sleep(0.5)  # 청크 사이 sleep — rate limit/순서 보장
+            _t.sleep(1.0)  # 청크 사이 sleep — rate limit/순서 보장(여유 있게)
         try:
             resp, tok_err = _post(chunk)
             if tok_err:
