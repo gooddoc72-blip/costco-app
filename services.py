@@ -1143,30 +1143,75 @@ def sync_active_order_status(username, client_id, client_secret):
       - updated: 로컬 갱신된 행 수
       - cleared: 발송/완료 상태로 바뀌어 미발송에서 빠진 건수
     """
-    from db import get_active_orders, update_order_status_bulk
+    from db import get_active_orders, update_order_status_bulk, get_user_db
     import naver_api as _na
 
     active = get_active_orders(username)
-    ids = [str(r.get('order_no', '') or '') for r in active if r.get('order_no')]
-    ids = [i for i in ids if i]
-    if not ids:
+    if not active:
         return {'checked': 0, 'updated': 0, 'cleared': 0, 'error': None}
-
-    rows, err = _na.fetch_order_details_by_ids(client_id, client_secret, ids)
-    if (err and not rows):
-        return {'checked': 0, 'updated': 0, 'cleared': 0, 'error': err}
 
     _ACTIVE = {"PAYED", "INSTRUCT", "PRODUCT_READY", "결제완료", "발주확인", "발송대기"}
     status_map = {}
     cleared = 0
-    for r in rows:
-        ono = str(r.get('상품주문번호', '') or '')
-        stt = str(r.get('주문상태', '') or '')
-        tno = str(r.get('송장번호', '') or '')
-        if not ono or not stt:
-            continue
-        status_map[ono] = {'status': stt, 'tracking_no': tno}
-        if stt not in _ACTIVE:
-            cleared += 1
+    checked = 0
+    err = None
+
+    # 플랫폼 분리: 쿠팡 주문번호는 '-' 포함(orderId-vendorItemId), 네이버는 미포함
+    naver_active   = [r for r in active if r.get('order_no') and '-' not in str(r['order_no'])]
+    coupang_active = [r for r in active if r.get('order_no') and '-' in str(r['order_no'])]
+
+    # ── 네이버: 각 주문의 현재 상태 조회 → 미발송 아니면 제외 ──
+    nv_ids = [str(r['order_no']) for r in naver_active if r.get('order_no')]
+    if nv_ids and client_id and client_secret:
+        rows, _nerr = _na.fetch_order_details_by_ids(client_id, client_secret, nv_ids)
+        if _nerr and not rows:
+            err = _nerr
+        for r in (rows or []):
+            ono = str(r.get('상품주문번호', '') or '')
+            stt = str(r.get('주문상태', '') or '')
+            tno = str(r.get('송장번호', '') or '')
+            if not ono or not stt:
+                continue
+            checked += 1
+            status_map[ono] = {'status': stt, 'tracking_no': tno}
+            if stt not in _ACTIVE:
+                cleared += 1
+
+    # ── 쿠팡: 현재 '대기'(ACCEPT+INSTRUCT) 목록에 없으면 = 발송됨 → 제외 ──
+    if coupang_active:
+        conn = get_user_db(username)
+        _g = lambda k: (conn.execute("SELECT value FROM settings WHERE key=?", (k,)).fetchone() or [None])[0]
+        _ak, _sk, _vid = _g('coupang_access_key'), _g('coupang_secret_key'), _g('coupang_vendor_id')
+        conn.close()
+        if _ak and _sk and _vid:
+            import coupang_api as _cq
+            from datetime import datetime as _dt, timedelta as _td
+            _from = (_dt.now() - _td(days=30)).strftime("%Y-%m-%d")
+            _to   = _dt.now().strftime("%Y-%m-%d")
+            pending = set()
+            pending_ok = False  # 조회 성공해야만 '미대기=발송' 판정 (API 실패 시 오제외 방지)
+            for _stt in ("ACCEPT", "INSTRUCT"):
+                try:
+                    _res = _cq.get_orders(_ak, _sk, _vid, status=_stt, date_from=_from, date_to=_to)
+                    _rows = _res[0] if isinstance(_res, tuple) else _res
+                    _cerr = _res[1] if isinstance(_res, tuple) and len(_res) > 1 else None
+                    if _cerr is None:
+                        pending_ok = True
+                    for _r in (_rows or []):
+                        _ono = str(_r.get('상품주문번호', '') or _r.get('주문번호', '') or '')
+                        if _ono:
+                            pending.add(_ono.split('-')[0])
+                except Exception:
+                    pass
+            if pending_ok:
+                for r in coupang_active:
+                    _full = str(r['order_no'])
+                    _base = _full.split('-')[0]
+                    checked += 1
+                    if _base not in pending:
+                        # 더 이상 대기상태가 아님 = 출고/배송 처리됨 → 미발송에서 제외
+                        status_map[_full] = {'status': 'DEPARTURE', 'tracking_no': ''}
+                        cleared += 1
+
     updated = update_order_status_bulk(username, status_map)
-    return {'checked': len(rows), 'updated': updated, 'cleared': cleared, 'error': None}
+    return {'checked': checked, 'updated': updated, 'cleared': cleared, 'error': err}
