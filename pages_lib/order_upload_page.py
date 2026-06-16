@@ -385,10 +385,10 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     st.session_state['order_excel_bytes_coupang'] = _cq_xl.getvalue()
                 else:
                     st.session_state['order_full_coupang'] = cq_df.copy()
-                _cq_xl_unified = io.BytesIO()
-                with pd.ExcelWriter(_cq_xl_unified, engine='openpyxl') as _w:
-                    cq_df.to_excel(_w, index=False)
-                st.session_state['order_excel_bytes'] = _cq_xl_unified.getvalue()
+                # 택배사 등록(송장) 엑셀은 네이버/쿠팡 분리 유지 —
+                # 네이버 엑셀은 order_full_naver(네이버 전용)에서 생성하므로 쿠팡 데이터로 덮지 않는다.
+                # (order_excel_bytes는 네이버 다운로드 전용 → None으로 두면 네이버 전용으로 재생성)
+                st.session_state['order_excel_bytes'] = None
 
                 # 기존 네이버 주문 보존 후 병합 (상품주문번호에 '-' 없음 = 네이버)
                 _prev_orders = st.session_state.get('orders')
