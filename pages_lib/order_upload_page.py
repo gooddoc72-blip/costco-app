@@ -1051,6 +1051,45 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                      total_items=len(_items),
                                      total_amount=_total_amount)
                 st.success(f"✅ 관리자에게 전송 완료 — {len(_items)}개 상품 ({fmt(_total_amount)}원)")
+                # ── 관리자 카카오로 장보기 목록 발송 (발송자 매장명 표시) ──
+                try:
+                    _sender = (get_user_info(USERNAME) or {}).get('display_name') or USERNAME
+                except Exception:
+                    _sender = USERNAME
+                _adm_kakao = get_setting('admin', 'kakao_access_token')
+                if _adm_kakao:
+                    _od = datetime.strptime(order_date_str, "%Y-%m-%d")
+                    _kl = [f"🛒 [{_sender}] 장보기 목록 ({_od.strftime('%m/%d')})", ""]
+                    for _it in _items:
+                        _nm  = str(_it.get('상품명', ''))[:40]
+                        _qty = int(_it.get('코스트코구매수량') or _it.get('주문수량') or 0)
+                        _cnt = int(_it.get('주문건수') or 0)
+                        _opt = str(_it.get('옵션정보') or '').strip()
+                        _kl.append(f"• {_nm} × {_qty}개 ({_cnt}건)")
+                        _d = ([f"옵션 {_opt}"] if _opt else []) + [
+                            f"정산 {fmt(int(_it.get('정산금액') or 0))}원",
+                            f"택배 {fmt(int(_it.get('배송비') or 0))}원",
+                        ]
+                        _kl.append("  " + " · ".join(_d))
+                    _kl += ["", f"💰 정산 총액: {fmt(sum(int(i.get('정산금액') or 0) for i in _items))}원 / 📦 {len(_items)}건"]
+                    _kmsg = "\n".join(_kl)
+                    _kok, _kerr = naver_api.send_kakao(
+                        _adm_kakao, _kmsg,
+                        rest_api_key=get_setting('admin', 'kakao_api_key'),
+                        refresh_token=get_setting('admin', 'kakao_refresh_token'),
+                        client_secret=get_setting('admin', 'kakao_client_secret'),
+                    )
+                    if _kok:
+                        if _kerr and "__TOKEN_REFRESHED__" in str(_kerr):
+                            _pp = str(_kerr).replace("__TOKEN_REFRESHED__", "").split("||")
+                            set_setting('admin', 'kakao_access_token', _pp[0])
+                            if len(_pp) > 1:
+                                set_setting('admin', 'kakao_refresh_token', _pp[1])
+                        st.success(f"📱 관리자 카톡 발송 완료 (발송자: {_sender})")
+                    else:
+                        st.warning(f"⚠️ 관리자 카톡 발송 실패: {_kerr} — 목록은 관리자 페이지에 저장됨")
+                else:
+                    st.info("ℹ️ 관리자 카카오 미설정 — 목록은 관리자 페이지에 저장됨")
             except Exception as _se:
                 st.error(f"❌ 전송 실패: {_se}")
 
