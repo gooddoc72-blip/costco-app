@@ -272,28 +272,29 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             df.index.name = None
         _src_label = f"🚀 발송 기준 ({len(df)}건) — dispatch_log"
     else:
-        # Fallback 1: 옛 daily_orders 데이터 (이전 워크플로 호환)
-        _get_daily = _cached_daily_orders if _cached_daily_orders else get_daily_orders
-        saved_rows = _get_daily(USERNAME, calc_date_str)
-        if saved_rows:
-            df = pd.DataFrame(saved_rows)
+        # Fallback 1: order_history (결제일 기준) — 각 주문이 자기 날짜에 정확히 있어
+        # '그 날짜 주문건'만 정확히 로드 (daily_orders 누적 오염 회피)
+        _hist_rows = search_order_history(USERNAME, date_from=calc_date_str, date_to=calc_date_str)
+        if _hist_rows:
+            df = pd.DataFrame(_hist_rows)
             df = df.rename(columns=rename_map)
-            if 'id' in df.columns:
-                df.index = df['id'].astype(str)
+            if '제주/도서 추가배송비' not in df.columns:
+                df['제주/도서 추가배송비'] = 0
+            if 'order_no' in df.columns:
+                df.index = df['order_no'].astype(str)
                 df.index.name = None
-            _src_label = f"📋 옛 데이터 ({len(df)}건) — daily_orders fallback"
+            _src_label = f"📋 주문이력 ({len(df)}건) — order_history (결제일 기준)"
         else:
-            # Fallback 2: order_history (결제일 기준) — 조회 버튼으로 영수증 매칭 수익계산용
-            _hist_rows = search_order_history(USERNAME, date_from=calc_date_str, date_to=calc_date_str)
-            if _hist_rows:
-                df = pd.DataFrame(_hist_rows)
+            # Fallback 2: 옛 daily_orders 데이터 (order_history 없을 때만)
+            _get_daily = _cached_daily_orders if _cached_daily_orders else get_daily_orders
+            saved_rows = _get_daily(USERNAME, calc_date_str)
+            if saved_rows:
+                df = pd.DataFrame(saved_rows)
                 df = df.rename(columns=rename_map)
-                if '제주/도서 추가배송비' not in df.columns:
-                    df['제주/도서 추가배송비'] = 0
-                if 'order_no' in df.columns:
-                    df.index = df['order_no'].astype(str)
+                if 'id' in df.columns:
+                    df.index = df['id'].astype(str)
                     df.index.name = None
-                _src_label = f"📋 주문이력 ({len(df)}건) — order_history"
+                _src_label = f"📋 옛 데이터 ({len(df)}건) — daily_orders fallback"
             else:
                 df = None
 
