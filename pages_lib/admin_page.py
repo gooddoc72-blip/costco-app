@@ -548,7 +548,48 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     _dl_data = None
                     st.error(f"엑셀 생성 실패: {_xe}")
 
-                _dc1, _dc2 = st.columns([2, 1])
+                # ── 프린트용 HTML (관리자가 각 사용자 장보기 목록을 바로 인쇄) ──
+                import html as _html_lib
+                import streamlit.components.v1 as _components
+                _prows = []
+                for _it in _items:
+                    _pno  = str(_it.get('코스트코상품번호') or _it.get('상품번호') or '')
+                    _nm   = _html_lib.escape(str(_it.get('상품명', '')))
+                    _opt  = _html_lib.escape(str(_it.get('옵션정보', '') or ''))
+                    _qty  = int(_it.get('코스트코구매수량') or _it.get('주문수량') or 0)
+                    _cnt  = int(_it.get('주문건수') or 0)
+                    _sett = int(_it.get('정산금액') or 0)
+                    _shp  = int(_it.get('배송비') or 0)
+                    _prows.append(
+                        f'<tr><td>{_pno}</td><td>{_nm}</td><td>{_opt}</td>'
+                        f'<td style="text-align:right">{_qty}개({_cnt}건)</td>'
+                        f'<td style="text-align:right">{fmt(_sett)}</td>'
+                        f'<td style="text-align:right">{fmt(_shp)}</td></tr>'
+                    )
+                _print_html = (
+                    '<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8">'
+                    f'<title>장보기 {_sub["username"]} {_sub["order_date"]}</title><style>'
+                    'body{font-family:"맑은 고딕",sans-serif;padding:24px}'
+                    'h1{font-size:20px;margin:0 0 4px}.meta{color:#666;font-size:13px;margin-bottom:12px}'
+                    'table{width:100%;border-collapse:collapse;font-size:13px}'
+                    'th,td{border-bottom:1px solid #ddd;padding:6px 8px;text-align:left}'
+                    'th{background:#f4f4f4;font-weight:600}.tot{margin-top:16px;font-size:15px;font-weight:600}'
+                    '@media print{body{padding:8px}.noprint{display:none}}'
+                    '</style></head><body>'
+                    f'<h1>🛒 장보기 — {_html_lib.escape(str(_sub["username"]))} ({_sub["order_date"]})</h1>'
+                    f'<div class="meta">총 {len(_items)}종 · 정산 총액 {fmt(_sub["total_amount"])}원 · 제출 {_sub["submitted_at"]}</div>'
+                    '<table><thead><tr><th>상품번호</th><th>상품명</th><th>옵션</th>'
+                    '<th style="text-align:right">수량</th><th style="text-align:right">정산금액</th>'
+                    '<th style="text-align:right">택배비</th></tr></thead><tbody>'
+                    + ''.join(_prows) +
+                    f'</tbody></table><div class="tot">💰 정산 총액: {fmt(_sub["total_amount"])}원</div>'
+                    '<button class="noprint" onclick="window.print()" '
+                    'style="margin-top:20px;padding:10px 24px;font-size:14px;cursor:pointer">🖨 인쇄</button>'
+                    '</body></html>'
+                )
+                _esc = _html_lib.escape(_print_html, quote=True)
+
+                _dc1, _dc2, _dc3 = st.columns([2, 2, 1])
                 if _dl_data:
                     _dc1.download_button(
                         "📥 엑셀 다운로드",
@@ -558,6 +599,21 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         key=f"dl_sub_{_sub['id']}",
                         use_container_width=True,
                     )
-                if _dc2.button("🗑 삭제", key=f"del_sub_{_sub['id']}", use_container_width=True):
+                with _dc2:
+                    _components.html(
+                        f'''<button onclick="(function(){{
+                            var f=document.getElementById('pf_{_sub['id']}');
+                            if(f&&f.contentWindow){{f.contentWindow.focus();f.contentWindow.print();}}
+                        }})()" style="width:100%;padding:7px 0;background:white;
+                            border:1px solid rgba(49,51,63,0.2);border-radius:8px;cursor:pointer;
+                            font-family:'Source Sans Pro',sans-serif;font-size:14px;color:rgb(49,51,63)"
+                          onmouseover="this.style.borderColor='#ff4b4b';this.style.color='#ff4b4b'"
+                          onmouseout="this.style.borderColor='rgba(49,51,63,0.2)';this.style.color='rgb(49,51,63)'">
+                            🖨 프린트
+                        </button>
+                        <iframe id="pf_{_sub['id']}" srcdoc="{_esc}" style="display:none"></iframe>''',
+                        height=44,
+                    )
+                if _dc3.button("🗑 삭제", key=f"del_sub_{_sub['id']}", use_container_width=True):
                     delete_shopping_submission(_sub['id'])
                     st.rerun()
