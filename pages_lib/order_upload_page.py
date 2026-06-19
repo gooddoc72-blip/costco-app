@@ -35,7 +35,7 @@ from db import (
     save_rank_result, get_rank_history, get_latest_ranks,
     get_daily_ranks_in_month, get_yearly_rank_history, delete_trackings_bulk,
     get_rank_drops,
-    submit_shopping_list,
+    submit_shopping_list, get_recent_shopping_submissions, delete_shopping_submission,
     AUTH_DB,
 )
 from services import (
@@ -104,6 +104,86 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
 
     st.header("📋 일일 주문 수집")
     st.caption("주문을 가져온 뒤 검토하고 **💾 저장** 버튼을 눌러야 수익계산에 반영됩니다.")
+
+    # ── (관리자 전용) 타 사용자가 제출한 장보기 목록 — 여기서 바로 확인·프린트 ──
+    if IS_ADMIN:
+        _subs = get_recent_shopping_submissions(limit=50)
+        with st.expander(f"🛒 사용자별 장보기 목록 (타 사용자 제출 {len(_subs)}건)", expanded=bool(_subs)):
+            if not _subs:
+                st.caption("아직 제출된 장보기 목록이 없습니다. (사용자가 '📋 장보기 목록 관리자에게 발송' 클릭 시 표시)")
+            else:
+                import html as _hl
+                import streamlit.components.v1 as _cmp
+                for _sub in _subs:
+                    _lbl = (f"📅 {_sub['order_date']} | 👤 {_sub['username']} | "
+                            f"📦 {_sub['total_items']}개 | 💰 {fmt(_sub['total_amount'])}원 | ⏰ {_sub['submitted_at']}")
+                    with st.expander(_lbl, expanded=False):
+                        try:
+                            _its = json.loads(_sub['items_json'])
+                        except Exception:
+                            _its = []
+                        if not _its:
+                            st.warning("항목이 비어있습니다.")
+                            continue
+                        st.dataframe(pd.DataFrame(_its), use_container_width=True, hide_index=True)
+                        _pr = []
+                        for _it in _its:
+                            _pno = str(_it.get('코스트코상품번호') or _it.get('상품번호') or '')
+                            _nm  = _hl.escape(str(_it.get('상품명', '')))
+                            _opt = _hl.escape(str(_it.get('옵션정보', '') or ''))
+                            _qy  = int(_it.get('코스트코구매수량') or _it.get('주문수량') or 0)
+                            _cn  = int(_it.get('주문건수') or 0)
+                            _se  = int(_it.get('정산금액') or 0)
+                            _sh  = int(_it.get('배송비') or 0)
+                            _pr.append(
+                                f'<tr><td>{_pno}</td><td>{_nm}</td><td>{_opt}</td>'
+                                f'<td style="text-align:right">{_qy}개({_cn}건)</td>'
+                                f'<td style="text-align:right">{fmt(_se)}</td>'
+                                f'<td style="text-align:right">{fmt(_sh)}</td></tr>'
+                            )
+                        _ph = (
+                            '<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8">'
+                            f'<title>장보기 {_sub["username"]}</title><style>'
+                            'body{font-family:"맑은 고딕",sans-serif;padding:24px}h1{font-size:20px;margin:0 0 4px}'
+                            '.meta{color:#666;font-size:13px;margin-bottom:12px}table{width:100%;border-collapse:collapse;font-size:13px}'
+                            'th,td{border-bottom:1px solid #ddd;padding:6px 8px;text-align:left}th{background:#f4f4f4}'
+                            '.tot{margin-top:16px;font-size:15px;font-weight:600}@media print{body{padding:8px}.noprint{display:none}}'
+                            '</style></head><body>'
+                            f'<h1>🛒 장보기 — {_hl.escape(str(_sub["username"]))} ({_sub["order_date"]})</h1>'
+                            f'<div class="meta">총 {len(_its)}종 · 정산 총액 {fmt(_sub["total_amount"])}원 · 제출 {_sub["submitted_at"]}</div>'
+                            '<table><thead><tr><th>상품번호</th><th>상품명</th><th>옵션</th>'
+                            '<th style="text-align:right">수량</th><th style="text-align:right">정산금액</th>'
+                            '<th style="text-align:right">택배비</th></tr></thead><tbody>'
+                            + ''.join(_pr) +
+                            f'</tbody></table><div class="tot">💰 정산 총액: {fmt(_sub["total_amount"])}원</div>'
+                            '<button class="noprint" onclick="window.print()" '
+                            'style="margin-top:20px;padding:10px 24px;font-size:14px;cursor:pointer">🖨 인쇄</button></body></html>'
+                        )
+                        _esc = _hl.escape(_ph, quote=True)
+                        _x1, _x2, _x3 = st.columns([2, 2, 1])
+                        try:
+                            _xb = io.BytesIO()
+                            with pd.ExcelWriter(_xb, engine='openpyxl') as _w:
+                                pd.DataFrame(_its).to_excel(_w, index=False)
+                            _x1.download_button(
+                                "📥 엑셀", data=_xb.getvalue(),
+                                file_name=f"장보기_{_sub['username']}_{_sub['order_date']}.xlsx",
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                key=f"ou_dl_{_sub['id']}", use_container_width=True)
+                        except Exception:
+                            pass
+                        with _x2:
+                            _cmp.html(
+                                f'''<button onclick="(function(){{var f=document.getElementById('ouf_{_sub['id']}');
+                                if(f&&f.contentWindow){{f.contentWindow.focus();f.contentWindow.print();}}}})()"
+                                style="width:100%;padding:7px 0;background:white;border:1px solid rgba(49,51,63,0.2);
+                                border-radius:8px;cursor:pointer;font-size:14px;color:rgb(49,51,63)">🖨 프린트</button>
+                                <iframe id="ouf_{_sub['id']}" srcdoc="{_esc}" style="display:none"></iframe>''',
+                                height=44)
+                        if _x3.button("🗑", key=f"ou_del_{_sub['id']}", use_container_width=True):
+                            delete_shopping_submission(_sub['id'])
+                            st.rerun()
+        st.divider()
 
     # ── API 자동 조회 ──
     if HAS_NAVER_API and api_id and api_secret:
