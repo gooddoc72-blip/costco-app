@@ -310,6 +310,10 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         st.toast(st.session_state.pop('_rcpt_pick_toast'), icon="🧾")
 
     if df is not None and not df.empty:
+        # 저장 전후 데이터 소스(order_history/profit_settlements)가 달라도 행 순서 고정
+        # → 저장 시 리스트가 재정렬되어 바뀌는 현상 방지
+        if '상품명' in df.columns and '수취인명' in df.columns:
+            df = df.sort_values(['상품명', '수취인명'], kind='stable')
         receipt_items = st.session_state.get('receipt_items', [])
         # 영수증이 없어도 daily_orders 가 있으면 정산표 표시 (영수증 매칭 enrichment만 비활성)
         if not receipt_items:
@@ -674,8 +678,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         _checked_rows = [_sk for _sk in _sk_list if st.session_state.get(f"sel_p_{_sk}", False)]
         _hdr_sel_key = f'_hdr_sel_{calc_date_str}'
 
-        # ── 액션 바: 4등분 균일 레이아웃 ──
-        _act1, _act4, _act5, _act6 = st.columns([2, 2, 2, 2])
+        # ── 액션 바 ──
+        _act1, _act_del, _act4, _act5, _act6 = st.columns([1.9, 1.4, 1.9, 1.9, 1.9])
         _bulk_save = _act1.button(
             f"📊 {len(_checked_rows)}개 정산저장" if _checked_rows else "📊 정산저장",
             type="primary",
@@ -683,6 +687,13 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             key="bulk_save_kw",
             use_container_width=True,
             help="수익계산 데이터 저장 (제품가격DB 변경 없음)"
+        )
+        _bulk_del = _act_del.button(
+            f"🗑 {len(_checked_rows)}개 삭제" if _checked_rows else "🗑 삭제",
+            disabled=not _checked_rows,
+            key="bulk_delete_rows",
+            use_container_width=True,
+            help="선택한 행(취소건 등)을 정산에서 삭제 (주문이력·정산저장에서 제거)"
         )
         _bulk_price_val = _act4.number_input(
             "일괄 단가 (1주문)",
@@ -954,6 +965,31 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     "title='영수증 등록 탭에서 영수증을 먼저 업로드하세요'>—</div>",
                     unsafe_allow_html=True
                 )
+
+        # ── 선택 삭제 처리 (취소건 등 — 주문이력/정산저장에서 제거) ──
+        if _bulk_del and _checked_rows:
+            try:
+                _conn_del = get_user_db(USERNAME)
+                _ph_del = ",".join("?" * len(_checked_rows))
+                # 정산표 행 key = order_no (order_history/profit_settlements 인덱스) 기준 삭제
+                _conn_del.execute(f"DELETE FROM order_history WHERE order_no IN ({_ph_del})", _checked_rows)
+                _conn_del.execute(f"DELETE FROM profit_settlements WHERE order_no IN ({_ph_del})", _checked_rows)
+                _conn_del.commit()
+                _conn_del.close()
+                # 캐시·복원플래그·선택 초기화 → 즉시 반영
+                st.session_state.pop('_pcalc_match_cache', None)
+                st.session_state.pop(f"_do_restored_{calc_date_str}", None)
+                for _k in list(st.session_state.keys()):
+                    if _k.startswith('sel_p_'):
+                        st.session_state.pop(_k, None)
+                try:
+                    invalidate_data_cache()
+                except Exception:
+                    pass
+                st.session_state['_profit_save_toast'] = f"🗑 {len(_checked_rows)}건 삭제 완료"
+            except Exception as _de:
+                st.error(f"삭제 오류: {_de}")
+            st.rerun()
 
         # ── 정산저장 처리 (수익계산 기록 보존 — 제품가격DB 변경 없음) ──
         if _bulk_save and _checked_rows:
