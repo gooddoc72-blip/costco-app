@@ -98,6 +98,111 @@ html {{
 }}
 </style>
 """, unsafe_allow_html=True)
+    _inject_design_system()
+
+
+def _inject_design_system():
+    """미니멀 라이트 + 코스트코 레드 디자인 시스템 (폰트·크롬·버튼·입력·사이드바·탭).
+    색상 하드코딩으로 f-string 중괄호 충돌 회피."""
+    st.markdown("""
+<link rel="preconnect" href="https://cdn.jsdelivr.net">
+<style>
+@import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard@latest/dist/web/static/pretendard.min.css');
+
+/* ── 전역 폰트: Pretendard (한글 최적 모던 산세리프) ── */
+html, body, .stApp, .stApp *,
+button, input, textarea, select, [class*="st-"] {
+    font-family: 'Pretendard Variable','Pretendard',-apple-system,BlinkMacSystemFont,
+                 'Segoe UI','Apple SD Gothic Neo','Malgun Gothic',sans-serif !important;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+}
+
+/* ── Streamlit 기본 크롬 숨김 (AI/기본 느낌 제거) ── */
+#MainMenu {visibility: hidden;}
+footer {visibility: hidden;}
+header[data-testid="stHeader"] {background: transparent;}
+[data-testid="stToolbar"] {display: none !important;}
+[data-testid="stDecoration"] {display: none !important;}
+[data-testid="stStatusWidget"] {display: none !important;}
+.stDeployButton {display: none !important;}
+[data-testid="stAppDeployButton"] {display: none !important;}
+
+/* ── 본문 폭/여백 정돈 ── */
+.main .block-container {max-width: 1280px; padding-top: 1.2rem;}
+
+/* ── 타이포 위계 (절제된 굵기/자간) ── */
+h1 {font-weight: 800 !important; letter-spacing: -0.025em !important; color:#111827 !important;}
+h2 {font-weight: 700 !important; letter-spacing: -0.02em !important; color:#111827 !important;}
+h3 {font-weight: 700 !important; letter-spacing: -0.015em !important; color:#1F2937 !important;}
+h4, h5 {font-weight: 600 !important; letter-spacing: -0.01em !important;}
+
+/* ── 버튼: 라운드 + 호버 + 그림자 (평평한 기본 버튼 탈피) ── */
+.stButton > button, .stDownloadButton > button, .stFormSubmitButton > button {
+    border-radius: 9px !important;
+    font-weight: 600 !important;
+    border: 1px solid #E5E7EB !important;
+    box-shadow: 0 1px 2px rgba(16,24,40,0.05) !important;
+    transition: all .15s ease !important;
+}
+.stButton > button:hover, .stDownloadButton > button:hover {
+    border-color: #E31837 !important;
+    color: #E31837 !important;
+    transform: translateY(-1px);
+    box-shadow: 0 3px 8px rgba(227,24,55,0.12) !important;
+}
+/* primary 버튼 = 코스트코 레드 솔리드 */
+.stButton > button[kind="primary"], .stFormSubmitButton > button[kind="primary"],
+.stButton > button[data-testid="baseButton-primary"] {
+    background: #E31837 !important;
+    border-color: #E31837 !important;
+    color: #fff !important;
+}
+.stButton > button[kind="primary"]:hover {
+    background: #C2142E !important; border-color: #C2142E !important; color:#fff !important;
+}
+
+/* ── 입력칸: 라운드 + 레드 포커스 링 ── */
+.stTextInput input, .stNumberInput input, .stDateInput input,
+[data-baseweb="input"], [data-baseweb="select"] > div, .stTextArea textarea {
+    border-radius: 9px !important;
+}
+.stTextInput input:focus, .stNumberInput input:focus, .stTextArea textarea:focus {
+    border-color: #E31837 !important;
+    box-shadow: 0 0 0 3px rgba(227,24,55,0.12) !important;
+}
+
+/* ── 사이드바: 깔끔한 흰 배경 + 얇은 경계 ── */
+section[data-testid="stSidebar"] {
+    background: #FFFFFF !important;
+    border-right: 1px solid #EEF0F2 !important;
+}
+[data-testid="stSidebarNav"] a {border-radius: 9px !important; margin: 1px 6px;}
+[data-testid="stSidebarNav"] a[aria-current="page"] {background: #FFE7EB !important;}
+[data-testid="stSidebarNav"] a[aria-current="page"] span {color:#E31837 !important; font-weight:700 !important;}
+
+/* ── 탭: 레드 인디케이터 ── */
+.stTabs [data-baseweb="tab-list"] {gap: 2px; border-bottom: 1px solid #EEF0F2;}
+.stTabs [aria-selected="true"] {color: #E31837 !important;}
+.stTabs [data-baseweb="tab-highlight"], .stTabs [data-baseweb="tab-border"] {background-color: #E31837 !important;}
+
+/* ── expander / 컨테이너: 부드러운 라운드 카드 ── */
+[data-testid="stExpander"] {border: 1px solid #EEF0F2 !important; border-radius: 11px !important;
+    box-shadow: 0 1px 2px rgba(16,24,40,0.04);}
+[data-testid="stExpander"] summary:hover {color: #E31837;}
+
+/* ── 라디오/체크 강조색 ── */
+[data-baseweb="radio"] [aria-checked="true"] div:first-child,
+[data-testid="stCheckbox"] [aria-checked="true"] {background-color: #E31837 !important; border-color:#E31837 !important;}
+
+/* ── 구분선 옅게, 코드/캡션 정돈 ── */
+hr {border-color: #EEF0F2 !important; margin: 1rem 0 !important;}
+[data-testid="stCaptionContainer"] {color:#6B7280 !important;}
+
+/* ── 데이터프레임 둥근 모서리 ── */
+[data-testid="stDataFrame"], [data-testid="stTable"] {border-radius: 10px; overflow: hidden;}
+</style>
+""", unsafe_allow_html=True)
 
 
 # ──────────────────────────────────────────────────────
