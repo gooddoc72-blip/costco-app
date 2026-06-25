@@ -55,14 +55,17 @@ def clear_key():
 
 
 def verify_license(key, machine_id=None):
-    """서버 검증. 반환: dict(ok, code, message, ...)."""
+    """서버 검증. 반환: dict(ok, code, message, ...). stdlib urllib 사용(의존성 없음)."""
     mid = machine_id or get_machine_id()
     if not (key or "").strip():
         return {"ok": False, "code": "no_key", "message": "라이선스키가 없습니다."}
+    import urllib.request
+    body = json.dumps({"key": key.strip(), "machine_id": mid}).encode("utf-8")
+    req = urllib.request.Request(
+        f"{LICENSE_SERVER}/license/verify", data=body,
+        headers={"Content-Type": "application/json"})
     try:
-        import requests
-        r = requests.post(f"{LICENSE_SERVER}/license/verify",
-                          json={"key": key.strip(), "machine_id": mid}, timeout=10)
-        return r.json()
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return json.loads(r.read().decode("utf-8"))
     except Exception as e:
         return {"ok": False, "code": "network", "message": f"인증 서버 연결 실패: {e}"}
