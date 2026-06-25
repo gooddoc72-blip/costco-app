@@ -127,6 +127,35 @@ def _clear_qparams():
     st.query_params.clear()
 
 
+# ── 로컬 설치형: 1-PC 라이선스 인증 (웹 모드는 건너뜀) ──
+try:
+    import license_client as _lic
+    if _lic.is_local_mode() and not st.session_state.get('_license_ok'):
+        _lk = _lic.get_stored_key()
+        _lres = _lic.verify_license(_lk) if _lk else {"ok": False, "code": "no_key"}
+        if _lres.get("ok"):
+            st.session_state['_license_ok'] = True
+        else:
+            st.title("🔑 프로그램 활성화")
+            st.caption("이 PC에서 최초 1회 라이선스키 활성화가 필요합니다. (1키 = 1PC)")
+            if _lres.get("code") and _lres.get("code") != "no_key":
+                st.error(_lres.get("message", "인증 실패"))
+            _ik = st.text_input("라이선스키 입력", placeholder="COCO-XXXX-XXXX-XXXX", key="_lic_input")
+            if st.button("활성화", type="primary", key="_lic_activate"):
+                _vr = _lic.verify_license((_ik or '').strip())
+                if _vr.get("ok"):
+                    _lic.save_key((_ik or '').strip())
+                    st.session_state['_license_ok'] = True
+                    st.success("✅ 활성화 완료!")
+                    st.rerun()
+                else:
+                    st.error(_vr.get("message", "활성화 실패"))
+            st.caption(f"내 PC ID: {_lic.get_machine_id()[:18]}…  (관리자 문의 시 전달)")
+            st.stop()
+except Exception:
+    pass  # 라이선스 모듈/네트워크 오류 시 (웹 모드 등) 무시
+
+
 # ── 로그인 상태 체크 ─────────────────────────────────────
 if 'user' not in st.session_state:
     st.session_state['user'] = None
