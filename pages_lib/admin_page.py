@@ -617,3 +617,50 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 if _dc3.button("🗑 삭제", key=f"del_sub_{_sub['id']}", use_container_width=True):
                     delete_shopping_submission(_sub['id'])
                     st.rerun()
+
+    # ── 로컬 설치형 라이선스 관리 (1-PC 사용 인증) ──
+    st.divider()
+    st.subheader("🔑 로컬 설치형 라이선스 (1-PC 사용 인증)")
+    st.caption("로컬 설치판 사용자에게 발급하는 라이선스키입니다. 1키 = 1PC (최초 실행 PC에 자동 바인딩).")
+    try:
+        from db_license import (create_license, list_licenses, revoke_license,
+                                unbind_license, delete_license)
+        _lic_c1, _lic_c2 = st.columns([2, 1])
+        _lic_user = _lic_c1.text_input("발급 대상(메모/사용자명)", key="lic_new_user",
+                                       placeholder="예: 더블루샵 / 홍길동")
+        if _lic_c2.button("🔑 라이선스 발급", key="lic_issue", type="primary", use_container_width=True):
+            _newk = create_license(username=_lic_user.strip(), memo=_lic_user.strip())
+            st.success(f"✅ 발급 완료: {_newk}")
+            st.rerun()
+
+        _lics = list_licenses(limit=200)
+        if not _lics:
+            st.caption("발급된 라이선스가 없습니다.")
+        else:
+            st.caption(f"총 {len(_lics)}개")
+            for _l in _lics:
+                _bound = (_l.get('bound_machine_id') or '').strip()
+                _badge = ("🟢 활성" if _l['status'] == 'active' else "🔴 정지")
+                _pcst = (f"💻 PC바인딩됨" if _bound else "⚪ 미사용(미바인딩)")
+                with st.expander(f"{_badge} | 🔑 {_l['license_key']} | 👤 {_l.get('username','')} | {_pcst}",
+                                 expanded=False):
+                    st.write({
+                        "키": _l['license_key'], "대상": _l.get('username', ''),
+                        "상태": _l['status'], "바인딩 PC": _bound or '(없음)',
+                        "발급": _l.get('created_at', ''), "활성화": _l.get('activated_at', ''),
+                        "최근접속": _l.get('last_seen_at', ''),
+                    })
+                    _b1, _b2, _b3 = st.columns(3)
+                    if _l['status'] == 'active':
+                        if _b1.button("⏸ 정지", key=f"lic_rev_{_l['id']}", use_container_width=True):
+                            revoke_license(_l['license_key'], True); st.rerun()
+                    else:
+                        if _b1.button("▶ 재활성", key=f"lic_act_{_l['id']}", use_container_width=True):
+                            revoke_license(_l['license_key'], False); st.rerun()
+                    if _b2.button("🔄 PC 해제(재바인딩 허용)", key=f"lic_unbind_{_l['id']}",
+                                  use_container_width=True, help="PC 교체 시 → 다음 실행 PC에 다시 바인딩"):
+                        unbind_license(_l['license_key']); st.rerun()
+                    if _b3.button("🗑 삭제", key=f"lic_del_{_l['id']}", use_container_width=True):
+                        delete_license(_l['license_key']); st.rerun()
+    except Exception as _le:
+        st.error(f"라이선스 관리 로드 오류: {_le}")
