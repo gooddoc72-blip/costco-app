@@ -563,6 +563,63 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
 
     st.divider()
 
+    # ── Task 6: 네이버 등록상품 정기수집 ──
+    st.subheader("🛍 Task 6 — 네이버 등록상품 정기수집")
+    st.caption("매일 지정 시간에 스마트스토어 등록상품 전체를 API로 가져와 제품DB(origin+channel 번호·판매가)를 자동 갱신합니다. → 주문 매칭 정확도 유지.")
+
+    TASK6_NAME = f"CostcoProducts_{USERNAME}"
+    t6_ok, t6_out = _query_task(TASK6_NAME)
+    if t6_ok:
+        st.success("✅ Task 6 (네이버 상품 정기수집) 등록됨")
+        st.code(t6_out[:300], language=None)
+
+    task6_en = _gs('auto_products_enabled') == '1'
+    task6_time_str = _gs('auto_products_time') or '05:00'
+    t6h, t6m = [int(x) for x in task6_time_str.split(':')]
+
+    _t6_c1, _t6_c2 = st.columns([1, 2])
+    new_t6_en   = _t6_c1.checkbox("활성화", value=task6_en, key="t6_en")
+    new_t6_time = _t6_c2.time_input("실행 시간", value=dtime(t6h, t6m), key="t6_time")
+
+    if not bool(_gs('api_client_id')):
+        st.warning("⚠️ 네이버 API 키를 설정 탭에서 먼저 입력해주세요.")
+
+    _s6c1, _s6c2, _s6c3 = st.columns(3)
+    if _s6c1.button("💾 Task 6 저장 & 등록", key="save_t6", type="primary", use_container_width=True):
+        t6_str = new_t6_time.strftime("%H:%M")
+        set_setting(USERNAME, 'auto_products_enabled', '1' if new_t6_en else '0')
+        set_setting(USERNAME, 'auto_products_time', t6_str)
+        if new_t6_en:
+            _cmd6 = f'"{PYTHON_PATH}" "{SCRIPT_PATH}" --task products --user {USERNAME}'
+            ok, out = _schtasks_run(["/create", "/tn", TASK6_NAME, "/tr", _cmd6,
+                                     "/sc", "daily", "/st", t6_str, "/f"])
+            if ok:
+                st.success(f"✅ Task 6 등록 완료 — 매일 {t6_str} 네이버 상품 정기수집")
+            else:
+                st.error(f"❌ 등록 실패 (관리자 권한 필요)\n{out}")
+        else:
+            _schtasks_run(["/delete", "/tn", TASK6_NAME, "/f"])
+            st.info("Task 6 비활성화 — 스케줄 삭제됨")
+        st.rerun()
+
+    if _s6c2.button("🗑 Task 6 삭제", key="del_t6", use_container_width=True):
+        ok, out = _schtasks_run(["/delete", "/tn", TASK6_NAME, "/f"])
+        set_setting(USERNAME, 'auto_products_enabled', '0')
+        st.success("삭제됨") if ok else st.error(f"삭제 실패: {out}")
+        st.rerun()
+
+    if _s6c3.button("▶ 지금 테스트 실행", key="run_t6", use_container_width=True):
+        with st.spinner("네이버 등록상품 수집 중..."):
+            r = subprocess.run(
+                [PYTHON_PATH, SCRIPT_PATH, "--task", "products", "--user", USERNAME],
+                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=180
+            )
+        output = (r.stdout + r.stderr).strip()
+        st.success("✅ 수집 완료") if r.returncode == 0 else st.error("❌ 오류 발생")
+        st.code(output, language=None)
+
+    st.divider()
+
     # ── 실행 로그 ──
     st.subheader("📄 자동화 실행 로그")
     LOG_PATH = os.path.join(DATA_DIR, "auto_task.log")

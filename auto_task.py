@@ -645,11 +645,70 @@ def run_rank_check_task(username="admin"):
     return True
 
 
+# ── Task 6: 네이버 등록상품 정기수집 (origin+channel 번호/가격 자동 갱신) ──
+def run_naver_products_task(username="admin"):
+    """네이버 스마트스토어 등록상품 전체를 API로 가져와 제품DB를 갱신.
+    origin/channel 상품번호 + 판매가를 최신화 → 주문 매칭 정확도 유지."""
+    log("=" * 50)
+    log(f"[Task 6] 네이버 등록상품 정기수집 시작 (사용자: {username})")
+    settings = get_user_settings(username)
+    cid = settings.get("api_client_id", "")
+    cs  = settings.get("api_client_secret", "")
+    seller = settings.get("channel_seller_id", "")
+    if not (cid and cs):
+        log("❌ 네이버 API 키 미설정 → 건너뜀")
+        return False
+    try:
+        from db import upsert_user_private
+        lst, err = naver_api.get_product_list(cid, cs, seller or "")
+        if err and not lst:
+            log(f"❌ 상품 조회 실패: {err}")
+            return False
+        if not lst:
+            log("ℹ️ 조회된 상품 없음")
+            return True
+
+        def _ns(s):
+            s = (s or 'SALE').upper()
+            if s in ('OUTOFSTOCK', 'SOLD_OUT', 'SOLDOUT'):
+                return 'OUTOFSTOCK'
+            if s in ('SUSPENSION', 'STOP', 'PAUSE', 'CLOSE', 'PROHIBITION'):
+                return 'SUSPENSION'
+            return 'SALE'
+
+        saved = 0
+        for p in lst:
+            name = (p.get('productName') or '').strip()
+            if not name:
+                continue
+            origin  = str(p.get('originProductNo') or '').strip()
+            channel = str(p.get('channelProductNo') or '').strip()
+            try:
+                upsert_user_private(
+                    username, name, name,
+                    sale_price=int(p.get('salePrice') or 0),
+                    shipping_fee=int(p.get('deliveryFee') or 0),
+                    naver_product_no=channel or None,   # channelProductNo
+                    naver_origin_pno=origin,             # originProductNo
+                    status=_ns(p.get('status')),
+                    from_naver=1,
+                )
+                saved += 1
+            except Exception as e:
+                log(f"  ⚠️ 저장 오류({name[:20]}): {e}")
+        log(f"✅ 네이버 등록상품 {saved}건 수집·갱신 완료 (origin+channel 번호/가격)")
+        log("[Task 6] 완료")
+        return True
+    except Exception as e:
+        log(f"❌ 네이버 상품 수집 오류: {e}")
+        return False
+
+
 # ── 진입점 ────────────────────────────────────────
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="코스트코핫딜 자동화 실행")
     parser.add_argument("--task",
-                        choices=["shopping", "shipping", "crawl", "rank", "orders", "all"],
+                        choices=["shopping", "shipping", "crawl", "rank", "orders", "products", "all"],
                         default="all",
                         help="실행할 작업 (기본: all)")
     parser.add_argument("--user",
@@ -667,6 +726,8 @@ if __name__ == "__main__":
         run_rank_check_task(args.user)
     elif args.task == "orders":
         run_fetch_orders_task(args.user)
+    elif args.task == "products":
+        run_naver_products_task(args.user)
     else:
         run_fetch_orders_task(args.user)
         run_shopping_task(args.user)
