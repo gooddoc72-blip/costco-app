@@ -104,9 +104,7 @@ html {{
 def _inject_design_system():
     """미니멀 라이트 + 코스트코 레드 디자인 시스템 (폰트·크롬·버튼·입력·사이드바·탭).
     색상 하드코딩으로 f-string 중괄호 충돌 회피."""
-    st.markdown("""
-<link rel="preconnect" href="https://cdn.jsdelivr.net">
-<style>
+    st.markdown("""<style>
 @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard@latest/dist/web/static/pretendard.min.css');
 
 /* ── 전역 폰트: Pretendard (한글 최적 모던 산세리프) ── */
