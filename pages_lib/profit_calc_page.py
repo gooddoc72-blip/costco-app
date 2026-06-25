@@ -742,15 +742,15 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             unsafe_allow_html=True
         )
         _h2.markdown(
-            "<b style='font-size:12px;color:#444' title='1주문 단가 입력'>단가✏️</b>",
+            "<div style='padding-left:12px'><b style='font-size:12px;color:#444' title='1주문 단가 입력'>단가✏️</b></div>",
             unsafe_allow_html=True
         )
         _h3.markdown(
-            "<b style='font-size:12px;color:#555' title='택배사 발송비 (행별 변경 가능, 기본값=설정값)'>발송비✏️</b>",
+            "<div style='padding-left:12px'><b style='font-size:12px;color:#555' title='택배사 발송비 (행별 변경 가능, 기본값=설정값)'>발송비✏️</b></div>",
             unsafe_allow_html=True
         )
         _h4.markdown(
-            "<b style='font-size:12px;color:#555' title='포장 박스비 (행별 변경 가능, 기본값=설정값)'>박스비✏️</b>",
+            "<div style='padding-left:12px'><b style='font-size:12px;color:#555' title='포장 박스비 (행별 변경 가능, 기본값=설정값)'>박스비✏️</b></div>",
             unsafe_allow_html=True
         )
         _h5.markdown("<b style='font-size:13px;color:#444' title='영수증에서 수동 매칭'>🧾</b>", unsafe_allow_html=True)
