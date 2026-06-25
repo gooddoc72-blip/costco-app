@@ -1085,12 +1085,17 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 if _row_save_key not in _overrides:
                     continue
                 if _cost > 0 and (_pno or _kw):
-                    _up = next(
-                        (p for p in (_preload_user or [])
-                         if (p.get('product_no') and p.get('product_no') == _pno)
-                         or p.get('match_keyword') == _kw),
-                        None
-                    )
+                    _order_channel = str(_r.get('product_no', '') or '').strip()
+                    # Rule2: 가격수정 저장은 주문 channel번호로 레코드 우선 식별 → 없으면 코스트코번호/키워드
+                    _up = next((p for p in (_preload_user or [])
+                                if _order_channel and str(p.get('naver_channel_pno', '') or '') == _order_channel), None)
+                    if not _up:
+                        _up = next(
+                            (p for p in (_preload_user or [])
+                             if (p.get('product_no') and p.get('product_no') == _pno)
+                             or p.get('match_keyword') == _kw),
+                            None
+                        )
                     _sq = max(1, int((_up or {}).get('split_qty') or 1))
                     _naver_origin = (_up or {}).get('naver_origin_pno', '') or ''
                     # ⭐ sell_factor 보정: 상품명에 "x N개" 표기 시 1주문 = N개
@@ -1102,10 +1107,12 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     _sell_factor = _sell_val if 1 < _sell_val <= 50 else 1
                     _denom = max(1, _qty * _sell_factor)
                     _new_unit = (_cost * _sq) // _denom
-                    _order_nv_pno_s = str(_r.get('product_no', '') or '').strip()
-                    upsert_product(USERNAME, _kw or _pno, _kw or _pno, _new_unit,
-                                    product_no=_pno, split_qty=_sq,
-                                    naver_origin_pno=_order_nv_pno_s or _naver_origin,
+                    # 식별된 레코드(채널 우선)에 정확히 반영 — origin칸에 channel 넣지 않음(오염 방지)
+                    _save_kw  = ((_up or {}).get('match_keyword') or '') or _kw or _pno
+                    _save_pno = ((_up or {}).get('product_no') or '') or _pno
+                    upsert_product(USERNAME, _save_kw, _save_kw, _new_unit,
+                                    product_no=_save_pno, split_qty=_sq,
+                                    naver_origin_pno=_naver_origin,
                                     shipping_fee=(_up or {}).get('shipping_fee'),
                                     auto_split_costco_no=False,  # 부작용으로 비활성화
                                     manual=True)  # 사용자 직접 수정 → 박스단가 보호 우회
