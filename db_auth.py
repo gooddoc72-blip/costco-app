@@ -183,6 +183,30 @@ def register_user(username, password, display_name=""):
         return False, None
 
 
+def ensure_local_user(username, display_name=""):
+    """로컬 설치판 전용: 라이선스 계정을 로컬 auth.db에 자동 생성(없으면)하고 active 보장.
+    반환: {username, display_name, is_admin} (자동 로그인용). DB 파일명 안전성 위해 영문/숫자만."""
+    import re as _re
+    import secrets as _secrets
+    safe = _re.sub(r'[^A-Za-z0-9_\-]', '', (username or '').strip()) or 'local'
+    conn = sqlite3.connect(AUTH_DB)
+    row = conn.execute("SELECT display_name, is_admin FROM users WHERE username=?", (safe,)).fetchone()
+    if not row:
+        conn.execute("INSERT OR IGNORE INTO users VALUES (?,?,?,?,?,?)",
+                     (safe, hash_pw(_secrets.token_hex(16)), display_name or safe, 0,
+                      datetime.now().strftime("%Y-%m-%d %H:%M"), "active"))
+        conn.commit()
+        dn, adm = (display_name or safe), 0
+    else:
+        conn.execute("UPDATE users SET status='active' WHERE username=?", (safe,))
+        if display_name:
+            conn.execute("UPDATE users SET display_name=? WHERE username=?", (display_name, safe))
+        conn.commit()
+        dn, adm = (display_name or row[0]), row[1]
+    conn.close()
+    return {"username": safe, "display_name": dn, "is_admin": adm}
+
+
 def get_pending_users():
     conn = sqlite3.connect(AUTH_DB)
     rows = conn.execute(

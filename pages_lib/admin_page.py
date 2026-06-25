@@ -621,17 +621,26 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     # ── 로컬 설치형 라이선스 관리 (1-PC 사용 인증) ──
     st.divider()
     st.subheader("🔑 로컬 설치형 라이선스 (1-PC 사용 인증)")
-    st.caption("로컬 설치판 사용자에게 발급하는 라이선스키입니다. 1키 = 1PC (최초 실행 PC에 자동 바인딩).")
+    st.caption("로컬 설치판 사용자에게 발급하는 라이선스키입니다. 1키 = 1PC (최초 실행 PC에 자동 바인딩). "
+               "활성화 시 **계정 사용자명으로 자동 로그인**됩니다 (회원가입/비번 불필요).")
     try:
+        import re as _re_lic
         from db_license import (create_license, list_licenses, revoke_license,
                                 unbind_license, delete_license)
-        _lic_c1, _lic_c2 = st.columns([2, 1])
-        _lic_user = _lic_c1.text_input("발급 대상(메모/사용자명)", key="lic_new_user",
-                                       placeholder="예: 더블루샵 / 홍길동")
-        if _lic_c2.button("🔑 라이선스 발급", key="lic_issue", type="primary", use_container_width=True):
-            _newk = create_license(username=_lic_user.strip(), memo=_lic_user.strip())
-            st.success(f"✅ 발급 완료: {_newk}")
-            st.rerun()
+        _lic_c1, _lic_c2, _lic_c3 = st.columns([1.4, 1.4, 1])
+        _lic_uid = _lic_c1.text_input("계정 사용자명(영문/숫자)", key="lic_new_uid",
+                                      placeholder="예: theblueshop")
+        _lic_disp = _lic_c2.text_input("표시이름(가게명, 선택)", key="lic_new_disp",
+                                       placeholder="예: 더블루샵")
+        _lic_c3.write("")
+        if _lic_c3.button("🔑 발급", key="lic_issue", type="primary", use_container_width=True):
+            _uid = _re_lic.sub(r'[^A-Za-z0-9_\-]', '', (_lic_uid or '').strip())
+            if not _uid:
+                st.error("계정 사용자명을 영문/숫자로 입력하세요. (DB 폴더명으로 사용)")
+            else:
+                _newk = create_license(username=_uid, memo=(_lic_disp.strip() or _uid))
+                st.success(f"✅ 발급 완료: {_newk}  (계정: {_uid})")
+                st.rerun()
 
         _lics = list_licenses(limit=200)
         if not _lics:

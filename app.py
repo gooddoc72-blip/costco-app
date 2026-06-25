@@ -37,7 +37,7 @@ div[data-testid="stHorizontalBlock"] {
 
 # ── DB 및 유틸리티 임포트 ────────────────────────────────
 from db import (
-    init_auth_db, check_login, get_global_setting, register_user,
+    init_auth_db, check_login, get_global_setting, register_user, ensure_local_user,
     get_user_info, create_session, get_session_user, delete_session,
     init_user_db, get_all_settings, get_shared_products, get_all_products,
     get_all_products_merged, get_saved_dates, get_daily_orders,
@@ -135,6 +135,8 @@ try:
         _lres = _lic.verify_license(_lk) if _lk else {"ok": False, "code": "no_key"}
         if _lres.get("ok"):
             st.session_state['_license_ok'] = True
+            st.session_state['_license_user'] = _lres.get('username') or 'local'
+            st.session_state['_license_display'] = _lres.get('display') or _lres.get('username') or 'local'
         else:
             st.title("🔑 프로그램 활성화")
             st.caption("이 PC에서 최초 1회 라이선스키 활성화가 필요합니다. (1키 = 1PC)")
@@ -159,6 +161,15 @@ except Exception:
 # ── 로그인 상태 체크 ─────────────────────────────────────
 if 'user' not in st.session_state:
     st.session_state['user'] = None
+
+# 로컬 설치형: 라이선스 계정으로 자동 로그인 (회원가입/비번 불필요)
+if st.session_state['user'] is None and st.session_state.get('_license_ok'):
+    try:
+        _lu = st.session_state.get('_license_user') or 'local'
+        _ld = st.session_state.get('_license_display') or _lu
+        st.session_state['user'] = ensure_local_user(_lu, _ld)
+    except Exception:
+        pass
 
 if st.session_state['user'] is None:
     # 자동 로그인 — query param의 sid 토큰

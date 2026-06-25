@@ -76,11 +76,13 @@ def verify_and_bind(key, machine_id):
         c.execute("UPDATE licenses SET bound_machine_id=?, activated_at=?, last_seen_at=? WHERE id=?",
                   (mid, now, now, row["id"]))
         c.commit(); c.close()
-        return {"ok": True, "code": "activated", "message": "이 PC에 활성화 완료", "username": row["username"]}
+        return {"ok": True, "code": "activated", "message": "이 PC에 활성화 완료",
+                "username": row["username"], "display": (row["memo"] or row["username"])}
     if bound == mid:
         c.execute("UPDATE licenses SET last_seen_at=? WHERE id=?", (now, row["id"]))
         c.commit(); c.close()
-        return {"ok": True, "code": "ok", "message": "인증됨", "username": row["username"]}
+        return {"ok": True, "code": "ok", "message": "인증됨",
+                "username": row["username"], "display": (row["memo"] or row["username"])}
     c.close()
     return {"ok": False, "code": "machine_mismatch",
             "message": "이미 다른 PC에 등록된 라이선스입니다. (1키=1PC) 관리자에게 문의하세요."}

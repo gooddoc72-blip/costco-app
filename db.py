@@ -22,7 +22,7 @@ from db_auth import (
     init_auth_db,
     check_login,
     get_global_setting, set_global_setting,
-    register_user, get_pending_users,
+    register_user, ensure_local_user, get_pending_users,
     approve_user, reject_user,
     get_all_users, add_user, delete_user,
     change_password, get_user_info,
