@@ -109,11 +109,22 @@ def _inject_design_system():
 
 /* ── 전역 폰트: Pretendard (한글 최적 모던 산세리프) ── */
 html, body, .stApp, .stApp *,
-button, input, textarea, select, [class*="st-"] {
+button, input, textarea, select {
     font-family: 'Pretendard Variable','Pretendard',-apple-system,BlinkMacSystemFont,
                  'Segoe UI','Apple SD Gothic Neo','Malgun Gothic',sans-serif !important;
     -webkit-font-smoothing: antialiased;
     text-rendering: optimizeLegibility;
+}
+/* ── Material 아이콘은 아이콘 폰트 유지 (Pretendard 강제에서 제외) ──
+   안 하면 아이콘이 'keyboard_double_arrow_left' 같은 글자로 보임 */
+span[data-testid="stIconMaterial"], [data-testid="stIconMaterial"],
+.material-icons, .material-icons-outlined, .material-icons-round, .material-icons-sharp,
+.material-symbols-rounded, .material-symbols-outlined, .material-symbols-sharp,
+[class*="material-symbols"], [class*="material-icons"],
+[data-testid="stSidebarCollapseButton"] span,
+[data-testid="stExpanderToggleIcon"] {
+    font-family: 'Material Symbols Rounded','Material Symbols Outlined',
+                 'Material Icons','Material Icons Outlined' !important;
 }
 
 /* ── Streamlit 기본 크롬 숨김 (AI/기본 느낌 제거) ── */
@@ -172,12 +183,31 @@ h4, h5 {font-weight: 600 !important; letter-spacing: -0.01em !important;}
 
 /* ── 사이드바: 깔끔한 흰 배경 + 얇은 경계 ── */
 section[data-testid="stSidebar"] {
-    background: #FFFFFF !important;
+    background: #FCFCFD !important;
     border-right: 1px solid #EEF0F2 !important;
 }
-[data-testid="stSidebarNav"] a {border-radius: 9px !important; margin: 1px 6px;}
-[data-testid="stSidebarNav"] a[aria-current="page"] {background: #FFE7EB !important;}
-[data-testid="stSidebarNav"] a[aria-current="page"] span {color:#E31837 !important; font-weight:700 !important;}
+/* 네비 항목: 패딩 + 라운드 + 호버 */
+[data-testid="stSidebarNav"] a {
+    border-radius: 9px !important;
+    margin: 2px 8px !important;
+    padding: 7px 10px !important;
+    transition: background .12s ease, color .12s ease !important;
+}
+[data-testid="stSidebarNav"] a:hover {background: #F2F3F5 !important;}
+[data-testid="stSidebarNav"] a span {color: #4B5563 !important; font-weight: 500 !important;}
+/* 활성 항목: 연한 레드 배경 + 레드 텍스트/아이콘 */
+[data-testid="stSidebarNav"] a[aria-current="page"] {background: #FFEAEE !important;}
+[data-testid="stSidebarNav"] a[aria-current="page"] span,
+[data-testid="stSidebarNav"] a[aria-current="page"] [data-testid="stIconMaterial"] {
+    color: #E31837 !important; font-weight: 700 !important;
+}
+/* 섹션 헤더(운영/상품 관리 등): 작고 옅게, 자간 */
+[data-testid="stSidebarNav"] [class*="navSectionHeader"],
+[data-testid="stNavSectionHeader"] {
+    font-size: 11px !important; font-weight: 700 !important;
+    letter-spacing: 0.06em !important; color: #9CA3AF !important;
+    text-transform: uppercase; margin-top: 10px !important;
+}
 
 /* ── 탭: 레드 인디케이터 ── */
 .stTabs [data-baseweb="tab-list"] {gap: 2px; border-bottom: 1px solid #EEF0F2;}

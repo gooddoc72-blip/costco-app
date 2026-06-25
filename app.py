@@ -347,28 +347,28 @@ def run_admin():
 # 페이지 정의 (섹션 그룹)
 _pages = {
     "운영": [
-        st.Page(run_home,         title="홈",          icon="🏠", default=True),
-        st.Page(run_order_upload, title="일일 주문 수집", icon="📋"),
-        st.Page(run_tracking,     title="송장번호",    icon="📮"),
-        st.Page(run_profit_calc,  title="수익 계산",   icon="💰"),
-        st.Page(run_settlement_match, title="정산 매칭", icon="💳"),
-        st.Page(run_dashboard,    title="대시보드",    icon="📊"),
+        st.Page(run_home,         title="홈",          icon=":material/home:", default=True),
+        st.Page(run_order_upload, title="일일 주문 수집", icon=":material/receipt_long:"),
+        st.Page(run_tracking,     title="송장번호",    icon=":material/local_shipping:"),
+        st.Page(run_profit_calc,  title="수익 계산",   icon=":material/payments:"),
+        st.Page(run_settlement_match, title="정산 매칭", icon=":material/account_balance_wallet:"),
+        st.Page(run_dashboard,    title="대시보드",    icon=":material/dashboard:"),
     ],
     "상품 관리": [
-        st.Page(run_product_db,     title="제품 DB",     icon="📦"),
-        st.Page(run_naver_register, title="네이버 등록", icon="🛍"),
-        st.Page(run_rank_check,     title="순위 체크",   icon="📈"),
+        st.Page(run_product_db,     title="제품 DB",     icon=":material/inventory_2:"),
+        st.Page(run_naver_register, title="네이버 등록", icon=":material/storefront:"),
+        st.Page(run_rank_check,     title="순위 체크",   icon=":material/trending_up:"),
     ],
     "자동화": [
-        st.Page(run_automation, title="자동화", icon="🤖"),
+        st.Page(run_automation, title="자동화", icon=":material/smart_toy:"),
     ],
     "설정": [
-        st.Page(run_settings, title="설정", icon="⚙️"),
+        st.Page(run_settings, title="설정", icon=":material/settings:"),
     ],
 }
 
 if IS_ADMIN:
-    _pages["관리자"] = [st.Page(run_admin, title="관리자", icon="👑")]
+    _pages["관리자"] = [st.Page(run_admin, title="관리자", icon=":material/admin_panel_settings:")]
 
 # 페이지 이동 시 sid 보존 — st.navigation()이 URL 경로를 바꿔도 query param 유지
 _persist_sid = st.session_state.get('_sid')
