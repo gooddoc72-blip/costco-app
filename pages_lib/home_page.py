@@ -347,7 +347,8 @@ def render(USERNAME: str):
 
 def _render_calendar(USERNAME: str, today: datetime):
     """📅 월별 달력 — 각 날짜에 주문건 · 발송건 · 수익 · 정산 표시."""
-    section_header("달력 (일별 주문 · 발송 · 수익 · 정산)", "", icon="📅")
+    section_header("달력 (일별 주문 · 발송 · 수익 · 입금정산)",
+                   "📋 입금정산 = 그날 실제 입금된 정산금(정산일 기준)", icon="📅")
 
     _months = [m['month'] for m in (get_monthly_stats(USERNAME) or [])]
     cur_month = today.strftime("%Y-%m")
@@ -364,6 +365,22 @@ def _render_calendar(USERNAME: str, today: datetime):
     stats = get_date_range_stats(USERNAME, _d_from, _d_to)
     by_date = {s['order_date']: s for s in stats}
     disp_map = get_dispatch_counts(USERNAME, _d_from, _d_to)  # {date: 발송건수}
+
+    # 📋 정산금 = 그날 실제 입금된 정산금(정산일/입금일 기준, /daily) — 월별 세션 캐시
+    _dep_key = f"_home_deposit_{sel_month}"
+    dep_map = st.session_state.get(_dep_key)
+    if dep_map is None:
+        dep_map = {}
+        try:
+            from db import get_all_settings
+            import naver_api
+            _s = get_all_settings(USERNAME)
+            if _s.get('api_client_id') and _s.get('api_client_secret'):
+                dep_map, _derr = naver_api.get_daily_settlements_range(
+                    _s['api_client_id'], _s['api_client_secret'], _d_from, _d_to)
+                st.session_state[_dep_key] = dep_map
+        except Exception:
+            dep_map = {}
 
     week_hdr = ['일', '월', '화', '수', '목', '금', '토']
     hdr = ''.join(
@@ -386,22 +403,24 @@ def _render_calendar(USERNAME: str, today: datetime):
             ds = d.strftime("%Y-%m-%d")
             s = by_date.get(ds)
             dn = int(disp_map.get(ds, 0) or 0)
+            has_dep = ds in dep_map
+            dep = int(dep_map.get(ds, 0) or 0)
             daycol = "#E74C3C" if i == 0 else "#3477eb" if i == 6 else "#333"
             bg = "#f0fbf6" if ds == _today_str else "white"
             inner = f'<div style="font-weight:700;font-size:17px;color:{daycol}">{d.day}</div>'
             if s:
                 cnt = int(s.get('cnt') or 0)
                 pf = int(s.get('total_profit') or 0)
-                se = int(s.get('total_settlement') or 0)
                 pfcol = "#1D9E75" if pf >= 0 else "#E74C3C"
                 inner += (
                     f'<div style="font-size:14px;color:#555">🧾 주문 {cnt}</div>'
-                    f'<div style="font-size:14px;color:#3477eb">🚚 발송 {dn}</div>'
                     f'<div style="font-size:14px;color:{pfcol};font-weight:600">💰 {pf:,}</div>'
-                    f'<div style="font-size:14px;color:#777">📋 {se:,}</div>'
                 )
-            elif dn > 0:
+            if dn > 0:
                 inner += f'<div style="font-size:14px;color:#3477eb">🚚 발송 {dn}</div>'
+            if has_dep:
+                _depcol = "#1D9E75" if dep >= 0 else "#E74C3C"
+                inner += f'<div style="font-size:14px;color:{_depcol}">📋 입금 {dep:,}</div>'
             cells.append(f'<td style="border:1px solid #e9ecef;background:{bg};'
                          f'height:118px;vertical-align:top;padding:4px">{inner}</td>')
         rows.append('<tr>' + ''.join(cells) + '</tr>')
@@ -414,7 +433,8 @@ def _render_calendar(USERNAME: str, today: datetime):
 
     m_cnt = sum(int(s.get('cnt') or 0) for s in stats)
     m_pf = sum(int(s.get('total_profit') or 0) for s in stats)
-    m_se = sum(int(s.get('total_settlement') or 0) for s in stats)
     m_disp = sum(disp_map.values())
+    m_dep = sum(dep_map.values()) if dep_map else 0
     st.caption(f"📆 {sel_month} 합계 — 주문 {m_cnt}건 · 발송 {m_disp}건 · "
-               f"수익 {fmt(m_pf)}원 · 정산 {fmt(m_se)}원")
+               f"수익 {fmt(m_pf)}원 · 입금정산 {fmt(m_dep)}원 "
+               f"(📋 입금 = 그날 실제 입금된 정산금, 정산일 기준)")

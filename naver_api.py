@@ -1338,6 +1338,32 @@ def get_purchase_decisions(client_id, client_secret, product_order_ids):
     return out
 
 
+def get_daily_settlements_range(client_id, client_secret, start_date, end_date):
+    """기간 일별 정산(입금) 합계 — {settleExpectDate(입금일): settleAmount(입금액)}.
+    달력에 '그날 실제 입금된 정산금'을 표시하기 위함. Returns (dict, error)."""
+    token, err = get_token(client_id, client_secret)
+    if not token:
+        return {}, err
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    url = "https://api.commerce.naver.com" + _SETTLE_DAILY_PATH
+    try:
+        resp = requests.get(url, headers=headers,
+                            params={"startDate": start_date, "endDate": end_date}, timeout=20)
+        if resp.status_code != 200:
+            return {}, _format_naver_err(resp)
+        data = resp.json()
+        items = (data.get('elements') or data.get('contents') or data.get('data')
+                 if isinstance(data, dict) else data) or []
+        out = {}
+        for it in items:
+            d = str(it.get('settleExpectDate') or it.get('settleCompleteDate') or '')[:10]
+            if d:
+                out[d] = int(it.get('settleAmount') or 0)
+        return out, None
+    except Exception as e:
+        return {}, str(e)[:120]
+
+
 # 정산 API — Naver Commerce 공식 path (애플리케이션 권한 그룹: 정산)
 # 건별 정산: /external/v1/pay-settle/settle/case
 # 일별 정산: /external/v1/pay-settle/settle/daily
