@@ -232,27 +232,28 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             st.dataframe(_df, use_container_width=True, hide_index=True)
 
         _rt1, _rt2, _rt3 = st.tabs([
+            f"✅ 발송일 일치 ({_s['matched_n']})",
+            f"🔍 미일치·발송기록 없음 ({_s['no_dispatch_n']})",
             f"⚠️ 차액 ({_s['mismatched_n']})",
-            f"✅ 일치 ({_s['matched_n']})",
-            f"🔍 발송기록 없음 ({_s['no_dispatch_n']})",
         ])
         with _rt1:
-            if _rt['mismatched']:
-                _render_rt(_rt['mismatched'])
-                st.caption("💡 차액원인 열로 수수료/배송비/공제 차감을 확인하세요.")
-            else:
-                st.success("차액 없음 — 예상 = 실제 정산.")
-        with _rt2:
             if _rt['matched']:
+                st.caption(f"발송건과 매칭되고 예상=실제가 일치한 정산 {_s['matched_n']}건 (발송일·소요일 표시)")
                 _render_rt(_rt['matched'])
             else:
-                st.caption("일치 항목 없음.")
-        with _rt3:
+                st.caption("발송일 일치 항목이 없습니다. (정산 수집·발송처리 누적 시 늘어남)")
+        with _rt2:
             if _rt['no_dispatch']:
+                st.caption(f"발송 기록과 매칭 안 된 정산 {_s['no_dispatch_n']}건 — dispatch_log 범위 밖(옛 발송분) 또는 수동 발송분")
                 _render_rt(_rt['no_dispatch'])
-                st.caption("💡 발송 기록이 없는 정산건 — dispatch_log 범위 밖(옛 발송분)이거나 수동 발송분입니다.")
             else:
                 st.success("모든 정산건이 발송건과 연결됨.")
+        with _rt3:
+            if _rt['mismatched']:
+                st.caption("💡 차액원인 열로 수수료/배송비/공제 차감을 확인하세요.")
+                _render_rt(_rt['mismatched'])
+            else:
+                st.success("차액 없음 — 예상 = 실제 정산.")
 
     # ══════════════════════════════════════════════════════════════
     # 📦 미정산 추적 (발송일 기준 순방향) — 발송했는데 아직 정산 안 된 건
