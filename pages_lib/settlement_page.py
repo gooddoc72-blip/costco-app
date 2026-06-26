@@ -14,6 +14,7 @@ from db import (
     search_order_history,
     get_dispatch_log_by_date, get_dispatch_dates, get_dispatch_by_order_nos,
     get_settled_product_order_nos, save_settlement_matches,
+    apply_actual_settlements_to_profit,
 )
 from settlement_service import (
     match_shipped_vs_settled, shipped_orders_from_db_rows,
@@ -236,8 +237,12 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 + [{**r, 'match_status': 'no_dispatch'} for r in _rt['no_dispatch']]
             )
             _n = save_settlement_matches(USERNAME, settle_date_str, _save_rows)
+            # 실정산 확정 → profit_settlements 반영 (달력/대시보드/통계까지 적용)
+            _actuals = {r['product_order_no']: {'actual': int(r.get('actual') or 0)}
+                        for r in _save_rows if int(r.get('actual') or 0) > 0}
+            _upd = apply_actual_settlements_to_profit(USERNAME, _actuals)
             st.success(f"✅ {settle_date_str} 정산매칭 {_n}건 저장 완료 — "
-                       f"수익계산에서 해당 주문은 '실정산 확정' 금액으로 표시됩니다.")
+                       f"수익계산 실정산 반영, 저장된 정산표 {_upd}건 갱신(달력·대시보드 반영).")
         st.caption("💡 저장하면 매칭 결과가 기록되고, 매칭된 실제 정산액이 수익계산에 반영됩니다 "
                    "(예상 → 실제 정산).")
 

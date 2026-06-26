@@ -125,6 +125,7 @@ from db_dispatch_log import (
 
 from db_profit_calc import (
     save_profit_settlements,
+    apply_actual_settlements_to_profit,
     get_profit_settlements,
     get_saved_profit_dates,
     delete_profit_settlements,

@@ -115,6 +115,30 @@ def save_profit_settlements(username: str, date: str, rows: list) -> int:
     return saved
 
 
+def apply_actual_settlements_to_profit(username: str, actuals: dict) -> int:
+    """정산매칭의 실제 정산액을 profit_settlements.settlement_amount에 반영 (order_no 기준).
+    → 달력/대시보드/통계의 정산·수익이 예상 대신 실제 정산액을 반영하게 됨.
+    actuals: {order_no(상품주문번호): {'actual': int, ...}}
+    """
+    if not actuals:
+        return 0
+    conn = get_user_db(username)
+    _ensure_tables(conn)
+    n = 0
+    for po, info in actuals.items():
+        actual = int((info or {}).get('actual') or 0)
+        if actual <= 0:
+            continue
+        cur = conn.execute(
+            "UPDATE profit_settlements SET settlement_amount=? WHERE order_no=?",
+            (actual, str(po))
+        )
+        n += cur.rowcount
+    conn.commit()
+    conn.close()
+    return n
+
+
 def get_profit_settlements(username: str, date: str) -> list:
     """날짜별 수익계산 결과 조회."""
     conn = get_user_db(username)
