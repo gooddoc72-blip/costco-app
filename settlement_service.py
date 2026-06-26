@@ -6,6 +6,25 @@ UI(streamlit)와 DB 모듈에 의존하지 않는 순수 매칭 로직.
 from typing import List, Dict
 
 
+def _diff_reason(diff: int, settled: Dict, tolerance: int = 10) -> str:
+    """예상 vs 실제 정산 차액의 원인을 추정해 한 줄 라벨로 반환."""
+    if abs(diff) <= tolerance:
+        return "일치"
+    _stype = str(settled.get('settle_type', '') or '')
+    _reason = str(settled.get('reason', '') or '')
+    _ad = int(settled.get('ad_cost') or 0)
+    _comm = int(settled.get('commission') or 0)
+    if '공제' in _stype or '클레임' in _reason or '취소' in _reason or '반품' in _reason:
+        return "공제/클레임"
+    if _ad > 0:
+        return f"광고비 공제 {_ad:,}원"
+    if diff < 0 and _comm > 0 and abs(diff + _comm) <= max(tolerance, int(_comm * 0.1)):
+        return f"수수료 차감 {_comm:,}원"
+    if diff < 0:
+        return "정산 차감(수수료/배송비)"
+    return "추가 정산(이전분 등)"
+
+
 def match_shipped_vs_settled(shipped: List[Dict], settled: List[Dict],
                               tolerance: int = 10) -> Dict:
     """발송건(shipped)과 정산 내역(settled)을 productOrderNo 기준으로 매칭.
@@ -38,9 +57,11 @@ def match_shipped_vs_settled(shipped: List[Dict], settled: List[Dict],
         exp = int(s.get('expected_settlement') or 0)
         total_expected += exp
         if po in settled_by_po:
-            actual = int(settled_by_po[po].get('settle_amount') or 0)
+            _st = settled_by_po[po]
+            actual = int(_st.get('settle_amount') or 0)
             total_actual += actual
             diff = actual - exp
+            _settle_type = str(_st.get('settle_type', '') or '')
             rec = {
                 'product_order_no': po,
                 'recipient':        s.get('recipient', ''),
@@ -48,8 +69,13 @@ def match_shipped_vs_settled(shipped: List[Dict], settled: List[Dict],
                 'expected':         exp,
                 'actual':           actual,
                 'diff':             diff,
-                'sales_amount':     int(settled_by_po[po].get('sales_amount') or 0),
-                'commission':       int(settled_by_po[po].get('commission') or 0),
+                'sales_amount':     int(_st.get('sales_amount') or 0),
+                'product_amount':   int(_st.get('product_amount') or 0),
+                'shipping_amount':  int(_st.get('shipping_amount') or 0),
+                'commission':       int(_st.get('commission') or 0),
+                'ad_cost':          int(_st.get('ad_cost') or 0),
+                'settle_type':      _settle_type,
+                'diff_reason':      _diff_reason(diff, _st, tolerance),
             }
             if abs(diff) <= tolerance:
                 matched.append(rec)

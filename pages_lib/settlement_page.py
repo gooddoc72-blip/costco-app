@@ -246,7 +246,11 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         'order_no':         r.get('order_no', ''),
         'settle_amount':    r.get('settle_amount', 0),
         'sales_amount':     r.get('sales_amount', 0),
+        'product_amount':   r.get('product_amount', 0),
+        'shipping_amount':  r.get('shipping_amount', 0),
         'commission':       r.get('commission', 0),
+        'settle_type':      r.get('settle_type', ''),
+        'reason':           r.get('reason', ''),
     } for r in settled_rows]
 
     if not settled_rows and not shipped_dicts:
@@ -272,10 +276,27 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         f"✅ 일치 ({s['matched_n']})",
         f"🔍 정산만 ({s['orphan_n']})",
     ])
+    def _render_match_df(rows):
+        """매칭 행을 한글 컬럼 + 차액 원인으로 표시."""
+        _cols = ['product_order_no', 'recipient', 'product_name',
+                 'expected', 'actual', 'diff', 'commission', 'shipping_amount',
+                 'settle_type', 'diff_reason']
+        _names = ['상품주문번호', '수취인', '상품명',
+                  '예상정산', '실제정산', '차액', '수수료', '정산배송비',
+                  '정산유형', '차액원인']
+        _df = pd.DataFrame(rows)
+        for _c in _cols:
+            if _c not in _df.columns:
+                _df[_c] = ''
+        _df = _df[_cols]
+        _df.columns = _names
+        st.dataframe(_df, use_container_width=True, hide_index=True)
+
     with _t1:
         if result['mismatched']:
-            df = pd.DataFrame(result['mismatched'])
-            st.dataframe(df, use_container_width=True, hide_index=True)
+            _render_match_df(result['mismatched'])
+            st.caption("💡 **차액원인** 열로 수수료/배송비/공제/광고비 차감을 확인하세요. "
+                       "정산유형 '공제'는 클레임·반품 등으로 차감된 건입니다.")
         else:
             st.success("차액 없음.")
     with _t2:
@@ -287,8 +308,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             st.success("누락 없음.")
     with _t3:
         if result['matched']:
-            df = pd.DataFrame(result['matched'])
-            st.dataframe(df, use_container_width=True, hide_index=True)
+            _render_match_df(result['matched'])
         else:
             st.caption("일치 항목 없음.")
     with _t4:
