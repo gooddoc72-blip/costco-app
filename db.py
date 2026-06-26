@@ -117,6 +117,7 @@ from db_dispatch_log import (
     get_dispatch_by_order_nos,
     get_dispatched_orders_with_details,
     get_dispatch_dates,
+    get_dispatch_counts,
 )
 
 from db_profit_calc import (

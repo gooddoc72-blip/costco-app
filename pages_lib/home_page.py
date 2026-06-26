@@ -2,6 +2,7 @@
 
 멀티페이지 마이그레이션 2번째 추출 모듈.
 """
+import calendar as _calendar
 from datetime import datetime, timedelta
 
 import streamlit as st
@@ -11,7 +12,7 @@ import plotly.graph_objects as go
 from db import (
     get_dashboard_kpi, get_rank_drops, get_daily_profit_trend,
     get_week_best_products, get_monthly_stats, get_price_history_monthly,
-    get_cumulative_sales,
+    get_cumulative_sales, get_date_range_stats, get_dispatch_counts,
 )
 from ui_theme import (
     COLORS, CHART_COLORS,
@@ -115,6 +116,11 @@ def render(USERNAME: str):
 
     st.markdown("<div style='margin-top:24px'></div>", unsafe_allow_html=True)
 
+    # ── 📅 달력 (대시보드에서 이동) ──
+    _render_calendar(USERNAME, today)
+
+    st.divider()
+
     # ── ⚠️ 순위 하락 알림 ──────────────────────────────────
     _drops = get_rank_drops(USERNAME, lookback_days=14, limit=20)
     _hd1, _hd2 = st.columns([5, 1])
@@ -164,47 +170,7 @@ def render(USERNAME: str):
         st.markdown(_drop_html, unsafe_allow_html=True)
     st.divider()
 
-    # ── 일별 수익 추이 (최근 14일) ──
-    section_header("일별 수익 추이", "최근 14일", icon="📈")
-    chart_card_open()
-    daily = get_daily_profit_trend(USERNAME, days=14)
-    if daily:
-        all_dates = pd.date_range(
-            start=(today - timedelta(days=13)).strftime("%Y-%m-%d"),
-            end=today.strftime("%Y-%m-%d"), freq='D'
-        )
-        ddf = pd.DataFrame(daily)
-        ddf['order_date'] = pd.to_datetime(ddf['order_date'])
-        ddf = ddf.set_index('order_date').reindex(all_dates, fill_value=0).reset_index()
-        ddf.rename(columns={'index': 'date'}, inplace=True)
-        bar_colors = [CHART_COLORS['profit_neg'] if v < 0 else CHART_COLORS['profit_pos']
-                      for v in ddf['total_profit']]
-        fig_daily = go.Figure()
-        fig_daily.add_trace(go.Bar(
-            x=ddf['date'], y=ddf['total_profit'],
-            name='순수익', marker_color=bar_colors,
-            text=ddf['total_profit'].apply(lambda x: f"{x:,.0f}" if x != 0 else ''),
-            textposition='outside', textfont=dict(size=10, color=COLORS['text']),
-        ))
-        fig_daily.add_trace(go.Scatter(
-            x=ddf['date'], y=ddf['cnt'], name='주문건수', yaxis='y2',
-            mode='lines+markers',
-            line=dict(color=CHART_COLORS['secondary'], width=2, dash='dot'),
-            marker=dict(size=6),
-        ))
-        fig_daily.update_layout(
-            height=360, margin=dict(l=10, r=10, t=20, b=40),
-            plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
-            font=dict(color=COLORS['text']),
-            legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1),
-            yaxis=dict(title='순수익 (원)', tickformat=',', gridcolor='rgba(0,0,0,0.06)'),
-            yaxis2=dict(title='주문건수', overlaying='y', side='right', showgrid=False),
-            xaxis=dict(tickformat='%m/%d', dtick='D1'), bargap=0.3,
-        )
-        st.plotly_chart(fig_daily, use_container_width=True)
-    else:
-        st.info("📋 저장된 데이터가 없습니다. 주문 업로드 → 수익 계산 → 저장 순으로 진행하세요.")
-    chart_card_close()
+    # (일별 수익 추이 차트는 달력으로 대체 — 중복 제거)
 
     # ── 주간 베스트 / 월간 수익 추이 ──
     col_left, col_right = st.columns(2)
@@ -377,3 +343,78 @@ def render(USERNAME: str):
     else:
         st.info("이번 달 가격 변동 이력이 없습니다.")
     chart_card_close()
+
+
+def _render_calendar(USERNAME: str, today: datetime):
+    """📅 월별 달력 — 각 날짜에 주문건 · 발송건 · 수익 · 정산 표시."""
+    section_header("달력 (일별 주문 · 발송 · 수익 · 정산)", "", icon="📅")
+
+    _months = [m['month'] for m in (get_monthly_stats(USERNAME) or [])]
+    cur_month = today.strftime("%Y-%m")
+    if cur_month not in _months:
+        _months.append(cur_month)
+    _months = sorted(set(_months), reverse=True)
+    sel_month = st.selectbox("월 선택", _months,
+                             index=_months.index(cur_month) if cur_month in _months else 0,
+                             key="home_cal_month", label_visibility="collapsed")
+
+    y, m = int(sel_month[:4]), int(sel_month[5:7])
+    last_day = _calendar.monthrange(y, m)[1]
+    _d_from, _d_to = f"{sel_month}-01", f"{sel_month}-{last_day:02d}"
+    stats = get_date_range_stats(USERNAME, _d_from, _d_to)
+    by_date = {s['order_date']: s for s in stats}
+    disp_map = get_dispatch_counts(USERNAME, _d_from, _d_to)  # {date: 발송건수}
+
+    week_hdr = ['일', '월', '화', '수', '목', '금', '토']
+    hdr = ''.join(
+        f'<th style="padding:6px;border:1px solid #e9ecef;background:#f8f9fa;'
+        f'color:{"#E74C3C" if i == 0 else "#3477eb" if i == 6 else "#333"};'
+        f'font-weight:600;width:14.28%">{d}</th>'
+        for i, d in enumerate(week_hdr)
+    )
+
+    cal = _calendar.Calendar(firstweekday=6)
+    rows = []
+    _today_str = today.strftime("%Y-%m-%d")
+    for week in cal.monthdatescalendar(y, m):
+        cells = []
+        for i, d in enumerate(week):
+            if d.month != m:
+                cells.append('<td style="border:1px solid #f1f3f5;background:#fcfcfc;'
+                             'height:118px;vertical-align:top"></td>')
+                continue
+            ds = d.strftime("%Y-%m-%d")
+            s = by_date.get(ds)
+            dn = int(disp_map.get(ds, 0) or 0)
+            daycol = "#E74C3C" if i == 0 else "#3477eb" if i == 6 else "#333"
+            bg = "#f0fbf6" if ds == _today_str else "white"
+            inner = f'<div style="font-weight:700;font-size:17px;color:{daycol}">{d.day}</div>'
+            if s:
+                cnt = int(s.get('cnt') or 0)
+                pf = int(s.get('total_profit') or 0)
+                se = int(s.get('total_settlement') or 0)
+                pfcol = "#1D9E75" if pf >= 0 else "#E74C3C"
+                inner += (
+                    f'<div style="font-size:14px;color:#555">🧾 주문 {cnt}</div>'
+                    f'<div style="font-size:14px;color:#3477eb">🚚 발송 {dn}</div>'
+                    f'<div style="font-size:14px;color:{pfcol};font-weight:600">💰 {pf:,}</div>'
+                    f'<div style="font-size:14px;color:#777">📋 {se:,}</div>'
+                )
+            elif dn > 0:
+                inner += f'<div style="font-size:14px;color:#3477eb">🚚 발송 {dn}</div>'
+            cells.append(f'<td style="border:1px solid #e9ecef;background:{bg};'
+                         f'height:118px;vertical-align:top;padding:4px">{inner}</td>')
+        rows.append('<tr>' + ''.join(cells) + '</tr>')
+
+    st.markdown(
+        '<table style="width:100%;border-collapse:collapse;table-layout:fixed">'
+        f'<thead><tr>{hdr}</tr></thead><tbody>{"".join(rows)}</tbody></table>',
+        unsafe_allow_html=True,
+    )
+
+    m_cnt = sum(int(s.get('cnt') or 0) for s in stats)
+    m_pf = sum(int(s.get('total_profit') or 0) for s in stats)
+    m_se = sum(int(s.get('total_settlement') or 0) for s in stats)
+    m_disp = sum(disp_map.values())
+    st.caption(f"📆 {sel_month} 합계 — 주문 {m_cnt}건 · 발송 {m_disp}건 · "
+               f"수익 {fmt(m_pf)}원 · 정산 {fmt(m_se)}원")

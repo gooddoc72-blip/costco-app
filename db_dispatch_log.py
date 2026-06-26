@@ -168,6 +168,19 @@ def get_dispatched_orders_with_details(username: str, dispatched_at: str,
     return [dict(r) for r in rows]
 
 
+def get_dispatch_counts(username: str, date_from: str, date_to: str) -> dict:
+    """기간 내 일별 발송건수 — {dispatched_at: count}. (달력 표시용)"""
+    conn = get_user_db(username)
+    _ensure_table(conn)
+    rows = conn.execute(
+        "SELECT dispatched_at, COUNT(*) c FROM dispatch_log "
+        "WHERE dispatched_at BETWEEN ? AND ? GROUP BY dispatched_at",
+        (date_from, date_to)
+    ).fetchall()
+    conn.close()
+    return {r['dispatched_at']: int(r['c']) for r in rows}
+
+
 def get_dispatch_dates(username: str, limit: int = 30) -> list:
     """일괄발송 이력이 있는 최근 날짜 목록."""
     conn = get_user_db(username)

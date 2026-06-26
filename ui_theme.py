@@ -137,8 +137,11 @@ header[data-testid="stHeader"] {background: transparent;}
 .stDeployButton {display: none !important;}
 [data-testid="stAppDeployButton"] {display: none !important;}
 
-/* ── 본문 폭/여백 정돈 ── */
-.main .block-container {max-width: 1280px; padding-top: 1.2rem;}
+/* ── 본문 폭/여백 정돈 (상단 여백 축소) ── */
+.main .block-container {max-width: 1280px; padding-top: 0.4rem !important;}
+/* 사이드바 상단 여백 축소 */
+section[data-testid="stSidebar"] > div:first-child {padding-top: 0.3rem !important;}
+[data-testid="stSidebarNav"] {padding-top: 0.2rem !important;}
 
 /* ── 타이포 위계 (절제된 굵기/자간) ── */
 h1 {font-weight: 800 !important; letter-spacing: -0.025em !important; color:#111827 !important;}
@@ -186,27 +189,33 @@ section[data-testid="stSidebar"] {
     background: #FCFCFD !important;
     border-right: 1px solid #EEF0F2 !important;
 }
-/* 네비 항목: 패딩 + 라운드 + 호버 */
+/* 네비 항목: 패딩 + 라운드 + 호버 (폰트 확대) */
 [data-testid="stSidebarNav"] a {
     border-radius: 9px !important;
-    margin: 2px 8px !important;
-    padding: 7px 10px !important;
+    margin: 3px 8px !important;
+    padding: 10px 12px !important;
     transition: background .12s ease, color .12s ease !important;
 }
 [data-testid="stSidebarNav"] a:hover {background: #F2F3F5 !important;}
-[data-testid="stSidebarNav"] a span {color: #4B5563 !important; font-weight: 500 !important;}
+[data-testid="stSidebarNav"] a span {
+    color: #374151 !important; font-weight: 600 !important;
+    font-size: 19px !important;          /* 메뉴 글자 확대 (기존 ~14px → 약 1.4배) */
+}
+[data-testid="stSidebarNav"] a [data-testid="stIconMaterial"] {
+    font-size: 24px !important;          /* 아이콘도 같이 확대 */
+}
 /* 활성 항목: 연한 레드 배경 + 레드 텍스트/아이콘 */
 [data-testid="stSidebarNav"] a[aria-current="page"] {background: #FFEAEE !important;}
 [data-testid="stSidebarNav"] a[aria-current="page"] span,
 [data-testid="stSidebarNav"] a[aria-current="page"] [data-testid="stIconMaterial"] {
     color: #E31837 !important; font-weight: 700 !important;
 }
-/* 섹션 헤더(운영/상품 관리 등): 작고 옅게, 자간 */
+/* 섹션 헤더(운영/상품 관리 등): 자간 */
 [data-testid="stSidebarNav"] [class*="navSectionHeader"],
 [data-testid="stNavSectionHeader"] {
-    font-size: 11px !important; font-weight: 700 !important;
-    letter-spacing: 0.06em !important; color: #9CA3AF !important;
-    text-transform: uppercase; margin-top: 10px !important;
+    font-size: 13px !important; font-weight: 700 !important;
+    letter-spacing: 0.04em !important; color: #9CA3AF !important;
+    text-transform: uppercase; margin-top: 12px !important;
 }
 
 /* ── 탭: 레드 인디케이터 ── */
