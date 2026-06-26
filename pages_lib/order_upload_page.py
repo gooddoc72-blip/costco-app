@@ -628,6 +628,12 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         _default_date_str = st.session_state.get('order_date', datetime.today().strftime("%Y-%m-%d"))
 
         _unsaved = st.session_state.get('orders_unsaved', False)
+        # 메뉴 이동 시 저장 확인 팝업용 — 이 페이지의 미저장 상태 등록/해제
+        _up_pages = st.session_state.setdefault('_unsaved_pages', {})
+        if _unsaved:
+            _up_pages['일일 주문 수집'] = "수집한 주문이 아직 저장되지 않았습니다. 저장하지 않으면 새로고침 시 사라집니다."
+        else:
+            _up_pages.pop('일일 주문 수집', None)
         _api_cnt = st.session_state.get('orders_api_count')
         _hdr_cnt = (f"미발송 {len(df)}건 · API 수집 {_api_cnt}건"
                     if _api_cnt is not None and _api_cnt != len(df)

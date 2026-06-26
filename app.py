@@ -387,4 +387,29 @@ _stc.html("""<script>
 
 # 라우팅 실행 — Streamlit이 사이드바 네비게이션 메뉴 자동 생성 + 페이지 전환 시 잔상 자동 제거
 pg = st.navigation(_pages)
+
+# ── 저장하지 않은 변경 경고 (메뉴 이동 직후 모달) ──
+# Streamlit은 이동 자체를 막지 못하므로, 떠난 페이지에 미저장이 있으면 이동 직후 1회 경고.
+# (데이터는 세션에 남아 있어 돌아가서 저장 가능)
+try:
+    _cur_page = getattr(pg, 'title', '') or ''
+    _unsaved_pages = st.session_state.get('_unsaved_pages', {}) or {}
+    _last_page = st.session_state.get('_last_page')
+    if _last_page and _last_page != _cur_page and _last_page in _unsaved_pages:
+        _leaving_page = _last_page
+        _leaving_msg = _unsaved_pages.get(_leaving_page) or \
+            "저장하지 않으면 새로고침 시 사라집니다. 돌아가서 저장하세요."
+
+        @st.dialog("⚠️ 저장하지 않은 변경")
+        def _unsaved_warn():
+            st.warning(f"**{_leaving_page}** 페이지에 저장하지 않은 내용이 있습니다.")
+            st.caption(_leaving_msg)
+            if st.button("확인 (그대로 진행)", type="primary", use_container_width=True):
+                st.rerun()
+
+        _unsaved_warn()
+    st.session_state['_last_page'] = _cur_page
+except Exception:
+    pass
+
 pg.run()

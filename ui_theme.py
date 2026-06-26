@@ -198,7 +198,7 @@ section[data-testid="stSidebar"] {
 }
 [data-testid="stSidebarNav"] a:hover {background: #F2F3F5 !important;}
 [data-testid="stSidebarNav"] a span {
-    color: #374151 !important; font-weight: 600 !important;
+    color: #374151 !important; font-weight: 400 !important;   /* 볼드 해제 (얇게) */
     font-size: 19px !important;          /* 메뉴 글자 확대 (기존 ~14px → 약 1.4배) */
 }
 [data-testid="stSidebarNav"] a [data-testid="stIconMaterial"] {
@@ -208,7 +208,7 @@ section[data-testid="stSidebar"] {
 [data-testid="stSidebarNav"] a[aria-current="page"] {background: #FFEAEE !important;}
 [data-testid="stSidebarNav"] a[aria-current="page"] span,
 [data-testid="stSidebarNav"] a[aria-current="page"] [data-testid="stIconMaterial"] {
-    color: #E31837 !important; font-weight: 700 !important;
+    color: #E31837 !important; font-weight: 600 !important;
 }
 /* 섹션 헤더(운영/상품 관리 등): 자간 */
 [data-testid="stSidebarNav"] [class*="navSectionHeader"],
