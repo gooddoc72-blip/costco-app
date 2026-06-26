@@ -84,7 +84,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         return
 
     # ── 날짜 선택 + 수집 버튼 ────────────────────────────────────
-    _c1, _c2, _c3, _c4 = st.columns([1.5, 1.5, 1, 1])
+    _c1, _c3, _c4 = st.columns([2, 1, 1])
     with _c1:
         settle_date = st.date_input(
             "정산일 (정산예정일=입금일)", value=datetime.today(),
@@ -92,16 +92,13 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                  "오늘 입금분을 보려면 오늘 날짜로 두세요."
         )
         settle_date_str = settle_date.strftime("%Y-%m-%d")
-    with _c2:
-        ship_date = st.date_input(
-            "매칭 대상 발송일", value=datetime.today() - timedelta(days=2),
-            help="이 날짜의 발송건과 정산을 대조합니다 (보통 정산일 -1일)"
-        )
-        ship_date_str = ship_date.strftime("%Y-%m-%d")
+    # 발송일은 역추적(정산일 기준)에선 불필요 → 합계/미정산 보조용 기본값(정산일 전날)
+    ship_date_str = (settle_date - timedelta(days=1)).strftime("%Y-%m-%d")
     with _c3:
         st.write("")
         st.write("")
-        fetch_clicked = st.button("📥 정산 수집", type="primary", use_container_width=True)
+        fetch_clicked = st.button("📥 정산 수집·저장", type="primary", use_container_width=True,
+                                  help="API로 건별 정산을 수집해 DB에 저장합니다 (별도 저장 불필요).")
     with _c4:
         st.write("")
         st.write("")
@@ -210,6 +207,17 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                    delta=f"{_s['delivery_n']}건")
         _g3.metric("건별 합계(상품+배송비)", f"{fmt(_s['grand_total'])}원",
                    help="건별(/case) 합계입니다. 위 '정산금액(입금)'은 여기서 혜택정산을 더 차감한 순액입니다.")
+        # 건별 합계 ≠ 입금액 차이 설명 (혜택정산 등 건별 응답에 없는 차감)
+        if _daily:
+            _settle_in = int(_daily.get('settleAmount', 0) or 0)
+            _ben = int(_daily.get('benefitSettleAmount', 0) or 0)
+            _gap = _s['grand_total'] - _settle_in
+            if _gap != 0:
+                st.caption(
+                    f"💡 **건별 합계 {fmt(_s['grand_total'])}원 ≠ 입금액 {fmt(_settle_in)}원** (차이 {fmt(_gap)}원) — "
+                    f"건별(/case) 응답엔 **혜택정산({fmt(_ben)}원)** 등 건별 외 차감이 안 들어옵니다. "
+                    f"건별 합계 + 혜택정산 = 입금액. 실제 입금액은 위 '정산금액(입금)' 기준이 정확합니다."
+                )
         # ── 매칭 현황 ──
         _r1, _r2, _r3, _r4 = st.columns(4)
         _r1.metric("정산건(상품)", f"{_s['settled_n']}건")
@@ -291,13 +299,18 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     # 📦 미정산 추적 (발송일 기준 순방향) — 발송했는데 아직 정산 안 된 건
     # ══════════════════════════════════════════════════════════════
     st.divider()
-    st.subheader(f"📦 미정산 추적 — {ship_date_str} 발송건 중 정산 안 된 건")
-    st.caption("발송했는데 아직 정산되지 않은 건을 찾습니다. 발송 후 오래된 건은 '누락 의심'으로 표시됩니다. "
-               "(정산 수집을 충분히 해둬야 정확합니다)")
+    st.subheader("📦 미정산 추적 — 발송건 중 정산 안 된 건")
+    _us_c1, _us_c2 = st.columns([1.3, 4])
+    _us_ship = _us_c1.date_input("발송일 선택", value=datetime.today() - timedelta(days=2),
+                                 key="us_ship_date",
+                                 help="이 발송일의 주문 중 아직 정산 안 된 건을 찾습니다.")
+    _us_ship_str = _us_ship.strftime("%Y-%m-%d")
+    _us_c2.caption("발송했는데 아직 정산되지 않은 건을 찾습니다. 발송 후 오래된 건은 '누락 의심'으로 표시됩니다. "
+                   "(정산 수집을 충분히 해둬야 정확합니다)")
 
-    _disp_us = get_dispatch_log_by_date(USERNAME, ship_date_str, platform='naver')
+    _disp_us = get_dispatch_log_by_date(USERNAME, _us_ship_str, platform='naver')
     if not _disp_us:
-        st.info(f"❓ {ship_date_str}에 발송 이력이 없습니다. (송장 페이지에서 발송처리 시 자동 기록)")
+        st.info(f"❓ {_us_ship_str}에 발송 이력이 없습니다. (송장 페이지에서 발송처리 시 자동 기록)")
     else:
         _settled_set = get_settled_product_order_nos(USERNAME)
         _today = datetime.today().strftime("%Y-%m-%d")
