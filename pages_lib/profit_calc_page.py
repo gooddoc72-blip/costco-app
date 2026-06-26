@@ -371,12 +371,11 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                             st.session_state[f"ship_{_rsk}"] = _per_ship
                         if _per_box > 0:
                             st.session_state[f"box_{_rsk}"] = _per_box
-                        _cp = int(_sv.get('cost_price', 0) or 0)
-                        if _cp > 0:
-                            _rkey = f"{_rrow['수취인명']}_{_rrow['상품명']}_{_rsk}_{calc_date_str}"
-                            st.session_state['cost_overrides'][_rkey] = _cp
+                        # ⚠️ daily_orders의 cost_price(수집 시점 동결가)는 복원하지 않음.
+                        #    단가는 products DB 신선 매칭이 기준 (가격 수정이 즉시 반영되도록).
+                        #    저장 결과 단가는 profit_settlements(명시 저장한 날)에서만 복원.
 
-            # 영구 정산매칭 오버라이드 적용 (저장된 값 없는 행에만)
+            # 영구 정산매칭 오버라이드: 키워드 매핑만 복원 (단가 마스킹 제거 → products DB 기준)
             _so_map = get_settlement_overrides_map(USERNAME)
             if _so_map:
                 for _ri, (_ridx, _rrow) in enumerate(df.iterrows()):
@@ -387,10 +386,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         continue
                     if _so.get('override_keyword') and _rsk not in st.session_state['kw_overrides']:
                         st.session_state['kw_overrides'][_rsk] = _so['override_keyword']
-                    if int(_so.get('override_cost', 0) or 0) > 0:
-                        _rkey = f"{_rrow['수취인명']}_{_rrow['상품명']}_{_rsk}_{calc_date_str}"
-                        if _rkey not in st.session_state['cost_overrides']:
-                            st.session_state['cost_overrides'][_rkey] = _so['override_cost']
+                    # override_cost(영구 단가)는 더 이상 복원하지 않음 — products DB 단가가 진실원천
 
             st.session_state[_restore_flag] = True
 
