@@ -11,10 +11,12 @@ def _diff_reason(diff: int, settled: Dict, tolerance: int = 10) -> str:
     if abs(diff) <= tolerance:
         return "일치"
     _stype = str(settled.get('settle_type', '') or '')
+    _stype_u = _stype.upper()
     _reason = str(settled.get('reason', '') or '')
     _ad = int(settled.get('ad_cost') or 0)
     _comm = int(settled.get('commission') or 0)
-    if '공제' in _stype or '클레임' in _reason or '취소' in _reason or '반품' in _reason:
+    if ('공제' in _stype or '클레임' in _reason or '취소' in _reason or '반품' in _reason
+            or any(k in _stype_u for k in ('CLAIM', 'CANCEL', 'REFUND', 'RETURN', 'DEDUCT'))):
         return "공제/클레임"
     if _ad > 0:
         return f"광고비 공제 {_ad:,}원"
@@ -23,6 +25,112 @@ def _diff_reason(diff: int, settled: Dict, tolerance: int = 10) -> str:
     if diff < 0:
         return "정산 차감(수수료/배송비)"
     return "추가 정산(이전분 등)"
+
+
+def settle_type_kr(code: str) -> str:
+    """네이버 settleType 코드 → 한글 라벨."""
+    c = str(code or '')
+    if not c:
+        return ''
+    if 'FAST' in c or 'QUICK' in c or '빠른' in c:
+        return '빠른정산'
+    if 'NORMAL' in c or '일반' in c:
+        return '일반정산'
+    if '공제' in c or 'CLAIM' in c or 'DEDUCT' in c:
+        return '공제'
+    return c
+
+
+def _lag_days(ship_date: str, settle_date: str) -> int:
+    """발송일 → 정산일 소요 일수. 파싱 실패 시 None."""
+    try:
+        from datetime import datetime as _dt
+        a = _dt.strptime(str(ship_date)[:10], "%Y-%m-%d")
+        b = _dt.strptime(str(settle_date)[:10], "%Y-%m-%d")
+        return (b - a).days
+    except Exception:
+        return None
+
+
+def match_settled_to_dispatch(settled_rows: List[Dict], dispatch_by_po: Dict,
+                              tolerance: int = 10) -> Dict:
+    """정산일 기준 역추적 매칭 — 정산건의 상품주문번호로 원래 발송건을 찾는다.
+
+    Args:
+        settled_rows: naver_settlements 행 dict 리스트 (product_order_no,
+                      settle_amount, commission, settle_type, product_order_type,
+                      product_name, buyer_name, settle_date, ...)
+        dispatch_by_po: {order_no: dispatch_row}  (get_dispatch_by_order_nos 결과)
+        tolerance: 금액 차이 허용 오차
+
+    Returns:
+        {
+          'matched':[...], 'mismatched':[...], 'no_dispatch':[...],
+          'delivery_total': int, 'delivery_n': int,
+          'summary': {...}
+        }
+    """
+    matched, mismatched, no_dispatch = [], [], []
+    delivery_total = delivery_n = 0
+    total_expected = total_actual = 0
+
+    for s in settled_rows:
+        po = str(s.get('product_order_no', '')).strip()
+        if not po:
+            continue
+        pot = str(s.get('product_order_type', '') or '')
+        actual = int(s.get('settle_amount') or 0)
+        # 배송비 정산 라인(DELIVERY)은 발송건과 별도 번호 → 배송비 합산만
+        if pot == 'DELIVERY':
+            delivery_total += actual
+            delivery_n += 1
+            continue
+        d = dispatch_by_po.get(po)
+        base = {
+            'product_order_no': po,
+            'product_name':     s.get('product_name', ''),
+            'buyer_name':       s.get('buyer_name', ''),
+            'settle_type':      settle_type_kr(s.get('settle_type', '')),
+            'actual':           actual,
+            'commission':       int(s.get('commission') or 0),
+            'settle_date':      s.get('settle_date', ''),
+        }
+        if d:
+            exp = int(d.get('expected_settlement') or 0)
+            diff = actual - exp
+            total_expected += exp
+            total_actual += actual
+            rec = {
+                **base,
+                'ship_date':   d.get('dispatched_at', ''),
+                'expected':    exp,
+                'diff':        diff,
+                'lag_days':    _lag_days(d.get('dispatched_at', ''), s.get('settle_date', '')),
+                'diff_reason': _diff_reason(diff, s, tolerance),
+            }
+            (matched if abs(diff) <= tolerance else mismatched).append(rec)
+        else:
+            no_dispatch.append({**base, 'ship_date': '', 'expected': 0,
+                                'diff': 0, 'lag_days': None, 'diff_reason': '발송기록 없음'})
+
+    return {
+        'matched': matched,
+        'mismatched': mismatched,
+        'no_dispatch': no_dispatch,
+        'delivery_total': delivery_total,
+        'delivery_n': delivery_n,
+        'summary': {
+            'settled_n':      len(matched) + len(mismatched) + len(no_dispatch),
+            'matched_n':      len(matched),
+            'mismatched_n':   len(mismatched),
+            'no_dispatch_n':  len(no_dispatch),
+            'delivery_n':     delivery_n,
+            'delivery_total': delivery_total,
+            'total_expected': total_expected,
+            'total_actual':   total_actual,
+            'total_diff':     total_actual - total_expected,
+        }
+    }
 
 
 def match_shipped_vs_settled(shipped: List[Dict], settled: List[Dict],

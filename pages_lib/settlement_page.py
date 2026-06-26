@@ -12,11 +12,12 @@ from db import (
     save_naver_settlements, save_naver_settlements_from_csv,
     get_naver_settlements_by_date, delete_naver_settlements_by_date,
     search_order_history,
-    get_dispatch_log_by_date, get_dispatch_dates,
+    get_dispatch_log_by_date, get_dispatch_dates, get_dispatch_by_order_nos,
 )
 from settlement_service import (
     match_shipped_vs_settled, shipped_orders_from_db_rows,
     match_daily_total, analyze_shipping_commission,
+    match_settled_to_dispatch,
 )
 from naver_settlement_parser import parse_naver_quicksettle_csv
 from utils import fmt
@@ -161,6 +162,68 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 )
             else:
                 st.success(f"✅ {settle_date_str} 정산 {saved}건 저장됨 (API 응답 {len(records)}건)")
+
+    # ══════════════════════════════════════════════════════════════
+    # 🔁 정산일 역추적 매칭 (정산건 → 상품주문번호로 발송건 역조회) — 메인
+    # ══════════════════════════════════════════════════════════════
+    st.divider()
+    st.subheader(f"🔁 정산일 역추적 매칭 — {settle_date_str} 정산건 → 발송건")
+    st.caption("이 정산일에 들어온 정산건을 상품주문번호로 역추적해 원래 발송건과 대조합니다. "
+               "(정산 = 확정된 사실 기준 / 발송→정산 소요일도 표시)")
+
+    _settled_rt = get_naver_settlements_by_date(USERNAME, settle_date_str)
+    if not _settled_rt:
+        st.info(f"❓ {settle_date_str} 정산 내역이 없습니다. 위에서 📥 정산 수집 또는 CSV 업로드를 먼저 하세요.")
+    else:
+        _po_list = [str(r.get('product_order_no', '')) for r in _settled_rt]
+        _disp_by_po = get_dispatch_by_order_nos(USERNAME, _po_list, platform='naver')
+        _rt = match_settled_to_dispatch(_settled_rt, _disp_by_po)
+        _s = _rt['summary']
+        _r1, _r2, _r3, _r4, _r5 = st.columns(5)
+        _r1.metric("정산건(상품)", f"{_s['settled_n']}건")
+        _r2.metric("✅ 일치", f"{_s['matched_n']}건")
+        _r3.metric("⚠️ 차액", f"{_s['mismatched_n']}건",
+                   delta=fmt(_s['total_diff']) + "원" if _s['total_diff'] else None)
+        _r4.metric("🔍 발송기록 없음", f"{_s['no_dispatch_n']}건")
+        _r5.metric("🚚 배송비 정산", f"{fmt(_s['delivery_total'])}원",
+                   delta=f"{_s['delivery_n']}건")
+
+        def _render_rt(rows):
+            _cols = ['product_order_no', 'buyer_name', 'product_name', 'ship_date',
+                     'settle_date', 'lag_days', 'expected', 'actual', 'diff',
+                     'commission', 'settle_type', 'diff_reason']
+            _names = ['상품주문번호', '구매자', '상품명', '발송일', '정산일',
+                      '소요일', '예상정산', '실제정산', '차액', '수수료', '정산유형', '차액원인']
+            _df = pd.DataFrame(rows)
+            for _c in _cols:
+                if _c not in _df.columns:
+                    _df[_c] = ''
+            _df = _df[_cols]
+            _df.columns = _names
+            st.dataframe(_df, use_container_width=True, hide_index=True)
+
+        _rt1, _rt2, _rt3 = st.tabs([
+            f"⚠️ 차액 ({_s['mismatched_n']})",
+            f"✅ 일치 ({_s['matched_n']})",
+            f"🔍 발송기록 없음 ({_s['no_dispatch_n']})",
+        ])
+        with _rt1:
+            if _rt['mismatched']:
+                _render_rt(_rt['mismatched'])
+                st.caption("💡 차액원인 열로 수수료/배송비/공제 차감을 확인하세요.")
+            else:
+                st.success("차액 없음 — 예상 = 실제 정산.")
+        with _rt2:
+            if _rt['matched']:
+                _render_rt(_rt['matched'])
+            else:
+                st.caption("일치 항목 없음.")
+        with _rt3:
+            if _rt['no_dispatch']:
+                _render_rt(_rt['no_dispatch'])
+                st.caption("💡 발송 기록이 없는 정산건 — dispatch_log 범위 밖(옛 발송분)이거나 수동 발송분입니다.")
+            else:
+                st.success("모든 정산건이 발송건과 연결됨.")
 
     # ══════════════════════════════════════════════════════════════
     # ⭐ 일괄발송 vs 일일정산 합계 매칭 (per-order /case 없이 합계로 검증)

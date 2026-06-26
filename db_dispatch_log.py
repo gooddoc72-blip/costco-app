@@ -87,6 +87,33 @@ def get_dispatch_log_by_date(username: str, date: str, platform: str = None) -> 
     return [dict(r) for r in rows]
 
 
+def get_dispatch_by_order_nos(username: str, order_nos: list,
+                              platform: str = None) -> dict:
+    """상품주문번호 리스트로 dispatch_log 역조회 (날짜 무관).
+
+    정산일 기준 역추적 매칭용 — 정산건의 상품주문번호로 원래 발송건을 찾는다.
+    Returns: {order_no: dispatch_row_dict}. 같은 order_no 중복 시 최신 발송 1건.
+    """
+    order_nos = [str(o).strip() for o in (order_nos or []) if str(o).strip()]
+    if not order_nos:
+        return {}
+    conn = get_user_db(username)
+    _ensure_table(conn)
+    out = {}
+    CHUNK = 900  # SQLite 변수 한도 회피
+    for i in range(0, len(order_nos), CHUNK):
+        chunk = order_nos[i:i + CHUNK]
+        ph = ",".join("?" * len(chunk))
+        sql = (f"SELECT * FROM dispatch_log WHERE order_no IN ({ph})"
+               + (" AND platform=?" if platform else "")
+               + " ORDER BY dispatched_at")  # 오래된 것부터 → 최신이 덮어씀
+        params = chunk + ([platform] if platform else [])
+        for r in conn.execute(sql, params).fetchall():
+            out[str(r['order_no'])] = dict(r)
+    conn.close()
+    return out
+
+
 def get_dispatched_orders_with_details(username: str, dispatched_at: str,
                                        platform: str = None) -> list:
     """일괄발송 성공건 + order_history 상세 정보 JOIN 조회.

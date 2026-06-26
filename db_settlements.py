@@ -33,6 +33,7 @@ def _ensure_table(conn):
         ('buyer_name',      "TEXT DEFAULT ''"),
         ('product_name',    "TEXT DEFAULT ''"),
         ('pay_date',        "TEXT DEFAULT ''"),
+        ('product_order_type', "TEXT DEFAULT ''"),  # PROD_ORDER / DELIVERY (배송비 정산)
     ]:
         try:
             conn.execute(f"ALTER TABLE naver_settlements ADD COLUMN {col} {ddl}")
@@ -68,8 +69,8 @@ def save_naver_settlements(username: str, settle_date: str, records: list) -> in
             (product_order_no, order_no, settle_date,
              sales_amount, product_amount, commission, settle_amount,
              settle_type, product_name, buyer_name, pay_date,
-             status, raw_json, fetched_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+             product_order_type, status, raw_json, fetched_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (po,
              str(r.get('orderId') or r.get('orderNo') or ''),
              settle_date,
@@ -81,6 +82,7 @@ def save_naver_settlements(username: str, settle_date: str, records: list) -> in
              str(r.get('productName') or ''),
              str(r.get('purchaserName') or r.get('buyerName') or ''),
              str(r.get('payDate') or ''),
+             str(r.get('productOrderType') or ''),
              str(r.get('status') or r.get('settleType') or ''),
              _json.dumps(r, ensure_ascii=False),
              now))

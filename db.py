@@ -113,6 +113,7 @@ from db_settlements import (
 from db_dispatch_log import (
     log_dispatch_success,
     get_dispatch_log_by_date,
+    get_dispatch_by_order_nos,
     get_dispatched_orders_with_details,
     get_dispatch_dates,
 )
