@@ -107,6 +107,7 @@ from db_settlements import (
     save_naver_settlements_from_csv,
     get_naver_settlements_by_date,
     get_naver_settlements_in_range,
+    get_settled_product_order_nos,
     delete_naver_settlements_by_date,
 )
 

@@ -167,6 +167,25 @@ def get_naver_settlements_in_range(username: str, start_date: str, end_date: str
     return [dict(r) for r in rows]
 
 
+def get_settled_product_order_nos(username: str) -> set:
+    """정산된 상품주문번호 집합 (전체 날짜, 배송비 라인 제외).
+    미정산 추적용 — 발송건이 이 집합에 없으면 아직 정산 안 됨.
+    """
+    conn = get_user_db(username)
+    _ensure_table(conn)
+    try:
+        rows = conn.execute(
+            "SELECT DISTINCT product_order_no FROM naver_settlements "
+            "WHERE COALESCE(product_order_type,'') != 'DELIVERY'"
+        ).fetchall()
+    except Exception:
+        rows = conn.execute(
+            "SELECT DISTINCT product_order_no FROM naver_settlements"
+        ).fetchall()
+    conn.close()
+    return {str(r['product_order_no']) for r in rows if r['product_order_no']}
+
+
 def delete_naver_settlements_by_date(username: str, settle_date: str) -> int:
     conn = get_user_db(username)
     _ensure_table(conn)

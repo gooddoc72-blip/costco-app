@@ -52,6 +52,51 @@ def _lag_days(ship_date: str, settle_date: str) -> int:
         return None
 
 
+def find_unsettled_dispatches(dispatch_rows: List[Dict], settled_po_set: set,
+                              today_str: str, delay_threshold: int = 10) -> Dict:
+    """발송건 중 아직 정산되지 않은 건 추출 + 정산지연/누락의심 분류 (순방향).
+
+    Args:
+        dispatch_rows: dispatch_log 행 리스트 (order_no=상품주문번호, dispatched_at, ...)
+        settled_po_set: 정산된 상품주문번호 집합 (get_settled_product_order_nos)
+        today_str: 오늘 날짜 'YYYY-MM-DD' (경과일 계산용)
+        delay_threshold: 발송 후 이 일수 초과 + 미정산이면 '누락 의심'
+    """
+    unsettled, settled_n = [], 0
+    for d in dispatch_rows:
+        po = str(d.get('order_no', '')).strip()
+        if not po:
+            continue
+        if po in settled_po_set:
+            settled_n += 1
+            continue
+        ship = d.get('dispatched_at', '')
+        elapsed = _lag_days(ship, today_str)
+        cls = '누락 의심' if (elapsed is not None and elapsed > delay_threshold) else '정산지연(대기)'
+        unsettled.append({
+            'product_order_no':    po,
+            'recipient':           d.get('recipient', ''),
+            'product_name':        d.get('product_name', ''),
+            'ship_date':           ship,
+            'elapsed_days':        elapsed,
+            'expected_settlement': int(d.get('expected_settlement') or 0),
+            'status':              cls,
+        })
+    unsettled.sort(key=lambda x: (x['elapsed_days'] if x['elapsed_days'] is not None else -1),
+                   reverse=True)
+    return {
+        'unsettled': unsettled,
+        'summary': {
+            'dispatch_n':       len(dispatch_rows),
+            'settled_n':        settled_n,
+            'unsettled_n':      len(unsettled),
+            'suspect_n':        sum(1 for u in unsettled if u['status'] == '누락 의심'),
+            'pending_n':        sum(1 for u in unsettled if u['status'] != '누락 의심'),
+            'unsettled_amount': sum(u['expected_settlement'] for u in unsettled),
+        }
+    }
+
+
 def match_settled_to_dispatch(settled_rows: List[Dict], dispatch_by_po: Dict,
                               tolerance: int = 10) -> Dict:
     """정산일 기준 역추적 매칭 — 정산건의 상품주문번호로 원래 발송건을 찾는다.

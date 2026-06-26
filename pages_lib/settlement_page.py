@@ -13,11 +13,12 @@ from db import (
     get_naver_settlements_by_date, delete_naver_settlements_by_date,
     search_order_history,
     get_dispatch_log_by_date, get_dispatch_dates, get_dispatch_by_order_nos,
+    get_settled_product_order_nos,
 )
 from settlement_service import (
     match_shipped_vs_settled, shipped_orders_from_db_rows,
     match_daily_total, analyze_shipping_commission,
-    match_settled_to_dispatch,
+    match_settled_to_dispatch, find_unsettled_dispatches,
 )
 from naver_settlement_parser import parse_naver_quicksettle_csv
 from utils import fmt
@@ -224,6 +225,40 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 st.caption("💡 발송 기록이 없는 정산건 — dispatch_log 범위 밖(옛 발송분)이거나 수동 발송분입니다.")
             else:
                 st.success("모든 정산건이 발송건과 연결됨.")
+
+    # ══════════════════════════════════════════════════════════════
+    # 📦 미정산 추적 (발송일 기준 순방향) — 발송했는데 아직 정산 안 된 건
+    # ══════════════════════════════════════════════════════════════
+    st.divider()
+    st.subheader(f"📦 미정산 추적 — {ship_date_str} 발송건 중 정산 안 된 건")
+    st.caption("발송했는데 아직 정산되지 않은 건을 찾습니다. 발송 후 오래된 건은 '누락 의심'으로 표시됩니다. "
+               "(정산 수집을 충분히 해둬야 정확합니다)")
+
+    _disp_us = get_dispatch_log_by_date(USERNAME, ship_date_str, platform='naver')
+    if not _disp_us:
+        st.info(f"❓ {ship_date_str}에 발송 이력이 없습니다. (송장 페이지에서 발송처리 시 자동 기록)")
+    else:
+        _settled_set = get_settled_product_order_nos(USERNAME)
+        _today = datetime.today().strftime("%Y-%m-%d")
+        _us = find_unsettled_dispatches(_disp_us, _settled_set, _today, delay_threshold=10)
+        _us_s = _us['summary']
+        _u1, _u2, _u3, _u4 = st.columns(4)
+        _u1.metric("발송", f"{_us_s['dispatch_n']}건")
+        _u2.metric("✅ 정산완료", f"{_us_s['settled_n']}건")
+        _u3.metric("⏳ 정산지연(대기)", f"{_us_s['pending_n']}건")
+        _u4.metric("🔴 누락 의심", f"{_us_s['suspect_n']}건",
+                   delta=fmt(_us_s['unsettled_amount']) + "원" if _us_s['unsettled_amount'] else None)
+        if _us['unsettled']:
+            _df_us = pd.DataFrame(_us['unsettled'])[
+                ['product_order_no', 'recipient', 'product_name', 'ship_date',
+                 'elapsed_days', 'expected_settlement', 'status']]
+            _df_us.columns = ['상품주문번호', '수취인', '상품명', '발송일',
+                              '경과일', '정산예정금액', '상태']
+            st.dataframe(_df_us, use_container_width=True, hide_index=True)
+            st.caption("💡 '누락 의심'(발송 10일 초과 미정산)은 네이버 정산관리에서 직접 확인을 권장합니다. "
+                       "'정산지연'은 구매확정 전이거나 정산예정일 미도래로 정상입니다.")
+        else:
+            st.success("✅ 이 발송일의 모든 주문이 정산 완료되었습니다.")
 
     # ══════════════════════════════════════════════════════════════
     # ⭐ 일괄발송 vs 일일정산 합계 매칭 (per-order /case 없이 합계로 검증)
