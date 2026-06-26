@@ -176,6 +176,7 @@ def get_new_orders(client_id, client_secret, hours_back=48, status_type="ALL"):
                         "상품번호": po.get("productId", ""),
                         "상품명": po.get("productName", ""),
                         "옵션정보": po.get("productOption", ""),
+                        "옵션번호": str(po.get("optionCode", "") or po.get("itemNo", "") or ""),
                         "수량": po.get("quantity", 1),
                         "상품가격": po.get("unitPrice", 0),
                         "최종 상품별 총 주문금액": total_payment,

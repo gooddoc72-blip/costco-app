@@ -26,6 +26,10 @@ def save_daily_orders(username, order_date, orders_df, shipping_cost, box_cost):
     conn = get_user_db(username)
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     _factor = _ship_settle_factor(conn)  # 실정산배송비 비율(네이버 수수료 차감)
+    try:
+        conn.execute("ALTER TABLE daily_orders ADD COLUMN option_code TEXT DEFAULT ''")
+    except Exception:
+        pass
 
     conn.execute("DELETE FROM daily_orders WHERE order_date=?", (order_date,))
 
@@ -42,11 +46,12 @@ def save_daily_orders(username, order_date, orders_df, shipping_cost, box_cost):
                   if int(cost) > 0 else 0)
         p_no = r.get('상품번호', '')
         conn.execute("""INSERT INTO daily_orders
-            (order_date,recipient,product_name,product_no,option_info,qty,
+            (order_date,recipient,product_name,product_no,option_info,option_code,qty,
              order_amount,shipping_fee,extra_shipping,settlement,
              cost_price,delivery_cost,box_cost,profit,matched,created_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (order_date, r['수취인명'], r['상품명'], str(p_no), r.get('옵션정보', ''),
+             str(r.get('옵션번호', '') or ''),
              int(r['수량']), int(r['최종 상품별 총 주문금액']), ship_fee,
              int(r.get('제주/도서 추가배송비', 0)), settlement,
              int(cost), per_ship, per_box, profit, 1 if cost > 0 else 0, now))
@@ -143,6 +148,10 @@ def save_order_history(username, full_df, cost_df=None):
     if full_df is None or full_df.empty:
         return 0
     conn = get_user_db(username)
+    try:
+        conn.execute("ALTER TABLE order_history ADD COLUMN option_code TEXT DEFAULT ''")
+    except Exception:
+        pass
     s_cost = b_cost = 0
     try:
         s_cost = int(conn.execute("SELECT value FROM settings WHERE key='shipping_cost'").fetchone()['value'])
@@ -190,11 +199,12 @@ def save_order_history(username, full_df, cost_df=None):
         try:
             conn.execute("""INSERT INTO order_history
                 (order_no, order_group_no, order_date, recipient, buyer,
-                 product_name, product_no, option_info, qty, unit_price,
+                 product_name, product_no, option_info, option_code, qty, unit_price,
                  order_amount, shipping_fee, settlement, status,
                  tracking_no, courier, cost_price, profit, created_at, raw_json)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(order_no) DO UPDATE SET
+                    option_code  = COALESCE(NULLIF(excluded.option_code, ''), order_history.option_code),
                     status       = excluded.status,
                     tracking_no  = COALESCE(NULLIF(excluded.tracking_no, ''), order_history.tracking_no),
                     courier      = COALESCE(NULLIF(excluded.courier, ''),     order_history.courier),
@@ -207,7 +217,8 @@ def save_order_history(username, full_df, cost_df=None):
                 (order_no, str(r.get('주문번호', '') or ''), order_date,
                  str(r.get('수취인명', '') or ''), str(r.get('구매자명', '') or ''),
                  str(r.get('상품명', '') or ''), str(r.get('상품번호', '') or ''),
-                 str(r.get('옵션정보', '') or ''), qty, unit_p, total, ship, settle,
+                 str(r.get('옵션정보', '') or ''), str(r.get('옵션번호', '') or ''),
+                 qty, unit_p, total, ship, settle,
                  str(r.get('주문상태', '') or ''), str(r.get('송장번호', '') or ''),
                  str(r.get('택배사', '') or ''), cost_price, profit, now, raw_json_str))
             saved += 1

@@ -306,6 +306,8 @@ def _ensure_products_columns(conn):
         "ALTER TABLE products ADD COLUMN costco_no_display TEXT DEFAULT ''",
         # 가격등록일자: 매입가(unit_price)가 실제로 바뀐 시점만 기록 (updated_at은 모든 수정에 갱신)
         "ALTER TABLE products ADD COLUMN price_updated_at TEXT DEFAULT ''",
+        # 옵션번호: 같은 네이버 상품번호라도 옵션별 매입가가 다를 때 옵션조합 고유번호(optionCode)로 구분
+        "ALTER TABLE products ADD COLUMN naver_option_code TEXT DEFAULT ''",
     ]:
         try:
             conn.execute(col_sql)
