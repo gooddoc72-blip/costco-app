@@ -53,17 +53,35 @@ def save_naver_settlements(username: str, settle_date: str, records: list) -> in
         po = str(r.get('productOrderId') or r.get('productOrderNo') or '').strip()
         if not po:
             continue
+        # /case 응답: 수수료는 음수 항목들의 합 → 양수(공제액)로 저장
+        _comm_case = -(int(r.get('totalPayCommissionAmount') or 0)
+                       + int(r.get('sellingInterlockCommissionAmount') or 0)
+                       + int(r.get('freeInstallmentCommissionAmount') or 0))
+        _commission = (int(r.get('commission') or r.get('totalCommission') or 0)
+                       or _comm_case)
+        # paySettleAmount = 수수료 차감 전 결제정산, settleExpectAmount = 실정산액
+        _pay_settle = int(r.get('paySettleAmount') or r.get('salesAmount')
+                          or r.get('totalAmount') or 0)
+        _settle = int(r.get('settleExpectAmount') or r.get('settleAmount')
+                      or r.get('settlementAmount') or 0)
         conn.execute("""INSERT OR REPLACE INTO naver_settlements
             (product_order_no, order_no, settle_date,
-             sales_amount, commission, settle_amount, status, raw_json, fetched_at)
-            VALUES (?,?,?,?,?,?,?,?,?)""",
+             sales_amount, product_amount, commission, settle_amount,
+             settle_type, product_name, buyer_name, pay_date,
+             status, raw_json, fetched_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (po,
              str(r.get('orderId') or r.get('orderNo') or ''),
              settle_date,
-             int(r.get('salesAmount') or r.get('totalAmount') or 0),
-             int(r.get('commission') or r.get('totalCommission') or 0),
-             int(r.get('settleAmount') or r.get('settlementAmount') or 0),
-             str(r.get('status') or r.get('settleStatus') or ''),
+             _pay_settle,
+             _pay_settle,
+             _commission,
+             _settle,
+             str(r.get('settleType') or ''),
+             str(r.get('productName') or ''),
+             str(r.get('purchaserName') or r.get('buyerName') or ''),
+             str(r.get('payDate') or ''),
+             str(r.get('status') or r.get('settleType') or ''),
              _json.dumps(r, ensure_ascii=False),
              now))
         saved += 1

@@ -1281,16 +1281,12 @@ _SETTLE_CASE_PATH  = "/external/v1/pay-settle/settle/case"
 _SETTLE_DAILY_PATH = "/external/v1/pay-settle/settle/daily"
 
 _SETTLEMENT_PATH_CANDIDATES = [
-    # /case — Naver 400 응답에서 확인된 필수 파라미터: searchDate + periodType
-    # periodType 후보 (가장 가능성 높은 순)
-    ("GET", _SETTLE_CASE_PATH,  "searchDate_SETTLE_COMPLETE_DATE"),
-    ("GET", _SETTLE_CASE_PATH,  "searchDate_SETTLE_COMPLETE"),
-    ("GET", _SETTLE_CASE_PATH,  "searchDate_SETTLE_BASIS_DATE"),
-    ("GET", _SETTLE_CASE_PATH,  "searchDate_SETTLE_BASIS"),
-    ("GET", _SETTLE_CASE_PATH,  "searchDate_PAY_DATE"),
-    ("GET", _SETTLE_CASE_PATH,  "searchDate_PAYMENT_DATE"),
-    ("GET", _SETTLE_CASE_PATH,  "searchDate_SETTLE_EXPECT_DATE"),
-    # /daily (참고 - 이미 동작 확인)
+    # /case — 건별 정산 (상품주문번호별). 확인된 정답 periodType: SETTLE_CASEBYCASE_*
+    # 정산예정일 기준이 권장(가장 빨리 조회됨), 그다음 완료일/기준일 폴백
+    ("GET", _SETTLE_CASE_PATH,  "searchDate_SETTLE_CASEBYCASE_SETTLE_SCHEDULE_DATE"),
+    ("GET", _SETTLE_CASE_PATH,  "searchDate_SETTLE_CASEBYCASE_SETTLE_COMPLETE_DATE"),
+    ("GET", _SETTLE_CASE_PATH,  "searchDate_SETTLE_CASEBYCASE_SETTLE_BASIS_DATE"),
+    # /daily (합계 폴백 - 상품주문번호 없음)
     ("GET", _SETTLE_DAILY_PATH, "dateRange"),
 ]
 

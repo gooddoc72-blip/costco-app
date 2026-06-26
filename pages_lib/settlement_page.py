@@ -185,9 +185,11 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             )
         _daily_total = 0
         if _records:
-            # /daily 응답: elements[0].settleAmount
+            # /case: settleExpectAmount(건별) / /daily: settleAmount(합계)
             for _rec in _records:
-                _daily_total += int(_rec.get('settleAmount') or _rec.get('settle_amount') or 0)
+                _daily_total += int(_rec.get('settleExpectAmount')
+                                    or _rec.get('settleAmount')
+                                    or _rec.get('settle_amount') or 0)
         if _err:
             st.error(f"❌ 일일정산 조회 실패: {_err}")
         else:
