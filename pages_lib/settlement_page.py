@@ -86,8 +86,9 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     _c1, _c2, _c3, _c4 = st.columns([1.5, 1.5, 1, 1])
     with _c1:
         settle_date = st.date_input(
-            "정산일", value=datetime.today() - timedelta(days=1),
-            help="이 날짜의 정산 내역을 수집합니다 (네이버 기준 정산일)"
+            "정산일 (정산예정일=입금일)", value=datetime.today(),
+            help="네이버 '정산예정일' 기준 — 이 날짜에 입금되는 정산내역을 조회합니다. "
+                 "오늘 입금분을 보려면 오늘 날짜로 두세요."
         )
         settle_date_str = settle_date.strftime("%Y-%m-%d")
     with _c2:
@@ -168,6 +169,26 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     # 🔁 정산일 역추적 매칭 (정산건 → 상품주문번호로 발송건 역조회) — 메인
     # ══════════════════════════════════════════════════════════════
     st.divider()
+    st.subheader(f"💰 {settle_date_str} 정산금액 (네이버 입금 기준)")
+    _daily, _derr = naver_api.get_daily_settlement(api_id, api_secret, settle_date_str)
+    if _daily:
+        _d1, _d2, _d3, _d4 = st.columns(4)
+        _d1.metric("💰 정산금액(입금)", f"{fmt(_daily.get('settleAmount', 0))}원")
+        _d2.metric("정산기준금액", f"{fmt(_daily.get('paySettleAmount', 0))}원")
+        _d3.metric("수수료합계", f"{fmt(_daily.get('commissionSettleAmount', 0))}원")
+        _d4.metric("혜택정산", f"{fmt(_daily.get('benefitSettleAmount', 0))}원")
+        _e1, _e2, _e3 = st.columns(3)
+        _e1.metric("일반정산금액", f"{fmt(_daily.get('normalSettleAmount', 0))}원")
+        _e2.metric("빠른정산금액", f"{fmt(_daily.get('quickSettleAmount', 0))}원")
+        _dcomplete = _daily.get('settleCompleteDate') or _daily.get('settleExpectDate') or ''
+        _e3.metric("입금(완료)일", _dcomplete)
+        st.caption("📌 네이버 정산내역 화면과 동일한 순액입니다 (정산기준금액 − 수수료 − 혜택 = 정산금액).")
+    elif _derr:
+        st.warning(f"일별 정산 합계 조회 실패: {_derr}")
+    else:
+        st.info(f"{settle_date_str}에 입금 예정 정산이 없습니다.")
+
+    st.divider()
     st.subheader(f"🔁 정산일 역추적 매칭 — {settle_date_str} 정산건 → 발송건")
     st.caption("이 정산일에 들어온 정산건을 상품주문번호로 역추적해 원래 발송건과 대조합니다. "
                "(정산 = 확정된 사실 기준 / 발송→정산 소요일도 표시)")
@@ -180,13 +201,14 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         _disp_by_po = get_dispatch_by_order_nos(USERNAME, _po_list, platform='naver')
         _rt = match_settled_to_dispatch(_settled_rt, _disp_by_po)
         _s = _rt['summary']
-        # ── 오늘 정산금액 (상품 / 배송비 / 총액) ──
+        # ── 건별 정산 합계 (상품 / 배송비) — /case 기준, 혜택정산 차감 전 ──
         _g1, _g2, _g3 = st.columns(3)
-        _g1.metric("💰 오늘 상품 정산금액", f"{fmt(_s['settle_total'])}원",
+        _g1.metric("상품 정산 합계(건별)", f"{fmt(_s['settle_total'])}원",
                    delta=f"{_s['settled_n']}건")
-        _g2.metric("🚚 배송비 정산금액", f"{fmt(_s['delivery_total'])}원",
+        _g2.metric("배송비 정산 합계(건별)", f"{fmt(_s['delivery_total'])}원",
                    delta=f"{_s['delivery_n']}건")
-        _g3.metric("📊 총 정산금액 (상품+배송비)", f"{fmt(_s['grand_total'])}원")
+        _g3.metric("건별 합계(상품+배송비)", f"{fmt(_s['grand_total'])}원",
+                   help="건별(/case) 합계입니다. 위 '정산금액(입금)'은 여기서 혜택정산을 더 차감한 순액입니다.")
         # ── 매칭 현황 ──
         _r1, _r2, _r3, _r4 = st.columns(4)
         _r1.metric("정산건(상품)", f"{_s['settled_n']}건")

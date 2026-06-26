@@ -1273,6 +1273,34 @@ def get_settlement_history(client_id, client_secret, start_date, end_date):
     return None, "정산 endpoint 모두 실패", None, attempts
 
 
+def get_daily_settlement(client_id, client_secret, date):
+    """일별 정산 합계 (/daily) — 네이버 정산내역 화면과 동일한 순액·구성.
+    Returns: (dict|None, error). dict 주요 키:
+      settleAmount(정산금액=입금), paySettleAmount(정산기준금액),
+      commissionSettleAmount(수수료합계), benefitSettleAmount(혜택정산),
+      normalSettleAmount(일반정산), quickSettleAmount(빠른정산),
+      settleExpectDate, settleCompleteDate, depositorName, bankType, accountNo
+    """
+    token, err = get_token(client_id, client_secret)
+    if not token:
+        return None, err
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    url = "https://api.commerce.naver.com" + _SETTLE_DAILY_PATH
+    try:
+        resp = requests.get(url, headers=headers,
+                            params={"startDate": date, "endDate": date}, timeout=15)
+        if resp.status_code != 200:
+            return None, _format_naver_err(resp)
+        data = resp.json()
+        items = (data.get('elements') or data.get('contents') or data.get('data')
+                 if isinstance(data, dict) else data) or []
+        if not items:
+            return None, None  # 해당일 정산 없음(오류 아님)
+        return items[0], None
+    except Exception as e:
+        return None, str(e)[:120]
+
+
 # 정산 API — Naver Commerce 공식 path (애플리케이션 권한 그룹: 정산)
 # 건별 정산: /external/v1/pay-settle/settle/case
 # 일별 정산: /external/v1/pay-settle/settle/daily
