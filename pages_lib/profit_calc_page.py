@@ -816,10 +816,16 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 f'소분÷{_row_sq}</span>'
                 if _row_sq > 1 else ''
             )
+            # 옵션 표기 (있을 때만 상품명 아래 작은 회색 줄)
+            _opt = str(r.get('옵션정보', '') or '').strip()
+            _opt_html = (
+                f'<br><span style="color:#9aa0a6;font-size:12px">└ {_opt}</span>'
+                if _opt and _opt.lower() not in ('nan', 'none', '-') else ''
+            )
             _name_html = (
-                f"{_ss['badge']} {_split_badge}{_pno_prefix}{_full_name}"
+                f"{_ss['badge']} {_split_badge}{_pno_prefix}{_full_name}{_opt_html}"
                 if _ss['badge']
-                else f"{_split_badge}{_pno_prefix}{_full_name}"
+                else f"{_split_badge}{_pno_prefix}{_full_name}{_opt_html}"
             )
             pv = r['수입']
             try:
