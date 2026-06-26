@@ -481,5 +481,33 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     st.rerun()
 
     # ═══════════════════════════════════════
+    # 📋 발송내역 (dispatch_log 기록)
+    # ═══════════════════════════════════════
+    st.divider()
+    st.subheader("📋 발송내역")
+    st.caption("발송처리되어 dispatch_log에 기록된 내역입니다. (정산 매칭에 사용)")
+    from db import get_dispatch_dates, get_dispatched_orders_with_details
+    _disp_dates = get_dispatch_dates(USERNAME, limit=30)
+    if not _disp_dates:
+        st.info("아직 발송내역이 없습니다. 위에서 발송처리(또는 수동 송장 저장) 시 자동 기록됩니다.")
+    else:
+        _hc1, _hc2 = st.columns([1.5, 3])
+        _sel_dd = _hc1.selectbox("발송일 선택", _disp_dates, key="track_hist_date")
+        _hrows = get_dispatched_orders_with_details(USERNAME, _sel_dd)
+        if _hrows:
+            _hc2.metric(f"{_sel_dd} 발송", f"{len(_hrows)}건")
+            _df_h = pd.DataFrame(_hrows)
+            _show = [c for c in ['platform', 'order_no', 'recipient', 'product_name',
+                                 'tracking_no', 'courier', 'settlement'] if c in _df_h.columns]
+            _df_h = _df_h[_show]
+            _rename = {'platform': '플랫폼', 'order_no': '주문번호', 'recipient': '수취인',
+                       'product_name': '상품명', 'tracking_no': '송장번호',
+                       'courier': '택배사', 'settlement': '정산예정'}
+            _df_h.columns = [_rename.get(c, c) for c in _show]
+            st.dataframe(_df_h, use_container_width=True, hide_index=True)
+        else:
+            st.caption("해당 발송일에 기록이 없습니다.")
+
+    # ═══════════════════════════════════════
     # 탭 2: 영수증 등록
     # ═══════════════════════════════════════
