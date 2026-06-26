@@ -180,14 +180,20 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         _disp_by_po = get_dispatch_by_order_nos(USERNAME, _po_list, platform='naver')
         _rt = match_settled_to_dispatch(_settled_rt, _disp_by_po)
         _s = _rt['summary']
-        _r1, _r2, _r3, _r4, _r5 = st.columns(5)
+        # ── 오늘 정산금액 (상품 / 배송비 / 총액) ──
+        _g1, _g2, _g3 = st.columns(3)
+        _g1.metric("💰 오늘 상품 정산금액", f"{fmt(_s['settle_total'])}원",
+                   delta=f"{_s['settled_n']}건")
+        _g2.metric("🚚 배송비 정산금액", f"{fmt(_s['delivery_total'])}원",
+                   delta=f"{_s['delivery_n']}건")
+        _g3.metric("📊 총 정산금액 (상품+배송비)", f"{fmt(_s['grand_total'])}원")
+        # ── 매칭 현황 ──
+        _r1, _r2, _r3, _r4 = st.columns(4)
         _r1.metric("정산건(상품)", f"{_s['settled_n']}건")
         _r2.metric("✅ 일치", f"{_s['matched_n']}건")
         _r3.metric("⚠️ 차액", f"{_s['mismatched_n']}건",
                    delta=fmt(_s['total_diff']) + "원" if _s['total_diff'] else None)
         _r4.metric("🔍 발송기록 없음", f"{_s['no_dispatch_n']}건")
-        _r5.metric("🚚 배송비 정산", f"{fmt(_s['delivery_total'])}원",
-                   delta=f"{_s['delivery_n']}건")
 
         def _render_rt(rows):
             _cols = ['product_order_no', 'buyer_name', 'product_name', 'ship_date',

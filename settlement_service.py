@@ -118,6 +118,7 @@ def match_settled_to_dispatch(settled_rows: List[Dict], dispatch_by_po: Dict,
     matched, mismatched, no_dispatch = [], [], []
     delivery_total = delivery_n = 0
     total_expected = total_actual = 0
+    settle_total = 0  # 상품 정산 총액 (매칭 여부 무관)
 
     for s in settled_rows:
         po = str(s.get('product_order_no', '')).strip()
@@ -130,6 +131,7 @@ def match_settled_to_dispatch(settled_rows: List[Dict], dispatch_by_po: Dict,
             delivery_total += actual
             delivery_n += 1
             continue
+        settle_total += actual  # 상품 정산 총액 (오늘 들어온 상품 정산금)
         d = dispatch_by_po.get(po)
         base = {
             'product_order_no': po,
@@ -171,6 +173,8 @@ def match_settled_to_dispatch(settled_rows: List[Dict], dispatch_by_po: Dict,
             'no_dispatch_n':  len(no_dispatch),
             'delivery_n':     delivery_n,
             'delivery_total': delivery_total,
+            'settle_total':   settle_total,                 # 상품 정산 총액
+            'grand_total':    settle_total + delivery_total,  # 상품+배송비 총정산
             'total_expected': total_expected,
             'total_actual':   total_actual,
             'total_diff':     total_actual - total_expected,
