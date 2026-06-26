@@ -19,6 +19,7 @@ from settlement_service import (
     match_shipped_vs_settled, shipped_orders_from_db_rows,
     match_daily_total, analyze_shipping_commission,
     match_settled_to_dispatch, find_unsettled_dispatches,
+    infer_purchase_decision,
 )
 from naver_settlement_parser import parse_naver_quicksettle_csv
 from utils import fmt
@@ -245,7 +246,38 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         with _rt2:
             if _rt['no_dispatch']:
                 st.caption(f"발송 기록과 매칭 안 된 정산 {_s['no_dispatch_n']}건 — dispatch_log 범위 밖(옛 발송분) 또는 수동 발송분")
-                _render_rt(_rt['no_dispatch'])
+                _dec_key = f"_pdec_{settle_date_str}"
+                if st.button("🤖 구매확정 유형 확인 (자동/수동 추정)",
+                             key=f"btn_pdec_{settle_date_str}",
+                             help="미일치 정산건의 상품주문번호로 구매확정 일시를 조회해 추정합니다 (새벽 확정=자동)"):
+                    _po_nd = [r['product_order_no'] for r in _rt['no_dispatch']]
+                    with st.spinner("구매확정 일시 조회 중..."):
+                        st.session_state[_dec_key] = naver_api.get_purchase_decisions(
+                            api_id, api_secret, _po_nd)
+                _decmap = st.session_state.get(_dec_key)
+                if _decmap is not None:
+                    _nd_rows = []
+                    for r in _rt['no_dispatch']:
+                        _d = _decmap.get(r['product_order_no'], {})
+                        _label, _dt = infer_purchase_decision(_d.get('decision_date', ''))
+                        _nd_rows.append({**r, '_confirm': _label or '—', '_confirm_at': _dt})
+                    _cols = ['product_order_no', 'buyer_name', 'product_name', 'settle_date',
+                             'actual', '_confirm', '_confirm_at']
+                    _names = ['상품주문번호', '구매자', '상품명', '정산일',
+                              '실제정산', '구매확정(추정)', '구매확정일시']
+                    _df = pd.DataFrame(_nd_rows)
+                    for _c in _cols:
+                        if _c not in _df.columns:
+                            _df[_c] = ''
+                    _df = _df[_cols]
+                    _df.columns = _names
+                    st.dataframe(_df, use_container_width=True, hide_index=True)
+                    _auto_n = sum(1 for x in _nd_rows if '자동' in (x['_confirm'] or ''))
+                    _manual_n = sum(1 for x in _nd_rows if '수동' in (x['_confirm'] or ''))
+                    st.caption(f"추정: 🤖 자동확정 {_auto_n}건 / 👤 수동확정 {_manual_n}건 "
+                               "— 자동확정된 옛 주문은 발송기록이 없을 수 있습니다. (시각 기반 추정)")
+                else:
+                    _render_rt(_rt['no_dispatch'])
             else:
                 st.success("모든 정산건이 발송건과 연결됨.")
         with _rt3:

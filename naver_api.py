@@ -1301,6 +1301,42 @@ def get_daily_settlement(client_id, client_secret, date):
         return None, str(e)[:120]
 
 
+def get_purchase_decisions(client_id, client_secret, product_order_ids):
+    """상품주문번호들의 구매확정 정보 조회 (자동/수동 추정용).
+    Returns: {product_order_id: {'decision_date': 'YYYY-MM-DDTHH:..', 'status': str}}
+    """
+    out = {}
+    ids = [str(p).strip() for p in (product_order_ids or []) if str(p).strip()]
+    if not ids:
+        return out
+    token, err = get_token(client_id, client_secret)
+    if not token:
+        return out
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    url = ("https://api.commerce.naver.com/external/v1/"
+           "pay-order/seller/product-orders/query")
+    for i in range(0, len(ids), 300):
+        chunk = ids[i:i + 300]
+        try:
+            resp = requests.post(url, headers=headers,
+                                json={"productOrderIds": chunk}, timeout=30)
+            if resp.status_code != 200:
+                continue
+            data = resp.json()
+            items = data.get('data') if isinstance(data, dict) else data
+            for it in (items or []):
+                po = it.get('productOrder', {}) if isinstance(it, dict) else {}
+                pid = str(po.get('productOrderId', '') or '')
+                if pid:
+                    out[pid] = {
+                        'decision_date': po.get('decisionDate', '') or '',
+                        'status':        po.get('productOrderStatus', '') or '',
+                    }
+        except Exception:
+            continue
+    return out
+
+
 # 정산 API — Naver Commerce 공식 path (애플리케이션 권한 그룹: 정산)
 # 건별 정산: /external/v1/pay-settle/settle/case
 # 일별 정산: /external/v1/pay-settle/settle/daily

@@ -27,6 +27,22 @@ def _diff_reason(diff: int, settled: Dict, tolerance: int = 10) -> str:
     return "추가 정산(이전분 등)"
 
 
+def infer_purchase_decision(decision_date: str, auto_hour_max: int = 4):
+    """구매확정 일시(decisionDate)로 자동/수동 구매확정을 추정.
+    새벽(0~auto_hour_max시) 확정 = 네이버 자동확정 일괄(추정), 그 외 = 고객 수동(추정).
+    Returns: (라벨, 'YYYY-MM-DD HH:MM').
+    """
+    dd = str(decision_date or '')
+    if len(dd) < 13:
+        return '', ''
+    try:
+        hour = int(dd[11:13])
+    except Exception:
+        return '', dd[:16].replace('T', ' ')
+    label = '🤖 자동(추정)' if hour <= auto_hour_max else '👤 수동(추정)'
+    return label, dd[:16].replace('T', ' ')
+
+
 def settle_type_kr(code: str) -> str:
     """네이버 settleType 코드 → 한글 라벨."""
     c = str(code or '')
