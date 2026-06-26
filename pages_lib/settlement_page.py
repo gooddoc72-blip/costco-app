@@ -13,7 +13,7 @@ from db import (
     get_naver_settlements_by_date, delete_naver_settlements_by_date,
     search_order_history,
     get_dispatch_log_by_date, get_dispatch_dates, get_dispatch_by_order_nos,
-    get_settled_product_order_nos,
+    get_settled_product_order_nos, save_settlement_matches,
 )
 from settlement_service import (
     match_shipped_vs_settled, shipped_orders_from_db_rows,
@@ -225,6 +225,21 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         _r3.metric("⚠️ 차액", f"{_s['mismatched_n']}건",
                    delta=fmt(_s['total_diff']) + "원" if _s['total_diff'] else None)
         _r4.metric("🔍 발송기록 없음", f"{_s['no_dispatch_n']}건")
+
+        # ── 💾 정산매칭 저장 (매칭 결과 기록 + 실정산 확정 → 수익계산 반영) ──
+        if st.button("💾 정산매칭 저장 (실정산 확정 → 수익계산 반영)",
+                     key=f"save_match_{settle_date_str}", type="primary",
+                     help="이 매칭 결과를 저장하고, 매칭된 실제 정산액을 수익계산에서 상품주문번호로 반영합니다."):
+            _save_rows = (
+                [{**r, 'match_status': 'matched'} for r in _rt['matched']]
+                + [{**r, 'match_status': 'mismatched'} for r in _rt['mismatched']]
+                + [{**r, 'match_status': 'no_dispatch'} for r in _rt['no_dispatch']]
+            )
+            _n = save_settlement_matches(USERNAME, settle_date_str, _save_rows)
+            st.success(f"✅ {settle_date_str} 정산매칭 {_n}건 저장 완료 — "
+                       f"수익계산에서 해당 주문은 '실정산 확정' 금액으로 표시됩니다.")
+        st.caption("💡 저장하면 매칭 결과가 기록되고, 매칭된 실제 정산액이 수익계산에 반영됩니다 "
+                   "(예상 → 실제 정산).")
 
         def _render_rt(rows):
             _cols = ['product_order_no', 'buyer_name', 'product_name', 'ship_date',

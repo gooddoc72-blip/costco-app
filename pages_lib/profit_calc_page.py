@@ -27,6 +27,7 @@ from db import (
     get_product_detail,
     save_daily_orders, get_daily_orders, save_order_history, search_order_history,
     save_profit_settlements, get_profit_settlements, get_settlement_overrides_map, save_settlement_override,
+    get_actual_settlements_map,
     save_receipt_items, get_recent_receipt_items, delete_receipt_items_by_date, get_receipt_dates,
     get_date_range_stats, get_monthly_stats, get_product_ranking, get_saved_dates,
     get_dashboard_kpi, get_daily_profit_trend, get_week_best_products,
@@ -630,6 +631,19 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 if st.session_state['cost_overrides'][key] > 0:
                     df.loc[idx, '매칭출처'] = '수동입력'
 
+        # ── 실정산 확정: 저장된 정산매칭(settlement_matches)의 실제 정산액으로 정산예정금액 대체 ──
+        df['_실정산확정'] = False
+        try:
+            _act_map = get_actual_settlements_map(USERNAME)
+        except Exception:
+            _act_map = {}
+        if _act_map:
+            for _aidx in df.index:
+                _av = _act_map.get(str(_aidx))
+                if _av and int(_av.get('actual') or 0) > 0:
+                    df.loc[_aidx, '정산예정금액'] = int(_av['actual'])
+                    df.loc[_aidx, '_실정산확정'] = True
+
         # 🚚 고객배송비는 수수료 차감 없이 전액 정산 (수수료 5.5%는 판매가에만 적용 → 정산예정금액에 이미 반영)
         _ship_settle_factor = 1.0
         df['실정산배송비'] = df['배송비 합계'].fillna(0).round().astype(int)
@@ -842,7 +856,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 f'<td style="{_CELL};width:10%" title="{r["수취인명"]}">{r["수취인명"]}</td>'
                 f'<td style="{_CELL_NAME};width:44%">{_name_html}</td>'
                 f'<td style="{_CELL};width:5%;text-align:center">{int(r["수량"])}</td>'
-                f'<td style="{_CELL};width:11%;text-align:right">{fmt(r["정산예정금액"])}</td>'
+                f'<td style="{_CELL};width:11%;text-align:right" title="{"실정산 확정" if r.get("_실정산확정") else "예상 정산"}">'
+                f'{"✅" if r.get("_실정산확정") else ""}{fmt(r["정산예정금액"])}</td>'
                 f'<td style="{_CELL};width:10%;text-align:right">{fmt(r["배송비 합계"])}</td>'
                 f'<td style="{_CELL};width:7%;text-align:right;color:#888">{_box_str}</td>'
                 f'<td style="{_CELL};width:12%;text-align:right;font-weight:700;color:{_pv_color}">{_pv_str}</td>'

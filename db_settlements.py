@@ -167,6 +167,87 @@ def get_naver_settlements_in_range(username: str, start_date: str, end_date: str
     return [dict(r) for r in rows]
 
 
+def _ensure_match_table(conn):
+    conn.execute("""CREATE TABLE IF NOT EXISTS settlement_matches (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        settle_date TEXT NOT NULL,
+        product_order_no TEXT NOT NULL,
+        ship_date TEXT DEFAULT '',
+        expected INTEGER DEFAULT 0,
+        actual INTEGER DEFAULT 0,
+        commission INTEGER DEFAULT 0,
+        diff INTEGER DEFAULT 0,
+        diff_reason TEXT DEFAULT '',
+        settle_type TEXT DEFAULT '',
+        match_status TEXT DEFAULT '',
+        product_name TEXT DEFAULT '',
+        buyer_name TEXT DEFAULT '',
+        created_at TEXT NOT NULL,
+        UNIQUE(settle_date, product_order_no)
+    )""")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_smatch_po ON settlement_matches(product_order_no)")
+    conn.commit()
+
+
+def save_settlement_matches(username: str, settle_date: str, rows: list) -> int:
+    """역추적 매칭 결과 저장 (settle_date 단위로 덮어씀). rows: match_settled_to_dispatch의
+    matched/mismatched/no_dispatch 항목 dict 리스트 (match_status 포함)."""
+    conn = get_user_db(username)
+    _ensure_match_table(conn)
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    conn.execute("DELETE FROM settlement_matches WHERE settle_date=?", (settle_date,))
+    saved = 0
+    for r in rows:
+        po = str(r.get('product_order_no', '') or '').strip()
+        if not po:
+            continue
+        conn.execute("""INSERT OR REPLACE INTO settlement_matches
+            (settle_date, product_order_no, ship_date, expected, actual, commission,
+             diff, diff_reason, settle_type, match_status, product_name, buyer_name, created_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (settle_date, po, str(r.get('ship_date', '') or ''),
+             int(r.get('expected', 0) or 0), int(r.get('actual', 0) or 0),
+             int(r.get('commission', 0) or 0), int(r.get('diff', 0) or 0),
+             str(r.get('diff_reason', '') or ''), str(r.get('settle_type', '') or ''),
+             str(r.get('match_status', '') or ''), str(r.get('product_name', '') or ''),
+             str(r.get('buyer_name', '') or ''), now))
+        saved += 1
+    conn.commit()
+    conn.close()
+    return saved
+
+
+def get_settlement_matches(username: str, settle_date: str) -> list:
+    conn = get_user_db(username)
+    _ensure_match_table(conn)
+    rows = conn.execute(
+        "SELECT * FROM settlement_matches WHERE settle_date=? ORDER BY match_status, product_order_no",
+        (settle_date,)
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_actual_settlements_map(username: str, order_nos=None) -> dict:
+    """상품주문번호 → 저장된 실제 정산액 매핑 (수익계산 실정산 반영용).
+    같은 주문번호 여러 정산일이면 최신 정산일 우선. order_nos 미지정 시 전체."""
+    conn = get_user_db(username)
+    _ensure_match_table(conn)
+    sql = ("SELECT product_order_no, actual, commission, settle_date, settle_type "
+           "FROM settlement_matches WHERE actual > 0 ORDER BY settle_date")
+    rows = conn.execute(sql).fetchall()
+    conn.close()
+    want = set(str(o) for o in order_nos) if order_nos else None
+    out = {}
+    for r in rows:  # 오래된→최신 순회, 최신이 덮어씀
+        po = str(r['product_order_no'])
+        if want is not None and po not in want:
+            continue
+        out[po] = {'actual': int(r['actual'] or 0), 'commission': int(r['commission'] or 0),
+                   'settle_date': r['settle_date'], 'settle_type': r['settle_type']}
+    return out
+
+
 def get_settled_product_order_nos(username: str) -> set:
     """정산된 상품주문번호 집합 (전체 날짜, 배송비 라인 제외).
     미정산 추적용 — 발송건이 이 집합에 없으면 아직 정산 안 됨.
