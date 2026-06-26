@@ -304,6 +304,8 @@ def _ensure_products_columns(conn):
         "ALTER TABLE products ADD COLUMN linked_shared_id INTEGER DEFAULT NULL",
         # 코스트코 번호 분리: product_no를 비우는 대신 원본은 여기에 보존 (표시·매장 식별용)
         "ALTER TABLE products ADD COLUMN costco_no_display TEXT DEFAULT ''",
+        # 가격등록일자: 매입가(unit_price)가 실제로 바뀐 시점만 기록 (updated_at은 모든 수정에 갱신)
+        "ALTER TABLE products ADD COLUMN price_updated_at TEXT DEFAULT ''",
     ]:
         try:
             conn.execute(col_sql)
@@ -604,12 +606,14 @@ def upsert_product(username, costco_name, keyword, price, product_no='', split_q
         if is_box_suspicion:
             new_price = existing_price
             new_name  = existing['costco_name'] or costco_name
+        _price_changed_date = now if int(new_price or 0) != existing_price else ''
         conn.execute("""UPDATE products
                         SET unit_price=?, costco_name=?, updated_at=?, product_no=?, split_qty=?, shipping_fee=?,
-                            naver_origin_pno=COALESCE(NULLIF(?, ''), naver_origin_pno)
+                            naver_origin_pno=COALESCE(NULLIF(?, ''), naver_origin_pno),
+                            price_updated_at=COALESCE(NULLIF(?, ''), price_updated_at)
                         WHERE id=?""",
                      (new_price, new_name, now, product_no, split_qty, fee,
-                      naver_origin_pno or '', existing['id']))
+                      naver_origin_pno or '', _price_changed_date, existing['id']))
 
         # ⭐ 자동 분리: 같은 product_no를 가진 다른 행이 있으면 이 행만 매칭에서 격리
         if auto_split_costco_no and product_no:
@@ -626,9 +630,10 @@ def upsert_product(username, costco_name, keyword, price, product_no='', split_q
         fee = shipping_fee if shipping_fee is not None else 0
         conn.execute("""INSERT INTO products
                         (product_no, store_product_name, costco_name, match_keyword,
-                         unit_price, split_qty, shipping_fee, naver_origin_pno, updated_at)
-                        VALUES (?,?,?,?,?,?,?,?,?)""",
+                         unit_price, split_qty, shipping_fee, naver_origin_pno, updated_at,
+                         price_updated_at)
+                        VALUES (?,?,?,?,?,?,?,?,?,?)""",
                      (product_no, costco_name, costco_name, keyword, price, split_qty, fee,
-                      naver_origin_pno or '', now))
+                      naver_origin_pno or '', now, (now if int(price or 0) > 0 else '')))
     conn.commit()
     conn.close()
