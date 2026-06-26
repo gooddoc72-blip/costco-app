@@ -141,7 +141,10 @@ def get_naver_settlements_by_date(username: str, settle_date: str) -> list:
     _ensure_table(conn)
     rows = conn.execute(
         """SELECT product_order_no, order_no, settle_date,
-                  sales_amount, commission, settle_amount, status, fetched_at
+                  sales_amount, product_amount, shipping_amount,
+                  commission, settle_amount, settle_type, reason,
+                  product_name, buyer_name, pay_date, product_order_type,
+                  status, fetched_at
            FROM naver_settlements WHERE settle_date=?
            ORDER BY product_order_no""",
         (settle_date,)
