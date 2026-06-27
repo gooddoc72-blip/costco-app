@@ -86,11 +86,14 @@ def render(USERNAME: str):
         _is_admin_nts = bool((get_user_info(USERNAME) or {}).get('is_admin'))
         _nc1, _nc2 = st.columns([3, 1])
         if _is_admin_nts:
-            _svc_in = _nc1.text_input("🔑 국세청 조회 서비스키 (관리자 — data.go.kr 발급, 공용)",
+            _svc_in = _nc1.text_input("🔑 국세청 조회 서비스키 (관리자 전용 — data.go.kr 발급, 공용)",
                                       value=_svc_key, type="password", key="nts_key")
             if _svc_in != _svc_key:
                 set_global_setting("nts_service_key", _svc_in)
                 _svc_key = _svc_in
+        else:
+            _nc1.caption("ℹ️ 국세청 조회 키는 **관리자**가 설정합니다. "
+                         + ("키 설정됨 — 조회 가능" if _svc_key else "관리자 설정 전엔 조회 불가"))
         if _nc2.button("🔍 국세청 상태조회", use_container_width=True, disabled=not (_svc_key and _regno)):
             if HAS_NTS:
                 _res = nts_status.check_business_status(_svc_key, _regno)
