@@ -112,6 +112,7 @@ from db_settlements import (
     save_coupang_settlements,
     get_coupang_settlements_by_date,
     get_coupang_settle_dates,
+    get_coupang_settled_map,
     save_settlement_matches,
     get_settlement_matches,
     get_actual_settlements_map,

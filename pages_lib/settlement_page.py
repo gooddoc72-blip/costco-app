@@ -16,7 +16,7 @@ from db import (
     get_settled_product_order_nos, save_settlement_matches,
     apply_actual_settlements_to_profit,
     save_coupang_settlements, get_coupang_settlements_by_date, get_coupang_settle_dates,
-    get_dispatch_by_order_id, get_orders_by_order_ids,
+    get_coupang_settled_map, get_dispatch_by_order_id, get_orders_by_order_ids,
 )
 try:
     import coupang_api
@@ -553,6 +553,57 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     if not (HAS_COUPANG_API and _cp_ak and _cp_sk and _cp_vid):
         st.info("⚙️ 설정에서 쿠팡 Wing API 키(Access/Secret/Vendor ID)를 입력하면 쿠팡 정산이 활성화됩니다.")
     else:
+        # ── 📊 판매-정산 대사 (판매건 중 정산 누락 없는지 + 실제 정산금) ──
+        st.subheader("📊 판매–정산 대사 (누락 확인 · 실제 정산금)")
+        _rc1, _rc2, _rc3 = st.columns([1.3, 1.3, 3])
+        _rc_from = _rc1.date_input("판매(주문)일 From", value=datetime.today() - timedelta(days=45),
+                                   key="cp_rc_from")
+        _rc_to = _rc2.date_input("판매(주문)일 To", value=datetime.today(), key="cp_rc_to")
+        _rc3.caption("이 기간 판매한 쿠팡 주문이 정산·입금됐는지 대조합니다. "
+                     "정산이 안 된 건(누락/대기)을 찾아 실제 수익을 확인하세요. "
+                     "(정산은 보통 판매 수주 후 — 최근 판매는 '정산대기'가 정상)")
+        _cp_orders = [o for o in search_order_history(
+            USERNAME, date_from=_rc_from.strftime("%Y-%m-%d"),
+            date_to=_rc_to.strftime("%Y-%m-%d"), limit=5000)
+            if '-' in str(o.get('order_no', ''))]  # 쿠팡 주문(order_no='{orderId}-..')
+        if not _cp_orders:
+            st.caption("해당 기간 쿠팡 판매 주문이 없습니다. (주문 수집을 먼저 하세요)")
+        else:
+            _settled = get_coupang_settled_map(USERNAME)  # {orderId: {settlement,...}}
+            _rc_rows, _n_settled, _n_missing, _sum_settle, _sum_sale = [], 0, 0, 0, 0
+            _today_d = datetime.today().date()
+            for o in _cp_orders:
+                _oid = str(o.get('order_no', '')).split('-')[0]
+                _sale = int(o.get('order_amount', 0) or 0)
+                _sum_sale += _sale
+                _sv = _settled.get(_oid)
+                if _sv:
+                    _n_settled += 1
+                    _sum_settle += _sv['settlement']
+                    _status, _sget, _sdate = '✅ 정산완료', _sv['settlement'], _sv['settle_date']
+                else:
+                    _n_missing += 1
+                    try:
+                        _od = datetime.strptime(str(o.get('order_date', ''))[:10], "%Y-%m-%d").date()
+                        _age = (_today_d - _od).days
+                    except Exception:
+                        _age = 0
+                    _status = '🔴 누락 의심' if _age > 30 else '⏳ 정산대기'
+                    _sget, _sdate = 0, ''
+                _rc_rows.append({
+                    '주문번호': _oid, '상품명': (o.get('product_name', '') or '')[:28],
+                    '판매일': str(o.get('order_date', ''))[:10], '판매액': _sale,
+                    '정산금': _sget if _sv else '', '정산일': _sdate, '상태': _status,
+                })
+            _q1, _q2, _q3, _q4 = st.columns(4)
+            _q1.metric("판매 건수", f"{len(_cp_orders)}건")
+            _q2.metric("✅ 정산완료", f"{_n_settled}건", delta=f"{fmt(_sum_settle)}원")
+            _q3.metric("⏳ 미정산(대기+누락)", f"{_n_missing}건")
+            _q4.metric("판매액 합계", f"{fmt(_sum_sale)}원")
+            st.caption(f"💰 **실제 받은 정산금(정산완료분) = {fmt(_sum_settle)}원** / 누락 의심(판매 30일 초과 미정산)을 확인하세요.")
+            st.dataframe(pd.DataFrame(_rc_rows), use_container_width=True, hide_index=True)
+            st.divider()
+        # ── (참고) 정산일 기준 입금 상세 ──
         _cpc1, _cpc2, _cpc3 = st.columns([1.4, 1.4, 1.2])
         _cp_from = _cpc1.date_input("매출인식일 From", value=datetime.today() - timedelta(days=45),
                                     key="cp_from", help="이 기간의 쿠팡 매출/정산을 수집합니다(매출인식일 기준).")

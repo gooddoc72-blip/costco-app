@@ -226,6 +226,23 @@ def get_coupang_settlements_by_date(username: str, settle_date: str) -> list:
     return [dict(r) for r in rows]
 
 
+def get_coupang_settled_map(username: str) -> dict:
+    """orderId별 정산 집계 — {order_id: {settlement, service_fee, delivery, settle_date}}.
+    한 주문에 여러 item이면 합산. 판매-정산 대사(누락 추적)용."""
+    conn = get_user_db(username)
+    _ensure_coupang_table(conn)
+    rows = conn.execute(
+        "SELECT order_id, SUM(settlement_amount) s, SUM(service_fee) f, "
+        "SUM(delivery_settlement) d, MAX(settle_date) sd "
+        "FROM coupang_settlements GROUP BY order_id"
+    ).fetchall()
+    conn.close()
+    return {str(r['order_id']): {
+        'settlement': int(r['s'] or 0), 'service_fee': int(r['f'] or 0),
+        'delivery': int(r['d'] or 0), 'settle_date': r['sd'] or ''
+    } for r in rows}
+
+
 def get_coupang_settle_dates(username: str, limit: int = 60) -> list:
     conn = get_user_db(username)
     _ensure_coupang_table(conn)
