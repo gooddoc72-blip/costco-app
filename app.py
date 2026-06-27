@@ -376,22 +376,7 @@ _persist_sid = st.session_state.get('_sid')
 if _persist_sid and _get_qparam('sid') != _persist_sid:
     _set_qparam('sid', _persist_sid)
 
-# 메뉴명 캐시 정리 — 부모 윈도우 localStorage 직접 접근 (reload 없음)
-import streamlit.components.v1 as _stc
-_stc.html("""<script>
-(function(){
-  try {
-    var s = (window.parent || window).localStorage;
-    if (s.getItem('_nav_ver') !== '20260627v4') {
-      Object.keys(s).filter(function(k){
-        var lk = k.toLowerCase();
-        return lk.indexOf('streamlit')===0 || lk.indexOf('sidebar')>=0 || lk.indexOf('stsidebar')>=0;
-      }).forEach(function(k){s.removeItem(k);});
-      s.setItem('_nav_ver', '20260627v4');
-    }
-  } catch(e) {}
-})();
-</script>""", height=0, scrolling=False)
+# (localStorage 강제 정리 스크립트 제거 — 사이드바 상태와 충돌해 메뉴가 사라지는 문제 유발)
 
 # 라우팅 실행 — Streamlit이 사이드바 네비게이션 메뉴 자동 생성 + 페이지 전환 시 잔상 자동 제거
 pg = st.navigation(_pages)
