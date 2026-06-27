@@ -167,6 +167,76 @@ def get_naver_settlements_in_range(username: str, start_date: str, end_date: str
     return [dict(r) for r in rows]
 
 
+def _ensure_coupang_table(conn):
+    conn.execute("""CREATE TABLE IF NOT EXISTS coupang_settlements (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        order_id TEXT NOT NULL,
+        vendor_item_id TEXT DEFAULT '',
+        product_name TEXT DEFAULT '',
+        settle_date TEXT NOT NULL,
+        recognition_date TEXT DEFAULT '',
+        sale_amount INTEGER DEFAULT 0,
+        service_fee INTEGER DEFAULT 0,
+        settlement_amount INTEGER DEFAULT 0,
+        delivery_settlement INTEGER DEFAULT 0,
+        quantity INTEGER DEFAULT 1,
+        fetched_at TEXT NOT NULL,
+        UNIQUE(order_id, vendor_item_id, settle_date)
+    )""")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_cps_settle ON coupang_settlements(settle_date)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_cps_order ON coupang_settlements(order_id)")
+    conn.commit()
+
+
+def save_coupang_settlements(username: str, records: list) -> int:
+    """쿠팡 revenue-history 레코드 저장 (order_id+vendor_item_id+settle_date UNIQUE)."""
+    if not records:
+        return 0
+    conn = get_user_db(username)
+    _ensure_coupang_table(conn)
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    saved = 0
+    for r in records:
+        oid = str(r.get('order_id', '') or '').strip()
+        if not oid:
+            continue
+        conn.execute("""INSERT OR REPLACE INTO coupang_settlements
+            (order_id, vendor_item_id, product_name, settle_date, recognition_date,
+             sale_amount, service_fee, settlement_amount, delivery_settlement, quantity, fetched_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            (oid, str(r.get('vendor_item_id', '') or ''), str(r.get('product_name', '') or ''),
+             str(r.get('settlement_date', '') or ''), str(r.get('recognition_date', '') or ''),
+             int(r.get('sale_amount', 0) or 0), int(r.get('service_fee', 0) or 0),
+             int(r.get('settlement_amount', 0) or 0), int(r.get('delivery_settlement', 0) or 0),
+             int(r.get('quantity', 1) or 1), now))
+        saved += 1
+    conn.commit()
+    conn.close()
+    return saved
+
+
+def get_coupang_settlements_by_date(username: str, settle_date: str) -> list:
+    conn = get_user_db(username)
+    _ensure_coupang_table(conn)
+    rows = conn.execute(
+        "SELECT * FROM coupang_settlements WHERE settle_date=? ORDER BY order_id",
+        (settle_date,)
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_coupang_settle_dates(username: str, limit: int = 60) -> list:
+    conn = get_user_db(username)
+    _ensure_coupang_table(conn)
+    rows = conn.execute(
+        "SELECT DISTINCT settle_date FROM coupang_settlements ORDER BY settle_date DESC LIMIT ?",
+        (int(limit),)
+    ).fetchall()
+    conn.close()
+    return [r['settle_date'] for r in rows]
+
+
 def _ensure_match_table(conn):
     conn.execute("""CREATE TABLE IF NOT EXISTS settlement_matches (
         id INTEGER PRIMARY KEY AUTOINCREMENT,

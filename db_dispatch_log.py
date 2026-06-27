@@ -114,6 +114,29 @@ def get_dispatch_by_order_nos(username: str, order_nos: list,
     return out
 
 
+def get_dispatch_by_order_id(username: str, order_ids: list,
+                             platform: str = 'coupang') -> dict:
+    """쿠팡 orderId 리스트로 dispatch_log 역조회.
+    쿠팡 발송 order_no는 '{orderId}-{orderItemId}' 형식 → orderId로 매칭.
+    Returns: {order_id: dispatch_row}."""
+    order_ids = [str(o).strip() for o in (order_ids or []) if str(o).strip()]
+    if not order_ids:
+        return {}
+    conn = get_user_db(username)
+    _ensure_table(conn)
+    out = {}
+    for oid in order_ids:
+        r = conn.execute(
+            "SELECT * FROM dispatch_log WHERE platform=? AND (order_no=? OR order_no LIKE ?) "
+            "ORDER BY dispatched_at LIMIT 1",
+            (platform, oid, oid + '-%')
+        ).fetchone()
+        if r:
+            out[oid] = dict(r)
+    conn.close()
+    return out
+
+
 def get_dispatched_orders_with_details(username: str, dispatched_at: str,
                                        platform: str = None) -> list:
     """일괄발송 성공건 + order_history 상세 정보 JOIN 조회.

@@ -15,7 +15,15 @@ from db import (
     get_dispatch_log_by_date, get_dispatch_dates, get_dispatch_by_order_nos,
     get_settled_product_order_nos, save_settlement_matches,
     apply_actual_settlements_to_profit,
+    save_coupang_settlements, get_coupang_settlements_by_date, get_coupang_settle_dates,
+    get_dispatch_by_order_id,
 )
+try:
+    import coupang_api
+    HAS_COUPANG_API = True
+except ImportError:
+    HAS_COUPANG_API = False
+    coupang_api = None
 from settlement_service import (
     match_shipped_vs_settled, shipped_orders_from_db_rows,
     match_daily_total, analyze_shipping_commission,
@@ -535,3 +543,63 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 _df_ship = pd.DataFrame(_ship_analysis['rows'])
                 _df_ship.columns = ['상품주문번호', '수취인', '고객결제배송비', '정산배송비', '수수료', '수수료율(%)']
                 st.dataframe(_df_ship, use_container_width=True, hide_index=True)
+
+    # ══════════════════════════════════════════════════════════════════
+    # 🛒 쿠팡 정산 매칭 (Wing revenue-history)
+    # ══════════════════════════════════════════════════════════════════
+    st.divider()
+    st.header("🛒 쿠팡 정산 매칭")
+    _cp_ak, _cp_sk, _cp_vid = _gs("coupang_access_key"), _gs("coupang_secret_key"), _gs("coupang_vendor_id")
+    if not (HAS_COUPANG_API and _cp_ak and _cp_sk and _cp_vid):
+        st.info("⚙️ 설정에서 쿠팡 Wing API 키(Access/Secret/Vendor ID)를 입력하면 쿠팡 정산이 활성화됩니다.")
+    else:
+        _cpc1, _cpc2, _cpc3 = st.columns([1.4, 1.4, 1.2])
+        _cp_from = _cpc1.date_input("매출인식일 From", value=datetime.today() - timedelta(days=45),
+                                    key="cp_from", help="이 기간의 쿠팡 매출/정산을 수집합니다(매출인식일 기준).")
+        _cp_to = _cpc2.date_input("매출인식일 To", value=datetime.today(), key="cp_to")
+        _cpc3.write(""); _cpc3.write("")
+        if _cpc3.button("📥 쿠팡 정산 수집·저장", type="primary", use_container_width=True, key="cp_fetch"):
+            with st.spinner("쿠팡 매출/정산 조회 중..."):
+                _cp_recs, _cp_err = coupang_api.get_revenue_history(
+                    _cp_ak, _cp_sk, _cp_vid,
+                    _cp_from.strftime("%Y-%m-%d"), _cp_to.strftime("%Y-%m-%d"))
+            if _cp_err:
+                st.error(f"❌ {_cp_err}")
+            else:
+                _cp_n = save_coupang_settlements(USERNAME, _cp_recs)
+                st.success(f"✅ 쿠팡 정산 {_cp_n}건 저장 (조회 {len(_cp_recs)}건)")
+
+        _cp_dates = get_coupang_settle_dates(USERNAME, limit=60)
+        if not _cp_dates:
+            st.caption("아직 저장된 쿠팡 정산이 없습니다. 위에서 수집·저장하세요.")
+        else:
+            _cp_sel = st.selectbox("정산일(지급일) 선택", _cp_dates, key="cp_settle_date")
+            _cp_rows = get_coupang_settlements_by_date(USERNAME, _cp_sel)
+            _cp_settle = sum(int(r.get('settlement_amount') or 0) for r in _cp_rows)
+            _cp_fee = sum(int(r.get('service_fee') or 0) for r in _cp_rows)
+            _cp_dlv = sum(int(r.get('delivery_settlement') or 0) for r in _cp_rows)
+            _cp_sale = sum(int(r.get('sale_amount') or 0) for r in _cp_rows)
+            _m1, _m2, _m3, _m4 = st.columns(4)
+            _m1.metric("💰 정산금(상품)", f"{fmt(_cp_settle)}원", delta=f"{len(_cp_rows)}건")
+            _m2.metric("수수료 합계", f"{fmt(_cp_fee)}원")
+            _m3.metric("🚚 배송비 정산", f"{fmt(_cp_dlv)}원")
+            _m4.metric("판매액 합계", f"{fmt(_cp_sale)}원")
+            st.caption(f"💡 정산금 = 판매액 − 수수료 (쿠팡). **광고비는 revenue-history에 없어 별도**입니다. "
+                       f"정산금+배송비정산 = {fmt(_cp_settle + _cp_dlv)}원")
+
+            # 역매칭: orderId → 쿠팡 발송 dispatch_log
+            _cp_oids = list({str(r.get('order_id')) for r in _cp_rows if r.get('order_id')})
+            _cp_disp = get_dispatch_by_order_id(USERNAME, _cp_oids, platform='coupang')
+            _cp_matched = sum(1 for o in _cp_oids if o in _cp_disp)
+            _mm1, _mm2 = st.columns(2)
+            _mm1.metric("✅ 발송 매칭", f"{_cp_matched}/{len(_cp_oids)}건")
+            _mm2.metric("🔍 발송기록 없음", f"{len(_cp_oids) - _cp_matched}건")
+            _cp_df = pd.DataFrame([{
+                '주문번호': r.get('order_id'), '상품명': (r.get('product_name') or '')[:30],
+                '판매액': r.get('sale_amount'), '수수료': r.get('service_fee'),
+                '정산금': r.get('settlement_amount'), '배송비정산': r.get('delivery_settlement'),
+                '발송': '✅' if str(r.get('order_id')) in _cp_disp else '—',
+            } for r in _cp_rows])
+            st.dataframe(_cp_df, use_container_width=True, hide_index=True)
+            if _cp_matched < len(_cp_oids):
+                st.caption("🔍 '발송기록 없음'은 쿠팡 발송처리(송장 페이지)가 dispatch_log에 기록되면 매칭됩니다.")
