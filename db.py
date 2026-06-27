@@ -126,6 +126,14 @@ from db_accounting import (
     get_monthly_pl,
 )
 
+from db_banktx import (
+    save_bank_tx,
+    get_bank_tx,
+    update_tx_category,
+    get_uncategorized_tx,
+    get_tx_category_summary,
+)
+
 from db_dispatch_log import (
     log_dispatch_success,
     get_dispatch_log_by_date,

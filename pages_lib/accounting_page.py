@@ -12,8 +12,22 @@ import pandas as pd
 from db import (
     get_pl_summary, get_ledger_rows, get_monthly_pl,
     get_setting, set_setting,
+    save_bank_tx, get_bank_tx, get_tx_category_summary,
 )
 from utils import fmt
+
+
+def _to_int(v):
+    """'1,234' / '1234원' / '-1,234' → int. 빈값/문자 → 0."""
+    if v is None:
+        return 0
+    s = str(v).replace(",", "").replace("원", "").replace(" ", "").strip()
+    if s in ("", "-", "nan", "None"):
+        return 0
+    try:
+        return int(float(s))
+    except Exception:
+        return 0
 
 
 _BIZ_TYPES = ["개인 일반과세자", "개인 간이과세자", "법인"]
@@ -73,8 +87,8 @@ def render(USERNAME: str):
         st.info("이 기간에 저장된 정산(수익계산) 데이터가 없습니다. 수익 계산에서 정산 저장을 먼저 하세요.")
         return
 
-    _tab1, _tab2, _tab3, _tab4 = st.tabs(
-        ["📊 손익계산서", "📒 간편장부", "🧾 부가가치세", "📚 복식부기"])
+    _tab1, _tab2, _tab3, _tab4, _tab5 = st.tabs(
+        ["📊 손익계산서", "📒 간편장부", "🧾 부가가치세", "📚 복식부기", "🏦 통장·카드"])
 
     # ── 손익계산서 ──
     with _tab1:
@@ -275,3 +289,84 @@ def render(USERNAME: str):
         st.dataframe(_je, use_container_width=True, hide_index=True)
         st.caption("⚠️ 자산/부채/자본(자본금·재고·차입 등)은 별도 입력이 필요해 재무상태표는 추후 제공합니다. "
                    "현재는 거래 기반 손익·시산표·분개입니다. 복식부기 의무자/법인은 세무사 확인 권장.")
+
+    # ── 통장·카드 (CSV 업로드 + 컬럼매핑) ──
+    with _tab5:
+        st.caption("인터넷뱅킹·카드사에서 거래내역(CSV/엑셀)을 받아 업로드하세요. "
+                   "은행마다 양식이 달라 어떤 열이 날짜/적요/입금/출금인지 한 번 지정하면 됩니다. "
+                   "계정과목 자동분류(AI)는 다음 단계에서 붙입니다.")
+        with st.expander("📥 거래내역 업로드", expanded=True):
+            _u1, _u2 = st.columns(2)
+            _src_type = _u1.selectbox("종류", ["통장(은행)", "카드"], key="banktx_srctype")
+            _src_name = _u2.text_input("은행/카드사 이름", key="banktx_srcname",
+                                       placeholder="예: 신한은행 / 삼성카드")
+            _file = st.file_uploader("CSV / 엑셀", type=['csv', 'xlsx', 'xls'], key="banktx_file")
+            if _file is not None:
+                # 인코딩 자동(엑셀/CP949/UTF-8)
+                _df_raw = None
+                try:
+                    if _file.name.lower().endswith(('.xlsx', '.xls')):
+                        _df_raw = pd.read_excel(_file, dtype=str)
+                    else:
+                        _b = _file.read()
+                        for _enc in ('cp949', 'utf-8-sig', 'utf-8'):
+                            try:
+                                _df_raw = pd.read_csv(io.BytesIO(_b), dtype=str, encoding=_enc)
+                                break
+                            except Exception:
+                                continue
+                except Exception as _e:
+                    st.error(f"파일 읽기 실패: {_e}")
+                if _df_raw is not None and not _df_raw.empty:
+                    _cols = ["(없음)"] + list(_df_raw.columns)
+                    st.markdown("**컬럼 매핑** — 각 항목이 어느 열인지 선택")
+                    _mc = st.columns(5)
+
+                    def _guess(keys):
+                        for c in _df_raw.columns:
+                            if any(k in str(c) for k in keys):
+                                return _cols.index(c)
+                        return 0
+                    _m_date = _mc[0].selectbox("날짜", _cols, index=_guess(['일자', '날짜', '거래일', 'date']), key="m_date")
+                    _m_desc = _mc[1].selectbox("적요/가맹점", _cols, index=_guess(['적요', '내용', '가맹점', '거래처', '비고']), key="m_desc")
+                    _m_in = _mc[2].selectbox("입금", _cols, index=_guess(['입금', '맡기신', '예금']), key="m_in")
+                    _m_out = _mc[3].selectbox("출금/사용", _cols, index=_guess(['출금', '찾으신', '사용', '결제', '승인금액']), key="m_out")
+                    _m_bal = _mc[4].selectbox("잔액", _cols, index=_guess(['잔액', 'balance']), key="m_bal")
+                    st.dataframe(_df_raw.head(5), use_container_width=True, hide_index=True)
+                    if st.button("💾 거래내역 저장", type="primary", key="banktx_save"):
+                        _rows = []
+                        for _, _rr in _df_raw.iterrows():
+                            _dt = str(_rr.get(_m_date, '') or '').strip()[:10].replace('.', '-').replace('/', '-')
+                            if not _dt or _dt in ('nan', 'None'):
+                                continue
+                            _amt_in = _to_int(_rr.get(_m_in)) if _m_in != "(없음)" else 0
+                            _amt_out = _to_int(_rr.get(_m_out)) if _m_out != "(없음)" else 0
+                            # 카드는 사용액이 출금
+                            _rows.append({
+                                'tx_date': _dt,
+                                'description': str(_rr.get(_m_desc, '') or '') if _m_desc != "(없음)" else '',
+                                'amount_in': _amt_in, 'amount_out': _amt_out,
+                                'balance': _to_int(_rr.get(_m_bal)) if _m_bal != "(없음)" else 0,
+                                'source_type': 'card' if _src_type == '카드' else 'bank',
+                                'source_name': _src_name,
+                            })
+                        _n = save_bank_tx(USERNAME, _rows)
+                        st.success(f"✅ {_n}건 저장 (중복 제외 / 총 {len(_rows)}건 중)")
+
+        # 기간 내 거래 + 계정과목 요약
+        _bt = get_bank_tx(USERNAME, _d_from, _d_to)
+        if _bt:
+            st.markdown(f"##### {_d_from} ~ {_d_to} 거래 ({len(_bt)}건)")
+            _bdf = pd.DataFrame([{
+                '일자': r['tx_date'], '종류': '카드' if r['source_type'] == 'card' else '통장',
+                '적요/가맹점': (r.get('description') or '')[:30],
+                '입금': r['amount_in'] or '', '출금/사용': r['amount_out'] or '',
+                '계정과목': r.get('category') or '(미분류)', '출처': r.get('source_name', ''),
+            } for r in _bt])
+            st.dataframe(_bdf, use_container_width=True, hide_index=True)
+            _sum = get_tx_category_summary(USERNAME, _d_from, _d_to)
+            st.caption("계정과목별 요약: " + " · ".join(
+                f"{s['category']} 출금 {fmt(s['out_sum'])}" for s in _sum[:8]))
+            st.info("➡️ 다음 단계(②)에서 **AI가 적요를 보고 계정과목을 자동 분류**합니다.")
+        else:
+            st.caption("이 기간 업로드된 거래가 없습니다. 위에서 CSV를 업로드하세요.")
