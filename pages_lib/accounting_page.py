@@ -22,6 +22,12 @@ try:
 except ImportError:
     HAS_AI = False
     ai_accounting = None
+try:
+    import nts_status
+    HAS_NTS = True
+except ImportError:
+    HAS_NTS = False
+    nts_status = None
 
 
 def _to_int(v):
@@ -74,6 +80,31 @@ def render(USERNAME: str):
                                 placeholder="000-00-00000")
         _bname = _b2.text_input("상호(사업장명)", value=get_setting(USERNAME, "biz_name") or "")
         _owner = _b3.text_input("대표자명", value=get_setting(USERNAME, "biz_owner") or "")
+
+        # 🔍 국세청 사업자 상태 자동조회
+        _svc_key = get_global_setting("nts_service_key") or ""
+        _is_admin_nts = bool((get_user_info(USERNAME) or {}).get('is_admin'))
+        _nc1, _nc2 = st.columns([3, 1])
+        if _is_admin_nts:
+            _svc_in = _nc1.text_input("🔑 국세청 조회 서비스키 (관리자 — data.go.kr 발급, 공용)",
+                                      value=_svc_key, type="password", key="nts_key")
+            if _svc_in != _svc_key:
+                set_global_setting("nts_service_key", _svc_in)
+                _svc_key = _svc_in
+        if _nc2.button("🔍 국세청 상태조회", use_container_width=True, disabled=not (_svc_key and _regno)):
+            if HAS_NTS:
+                _res = nts_status.check_business_status(_svc_key, _regno)
+                st.session_state['_nts_result'] = _res
+        _nts = st.session_state.get('_nts_result')
+        if _nts:
+            if _nts.get('_error'):
+                st.warning(f"조회 실패: {_nts['_error']}")
+            else:
+                _stt = _nts.get('b_stt', '') or _nts.get('b_stt_cd', '')
+                _ttype = _nts.get('tax_type', '')
+                _rec = nts_status.map_tax_type(_ttype) if HAS_NTS else ''
+                st.success(f"✅ 납세상태: **{_stt}** · 과세유형: **{_ttype}**"
+                           + (f" → 사업자유형 '{_rec}' 권장(위에서 선택 저장)" if _rec else ""))
         _b4, _b5, _b6 = st.columns(3)
         _btae = _b4.text_input("업태", value=get_setting(USERNAME, "biz_tae") or "",
                                placeholder="예: 도소매")
