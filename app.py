@@ -88,7 +88,7 @@ def invalidate_data_cache():
 # plotly 의존 모듈(automation_page, rank_check_page)은 lazy import로 첫 진입 시 1회만 로드
 from pages_lib import (
     home_page, order_upload_page, tracking_page, receipt_page,
-    profit_calc_page, settings_page,
+    profit_calc_page, settings_page, accounting_page,
     product_db_page, admin_page, naver_register_page,
     guide_page, settlement_page,
 )
@@ -308,6 +308,10 @@ def run_profit_calc():
     profit_calc_page.render(USERNAME, IS_ADMIN, settings)
 
 
+def run_accounting():
+    accounting_page.render(USERNAME)
+
+
 def run_settlement_match():
     settlement_page.render(USERNAME, IS_ADMIN, settings)
 
@@ -348,6 +352,7 @@ _pages = {
         st.Page(run_tracking,     title="송장번호",    icon=":material/local_shipping:"),
         st.Page(run_profit_calc,  title="수익 계산",   icon=":material/payments:"),
         st.Page(run_settlement_match, title="정산 매칭", icon=":material/account_balance_wallet:"),
+        st.Page(run_accounting,   title="세무회계",    icon=":material/calculate:"),
     ],
     "상품 관리": [
         st.Page(run_product_db,     title="제품 DB",     icon=":material/inventory_2:"),
