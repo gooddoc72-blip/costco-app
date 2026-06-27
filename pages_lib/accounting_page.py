@@ -66,7 +66,8 @@ def render(USERNAME: str):
                "부가세/복식부기/종소세는 단계적으로 확장됩니다.")
 
     # ── 사업자 설정 ──
-    _biz_open = bool(not (get_setting(USERNAME, "biz_regno") or "").strip())
+    _biz_open = not all((get_setting(USERNAME, _k) or "").strip()
+                        for _k in ("biz_regno", "biz_name", "biz_owner"))
     with st.expander("⚙️ 사업자 설정 (등록번호·상호 등)", expanded=_biz_open):
         # 🤖 사업자등록증 업로드 → AI 자동입력
         _reg_key = get_global_setting("anthropic_api_key") or ""
