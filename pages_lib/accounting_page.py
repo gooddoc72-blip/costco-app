@@ -85,36 +85,40 @@ def render(USERNAME: str):
             if _ext.get('_error'):
                 st.error(f"❌ {_ext['_error']}")
             else:
-                for _ek, _fk in [('biz_regno', 'biz_regno_v'), ('biz_name', 'biz_name_v'),
-                                 ('biz_owner', 'biz_owner_v')]:
+                for _ek in ('biz_regno', 'biz_name', 'biz_owner'):
                     if _ext.get(_ek):
-                        st.session_state[_fk] = _ext[_ek]
                         set_setting(USERNAME, _ek, _ext[_ek])
                 st.success("✅ 사업자등록증에서 자동입력 완료! (아래에서 확인·수정 후 저장)")
                 st.rerun()
         if not _reg_key:
             _ru1.caption("ℹ️ AI 키(관리자 설정) 후 사업자등록증 자동입력 가능")
         st.divider()
-        _c1, _c2 = st.columns(2)
-        _biz = _c1.selectbox("사업자 유형", _BIZ_TYPES,
-                             index=_BIZ_TYPES.index(get_setting(USERNAME, "biz_type") or _BIZ_TYPES[0])
-                             if (get_setting(USERNAME, "biz_type") in _BIZ_TYPES) else 0)
-        _book = _c2.selectbox("장부 방식", _BOOK_TYPES,
-                              index=_BOOK_TYPES.index(get_setting(USERNAME, "book_type") or _BOOK_TYPES[0])
-                              if (get_setting(USERNAME, "book_type") in _BOOK_TYPES) else 0)
-        # 세션 키로 입력 유지(조건부 UI 변동에도 초기화 안 되게)
-        for _fk, _sk in [("biz_regno_v", "biz_regno"), ("biz_name_v", "biz_name"),
-                         ("biz_owner_v", "biz_owner")]:
-            if _fk not in st.session_state:
-                st.session_state[_fk] = get_setting(USERNAME, _sk) or ""
-        _b1, _b2, _b3 = st.columns(3)
-        _regno = _b1.text_input("사업자등록번호", key="biz_regno_v", placeholder="000-00-00000")
-        _bname = _b2.text_input("상호(사업장명)", key="biz_name_v")
-        _owner = _b3.text_input("대표자명", key="biz_owner_v")
+        # ── 사업자 정보 입력 (폼 — 키 입력이 끊기지 않음) ──
+        with st.form("biz_info_form"):
+            _c1, _c2 = st.columns(2)
+            _biz = _c1.selectbox("사업자 유형", _BIZ_TYPES,
+                                 index=_BIZ_TYPES.index(get_setting(USERNAME, "biz_type") or _BIZ_TYPES[0])
+                                 if (get_setting(USERNAME, "biz_type") in _BIZ_TYPES) else 0)
+            _book = _c2.selectbox("장부 방식", _BOOK_TYPES,
+                                  index=_BOOK_TYPES.index(get_setting(USERNAME, "book_type") or _BOOK_TYPES[0])
+                                  if (get_setting(USERNAME, "book_type") in _BOOK_TYPES) else 0)
+            _b1, _b2, _b3 = st.columns(3)
+            _regno = _b1.text_input("사업자등록번호",
+                                    value=get_setting(USERNAME, "biz_regno") or "",
+                                    placeholder="000-00-00000")
+            _bname = _b2.text_input("상호(사업장명)", value=get_setting(USERNAME, "biz_name") or "")
+            _owner = _b3.text_input("대표자명", value=get_setting(USERNAME, "biz_owner") or "")
+            if st.form_submit_button("💾 사업자 설정 저장", type="primary"):
+                for _k, _v in [("biz_type", _biz), ("book_type", _book), ("biz_regno", _regno),
+                               ("biz_name", _bname), ("biz_owner", _owner)]:
+                    set_setting(USERNAME, _k, _v)
+                st.success("저장되었습니다.")
+                st.rerun()
 
-        # 🔍 국세청 사업자 상태 자동조회
+        # 🔍 국세청 사업자 상태 자동조회 (저장된 사업자번호 기준)
         _svc_key = get_global_setting("nts_service_key") or ""
         _is_admin_nts = bool((get_user_info(USERNAME) or {}).get('is_admin'))
+        _saved_regno = get_setting(USERNAME, "biz_regno") or ""
         _nc1, _nc2, _nc3 = st.columns([3, 0.9, 1.1])
         if _is_admin_nts:
             _svc_in = _nc1.text_input("🔑 국세청 조회 서비스키 (관리자 전용 — data.go.kr 발급, 공용)",
@@ -128,12 +132,11 @@ def render(USERNAME: str):
             _nc1.caption("ℹ️ 국세청 조회 키는 **관리자**가 설정합니다. "
                          + ("키 설정됨 — 조회 가능" if _svc_key else "관리자 설정 전엔 조회 불가"))
         _nc3.write(""); _nc3.write("")
-        if _nc3.button("🔍 국세청 상태조회", use_container_width=True,
-                       disabled=not (_svc_key and _regno), key="nts_lookup"):
+        if _nc3.button("🔍 국세청 상태조회 (저장 후)", use_container_width=True,
+                       disabled=not (_svc_key and _saved_regno), key="nts_lookup"):
             if HAS_NTS:
-                _res = nts_status.check_business_status(_svc_key, _regno)
+                _res = nts_status.check_business_status(_svc_key, _saved_regno)
                 st.session_state['_nts_result'] = _res
-                # 과세유형 → 사업자유형 자동 적용 (국세청이 주는 건 이것뿐)
                 if not _res.get('_error'):
                     _rec_auto = nts_status.map_tax_type(_res.get('tax_type', ''))
                     if _rec_auto:
@@ -148,14 +151,9 @@ def render(USERNAME: str):
                 _ttype = _nts.get('tax_type', '')
                 _rec = nts_status.map_tax_type(_ttype) if HAS_NTS else ''
                 st.success(f"✅ 납세상태: **{_stt}** · 과세유형: **{_ttype}**"
-                           + (f" → 사업자유형 **{_rec}** 자동 적용됨" if _rec else ""))
-                st.caption("ℹ️ 상호·대표자·업태·종목·주소는 국세청 공개 API로 제공되지 않습니다(개인정보). "
-                           "→ 위 **📄 사업자등록증 업로드 → 🤖 자동입력** 으로 채우세요.")
-        if st.button("💾 사업자 설정 저장"):
-            for _k, _v in [("biz_type", _biz), ("book_type", _book), ("biz_regno", _regno),
-                           ("biz_name", _bname), ("biz_owner", _owner)]:
-                set_setting(USERNAME, _k, _v)
-            st.success("저장되었습니다.")
+                           + (f" → 사업자유형 **{_rec}** 자동 적용됨(폼에서 확인)" if _rec else ""))
+                st.caption("ℹ️ 상호·대표자는 국세청 공개 API로 제공되지 않습니다(개인정보). "
+                           "→ 위 **📄 사업자등록증 업로드 → 🤖 자동입력** 또는 직접 입력하세요.")
 
     # 사업자 정보 헤더 (장부/재무제표 상단 표기)
     _binfo = {k: (get_setting(USERNAME, k) or "") for k in
