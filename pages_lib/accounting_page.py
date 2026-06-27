@@ -65,6 +65,12 @@ def render(USERNAME: str):
     st.caption("정산·매입·경비 데이터를 회계 형식(손익계산서·간편장부)으로 집계합니다. "
                "부가세/복식부기/종소세는 단계적으로 확장됩니다.")
 
+    # 🧪 진단용 테스트 입력칸 (페이지 최상단) — 여기 타이핑 되는지 확인
+    _typing_test = st.text_input("🧪 [진단] 이 칸에 글자가 입력되나요? (아무거나 타이핑)",
+                                 key="_typing_test_top")
+    if _typing_test:
+        st.success(f"✅ 최상단 테스트 입력 정상 작동: '{_typing_test}'")
+
     # ── 사업자 설정 (expander 대신 일반 컨테이너 — 입력 인터랙션 안정) ──
     st.markdown("#### ⚙️ 사업자 설정")
     with st.container(border=True):
