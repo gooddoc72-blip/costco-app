@@ -68,6 +68,31 @@ def render(USERNAME: str):
     # ── 사업자 설정 ──
     _biz_open = bool(not (get_setting(USERNAME, "biz_regno") or "").strip())
     with st.expander("⚙️ 사업자 설정 (등록번호·상호 등)", expanded=_biz_open):
+        # 🤖 사업자등록증 업로드 → AI 자동입력
+        _reg_key = get_global_setting("anthropic_api_key") or ""
+        _ru1, _ru2 = st.columns([3, 1])
+        _reg_file = _ru1.file_uploader("📄 사업자등록증 (이미지/PDF) — AI 자동입력",
+                                       type=['jpg', 'jpeg', 'png', 'pdf'], key="reg_upload")
+        _ru2.write(""); _ru2.write("")
+        if _ru2.button("🤖 자동입력", use_container_width=True,
+                       disabled=not (_reg_file and _reg_key and HAS_AI), key="reg_extract"):
+            _fn = _reg_file.name.lower()
+            _mt = ("application/pdf" if _fn.endswith('.pdf')
+                   else "image/png" if _fn.endswith('.png') else "image/jpeg")
+            with st.spinner("AI가 사업자등록증을 읽는 중..."):
+                _ext = ai_accounting.extract_business_registration(_reg_key, _reg_file.read(), _mt)
+            if _ext.get('_error'):
+                st.error(f"❌ {_ext['_error']}")
+            else:
+                for _k in ('biz_regno', 'biz_name', 'biz_owner', 'biz_tae',
+                           'biz_item', 'biz_addr', 'biz_open_date'):
+                    if _ext.get(_k):
+                        set_setting(USERNAME, _k, _ext[_k])
+                st.success("✅ 사업자등록증에서 자동입력 완료! (아래에서 확인·수정 후 저장)")
+                st.rerun()
+        if not _reg_key:
+            _ru1.caption("ℹ️ AI 키(관리자 설정) 후 사업자등록증 자동입력 가능")
+        st.divider()
         _c1, _c2 = st.columns(2)
         _biz = _c1.selectbox("사업자 유형", _BIZ_TYPES,
                              index=_BIZ_TYPES.index(get_setting(USERNAME, "biz_type") or _BIZ_TYPES[0])

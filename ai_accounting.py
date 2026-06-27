@@ -5,8 +5,58 @@
 """
 import json
 import re
+import base64
 
 import requests
+
+
+def extract_business_registration(api_key: str, file_bytes: bytes,
+                                  media_type: str = "image/jpeg",
+                                  model: str = "claude-sonnet-4-6") -> dict:
+    """사업자등록증(이미지/PDF)에서 사업자 정보 추출.
+    Returns: {biz_regno, biz_name, biz_owner, biz_tae, biz_item, biz_addr, biz_open_date}
+             또는 {'_error': msg}
+    """
+    if not api_key:
+        return {"_error": "AI 키가 없습니다(관리자 설정)."}
+    if not file_bytes:
+        return {"_error": "파일이 없습니다."}
+    b64 = base64.b64encode(file_bytes).decode()
+    is_pdf = "pdf" in (media_type or "").lower()
+    _content_doc = ({"type": "document",
+                     "source": {"type": "base64", "media_type": "application/pdf", "data": b64}}
+                    if is_pdf else
+                    {"type": "image",
+                     "source": {"type": "base64", "media_type": media_type, "data": b64}})
+    _prompt = (
+        "이 사업자등록증에서 정보를 추출해 JSON으로만 출력(설명 금지):\n"
+        '{"biz_regno":"등록번호 000-00-00000 형식","biz_name":"상호(법인명)",'
+        '"biz_owner":"대표자(성명)","biz_tae":"업태","biz_item":"종목",'
+        '"biz_addr":"사업장 소재지 주소","biz_open_date":"개업연월일 YYYY-MM-DD"}\n'
+        "없는 항목은 빈 문자열. 업태/종목이 여러 개면 대표 1개만."
+    )
+    try:
+        resp = requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={"x-api-key": api_key, "anthropic-version": "2023-06-01",
+                     "content-type": "application/json"},
+            json={"model": model, "max_tokens": 1000,
+                  "messages": [{"role": "user",
+                                "content": [_content_doc, {"type": "text", "text": _prompt}]}]},
+            timeout=90,
+        )
+    except Exception as e:
+        return {"_error": f"API 호출 실패: {str(e)[:150]}"}
+    if resp.status_code != 200:
+        return {"_error": f"API 오류 {resp.status_code}: {resp.text[:200]}"}
+    try:
+        text = resp.json()["content"][0]["text"]
+        m = re.search(r"\{.*\}", text, re.DOTALL)
+        d = json.loads(m.group(0)) if m else {}
+    except Exception as e:
+        return {"_error": f"응답 파싱 실패: {str(e)[:150]}"}
+    return {k: str(d.get(k, "") or "") for k in
+            ("biz_regno", "biz_name", "biz_owner", "biz_tae", "biz_item", "biz_addr", "biz_open_date")}
 
 # 표준 계정과목 (소규모 쇼핑몰 기준)
 ACCOUNTS = [
