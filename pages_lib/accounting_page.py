@@ -74,33 +74,7 @@ def render(USERNAME: str):
     # ── 사업자 설정 (expander 대신 일반 컨테이너 — 입력 인터랙션 안정) ──
     st.markdown("#### ⚙️ 사업자 설정")
     with st.container(border=True):
-        # 🤖 사업자등록증 업로드 → AI 자동입력
-        _reg_key = get_global_setting("anthropic_api_key") or ""
-        _ru1, _ru2 = st.columns([3, 1])
-        _reg_file = _ru1.file_uploader("📄 사업자등록증 (이미지/PDF) — AI 자동입력",
-                                       type=['jpg', 'jpeg', 'png', 'pdf'], key="reg_upload")
-        _ru2.write(""); _ru2.write("")
-        if _ru2.button("🤖 자동입력", use_container_width=True,
-                       disabled=not (_reg_file and _reg_key and HAS_AI), key="reg_extract"):
-            _fn = _reg_file.name.lower()
-            _mt = ("application/pdf" if _fn.endswith('.pdf')
-                   else "image/png" if _fn.endswith('.png') else "image/jpeg")
-            with st.spinner("AI가 사업자등록증을 읽는 중..."):
-                _ext = ai_accounting.extract_business_registration(_reg_key, _reg_file.read(), _mt)
-            if _ext.get('_error'):
-                st.error(f"❌ {_ext['_error']}")
-            else:
-                for _ek, _fk in [('biz_regno', 'biz_regno_v'), ('biz_name', 'biz_name_v'),
-                                 ('biz_owner', 'biz_owner_v')]:
-                    if _ext.get(_ek):
-                        st.session_state[_fk] = _ext[_ek]
-                        set_setting(USERNAME, _ek, _ext[_ek])
-                st.success("✅ 사업자등록증에서 자동입력 완료! (아래에서 확인·수정 후 저장)")
-                st.rerun()
-        if not _reg_key:
-            _ru1.caption("ℹ️ AI 키(관리자 설정) 후 사업자등록증 자동입력 가능")
-        st.divider()
-        # ── 사업자 정보 입력 (세션키 plain inputs — 폼/컨테이너 없이 가장 단순) ──
+        # ── 사업자 정보 입력 (최상단 배치 — 파일 드롭존에 안 가려지게) ──
         _c1, _c2 = st.columns(2)
         _biz = _c1.selectbox("사업자 유형", _BIZ_TYPES,
                              index=_BIZ_TYPES.index(get_setting(USERNAME, "biz_type") or _BIZ_TYPES[0])
@@ -117,12 +91,36 @@ def render(USERNAME: str):
         _bname = _b2.text_input("상호(사업장명)", key="biz_name_v")
         _owner = _b3.text_input("대표자명", key="biz_owner_v")
         if st.button("💾 사업자 설정 저장", type="primary", key="biz_save_btn"):
-            st.info(f"🔵 입력값 → 상호:'{_bname}'  대표자:'{_owner}'")
             for _k, _v in [("biz_type", _biz), ("book_type", _book), ("biz_regno", _regno),
                            ("biz_name", _bname), ("biz_owner", _owner)]:
                 set_setting(USERNAME, _k, _v)
             st.success(f"✅ 저장됨 → 상호:'{get_setting(USERNAME, 'biz_name')}'  "
                        f"대표자:'{get_setting(USERNAME, 'biz_owner')}'")
+
+        # 📄 사업자등록증 AI 자동입력 (접힘 — 펼쳐야 업로드칸 표시 → 평소엔 입력칸 안 가림)
+        with st.expander("📄 사업자등록증 업로드로 자동입력 (선택)", expanded=False):
+            _reg_key = get_global_setting("anthropic_api_key") or ""
+            _reg_file = st.file_uploader("사업자등록증 (이미지/PDF)",
+                                         type=['jpg', 'jpeg', 'png', 'pdf'], key="reg_upload")
+            if st.button("🤖 자동입력", disabled=not (_reg_file and _reg_key and HAS_AI),
+                         key="reg_extract"):
+                _fn = _reg_file.name.lower()
+                _mt = ("application/pdf" if _fn.endswith('.pdf')
+                       else "image/png" if _fn.endswith('.png') else "image/jpeg")
+                with st.spinner("AI가 사업자등록증을 읽는 중..."):
+                    _ext = ai_accounting.extract_business_registration(_reg_key, _reg_file.read(), _mt)
+                if _ext.get('_error'):
+                    st.error(f"❌ {_ext['_error']}")
+                else:
+                    for _ek, _fk in [('biz_regno', 'biz_regno_v'), ('biz_name', 'biz_name_v'),
+                                     ('biz_owner', 'biz_owner_v')]:
+                        if _ext.get(_ek):
+                            st.session_state[_fk] = _ext[_ek]
+                            set_setting(USERNAME, _ek, _ext[_ek])
+                    st.success("✅ 사업자등록증에서 자동입력 완료!")
+                    st.rerun()
+            if not _reg_key:
+                st.caption("ℹ️ AI 키(관리자 설정) 후 자동입력 가능")
 
         # 🔍 국세청 사업자 상태 자동조회 (저장된 사업자번호 기준)
         _svc_key = get_global_setting("nts_service_key") or ""
