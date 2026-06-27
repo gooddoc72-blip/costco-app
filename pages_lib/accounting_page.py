@@ -73,7 +73,7 @@ def render(USERNAME: str):
         st.info("이 기간에 저장된 정산(수익계산) 데이터가 없습니다. 수익 계산에서 정산 저장을 먼저 하세요.")
         return
 
-    _tab1, _tab2 = st.tabs(["📊 손익계산서", "📒 간편장부"])
+    _tab1, _tab2, _tab3 = st.tabs(["📊 손익계산서", "📒 간편장부", "🧾 부가가치세"])
 
     # ── 손익계산서 ──
     with _tab1:
@@ -137,7 +137,57 @@ def render(USERNAME: str):
         } for r in _ledger])
         st.dataframe(_ldf, use_container_width=True, hide_index=True)
 
-        # 엑셀 다운로드 (세무사 제출용)
+        _LEDGER_DONE = True
+
+    # ── 부가가치세 집계 ──
+    with _tab3:
+        _ad_month3 = _d_to[:7]
+        _adcost3 = int(get_setting(USERNAME, f"coupang_adcost_{_ad_month3}") or 0)
+        st.caption("매출세액 − 매입세액 = 납부세액. 플랫폼 수수료·택배비·광고비는 세금계산서 발행분(매입세액공제). "
+                   "면세 매입은 공제 불가 → 면세 매입액을 입력해 과세분만 공제합니다.")
+        _vat_exempt = int(st.number_input(
+            "면세 매입액 (코스트코 면세품 등, 수동)", value=0, min_value=0, step=10000,
+            key=f"vat_exempt_{_d_from}",
+            help="영수증 과세/면세 자동구분은 파서 보강 후 적용. 현재는 면세 매입액을 직접 입력."))
+        _taxable_purchase = max(0, pl['cost'] - _vat_exempt)  # 과세 매입(매입가)
+        # 매출세액 (과세매출 가정 — 면세매출 구분은 추후)
+        _vat_sales = round(pl['sales'] * 10 / 110)
+        # 매입세액 (과세분 × 10/110)
+        _vat_purchase = round(_taxable_purchase * 10 / 110)
+        _vat_commission = round(pl['commission'] * 10 / 110)   # 플랫폼 수수료(세금계산서)
+        _vat_delivery = round(pl['delivery'] * 10 / 110)        # 택배비(세금계산서/카드)
+        _vat_ad = round(_adcost3 * 10 / 110)                    # 광고비
+        _vat_in = _vat_purchase + _vat_commission + _vat_delivery + _vat_ad
+        _vat_pay = _vat_sales - _vat_in
+        _v1, _v2, _v3 = st.columns(3)
+        _v1.metric("매출세액", f"{fmt(_vat_sales)}원")
+        _v2.metric("매입세액(공제)", f"{fmt(_vat_in)}원")
+        _v3.metric("💰 납부(환급)세액", f"{fmt(_vat_pay)}원",
+                   delta=("납부" if _vat_pay >= 0 else "환급"))
+        _vat_rows = [
+            ("매출세액 (과세매출×10/110)", _vat_sales, f"과세매출 {fmt(pl['sales'])}"),
+            ("(−) 매입세액 — 상품매입(과세)", -_vat_purchase, f"과세매입 {fmt(_taxable_purchase)}"),
+            ("(−) 매입세액 — 플랫폼 수수료", -_vat_commission, f"수수료 {fmt(pl['commission'])} (네이버/쿠팡 세금계산서)"),
+            ("(−) 매입세액 — 택배비", -_vat_delivery, f"택배 {fmt(pl['delivery'])}"),
+            ("(−) 매입세액 — 광고비", -_vat_ad, f"광고 {fmt(_adcost3)}"),
+            ("= 납부(환급)세액", _vat_pay, ""),
+        ]
+        _vhtml = '<table style="width:100%;border-collapse:collapse;font-size:14px">'
+        for _n, _a, _m in _vat_rows:
+            _b = _n.startswith(("매출", "= 납부"))
+            _c = "#1D9E75" if _a >= 0 else "#E74C3C"
+            _vhtml += (f'<tr style="border-bottom:1px solid #eee">'
+                       f'<td style="padding:7px 10px;{"font-weight:700" if _b else "color:#666"}">{_n}</td>'
+                       f'<td style="padding:7px 10px;text-align:right;font-weight:{"700" if _b else "500"};color:{_c}">{_a:,}원</td>'
+                       f'<td style="padding:7px 10px;font-size:12px;color:#999">{_m}</td></tr>')
+        _vhtml += '</table>'
+        st.markdown(_vhtml, unsafe_allow_html=True)
+        st.caption(f"⚠️ 추정치입니다 — 모든 매출을 과세로 가정(면세매출 구분 추후), 면세매입은 수동입력. "
+                   f"사업자유형({_biz})에 따라 신고주기 다름(일반=분기, 간이=연). "
+                   f"정확한 신고는 세무사/홈택스 확인 필요.")
+
+    # ── 간편장부 엑셀 (탭2) ──
+    with _tab2:
         if not _ldf.empty:
             _buf = io.BytesIO()
             with pd.ExcelWriter(_buf, engine='xlsxwriter') as _w:
