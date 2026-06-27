@@ -569,8 +569,11 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         if not _cp_orders:
             st.caption("해당 기간 쿠팡 판매 주문이 없습니다. (주문 수집을 먼저 하세요)")
         else:
-            _settled = get_coupang_settled_map(USERNAME)  # {orderId: {settlement,...}}
-            _rc_rows, _n_settled, _n_missing, _sum_settle, _sum_sale = [], 0, 0, 0, 0
+            _settled = get_coupang_settled_map(USERNAME)  # {orderId: {settlement, first_amt, ...}}
+            _rc_rows = []
+            _n_settled = _n_missing = _sum_settle = _sum_sale = 0
+            _sum_1st = _sum_2nd = 0
+            _cycles = set()
             _today_d = datetime.today().date()
             for o in _cp_orders:
                 _oid = str(o.get('order_no', '')).split('-')[0]
@@ -580,7 +583,16 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 if _sv:
                     _n_settled += 1
                     _sum_settle += _sv['settlement']
-                    _status, _sget, _sdate = '✅ 정산완료', _sv['settlement'], _sv['settle_date']
+                    _sum_1st += _sv['first_amt']; _sum_2nd += _sv['second_amt']
+                    _cycles.add(_sv['cycle'])
+                    _rc_rows.append({
+                        '주문번호': _oid, '상품명': (o.get('product_name', '') or '')[:24],
+                        '판매일': str(o.get('order_date', ''))[:10], '판매액': _sale,
+                        '정산금(전액)': _sv['settlement'], '주기': _sv['cycle'],
+                        '1차(70%)': _sv['first_amt'], '1차일': _sv['settle_date'],
+                        '2차(30%)': _sv['second_amt'] or '', '2차일': _sv['final_settle_date'] or '',
+                        '상태': '✅ 정산완료',
+                    })
                 else:
                     _n_missing += 1
                     try:
@@ -588,19 +600,24 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         _age = (_today_d - _od).days
                     except Exception:
                         _age = 0
-                    _status = '🔴 누락 의심' if _age > 30 else '⏳ 정산대기'
-                    _sget, _sdate = 0, ''
-                _rc_rows.append({
-                    '주문번호': _oid, '상품명': (o.get('product_name', '') or '')[:28],
-                    '판매일': str(o.get('order_date', ''))[:10], '판매액': _sale,
-                    '정산금': _sget if _sv else '', '정산일': _sdate, '상태': _status,
-                })
+                    _rc_rows.append({
+                        '주문번호': _oid, '상품명': (o.get('product_name', '') or '')[:24],
+                        '판매일': str(o.get('order_date', ''))[:10], '판매액': _sale,
+                        '정산금(전액)': '', '주기': '', '1차(70%)': '', '1차일': '',
+                        '2차(30%)': '', '2차일': '',
+                        '상태': '🔴 누락 의심' if _age > 30 else '⏳ 정산대기',
+                    })
             _q1, _q2, _q3, _q4 = st.columns(4)
             _q1.metric("판매 건수", f"{len(_cp_orders)}건")
             _q2.metric("✅ 정산완료", f"{_n_settled}건", delta=f"{fmt(_sum_settle)}원")
             _q3.metric("⏳ 미정산(대기+누락)", f"{_n_missing}건")
             _q4.metric("판매액 합계", f"{fmt(_sum_sale)}원")
-            st.caption(f"💰 **실제 받은 정산금(정산완료분) = {fmt(_sum_settle)}원** / 누락 의심(판매 30일 초과 미정산)을 확인하세요.")
+            _cyc_label = " / ".join(sorted(_cycles)) if _cycles else "-"
+            st.caption(
+                f"💰 **실제 받을 정산금(전액) = {fmt(_sum_settle)}원** · 정산주기: **{_cyc_label}** | "
+                f"주정산 분할 → **1차(70%) {fmt(_sum_1st)}원 + 2차(30%) {fmt(_sum_2nd)}원**. "
+                f"(70/30은 정책 기준 계산값 · 월정산은 1차에 100%) 🔴누락의심(판매 30일 초과 미정산) 확인."
+            )
             st.dataframe(pd.DataFrame(_rc_rows), use_container_width=True, hide_index=True)
             st.divider()
         # ── (참고) 정산일 기준 입금 상세 ──

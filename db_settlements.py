@@ -185,6 +185,10 @@ def _ensure_coupang_table(conn):
     )""")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_cps_settle ON coupang_settlements(settle_date)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_cps_order ON coupang_settlements(order_id)")
+    try:  # 2차 지급일(30%) — 주정산 분할 반영용
+        conn.execute("ALTER TABLE coupang_settlements ADD COLUMN final_settle_date TEXT DEFAULT ''")
+    except Exception:
+        pass
     conn.commit()
 
 
@@ -202,13 +206,14 @@ def save_coupang_settlements(username: str, records: list) -> int:
             continue
         conn.execute("""INSERT OR REPLACE INTO coupang_settlements
             (order_id, vendor_item_id, product_name, settle_date, recognition_date,
-             sale_amount, service_fee, settlement_amount, delivery_settlement, quantity, fetched_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+             sale_amount, service_fee, settlement_amount, delivery_settlement, quantity,
+             final_settle_date, fetched_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
             (oid, str(r.get('vendor_item_id', '') or ''), str(r.get('product_name', '') or ''),
              str(r.get('settlement_date', '') or ''), str(r.get('recognition_date', '') or ''),
              int(r.get('sale_amount', 0) or 0), int(r.get('service_fee', 0) or 0),
              int(r.get('settlement_amount', 0) or 0), int(r.get('delivery_settlement', 0) or 0),
-             int(r.get('quantity', 1) or 1), now))
+             int(r.get('quantity', 1) or 1), str(r.get('final_settlement_date', '') or ''), now))
         saved += 1
     conn.commit()
     conn.close()
@@ -233,14 +238,29 @@ def get_coupang_settled_map(username: str) -> dict:
     _ensure_coupang_table(conn)
     rows = conn.execute(
         "SELECT order_id, SUM(settlement_amount) s, SUM(service_fee) f, "
-        "SUM(delivery_settlement) d, MAX(settle_date) sd "
+        "SUM(delivery_settlement) d, MAX(settle_date) sd, MAX(final_settle_date) fsd "
         "FROM coupang_settlements GROUP BY order_id"
     ).fetchall()
     conn.close()
-    return {str(r['order_id']): {
-        'settlement': int(r['s'] or 0), 'service_fee': int(r['f'] or 0),
-        'delivery': int(r['d'] or 0), 'settle_date': r['sd'] or ''
-    } for r in rows}
+    out = {}
+    for r in rows:
+        s = int(r['s'] or 0)
+        sd = r['sd'] or ''
+        fsd = r['fsd'] or ''
+        # 2차 지급일이 없거나 1차와 같으면 월정산(100%), 다르면 주정산(70/30)
+        monthly = (not fsd) or (fsd == sd)
+        if monthly:
+            first_amt, second_amt = s, 0
+        else:
+            first_amt = round(s * 0.7)
+            second_amt = s - first_amt
+        out[str(r['order_id'])] = {
+            'settlement': s, 'service_fee': int(r['f'] or 0), 'delivery': int(r['d'] or 0),
+            'settle_date': sd, 'final_settle_date': fsd,
+            'cycle': '월정산' if monthly else '주정산',
+            'first_amt': first_amt, 'second_amt': second_amt,
+        }
+    return out
 
 
 def get_coupang_settle_dates(username: str, limit: int = 60) -> list:
