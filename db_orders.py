@@ -142,6 +142,29 @@ def get_saved_dates(username):
 
 # ── 주문 이력 (발송 추적용) ──────────────────────────────
 
+def get_orders_by_order_ids(username, order_ids):
+    """쿠팡 orderId 리스트로 order_history 역조회 (order_no='{orderId}-{itemId}').
+    발송처리(dispatch_log) 전이라도 주문수집 데이터로 매칭하기 위한 폴백.
+    Returns: {order_id: order_history_row}."""
+    order_ids = [str(o).strip() for o in (order_ids or []) if str(o).strip()]
+    if not order_ids:
+        return {}
+    conn = get_user_db(username)
+    out = {}
+    for oid in order_ids:
+        try:
+            r = conn.execute(
+                "SELECT * FROM order_history WHERE order_no=? OR order_no LIKE ? ORDER BY id LIMIT 1",
+                (oid, oid + '-%')
+            ).fetchone()
+        except Exception:
+            r = None
+        if r:
+            out[oid] = dict(r)
+    conn.close()
+    return out
+
+
 def save_order_history(username, full_df, cost_df=None):
     import hashlib as _hl
     import pandas as pd

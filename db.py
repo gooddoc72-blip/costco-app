@@ -63,6 +63,7 @@ from db_orders import (
     active_orders_to_naver_excel_df,
     db_rows_to_orders_df,
     search_order_history,
+    get_orders_by_order_ids,
 )
 
 from db_stats import (

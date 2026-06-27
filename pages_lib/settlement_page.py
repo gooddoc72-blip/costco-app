@@ -16,7 +16,7 @@ from db import (
     get_settled_product_order_nos, save_settlement_matches,
     apply_actual_settlements_to_profit,
     save_coupang_settlements, get_coupang_settlements_by_date, get_coupang_settle_dates,
-    get_dispatch_by_order_id,
+    get_dispatch_by_order_id, get_orders_by_order_ids,
 )
 try:
     import coupang_api
@@ -587,19 +587,27 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             st.caption(f"💡 정산금 = 판매액 − 수수료 (쿠팡). **광고비는 revenue-history에 없어 별도**입니다. "
                        f"정산금+배송비정산 = {fmt(_cp_settle + _cp_dlv)}원")
 
-            # 역매칭: orderId → 쿠팡 발송 dispatch_log
+            # 역매칭: orderId → 발송(dispatch_log) 우선, 없으면 주문수집(order_history) 폴백
             _cp_oids = list({str(r.get('order_id')) for r in _cp_rows if r.get('order_id')})
             _cp_disp = get_dispatch_by_order_id(USERNAME, _cp_oids, platform='coupang')
-            _cp_matched = sum(1 for o in _cp_oids if o in _cp_disp)
+            _cp_ord = get_orders_by_order_ids(USERNAME, [o for o in _cp_oids if o not in _cp_disp])
+            _cp_hit = {o for o in _cp_oids if o in _cp_disp or o in _cp_ord}
+            _cp_matched = len(_cp_hit)
             _mm1, _mm2 = st.columns(2)
-            _mm1.metric("✅ 발송 매칭", f"{_cp_matched}/{len(_cp_oids)}건")
-            _mm2.metric("🔍 발송기록 없음", f"{len(_cp_oids) - _cp_matched}건")
+            _mm1.metric("✅ 주문/발송 매칭", f"{_cp_matched}/{len(_cp_oids)}건")
+            _mm2.metric("🔍 매칭 없음", f"{len(_cp_oids) - _cp_matched}건")
+
+            def _cp_src(oid):
+                if oid in _cp_disp:
+                    return '🚚 발송'
+                if oid in _cp_ord:
+                    return '📋 주문'
+                return '—'
             _cp_df = pd.DataFrame([{
                 '주문번호': r.get('order_id'), '상품명': (r.get('product_name') or '')[:30],
                 '판매액': r.get('sale_amount'), '수수료': r.get('service_fee'),
                 '정산금': r.get('settlement_amount'), '배송비정산': r.get('delivery_settlement'),
-                '발송': '✅' if str(r.get('order_id')) in _cp_disp else '—',
+                '매칭': _cp_src(str(r.get('order_id'))),
             } for r in _cp_rows])
             st.dataframe(_cp_df, use_container_width=True, hide_index=True)
-            if _cp_matched < len(_cp_oids):
-                st.caption("🔍 '발송기록 없음'은 쿠팡 발송처리(송장 페이지)가 dispatch_log에 기록되면 매칭됩니다.")
+            st.caption("💡 매칭: 🚚발송(발송처리됨) / 📋주문(주문수집됨, 발송처리 전) / —(우리 주문 아님·범위 밖)")
