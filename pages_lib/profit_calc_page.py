@@ -27,7 +27,7 @@ from db import (
     get_product_detail,
     save_daily_orders, get_daily_orders, save_order_history, search_order_history,
     save_profit_settlements, get_profit_settlements, get_settlement_overrides_map, save_settlement_override,
-    get_actual_settlements_map,
+    get_actual_settlements_map, get_coupang_settled_map,
     save_receipt_items, get_recent_receipt_items, delete_receipt_items_by_date, get_receipt_dates,
     get_date_range_stats, get_monthly_stats, get_product_ranking, get_saved_dates,
     get_dashboard_kpi, get_daily_profit_trend, get_week_best_products,
@@ -643,6 +643,19 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 if _av and int(_av.get('actual') or 0) > 0:
                     df.loc[_aidx, '정산예정금액'] = int(_av['actual'])
                     df.loc[_aidx, '_실정산확정'] = True
+        # 쿠팡 실정산 반영: order_no='{orderId}-..' → coupang_settlements(전액 정산금)
+        try:
+            _cp_map = get_coupang_settled_map(USERNAME)
+        except Exception:
+            _cp_map = {}
+        if _cp_map:
+            for _cidx in df.index:
+                _ono = str(_cidx)
+                if '-' in _ono:
+                    _cv = _cp_map.get(_ono.split('-')[0])
+                    if _cv and int(_cv.get('settlement') or 0) > 0:
+                        df.loc[_cidx, '정산예정금액'] = int(_cv['settlement'])
+                        df.loc[_cidx, '_실정산확정'] = True
 
         # 🚚 고객배송비는 수수료 차감 없이 전액 정산 (수수료 5.5%는 판매가에만 적용 → 정산예정금액에 이미 반영)
         _ship_settle_factor = 1.0
