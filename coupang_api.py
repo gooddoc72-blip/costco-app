@@ -416,6 +416,62 @@ def dispatch_orders(access_key: str, secret_key: str, vendor_id: str, ship_data:
     }, None
 
 
+# ── 정산(매출내역) 조회 ────────────────────────────────────────────────────
+
+def get_revenue_history(access_key: str, secret_key: str, vendor_id: str,
+                        date_from: str, date_to: str):
+    """쿠팡 매출/정산 내역(revenue-history) 조회 — 매출인식일 기준.
+    Returns: (records, error). record(item 단위):
+      order_id, vendor_item_id, product_id, product_name, sale_date,
+      recognition_date, settlement_date, sale_amount, service_fee(수수료+VAT),
+      settlement_amount(정산금=수수료 차감 후), delivery_settlement(배송비 정산),
+      quantity. (광고비는 revenue-history에 없음 — 별도)
+    """
+    from urllib.parse import urlparse
+    path = "/v2/providers/openapi/apis/api/v1/revenue-history"
+    out = []
+    token = ""
+    for _ in range(200):  # 페이지 한도(안전장치)
+        params = {"vendorId": vendor_id, "recognitionDateFrom": date_from,
+                  "recognitionDateTo": date_to, "maxPerPage": 50, "token": token}
+        prep = requests.Request("GET", BASE_URL + path, params=params).prepare()
+        query = urlparse(prep.url).query
+        headers = _auth_header(access_key, secret_key, "GET", path, query)
+        try:
+            resp = requests.get(prep.url, headers=headers, timeout=30)
+        except requests.exceptions.RequestException as e:
+            return out, f"네트워크 오류: {e}"
+        if resp.status_code != 200:
+            return out, f"{resp.status_code}: {resp.text[:200]}"
+        j = resp.json()
+        data = j.get("data") or []
+        for od in data:
+            oid = str(od.get("orderId") or "")
+            dfee = od.get("deliveryFee") or {}
+            dfee_settle = int(dfee.get("settlementAmount") or 0)
+            for it in (od.get("items") or []):
+                out.append({
+                    "order_id":           oid,
+                    "vendor_item_id":     str(it.get("vendorItemId") or ""),
+                    "product_id":         str(it.get("productId") or ""),
+                    "product_name":       it.get("productName") or it.get("vendorItemName") or "",
+                    "sale_date":          od.get("saleDate") or "",
+                    "recognition_date":   od.get("recognitionDate") or "",
+                    "settlement_date":    od.get("settlementDate") or "",
+                    "final_settlement_date": od.get("finalSettlementDate") or "",
+                    "sale_amount":        int(it.get("saleAmount") or 0),
+                    "service_fee":        int(it.get("serviceFee") or 0) + int(it.get("serviceFeeVat") or 0),
+                    "settlement_amount":  int(it.get("settlementAmount") or 0),
+                    "delivery_settlement": dfee_settle,  # 주문당 1회만(아래에서 0 처리)
+                    "quantity":           int(it.get("quantity") or 1),
+                })
+                dfee_settle = 0  # 배송비 정산은 주문당 1회만 반영
+        token = j.get("nextToken") or ""
+        if not j.get("hasNext") or not token:
+            break
+    return out, None
+
+
 # ── 단순 API 연결 테스트 ───────────────────────────────────────────────────
 
 def test_connection(access_key: str, secret_key: str, vendor_id: str):
