@@ -615,6 +615,20 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             _q2.metric("✅ 정산완료", f"{_n_settled}건", delta=f"{fmt(_sum_settle)}원")
             _q3.metric("⏳ 미정산(대기+누락)", f"{_n_missing}건")
             _q4.metric("판매액 합계", f"{fmt(_sum_sale)}원")
+            # 광고비(수동) — 쿠팡 광고는 API 미제공 → 광고센터 금액 직접 입력 → 순수익 차감
+            _ad_month = _rc_to.strftime("%Y-%m")
+            _ad_key = f"coupang_adcost_{_ad_month}"
+            _ad_a, _ad_b = st.columns([1.6, 3])
+            _ad_default = int(_gs(_ad_key, "0") or 0)
+            _ad_cost = int(_ad_a.number_input(
+                f"쿠팡 광고비 ({_ad_month}, 수동)", value=_ad_default, min_value=0, step=10000,
+                key=f"cp_ad_{_ad_month}",
+                help="쿠팡 광고는 API로 안 와서 광고센터의 해당 월 광고비를 직접 입력합니다. 실수익에서 차감됩니다."))
+            if _ad_cost != _ad_default:
+                from db import set_setting
+                set_setting(USERNAME, _ad_key, str(_ad_cost))
+            _ad_b.metric("💵 실수익 (정산금 − 광고비)", f"{fmt(_sum_settle - _ad_cost)}원",
+                         delta=(f"광고비 -{fmt(_ad_cost)}원" if _ad_cost else "광고비 미입력"))
             _cyc_label = " / ".join(sorted(_cycles)) if _cycles else "-"
             st.caption(
                 f"💰 **실제 받을 정산금(전액) = {fmt(_sum_settle)}원** · 정산주기: **{_cyc_label}** | "
