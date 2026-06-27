@@ -84,8 +84,7 @@ def render(USERNAME: str):
             if _ext.get('_error'):
                 st.error(f"❌ {_ext['_error']}")
             else:
-                for _k in ('biz_regno', 'biz_name', 'biz_owner', 'biz_tae',
-                           'biz_item', 'biz_addr', 'biz_open_date'):
+                for _k in ('biz_regno', 'biz_name', 'biz_owner'):
                     if _ext.get(_k):
                         set_setting(USERNAME, _k, _ext[_k])
                 st.success("✅ 사업자등록증에서 자동입력 완료! (아래에서 확인·수정 후 저장)")
@@ -145,31 +144,21 @@ def render(USERNAME: str):
                            + (f" → 사업자유형 **{_rec}** 자동 적용됨" if _rec else ""))
                 st.caption("ℹ️ 상호·대표자·업태·종목·주소는 국세청 공개 API로 제공되지 않습니다(개인정보). "
                            "→ 위 **📄 사업자등록증 업로드 → 🤖 자동입력** 으로 채우세요.")
-        _b4, _b5, _b6 = st.columns(3)
-        _btae = _b4.text_input("업태", value=get_setting(USERNAME, "biz_tae") or "",
-                               placeholder="예: 도소매")
-        _bitem = _b5.text_input("종목", value=get_setting(USERNAME, "biz_item") or "",
-                                placeholder="예: 전자상거래 소매")
-        _bopen = _b6.text_input("개업일", value=get_setting(USERNAME, "biz_open_date") or "",
-                                placeholder="YYYY-MM-DD")
-        _baddr = st.text_input("사업장 주소", value=get_setting(USERNAME, "biz_addr") or "")
         if st.button("💾 사업자 설정 저장"):
             for _k, _v in [("biz_type", _biz), ("book_type", _book), ("biz_regno", _regno),
-                           ("biz_name", _bname), ("biz_owner", _owner), ("biz_tae", _btae),
-                           ("biz_item", _bitem), ("biz_open_date", _bopen), ("biz_addr", _baddr)]:
+                           ("biz_name", _bname), ("biz_owner", _owner)]:
                 set_setting(USERNAME, _k, _v)
             st.success("저장되었습니다.")
 
     # 사업자 정보 헤더 (장부/재무제표 상단 표기)
     _binfo = {k: (get_setting(USERNAME, k) or "") for k in
-              ("biz_regno", "biz_name", "biz_owner", "biz_tae", "biz_item", "biz_addr")}
+              ("biz_regno", "biz_name", "biz_owner")}
     if _binfo["biz_regno"] or _binfo["biz_name"]:
         st.markdown(
             f'<div style="background:#f8f9fa;border:1px solid #e9ecef;border-radius:8px;'
             f'padding:8px 14px;margin-bottom:6px;font-size:13px;color:#444">'
             f'🏢 <b>{_binfo["biz_name"]}</b>  ·  사업자등록번호 <b>{_binfo["biz_regno"]}</b>'
             f'{"  ·  대표 " + _binfo["biz_owner"] if _binfo["biz_owner"] else ""}'
-            f'{"  ·  " + _binfo["biz_tae"] + "/" + _binfo["biz_item"] if _binfo["biz_tae"] else ""}'
             f'</div>', unsafe_allow_html=True)
 
     # ── 기간 선택 ──
@@ -316,7 +305,7 @@ def render(USERNAME: str):
                 _ws = _w.sheets['간편장부']
                 _ws.write(0, 0, f"간편장부  ({_d_from} ~ {_d_to})")
                 _ws.write(1, 0, f"상호: {_binfo['biz_name']}    사업자등록번호: {_binfo['biz_regno']}")
-                _ws.write(2, 0, f"대표자: {_binfo['biz_owner']}    업태/종목: {_binfo['biz_tae']}/{_binfo['biz_item']}")
+                _ws.write(2, 0, f"대표자: {_binfo['biz_owner']}")
             st.download_button("📥 간편장부 엑셀 다운로드 (세무사 제출용)",
                                data=_buf.getvalue(),
                                file_name=f"간편장부_{_d_from}_{_d_to}.xlsx",
