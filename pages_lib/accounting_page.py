@@ -11,7 +11,7 @@ import pandas as pd
 
 from db import (
     get_pl_summary, get_ledger_rows, get_monthly_pl,
-    get_setting, set_setting,
+    get_setting, set_setting, get_global_setting, set_global_setting, get_user_info,
     save_bank_tx, get_bank_tx, get_tx_category_summary,
     update_tx_category, get_uncategorized_tx,
 )
@@ -360,18 +360,28 @@ def render(USERNAME: str):
                         _n = save_bank_tx(USERNAME, _rows)
                         st.success(f"✅ {_n}건 저장 (중복 제외 / 총 {len(_rows)}건 중)")
 
-        # ── 🤖 AI 자동 계정과목 분류 ──
+        # ── 🤖 AI 자동 계정과목 분류 (공용 키: 관리자 1회 설정 → 전체 사용) ──
         st.markdown("##### 🤖 AI 자동 계정과목 분류")
-        _ai_key = get_setting(USERNAME, "anthropic_api_key") or ""
-        _akc1, _akc2 = st.columns([3, 1])
-        _ai_key_in = _akc1.text_input("Anthropic API 키", value=_ai_key, type="password",
-                                      key="ai_key",
-                                      help="console.anthropic.com 발급. 거래 적요·금액만 전송(계좌번호 제외).")
-        if _ai_key_in != _ai_key:
-            set_setting(USERNAME, "anthropic_api_key", _ai_key_in)
-            _ai_key = _ai_key_in
+        _is_admin_acc = bool((get_user_info(USERNAME) or {}).get('is_admin'))
+        _ai_key = (get_global_setting("anthropic_api_key")
+                   or get_setting(USERNAME, "anthropic_api_key") or "")
+        if _is_admin_acc:
+            _akc1, _akc2 = st.columns([3, 1])
+            _gk = get_global_setting("anthropic_api_key") or ""
+            _gk_in = _akc1.text_input("🔑 공용 AI 키 (관리자 — 전체 사용자 공용)", value=_gk,
+                                      type="password", key="ai_key_global",
+                                      help="console.anthropic.com 발급. 여기 넣으면 모든 사용자 AI 분류가 이 키 사용. "
+                                           "거래 적요·금액만 전송(계좌번호 제외).")
+            if _gk_in != _gk:
+                set_global_setting("anthropic_api_key", _gk_in)
+                _ai_key = _gk_in
+            _akc2.metric("키 상태", "✅ 설정됨" if _ai_key else "미설정")
+        elif _ai_key:
+            st.caption("✅ 공용 AI 키 설정됨 (관리자 제공) — AI 분류 사용 가능")
+        else:
+            st.caption("관리자가 공용 AI 키를 설정하면 AI 분류를 사용할 수 있습니다.")
         _unc = get_uncategorized_tx(USERNAME, limit=300)
-        _akc2.metric("미분류", f"{len(_unc)}건")
+        st.caption(f"미분류 거래: {len(_unc)}건")
         if _unc and _ai_key and HAS_AI:
             if st.button(f"🤖 미분류 {len(_unc)}건 AI 분류", type="primary", key="ai_classify"):
                 with st.spinner("AI가 적요를 보고 계정과목을 분류 중..."):
