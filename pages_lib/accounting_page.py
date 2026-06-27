@@ -73,7 +73,8 @@ def render(USERNAME: str):
         st.info("이 기간에 저장된 정산(수익계산) 데이터가 없습니다. 수익 계산에서 정산 저장을 먼저 하세요.")
         return
 
-    _tab1, _tab2, _tab3 = st.tabs(["📊 손익계산서", "📒 간편장부", "🧾 부가가치세"])
+    _tab1, _tab2, _tab3, _tab4 = st.tabs(
+        ["📊 손익계산서", "📒 간편장부", "🧾 부가가치세", "📚 복식부기"])
 
     # ── 손익계산서 ──
     with _tab1:
@@ -196,3 +197,81 @@ def render(USERNAME: str):
                                data=_buf.getvalue(),
                                file_name=f"간편장부_{_d_from}_{_d_to}.xlsx",
                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+    # ── 복식부기 (합계잔액시산표 + 손익계산서 + 집계 분개장) ──
+    with _tab4:
+        _adm = _d_to[:7]
+        _adc = int(get_setting(USERNAME, f"coupang_adcost_{_adm}") or 0)
+        _rev = pl['sales'] + pl['ship']          # 상품매출(총매출+배송비수령)
+        _bank = pl['settle'] + pl['ship']         # 보통예금 실입금
+        _comm, _cost, _dlv, _box = pl['commission'], pl['cost'], pl['delivery'], pl['box']
+        _cash_out = _cost + _dlv + _box + _adc    # 현금 지출(비용 자산감소)
+        _profit = _bank - _cash_out               # 당기순이익
+
+        st.markdown("##### 합계잔액시산표")
+        _tb = [
+            # (계정, 구분, 차변, 대변)
+            ("보통예금", "자산", _bank, 0),
+            ("현금(지출)", "자산", 0, _cash_out),
+            ("상품매출", "수익", 0, _rev),
+            ("상품매출원가", "비용", _cost, 0),
+            ("지급수수료", "비용", _comm, 0),
+            ("운반비", "비용", _dlv, 0),
+            ("포장비", "비용", _box, 0),
+            ("광고선전비", "비용", _adc, 0),
+        ]
+        _tot_d = sum(x[2] for x in _tb)
+        _tot_c = sum(x[3] for x in _tb)
+        _thtml = ('<table style="width:100%;border-collapse:collapse;font-size:13px">'
+                  '<tr style="background:#f8f9fa;font-weight:700">'
+                  '<td style="padding:6px 10px">계정과목</td><td style="padding:6px 10px">구분</td>'
+                  '<td style="padding:6px 10px;text-align:right">차변</td>'
+                  '<td style="padding:6px 10px;text-align:right">대변</td></tr>')
+        for _acc, _cls, _dr, _cr in _tb:
+            _thtml += (f'<tr style="border-bottom:1px solid #eee">'
+                       f'<td style="padding:6px 10px">{_acc}</td>'
+                       f'<td style="padding:6px 10px;color:#888">{_cls}</td>'
+                       f'<td style="padding:6px 10px;text-align:right">{_dr:,}</td>'
+                       f'<td style="padding:6px 10px;text-align:right">{_cr:,}</td></tr>')
+        _bal = "✅ 일치" if _tot_d == _tot_c else f"⚠️ 불일치({_tot_d-_tot_c:,})"
+        _thtml += (f'<tr style="font-weight:700;border-top:2px solid #333">'
+                   f'<td style="padding:6px 10px" colspan=2>합계 ({_bal})</td>'
+                   f'<td style="padding:6px 10px;text-align:right">{_tot_d:,}</td>'
+                   f'<td style="padding:6px 10px;text-align:right">{_tot_c:,}</td></tr></table>')
+        st.markdown(_thtml, unsafe_allow_html=True)
+
+        st.markdown("##### 손익계산서 (복식)")
+        _pl_lines = [
+            ("매출액 (상품매출)", _rev),
+            ("(−) 매출원가", -_cost),
+            ("(−) 지급수수료", -_comm),
+            ("(−) 운반비", -_dlv),
+            ("(−) 포장비", -_box),
+            ("(−) 광고선전비", -_adc),
+            ("당기순이익", _profit),
+        ]
+        _ph = '<table style="width:100%;border-collapse:collapse;font-size:14px">'
+        for _n, _a in _pl_lines:
+            _b = _n in ("매출액 (상품매출)", "당기순이익")
+            _c = "#1D9E75" if _a >= 0 else "#E74C3C"
+            _ph += (f'<tr style="border-bottom:1px solid #eee"><td style="padding:6px 10px;'
+                    f'{"font-weight:700" if _b else "color:#666"}">{_n}</td>'
+                    f'<td style="padding:6px 10px;text-align:right;font-weight:{"700" if _b else "500"};color:{_c}">{_a:,}원</td></tr>')
+        _ph += '</table>'
+        st.markdown(_ph, unsafe_allow_html=True)
+
+        st.markdown("##### 집계 분개 (기간 요약 — 세무사 참고용)")
+        _je = pd.DataFrame([
+            {'차변계정': '보통예금', '차변금액': _bank, '대변계정': '상품매출', '대변금액': _rev,
+             '적요': '기간 정산입금(매출)'},
+            {'차변계정': '상품매출원가', '차변금액': _cost, '대변계정': '현금', '대변금액': _cost,
+             '적요': '상품 매입원가'},
+            {'차변계정': '지급수수료', '차변금액': _comm, '대변계정': '상품매출', '대변금액': _comm,
+             '적요': '플랫폼 수수료(세금계산서)'},
+            {'차변계정': '운반비', '차변금액': _dlv, '대변계정': '현금', '대변금액': _dlv, '적요': '택배비'},
+            {'차변계정': '포장비', '차변금액': _box, '대변계정': '현금', '대변금액': _box, '적요': '포장비'},
+            {'차변계정': '광고선전비', '차변금액': _adc, '대변계정': '현금', '대변금액': _adc, '적요': '광고비'},
+        ])
+        st.dataframe(_je, use_container_width=True, hide_index=True)
+        st.caption("⚠️ 자산/부채/자본(자본금·재고·차입 등)은 별도 입력이 필요해 재무상태표는 추후 제공합니다. "
+                   "현재는 거래 기반 손익·시산표·분개입니다. 복식부기 의무자/법인은 세무사 확인 권장.")
