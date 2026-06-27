@@ -107,15 +107,15 @@ def render(USERNAME: str):
                                     placeholder="000-00-00000")
             _bname = _b2.text_input("상호(사업장명)", value=get_setting(USERNAME, "biz_name") or "")
             _owner = _b3.text_input("대표자명", value=get_setting(USERNAME, "biz_owner") or "")
-            if st.form_submit_button("💾 사업자 설정 저장", type="primary"):
-                # 폼이 받은 값 확인 + 저장 + DB 재읽기 확인 (진단용)
-                st.info(f"입력받은 값 → 상호:'{_bname}' 대표자:'{_owner}'")
-                for _k, _v in [("biz_type", _biz), ("book_type", _book), ("biz_regno", _regno),
-                               ("biz_name", _bname), ("biz_owner", _owner)]:
-                    set_setting(USERNAME, _k, _v)
-                _c_name = get_setting(USERNAME, "biz_name")
-                _c_owner = get_setting(USERNAME, "biz_owner")
-                st.success(f"✅ 저장 후 DB확인 → 상호:'{_c_name}' 대표자:'{_c_owner}'")
+            _submitted = st.form_submit_button("💾 사업자 설정 저장", type="primary")
+        # 폼 밖에서 처리 — 메시지·저장 확실히 실행
+        if _submitted:
+            st.info(f"🔵 폼이 받은 값 → 상호:'{_bname}'  대표자:'{_owner}'")
+            for _k, _v in [("biz_type", _biz), ("book_type", _book), ("biz_regno", _regno),
+                           ("biz_name", _bname), ("biz_owner", _owner)]:
+                set_setting(USERNAME, _k, _v)
+            st.success(f"✅ 저장 후 DB확인 → 상호:'{get_setting(USERNAME, 'biz_name')}'  "
+                       f"대표자:'{get_setting(USERNAME, 'biz_owner')}'")
 
         # 🔍 국세청 사업자 상태 자동조회 (저장된 사업자번호 기준)
         _svc_key = get_global_setting("nts_service_key") or ""
