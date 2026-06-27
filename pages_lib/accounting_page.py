@@ -65,10 +65,9 @@ def render(USERNAME: str):
     st.caption("정산·매입·경비 데이터를 회계 형식(손익계산서·간편장부)으로 집계합니다. "
                "부가세/복식부기/종소세는 단계적으로 확장됩니다.")
 
-    # ── 사업자 설정 ──
-    _biz_open = not all((get_setting(USERNAME, _k) or "").strip()
-                        for _k in ("biz_regno", "biz_name", "biz_owner"))
-    with st.expander("⚙️ 사업자 설정 (등록번호·상호 등)", expanded=_biz_open):
+    # ── 사업자 설정 (expander 대신 일반 컨테이너 — 입력 인터랙션 안정) ──
+    st.markdown("#### ⚙️ 사업자 설정")
+    with st.container(border=True):
         # 🤖 사업자등록증 업로드 → AI 자동입력
         _reg_key = get_global_setting("anthropic_api_key") or ""
         _ru1, _ru2 = st.columns([3, 1])
