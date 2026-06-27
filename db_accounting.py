@@ -11,28 +11,31 @@ def get_pl_summary(username: str, date_from: str, date_to: str) -> dict:
     Returns: 매출/매출원가/운반비/포장비/지급수수료(추정)/영업이익 등.
     """
     conn = get_user_db(username)
+    # 순이익은 달력/수익계산과 동일하게 재계산(원가 0행은 제외) — 저장 profit 컬럼은 신뢰 안 함
     r = conn.execute(
         """SELECT
             COUNT(*) cnt,
-            COALESCE(SUM(order_amount),0)       sales,        -- 총매출(주문금액)
-            COALESCE(SUM(settlement_amount),0)  settle,       -- 정산수령액
-            COALESCE(SUM(shipping_fee),0)       ship,         -- 고객결제 배송비
+            COALESCE(SUM(order_amount),0)       sales,        -- 총매출(주문금액, 수수료 차감 전)
+            COALESCE(SUM(settlement_amount),0)  settle,       -- 정산수령액(수수료 차감 후)
+            COALESCE(SUM(shipping_fee),0)       ship,         -- 고객결제 배송비(전액 정산)
             COALESCE(SUM(cost_price),0)         cost,         -- 매출원가(매입가)
             COALESCE(SUM(delivery_cost),0)      delivery,     -- 운반비(택배원가)
             COALESCE(SUM(box_cost),0)           box,          -- 포장비
-            COALESCE(SUM(profit),0)             profit        -- 저장된 순이익
+            COALESCE(SUM(CASE WHEN cost_price>0 THEN
+                settlement_amount + COALESCE(shipping_fee,0)
+                - cost_price - COALESCE(delivery_cost,0) - COALESCE(box_cost,0)
+                ELSE 0 END),0)                  net_profit    -- 순이익(재계산)
         FROM profit_settlements
         WHERE settlement_date BETWEEN ? AND ? """,
         (date_from, date_to)
     ).fetchone()
     conn.close()
     d = {k: int(r[k] or 0) for k in r.keys()}
-    # 플랫폼 지급수수료(추정) = 총매출 + 고객배송비 − 정산수령액
-    d['commission'] = max(0, d['sales'] + d['ship'] - d['settle'])
-    # 매출총이익 / 영업이익(광고비 제외)
-    d['gross_profit'] = d['sales'] - d['cost']
-    d['operating_profit'] = (d['sales'] + d['ship']
-                             - d['cost'] - d['delivery'] - d['box'] - d['commission'])
+    # 플랫폼 지급수수료(추정) = 총매출 − 정산수령 (배송비는 전액 정산되므로 매출에서만 차감)
+    d['commission'] = max(0, d['sales'] - d['settle'])
+    # 매출(실수령 정산 + 배송비) 기준
+    d['revenue'] = d['settle'] + d['ship']
+    d['operating_profit'] = d['net_profit']
     return d
 
 
