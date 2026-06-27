@@ -84,37 +84,38 @@ def render(USERNAME: str):
             if _ext.get('_error'):
                 st.error(f"❌ {_ext['_error']}")
             else:
-                for _ek in ('biz_regno', 'biz_name', 'biz_owner'):
+                for _ek, _fk in [('biz_regno', 'biz_regno_v'), ('biz_name', 'biz_name_v'),
+                                 ('biz_owner', 'biz_owner_v')]:
                     if _ext.get(_ek):
+                        st.session_state[_fk] = _ext[_ek]
                         set_setting(USERNAME, _ek, _ext[_ek])
                 st.success("✅ 사업자등록증에서 자동입력 완료! (아래에서 확인·수정 후 저장)")
                 st.rerun()
         if not _reg_key:
             _ru1.caption("ℹ️ AI 키(관리자 설정) 후 사업자등록증 자동입력 가능")
         st.divider()
-        # ── 사업자 정보 입력 (폼 — 키 입력이 끊기지 않음) ──
-        with st.form("biz_info_form"):
-            _c1, _c2 = st.columns(2)
-            _biz = _c1.selectbox("사업자 유형", _BIZ_TYPES,
-                                 index=_BIZ_TYPES.index(get_setting(USERNAME, "biz_type") or _BIZ_TYPES[0])
-                                 if (get_setting(USERNAME, "biz_type") in _BIZ_TYPES) else 0)
-            _book = _c2.selectbox("장부 방식", _BOOK_TYPES,
-                                  index=_BOOK_TYPES.index(get_setting(USERNAME, "book_type") or _BOOK_TYPES[0])
-                                  if (get_setting(USERNAME, "book_type") in _BOOK_TYPES) else 0)
-            _b1, _b2, _b3 = st.columns(3)
-            _regno = _b1.text_input("사업자등록번호",
-                                    value=get_setting(USERNAME, "biz_regno") or "",
-                                    placeholder="000-00-00000")
-            _bname = _b2.text_input("상호(사업장명)", value=get_setting(USERNAME, "biz_name") or "")
-            _owner = _b3.text_input("대표자명", value=get_setting(USERNAME, "biz_owner") or "")
-            _submitted = st.form_submit_button("💾 사업자 설정 저장", type="primary")
-        # 폼 밖에서 처리 — 메시지·저장 확실히 실행
-        if _submitted:
-            st.info(f"🔵 폼이 받은 값 → 상호:'{_bname}'  대표자:'{_owner}'")
+        # ── 사업자 정보 입력 (세션키 plain inputs — 폼/컨테이너 없이 가장 단순) ──
+        _c1, _c2 = st.columns(2)
+        _biz = _c1.selectbox("사업자 유형", _BIZ_TYPES,
+                             index=_BIZ_TYPES.index(get_setting(USERNAME, "biz_type") or _BIZ_TYPES[0])
+                             if (get_setting(USERNAME, "biz_type") in _BIZ_TYPES) else 0)
+        _book = _c2.selectbox("장부 방식", _BOOK_TYPES,
+                              index=_BOOK_TYPES.index(get_setting(USERNAME, "book_type") or _BOOK_TYPES[0])
+                              if (get_setting(USERNAME, "book_type") in _BOOK_TYPES) else 0)
+        for _fk, _sk in [("biz_regno_v", "biz_regno"), ("biz_name_v", "biz_name"),
+                         ("biz_owner_v", "biz_owner")]:
+            if _fk not in st.session_state:
+                st.session_state[_fk] = get_setting(USERNAME, _sk) or ""
+        _b1, _b2, _b3 = st.columns(3)
+        _regno = _b1.text_input("사업자등록번호", key="biz_regno_v", placeholder="000-00-00000")
+        _bname = _b2.text_input("상호(사업장명)", key="biz_name_v")
+        _owner = _b3.text_input("대표자명", key="biz_owner_v")
+        if st.button("💾 사업자 설정 저장", type="primary", key="biz_save_btn"):
+            st.info(f"🔵 입력값 → 상호:'{_bname}'  대표자:'{_owner}'")
             for _k, _v in [("biz_type", _biz), ("book_type", _book), ("biz_regno", _regno),
                            ("biz_name", _bname), ("biz_owner", _owner)]:
                 set_setting(USERNAME, _k, _v)
-            st.success(f"✅ 저장 후 DB확인 → 상호:'{get_setting(USERNAME, 'biz_name')}'  "
+            st.success(f"✅ 저장됨 → 상호:'{get_setting(USERNAME, 'biz_name')}'  "
                        f"대표자:'{get_setting(USERNAME, 'biz_owner')}'")
 
         # 🔍 국세청 사업자 상태 자동조회 (저장된 사업자번호 기준)
