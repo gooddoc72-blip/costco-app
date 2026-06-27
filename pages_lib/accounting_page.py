@@ -13,8 +13,15 @@ from db import (
     get_pl_summary, get_ledger_rows, get_monthly_pl,
     get_setting, set_setting,
     save_bank_tx, get_bank_tx, get_tx_category_summary,
+    update_tx_category, get_uncategorized_tx,
 )
 from utils import fmt
+try:
+    import ai_accounting
+    HAS_AI = True
+except ImportError:
+    HAS_AI = False
+    ai_accounting = None
 
 
 def _to_int(v):
@@ -352,6 +359,37 @@ def render(USERNAME: str):
                             })
                         _n = save_bank_tx(USERNAME, _rows)
                         st.success(f"✅ {_n}건 저장 (중복 제외 / 총 {len(_rows)}건 중)")
+
+        # ── 🤖 AI 자동 계정과목 분류 ──
+        st.markdown("##### 🤖 AI 자동 계정과목 분류")
+        _ai_key = get_setting(USERNAME, "anthropic_api_key") or ""
+        _akc1, _akc2 = st.columns([3, 1])
+        _ai_key_in = _akc1.text_input("Anthropic API 키", value=_ai_key, type="password",
+                                      key="ai_key",
+                                      help="console.anthropic.com 발급. 거래 적요·금액만 전송(계좌번호 제외).")
+        if _ai_key_in != _ai_key:
+            set_setting(USERNAME, "anthropic_api_key", _ai_key_in)
+            _ai_key = _ai_key_in
+        _unc = get_uncategorized_tx(USERNAME, limit=300)
+        _akc2.metric("미분류", f"{len(_unc)}건")
+        if _unc and _ai_key and HAS_AI:
+            if st.button(f"🤖 미분류 {len(_unc)}건 AI 분류", type="primary", key="ai_classify"):
+                with st.spinner("AI가 적요를 보고 계정과목을 분류 중..."):
+                    _res = ai_accounting.classify_transactions(_ai_key, _unc)
+                if _res.get("_error"):
+                    st.error(f"❌ {_res['_error']}")
+                else:
+                    _applied = 0
+                    for _t in _unc:
+                        _c = _res.get(str(_t['id']))
+                        if _c:
+                            update_tx_category(USERNAME, _t['id'], _c['category'],
+                                               _c['vat_deductible'], _c['biz_use'])
+                            _applied += 1
+                    st.success(f"✅ {_applied}건 분류 완료. (표에서 직접 수정 가능)")
+                    st.rerun()
+        elif not _ai_key:
+            st.caption("API 키를 입력하면 미분류 거래를 AI가 계정과목으로 자동 분류합니다.")
 
         # 기간 내 거래 + 계정과목 요약
         _bt = get_bank_tx(USERNAME, _d_from, _d_to)
