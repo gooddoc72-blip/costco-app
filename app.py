@@ -382,10 +382,12 @@ _stc.html("""<script>
 (function(){
   try {
     var s = (window.parent || window).localStorage;
-    if (s.getItem('_nav_ver') !== '20260509v3') {
-      Object.keys(s).filter(function(k){return k.indexOf('streamlit')===0;})
-        .forEach(function(k){s.removeItem(k);});
-      s.setItem('_nav_ver', '20260509v3');
+    if (s.getItem('_nav_ver') !== '20260627v4') {
+      Object.keys(s).filter(function(k){
+        var lk = k.toLowerCase();
+        return lk.indexOf('streamlit')===0 || lk.indexOf('sidebar')>=0 || lk.indexOf('stsidebar')>=0;
+      }).forEach(function(k){s.removeItem(k);});
+      s.setItem('_nav_ver', '20260627v4');
     }
   } catch(e) {}
 })();
