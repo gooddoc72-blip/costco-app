@@ -555,10 +555,13 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     else:
         # ── 📊 판매-정산 대사 (판매건 중 정산 누락 없는지 + 실제 정산금) ──
         st.subheader("📊 판매–정산 대사 (누락 확인 · 실제 정산금)")
-        _rc1, _rc2, _rc3 = st.columns([1.3, 1.3, 3])
+        _rc1, _rc2, _rc2b, _rc3 = st.columns([1.2, 1.2, 1, 2.4])
         _rc_from = _rc1.date_input("판매(주문)일 From", value=datetime.today() - timedelta(days=45),
                                    key="cp_rc_from")
         _rc_to = _rc2.date_input("판매(주문)일 To", value=datetime.today(), key="cp_rc_to")
+        _rc_thr = int(_rc2b.number_input("누락 기준일", value=30, min_value=1, max_value=120, step=5,
+                                         key="cp_miss_thr",
+                                         help="판매 후 이 일수가 지나도 미정산이면 '누락 의심'으로 표시"))
         _rc3.caption("이 기간 판매한 쿠팡 주문이 정산·입금됐는지 대조합니다. "
                      "정산이 안 된 건(누락/대기)을 찾아 실제 수익을 확인하세요. "
                      "(정산은 보통 판매 수주 후 — 최근 판매는 '정산대기'가 정상)")
@@ -605,7 +608,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         '판매일': str(o.get('order_date', ''))[:10], '판매액': _sale,
                         '정산금(전액)': '', '주기': '', '1차(70%)': '', '1차일': '',
                         '2차(30%)': '', '2차일': '',
-                        '상태': '🔴 누락 의심' if _age > 30 else '⏳ 정산대기',
+                        '상태': '🔴 누락 의심' if _age > _rc_thr else '⏳ 정산대기',
                     })
             _q1, _q2, _q3, _q4 = st.columns(4)
             _q1.metric("판매 건수", f"{len(_cp_orders)}건")
@@ -616,7 +619,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             st.caption(
                 f"💰 **실제 받을 정산금(전액) = {fmt(_sum_settle)}원** · 정산주기: **{_cyc_label}** | "
                 f"주정산 분할 → **1차(70%) {fmt(_sum_1st)}원 + 2차(30%) {fmt(_sum_2nd)}원**. "
-                f"(70/30은 정책 기준 계산값 · 월정산은 1차에 100%) 🔴누락의심(판매 30일 초과 미정산) 확인."
+                f"(70/30은 정책 기준 계산값 · 월정산은 1차에 100%) 🔴누락의심(판매 {_rc_thr}일 초과 미정산) 확인."
             )
             st.dataframe(pd.DataFrame(_rc_rows), use_container_width=True, hide_index=True)
             st.divider()

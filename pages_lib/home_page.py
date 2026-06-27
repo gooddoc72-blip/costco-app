@@ -366,19 +366,26 @@ def _render_calendar(USERNAME: str, today: datetime):
     by_date = {s['order_date']: s for s in stats}
     disp_map = get_dispatch_counts(USERNAME, _d_from, _d_to)  # {date: 발송건수}
 
-    # 📋 정산금 = 그날 실제 입금된 정산금(정산일/입금일 기준, /daily) — 월별 세션 캐시
+    # 📋 정산금 = 그날 실제 입금된 정산금(정산일/입금일 기준) — 네이버 /daily + 쿠팡(주정산 70/30 분배)
     _dep_key = f"_home_deposit_{sel_month}"
     dep_map = st.session_state.get(_dep_key)
     if dep_map is None:
         dep_map = {}
         try:
-            from db import get_all_settings
+            from db import get_all_settings, get_coupang_deposit_map
             import naver_api
             _s = get_all_settings(USERNAME)
             if _s.get('api_client_id') and _s.get('api_client_secret'):
                 dep_map, _derr = naver_api.get_daily_settlements_range(
                     _s['api_client_id'], _s['api_client_secret'], _d_from, _d_to)
-                st.session_state[_dep_key] = dep_map
+            # 쿠팡 입금 합산 (저장된 coupang_settlements 기준, 1차 70%/2차 30%)
+            try:
+                _cp_dep = get_coupang_deposit_map(USERNAME, _d_from, _d_to)
+                for _dd, _amt in _cp_dep.items():
+                    dep_map[_dd] = int(dep_map.get(_dd, 0)) + int(_amt)
+            except Exception:
+                pass
+            st.session_state[_dep_key] = dep_map
         except Exception:
             dep_map = {}
 

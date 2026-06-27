@@ -263,6 +263,31 @@ def get_coupang_settled_map(username: str) -> dict:
     return out
 
 
+def get_coupang_deposit_map(username: str, date_from: str, date_to: str) -> dict:
+    """쿠팡 일별 실제 입금액 — {입금일: 금액}. 주정산은 1차일 70%·2차일 30%로 분배,
+    월정산은 1차일 100%. 홈 달력의 '그날 입금' 합산용."""
+    conn = get_user_db(username)
+    _ensure_coupang_table(conn)
+    rows = conn.execute(
+        "SELECT settlement_amount s, settle_date sd, final_settle_date fsd FROM coupang_settlements"
+    ).fetchall()
+    conn.close()
+    dep = {}
+    for r in rows:
+        s = int(r['s'] or 0)
+        sd = r['sd'] or ''
+        fsd = r['fsd'] or ''
+        if not s or not sd:
+            continue
+        if not fsd or fsd == sd:  # 월정산: 1차일에 100%
+            dep[sd] = dep.get(sd, 0) + s
+        else:  # 주정산: 1차일 70% / 2차일 30%
+            first = round(s * 0.7)
+            dep[sd] = dep.get(sd, 0) + first
+            dep[fsd] = dep.get(fsd, 0) + (s - first)
+    return {d: v for d, v in dep.items() if date_from <= d <= date_to}
+
+
 def get_coupang_settle_dates(username: str, limit: int = 60) -> list:
     conn = get_user_db(username)
     _ensure_coupang_table(conn)
