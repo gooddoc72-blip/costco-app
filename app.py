@@ -19,7 +19,8 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")
 os.makedirs(DATA_DIR, exist_ok=True)
 
-st.set_page_config(page_title=APP_TITLE, page_icon="📦", layout="wide", menu_items={"About": "costcobiz"})
+st.set_page_config(page_title=APP_TITLE, page_icon="📦", layout="wide",
+                   initial_sidebar_state="expanded", menu_items={"About": "costcobiz"})
 
 
 # 디자인 시스템 CSS 주입
