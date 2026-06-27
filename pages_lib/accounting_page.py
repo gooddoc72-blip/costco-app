@@ -127,6 +127,12 @@ def render(USERNAME: str):
             if HAS_NTS:
                 _res = nts_status.check_business_status(_svc_key, _regno)
                 st.session_state['_nts_result'] = _res
+                # 과세유형 → 사업자유형 자동 적용 (국세청이 주는 건 이것뿐)
+                if not _res.get('_error'):
+                    _rec_auto = nts_status.map_tax_type(_res.get('tax_type', ''))
+                    if _rec_auto:
+                        set_setting(USERNAME, "biz_type", _rec_auto)
+                st.rerun()
         _nts = st.session_state.get('_nts_result')
         if _nts:
             if _nts.get('_error'):
@@ -136,7 +142,9 @@ def render(USERNAME: str):
                 _ttype = _nts.get('tax_type', '')
                 _rec = nts_status.map_tax_type(_ttype) if HAS_NTS else ''
                 st.success(f"✅ 납세상태: **{_stt}** · 과세유형: **{_ttype}**"
-                           + (f" → 사업자유형 '{_rec}' 권장(위에서 선택 저장)" if _rec else ""))
+                           + (f" → 사업자유형 **{_rec}** 자동 적용됨" if _rec else ""))
+                st.caption("ℹ️ 상호·대표자·업태·종목·주소는 국세청 공개 API로 제공되지 않습니다(개인정보). "
+                           "→ 위 **📄 사업자등록증 업로드 → 🤖 자동입력** 으로 채우세요.")
         _b4, _b5, _b6 = st.columns(3)
         _btae = _b4.text_input("업태", value=get_setting(USERNAME, "biz_tae") or "",
                                placeholder="예: 도소매")
