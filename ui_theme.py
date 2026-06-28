@@ -189,9 +189,23 @@ section[data-testid="stSidebar"] {
     background: #FCFCFD !important;
     border-right: 1px solid #EEF0F2 !important;
 }
-/* 접기 버튼 숨김 — 실수로 접혀 좌측 메뉴가 사라지는 문제 방지 (항상 펼침 유지).
-   접힘 상태에서 펴는 버튼(stExpandSidebarButton)은 남겨 복구 가능하게 둠. */
-[data-testid="stSidebarCollapseButton"] {display: none !important;}
+/* 데스크톱에서 사이드바 항상 펼침 강제 — 접힘 상태가 저장돼(localStorage) 좌측 메뉴가
+   화면 밖으로 밀려 사라지는 문제 영구 차단. 모바일(<768px)에선 기본 동작 유지. */
+@media (min-width: 768px) {
+  section[data-testid="stSidebar"] {
+    transform: none !important;
+    margin-left: 0 !important;
+    left: 0 !important;
+    min-width: 244px !important;
+    width: 244px !important;
+    visibility: visible !important;
+  }
+  section[data-testid="stSidebar"] > div:first-child {
+    transform: none !important;
+    visibility: visible !important;
+  }
+  [data-testid="stSidebarCollapseButton"] {display: none !important;}
+}
 /* 네비 항목: 패딩 + 라운드 + 호버 (폰트 확대) */
 [data-testid="stSidebarNav"] a {
     border-radius: 9px !important;
