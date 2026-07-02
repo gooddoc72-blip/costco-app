@@ -363,11 +363,9 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         _res, _err = naver_api.ship_orders(api_id, api_secret, _items)
                     _show_dispatch_result(_dc3, _res, _err, len(_items))
                     if _res and _res.get('success_order_ids'):
-                        # 자동저장 대신 session_state에 보관 → 별도 '저장' 버튼이 commit
-                        st.session_state['dispatch_pending_naver'] = {
-                            'rows':  _prepare_dispatch_rows(USERNAME, result_df, _res['success_order_ids']),
-                            'count': int(_res.get('success', 0) or 0),
-                        }
+                        # 발송처리 성공 시 dispatch_log에 자동 저장 (별도 저장버튼 불필요 → 홈 달력 즉시 반영)
+                        _drows = _prepare_dispatch_rows(USERNAME, result_df, _res['success_order_ids'])
+                        _save_dispatch_rows(USERNAME, _drows, 'naver', _dc3)
 
             elif _p["id"] == "coupang":
                 _dc3.caption("💡 쿠팡 상품주문번호 형식: `주문번호-아이템번호` — CJ 고객주문번호에 이 값 입력")
@@ -380,10 +378,9 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         _res, _err = coupang_api.dispatch_orders(cq_access, cq_secret, cq_vendor, _items)
                     _show_dispatch_result(_dc3, _res, _err, len(_items))
                     if _res and _res.get('success_order_ids'):
-                        st.session_state['dispatch_pending_coupang'] = {
-                            'rows':  _prepare_dispatch_rows(USERNAME, result_df, _res['success_order_ids']),
-                            'count': int(_res.get('success', 0) or 0),
-                        }
+                        # 발송처리 성공 시 dispatch_log에 자동 저장
+                        _drows = _prepare_dispatch_rows(USERNAME, result_df, _res['success_order_ids'])
+                        _save_dispatch_rows(USERNAME, _drows, 'coupang', _dc3)
 
             # ── 저장 대기 (수동 저장 버튼) — 같은 플랫폼 카드 안에 표시 ──
             _pkey = f"dispatch_pending_{_p['id']}"
