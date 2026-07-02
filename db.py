@@ -54,6 +54,7 @@ from db_orders import (
     get_daily_orders,
     recalc_daily_orders_for_products,
     get_saved_dates,
+    get_daily_order_counts,
     save_order_history,
     ACTIVE_ORDER_STATUSES,
     get_active_orders,

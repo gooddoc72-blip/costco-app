@@ -140,6 +140,19 @@ def get_saved_dates(username):
     return [r['order_date'] for r in rows]
 
 
+def get_daily_order_counts(username, date_from, date_to):
+    """수집된 주문(daily_orders) 날짜별 건수 — {order_date: cnt}.
+    홈 달력의 '주문 수집 수량' 표시용 (정산저장 여부와 무관하게 수집한 주문 전체)."""
+    conn = get_user_db(username)
+    rows = conn.execute(
+        "SELECT order_date, COUNT(*) cnt FROM daily_orders "
+        "WHERE order_date BETWEEN ? AND ? GROUP BY order_date",
+        (date_from, date_to)
+    ).fetchall()
+    conn.close()
+    return {r['order_date']: int(r['cnt']) for r in rows}
+
+
 # ── 주문 이력 (발송 추적용) ──────────────────────────────
 
 def get_orders_by_order_ids(username, order_ids):

@@ -13,6 +13,7 @@ from db import (
     get_dashboard_kpi, get_rank_drops, get_daily_profit_trend,
     get_week_best_products, get_monthly_stats, get_price_history_monthly,
     get_cumulative_sales, get_date_range_stats, get_dispatch_counts,
+    get_daily_order_counts,
 )
 from ui_theme import (
     COLORS, CHART_COLORS,
@@ -364,6 +365,7 @@ def _render_calendar(USERNAME: str, today: datetime):
     _d_from, _d_to = f"{sel_month}-01", f"{sel_month}-{last_day:02d}"
     stats = get_date_range_stats(USERNAME, _d_from, _d_to)
     by_date = {s['order_date']: s for s in stats}
+    order_map = get_daily_order_counts(USERNAME, _d_from, _d_to)  # {주문일: 수집주문건수}
     disp_map = get_dispatch_counts(USERNAME, _d_from, _d_to)  # {date: 발송건수}
 
     # 📋 정산금 = 그날 실제 입금된 정산금(정산일/입금일 기준) — 네이버 /daily + 쿠팡(주정산 70/30 분배)
@@ -409,20 +411,19 @@ def _render_calendar(USERNAME: str, today: datetime):
                 continue
             ds = d.strftime("%Y-%m-%d")
             s = by_date.get(ds)
+            ocnt = int(order_map.get(ds, 0) or 0)  # 수집한 주문 건수(주문일 기준)
             dn = int(disp_map.get(ds, 0) or 0)
             has_dep = ds in dep_map
             dep = int(dep_map.get(ds, 0) or 0)
             daycol = "#E74C3C" if i == 0 else "#3477eb" if i == 6 else "#333"
             bg = "#f0fbf6" if ds == _today_str else "white"
             inner = f'<div style="font-weight:700;font-size:17px;color:{daycol}">{d.day}</div>'
+            if ocnt > 0:
+                inner += f'<div style="font-size:14px;color:#555">🧾 주문 {ocnt}</div>'
             if s:
-                cnt = int(s.get('cnt') or 0)
                 pf = int(s.get('total_profit') or 0)
                 pfcol = "#1D9E75" if pf >= 0 else "#E74C3C"
-                inner += (
-                    f'<div style="font-size:14px;color:#555">🧾 주문 {cnt}</div>'
-                    f'<div style="font-size:14px;color:{pfcol};font-weight:600">💰 {pf:,}</div>'
-                )
+                inner += f'<div style="font-size:14px;color:{pfcol};font-weight:600">💰 {pf:,}</div>'
             if dn > 0:
                 inner += f'<div style="font-size:14px;color:#3477eb">🚚 발송 {dn}</div>'
             if has_dep:
@@ -438,7 +439,7 @@ def _render_calendar(USERNAME: str, today: datetime):
         unsafe_allow_html=True,
     )
 
-    m_cnt = sum(int(s.get('cnt') or 0) for s in stats)
+    m_cnt = sum(order_map.values())
     m_pf = sum(int(s.get('total_profit') or 0) for s in stats)
     m_disp = sum(disp_map.values())
     m_dep = sum(dep_map.values()) if dep_map else 0
