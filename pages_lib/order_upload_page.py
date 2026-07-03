@@ -756,13 +756,16 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 _src_nv = st.session_state.get('order_full_naver')
             if _src_nv is None or getattr(_src_nv, 'empty', True):
                 _src_nv = st.session_state.get('order_full')
-            # 현재 화면의 주문목록(오늘 수집한 배치)에 있는 건만 다운로드 — 상품주문번호로 제한
+            # 네이버 전용 + 오늘 수집한 배치만 — 현재 화면 네이버 주문(상품주문번호에 '-' 없는 것)으로 제한
+            # (쿠팡 주문은 '-' 포함 → 자동 제외되어 네이버 엑셀에 안 섞임)
             if (_src_nv is not None and not getattr(_src_nv, 'empty', True)
                     and '상품주문번호' in getattr(_src_nv, 'columns', [])):
-                _cur_disp = st.session_state.get('orders')
-                if _cur_disp is not None and '상품주문번호' in getattr(_cur_disp, 'columns', []):
-                    _cur_ids = set(_cur_disp['상품주문번호'].astype(str))
-                    _src_nv = _src_nv[_src_nv['상품주문번호'].astype(str).isin(_cur_ids)].reset_index(drop=True)
+                if _naver_df is not None and '상품주문번호' in getattr(_naver_df, 'columns', []):
+                    _nv_ids = set(_naver_df['상품주문번호'].astype(str))
+                    _src_nv = _src_nv[_src_nv['상품주문번호'].astype(str).isin(_nv_ids)].reset_index(drop=True)
+                else:
+                    # 네이버 표시분이 없으면 최소한 쿠팡('-')만이라도 제외
+                    _src_nv = _src_nv[~_src_nv['상품주문번호'].astype(str).str.contains('-', na=False)].reset_index(drop=True)
             if _src_nv is not None and not getattr(_src_nv, 'empty', True):
                 _tmp_nv = io.BytesIO()
                 with pd.ExcelWriter(_tmp_nv, engine='openpyxl') as _w:
