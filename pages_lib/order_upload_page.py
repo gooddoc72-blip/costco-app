@@ -735,18 +735,21 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             _nv_disp_cols = [c for c in _disp_base if c in _naver_df.columns]
             _prep_naver = _naver_df[_nv_disp_cols].copy()
 
-            # 네이버 엑셀 bytes
-            _excel_bytes_nv = st.session_state.get('order_excel_bytes')
-            if not _excel_bytes_nv and st.session_state.get('order_full_naver') is not None:
+            # 네이버 엑셀 bytes — DB의 미발송 주문(표준 72컬럼)에서 항상 최신 생성.
+            # (옛 세션 캐시/스토어 변경으로 컬럼·형식이 어긋나 '안 열리는' 문제 방지)
+            _excel_bytes_nv = None
+            try:
+                _src_nv = active_orders_to_naver_excel_df(USERNAME)
+            except Exception:
+                _src_nv = None
+            if _src_nv is None or getattr(_src_nv, 'empty', True):
+                _src_nv = st.session_state.get('order_full_naver')
+            if _src_nv is None or getattr(_src_nv, 'empty', True):
+                _src_nv = st.session_state.get('order_full')
+            if _src_nv is not None and not getattr(_src_nv, 'empty', True):
                 _tmp_nv = io.BytesIO()
                 with pd.ExcelWriter(_tmp_nv, engine='openpyxl') as _w:
-                    st.session_state['order_full_naver'].to_excel(_w, index=False)
-                _excel_bytes_nv = _tmp_nv.getvalue()
-                st.session_state['order_excel_bytes'] = _excel_bytes_nv
-            elif not _excel_bytes_nv and st.session_state.get('order_full') is not None:
-                _tmp_nv = io.BytesIO()
-                with pd.ExcelWriter(_tmp_nv, engine='openpyxl') as _w:
-                    st.session_state['order_full'].to_excel(_w, index=False)
+                    _src_nv.to_excel(_w, index=False)
                 _excel_bytes_nv = _tmp_nv.getvalue()
                 st.session_state['order_excel_bytes'] = _excel_bytes_nv
 
