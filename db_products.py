@@ -555,6 +555,24 @@ def get_all_products_merged(username):
     return merged
 
 
+def _contribute_shared_from_user(product_no, costco_name, keyword, price, split_qty=1, username=''):
+    """방법 A(크라우드 누적): 사용자가 코스트코번호+구입가를 직접 저장하면 공유DB에 기여.
+    공유DB에 그 코스트코번호가 아직 없거나 가격이 비어있을 때만 채움(기존 공유값은 보호)."""
+    if not product_no or int(price or 0) <= 0:
+        return False
+    conn = sqlite3.connect(AUTH_DB)
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT id, unit_price FROM shared_products WHERE product_no=?",
+                       (str(product_no),)).fetchone()
+    conn.close()
+    if row and int(row['unit_price'] or 0) > 0:
+        return False  # 이미 공유DB에 가격 있음 → 덮어쓰지 않음(다른 판매자 값 보호)
+    _upsert_shared_internal(costco_name or keyword, keyword or costco_name,
+                            store_price=int(price), product_no=str(product_no),
+                            split_qty=split_qty, updated_by=f'user:{username}'[:40])
+    return True
+
+
 def upsert_product(username, costco_name, keyword, price, product_no='', split_qty=1,
                    shipping_fee=None, naver_origin_pno='', auto_split_costco_no=False,
                    manual=False):
@@ -639,3 +657,12 @@ def upsert_product(username, costco_name, keyword, price, product_no='', split_q
                       naver_origin_pno or '', now, (now if int(price or 0) > 0 else '')))
     conn.commit()
     conn.close()
+
+    # 방법 A — 크라우드 누적: 사용자가 코스트코번호+구입가를 직접 저장(manual)하면 공유DB에 기여.
+    #   공유DB에 그 코스트코번호가 없을 때만 추가 → 시간이 지나며 모든 판매자 커버리지 상승.
+    if manual and product_no and int(price or 0) > 0:
+        try:
+            _contribute_shared_from_user(str(product_no), costco_name, keyword,
+                                         int(price), split_qty, username)
+        except Exception:
+            pass
