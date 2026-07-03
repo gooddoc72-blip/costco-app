@@ -203,9 +203,13 @@ def _token_score(a: str, b: str) -> float:
     if sa and sb and not (sa & sb):
         score *= 0.3
     # 공백 없는 핵심 연결 포함 매칭 — '부추고기순대'(붙임) ⊂ '부추 고기 순대'(띄어쓰기) 보강.
-    #   의미있는 토큰을 원래 순서대로 이어붙여, 짧은 쪽 핵심(4자+)이 긴 쪽에 통째로 포함되면 강한 매칭.
-    _ca = ''.join(t for t in re.findall(r'[가-힣a-zA-Z0-9]+', a.lower()) if t not in _skip)
-    _cb = ''.join(t for t in re.findall(r'[가-힣a-zA-Z0-9]+', b.lower()) if t not in _skip)
+    #   매장/마케팅어(코스트코 등)와 숫자/용량만 제거하고 식품명 토큰(고기·치즈 등)은 유지해야
+    #   붙여쓴 키워드('부추고기순대')와 정확히 이어붙일 수 있음.
+    _STORE = {'코스트코', '커클랜드', '대용량', '소용량', '선물', '세트', '신상',
+              '특가', '행사', '할인', '정품', '한정', '베스트', '신선', '냉장', '냉동'}
+    _drop = _noise | _STORE
+    _ca = ''.join(t for t in re.findall(r'[가-힣a-zA-Z0-9]+', a.lower()) if t not in _drop)
+    _cb = ''.join(t for t in re.findall(r'[가-힣a-zA-Z0-9]+', b.lower()) if t not in _drop)
     if len(_ca) >= 4 and len(_cb) >= 4:
         _short, _long = (_ca, _cb) if len(_ca) <= len(_cb) else (_cb, _ca)
         if len(_short) >= 4 and _short in _long:
