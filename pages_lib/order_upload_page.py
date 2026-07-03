@@ -273,6 +273,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             if all_orders:
                 _api_ids = {str(o.get('상품주문번호', '')) for o in all_orders}
                 active_rows = [r for r in active_rows if str(r.get('order_no', '')) in _api_ids]
+            df = None  # 미발송 0건이면 else 미실행 → 아래 len(df) 대비 초기화
             if not active_rows:
                 st.info(f"미발송 주문이 없습니다. (API 수집 {api_count}건)")
             else:
@@ -373,7 +374,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 except Exception as _se:
                     st.error(f"매입가 계산 실패: {_se}")
 
-            st.success(f"✅ API 수집 {api_count}건 / DB 미발송 {len(df)}건 표시 — 💾 저장 버튼을 눌러 수익계산에 반영하세요")
+            _mi_cnt = 0 if df is None else len(df)
+            st.success(f"✅ API 수집 {api_count}건 / DB 미발송 {_mi_cnt}건 표시 — 💾 저장 버튼을 눌러 수익계산에 반영하세요")
             st.rerun()
         st.divider()
     elif not HAS_NAVER_API:
