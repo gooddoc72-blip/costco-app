@@ -267,6 +267,16 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 if _detail_rows:
                     save_order_history(USERNAME, pd.DataFrame(_detail_rows))
 
+            # ── 1-C. 이미 발송·완료된 건 자동 제외 (앱 발송 안 했어도, 네이버 직접 발송 포함) ──
+            #   수집 시마다 미발송 주문의 실제 네이버 상태를 조회해 완료건을 목록에서 제거.
+            try:
+                from services import sync_active_order_status
+                _autosync = sync_active_order_status(USERNAME, api_id, api_secret)
+                if _autosync and not _autosync.get('error') and _autosync.get('cleared'):
+                    st.caption(f"🔄 이미 발송·완료된 {_autosync['cleared']}건 자동 제외됨")
+            except Exception:
+                pass
+
             # ── 2. DB에서 미발송 주문(active)만 추려 화면용 df 구성 ──
             active_rows = get_active_orders(USERNAME)
             # 이번 API 응답에 있는 주문만 화면 표시 — DB 옛 stale 누적은 제외
@@ -746,6 +756,13 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 _src_nv = st.session_state.get('order_full_naver')
             if _src_nv is None or getattr(_src_nv, 'empty', True):
                 _src_nv = st.session_state.get('order_full')
+            # 현재 화면의 주문목록(오늘 수집한 배치)에 있는 건만 다운로드 — 상품주문번호로 제한
+            if (_src_nv is not None and not getattr(_src_nv, 'empty', True)
+                    and '상품주문번호' in getattr(_src_nv, 'columns', [])):
+                _cur_disp = st.session_state.get('orders')
+                if _cur_disp is not None and '상품주문번호' in getattr(_cur_disp, 'columns', []):
+                    _cur_ids = set(_cur_disp['상품주문번호'].astype(str))
+                    _src_nv = _src_nv[_src_nv['상품주문번호'].astype(str).isin(_cur_ids)].reset_index(drop=True)
             if _src_nv is not None and not getattr(_src_nv, 'empty', True):
                 _tmp_nv = io.BytesIO()
                 with pd.ExcelWriter(_tmp_nv, engine='openpyxl') as _w:
