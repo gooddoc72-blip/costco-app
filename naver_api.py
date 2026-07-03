@@ -1358,7 +1358,8 @@ def get_daily_settlements_range(client_id, client_secret, start_date, end_date):
         for it in items:
             d = str(it.get('settleExpectDate') or it.get('settleCompleteDate') or '')[:10]
             if d:
-                out[d] = int(it.get('settleAmount') or 0)
+                # 같은 날 레코드가 여러 개(일반+빠른정산 등)면 합산 (덮어쓰기 금지)
+                out[d] = out.get(d, 0) + int(it.get('settleAmount') or 0)
         return out, None
     except Exception as e:
         return {}, str(e)[:120]

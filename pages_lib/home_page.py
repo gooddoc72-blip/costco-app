@@ -369,14 +369,16 @@ def _render_calendar(USERNAME: str, today: datetime):
     disp_map = get_dispatch_counts(USERNAME, _d_from, _d_to)  # {date: 발송건수}
 
     # 📋 정산금 = 그날 실제 입금된 정산금(정산일/입금일 기준) — 네이버 /daily + 쿠팡(주정산 70/30 분배)
-    _dep_key = f"_home_deposit_{sel_month}"
+    from db import get_all_settings, get_coupang_deposit_map
+    _s = get_all_settings(USERNAME)
+    # 캐시 키에 API client_id 포함 → 키(스토어) 변경 시 옛 정산 캐시 자동 무효화
+    _cid_tag = (_s.get('api_client_id') or 'none')[:10]
+    _dep_key = f"_home_deposit_{sel_month}_{_cid_tag}"
     dep_map = st.session_state.get(_dep_key)
     if dep_map is None:
         dep_map = {}
         try:
-            from db import get_all_settings, get_coupang_deposit_map
             import naver_api
-            _s = get_all_settings(USERNAME)
             if _s.get('api_client_id') and _s.get('api_client_secret'):
                 dep_map, _derr = naver_api.get_daily_settlements_range(
                     _s['api_client_id'], _s['api_client_secret'], _d_from, _d_to)
