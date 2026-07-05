@@ -74,6 +74,40 @@ def get_recent_shopping_submissions(limit: int = 50, username: str = None) -> li
     return [dict(r) for r in rows]
 
 
+def get_shopping_submissions_range(date_from: str, date_to: str) -> list:
+    """[관리자] 날짜범위 내 사용자별 장보기 제출 집계.
+    반환: [{username, order_date, order_count(주문건수 합), item_count(종수), amount(코스트코구매금액 합)}]
+    order_count = items_json 각 항목의 '주문건수' 합계. 같은 (user,date)는 제출이 이미 덮어써서 1행.
+    """
+    _ensure_table()
+    conn = sqlite3.connect(AUTH_DB)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(
+        """SELECT username, order_date, total_items, total_amount, items_json
+           FROM shopping_list_submissions
+           WHERE order_date >= ? AND order_date <= ?
+           ORDER BY order_date DESC, username""",
+        (date_from, date_to)
+    ).fetchall()
+    conn.close()
+    out = []
+    for r in rows:
+        _oc = 0
+        try:
+            for _it in json.loads(r['items_json'] or '[]'):
+                _oc += int(_it.get('주문건수') or 0)
+        except Exception:
+            _oc = 0
+        out.append({
+            'username': r['username'],
+            'order_date': r['order_date'],
+            'order_count': _oc,
+            'item_count': int(r['total_items'] or 0),
+            'amount': int(r['total_amount'] or 0),
+        })
+    return out
+
+
 def delete_shopping_submission(submission_id: int) -> bool:
     _ensure_table()
     conn = sqlite3.connect(AUTH_DB)

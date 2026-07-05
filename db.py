@@ -101,6 +101,7 @@ from db_ranks import (
 from db_shopping import (
     submit_shopping_list,
     get_recent_shopping_submissions,
+    get_shopping_submissions_range,
     delete_shopping_submission,
 )
 

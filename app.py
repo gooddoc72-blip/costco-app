@@ -294,7 +294,7 @@ with st.sidebar:
 
 # ── 페이지 라우터 (st.navigation 사용) ──────────────────────
 def run_home():
-    home_page.render(USERNAME)
+    home_page.render(USERNAME, IS_ADMIN)
 
 
 def run_order_upload():

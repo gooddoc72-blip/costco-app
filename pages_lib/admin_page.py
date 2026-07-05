@@ -518,105 +518,120 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
 
     st.divider()
     st.subheader("🛒 사용자별 장보기 목록")
-    _subs = get_recent_shopping_submissions(limit=50)
-    if not _subs:
-        st.caption("아직 제출된 장보기 목록이 없습니다. (사용자가 주문 업로드 페이지에서 '📋 장보기 목록 관리자에게 보내기' 클릭 시 표시됨)")
-    else:
-        st.caption(f"최근 {len(_subs)}건")
-        for _sub in _subs:
-            _label = (f"📅 {_sub['order_date']}  |  👤 {_sub['username']}  |  "
-                      f"📦 {_sub['total_items']}개 상품  |  💰 {fmt(_sub['total_amount'])}원  "
-                      f"|  ⏰ {_sub['submitted_at']}")
-            with st.expander(_label, expanded=False):
-                try:
-                    _items = json.loads(_sub['items_json'])
-                except Exception:
-                    _items = []
-                if not _items:
-                    st.warning("항목이 비어있습니다.")
-                    continue
-                _df_sub = pd.DataFrame(_items)
-                st.dataframe(_df_sub, use_container_width=True, hide_index=True)
+    _today_str_adm = datetime.now().strftime("%Y-%m-%d")
+    _all_subs = get_recent_shopping_submissions(limit=200)
+    _subs_today = [s for s in _all_subs if s.get('order_date') == _today_str_adm]
+    _subs_old = [s for s in _all_subs if s.get('order_date') != _today_str_adm]
 
-                _xbuf = io.BytesIO()
-                try:
-                    with pd.ExcelWriter(_xbuf, engine='openpyxl') as _xw:
-                        _df_sub.to_excel(_xw, index=False, sheet_name='장보기')
-                    _xbuf.seek(0)
-                    _dl_data = _xbuf.getvalue()
-                except Exception as _xe:
-                    _dl_data = None
-                    st.error(f"엑셀 생성 실패: {_xe}")
+    def _render_shop_sub(_sub):
+        _label = (f"📅 {_sub['order_date']}  |  👤 {_sub['username']}  |  "
+                  f"📦 {_sub['total_items']}개 상품  |  💰 {fmt(_sub['total_amount'])}원  "
+                  f"|  ⏰ {_sub['submitted_at']}")
+        with st.expander(_label, expanded=False):
+            try:
+                _items = json.loads(_sub['items_json'])
+            except Exception:
+                _items = []
+            if not _items:
+                st.warning("항목이 비어있습니다.")
+                return
+            _df_sub = pd.DataFrame(_items)
+            st.dataframe(_df_sub, use_container_width=True, hide_index=True)
 
-                # ── 프린트용 HTML (관리자가 각 사용자 장보기 목록을 바로 인쇄) ──
-                import html as _html_lib
-                import streamlit.components.v1 as _components
-                _prows = []
-                for _it in _items:
-                    _pno  = str(_it.get('코스트코상품번호') or _it.get('상품번호') or '')
-                    _nm   = _html_lib.escape(str(_it.get('상품명', '')))
-                    _opt  = _html_lib.escape(str(_it.get('옵션정보', '') or ''))
-                    _qty  = int(_it.get('코스트코구매수량') or _it.get('주문수량') or 0)
-                    _cnt  = int(_it.get('주문건수') or 0)
-                    _sett = int(_it.get('정산금액') or 0)
-                    _shp  = int(_it.get('배송비') or 0)
-                    _prows.append(
-                        f'<tr><td>{_pno}</td><td>{_nm}</td><td>{_opt}</td>'
-                        f'<td style="text-align:right">{_qty}개({_cnt}건)</td>'
-                        f'<td style="text-align:right">{fmt(_sett)}</td>'
-                        f'<td style="text-align:right">{fmt(_shp)}</td></tr>'
-                    )
-                _print_html = (
-                    '<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8">'
-                    f'<title>장보기 {_sub["username"]} {_sub["order_date"]}</title><style>'
-                    'body{font-family:"맑은 고딕",sans-serif;padding:24px}'
-                    'h1{font-size:20px;margin:0 0 4px}.meta{color:#666;font-size:13px;margin-bottom:12px}'
-                    'table{width:100%;border-collapse:collapse;font-size:13px}'
-                    'th,td{border-bottom:1px solid #ddd;padding:6px 8px;text-align:left}'
-                    'th{background:#f4f4f4;font-weight:600}.tot{margin-top:16px;font-size:15px;font-weight:600}'
-                    '@media print{body{padding:8px}.noprint{display:none}}'
-                    '</style></head><body>'
-                    f'<h1>🛒 장보기 — {_html_lib.escape(str(_sub["username"]))} ({_sub["order_date"]})</h1>'
-                    f'<div class="meta">총 {len(_items)}종 · 정산 총액 {fmt(_sub["total_amount"])}원 · 제출 {_sub["submitted_at"]}</div>'
-                    '<table><thead><tr><th>상품번호</th><th>상품명</th><th>옵션</th>'
-                    '<th style="text-align:right">수량</th><th style="text-align:right">정산금액</th>'
-                    '<th style="text-align:right">택배비</th></tr></thead><tbody>'
-                    + ''.join(_prows) +
-                    f'</tbody></table><div class="tot">💰 정산 총액: {fmt(_sub["total_amount"])}원</div>'
-                    '<button class="noprint" onclick="window.print()" '
-                    'style="margin-top:20px;padding:10px 24px;font-size:14px;cursor:pointer">🖨 인쇄</button>'
-                    '</body></html>'
+            _xbuf = io.BytesIO()
+            try:
+                with pd.ExcelWriter(_xbuf, engine='openpyxl') as _xw:
+                    _df_sub.to_excel(_xw, index=False, sheet_name='장보기')
+                _xbuf.seek(0)
+                _dl_data = _xbuf.getvalue()
+            except Exception as _xe:
+                _dl_data = None
+                st.error(f"엑셀 생성 실패: {_xe}")
+
+            # ── 프린트용 HTML (관리자가 각 사용자 장보기 목록을 바로 인쇄) ──
+            import html as _html_lib
+            import streamlit.components.v1 as _components
+            _prows = []
+            for _it in _items:
+                _pno  = str(_it.get('코스트코상품번호') or _it.get('상품번호') or '')
+                _nm   = _html_lib.escape(str(_it.get('상품명', '')))
+                _opt  = _html_lib.escape(str(_it.get('옵션정보', '') or ''))
+                _qty  = int(_it.get('코스트코구매수량') or _it.get('주문수량') or 0)
+                _cnt  = int(_it.get('주문건수') or 0)
+                _sett = int(_it.get('정산금액') or 0)
+                _shp  = int(_it.get('배송비') or 0)
+                _prows.append(
+                    f'<tr><td>{_pno}</td><td>{_nm}</td><td>{_opt}</td>'
+                    f'<td style="text-align:right">{_qty}개({_cnt}건)</td>'
+                    f'<td style="text-align:right">{fmt(_sett)}</td>'
+                    f'<td style="text-align:right">{fmt(_shp)}</td></tr>'
                 )
-                _esc = _html_lib.escape(_print_html, quote=True)
+            _print_html = (
+                '<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8">'
+                f'<title>장보기 {_sub["username"]} {_sub["order_date"]}</title><style>'
+                'body{font-family:"맑은 고딕",sans-serif;padding:24px}'
+                'h1{font-size:20px;margin:0 0 4px}.meta{color:#666;font-size:13px;margin-bottom:12px}'
+                'table{width:100%;border-collapse:collapse;font-size:13px}'
+                'th,td{border-bottom:1px solid #ddd;padding:6px 8px;text-align:left}'
+                'th{background:#f4f4f4;font-weight:600}.tot{margin-top:16px;font-size:15px;font-weight:600}'
+                '@media print{body{padding:8px}.noprint{display:none}}'
+                '</style></head><body>'
+                f'<h1>🛒 장보기 — {_html_lib.escape(str(_sub["username"]))} ({_sub["order_date"]})</h1>'
+                f'<div class="meta">총 {len(_items)}종 · 정산 총액 {fmt(_sub["total_amount"])}원 · 제출 {_sub["submitted_at"]}</div>'
+                '<table><thead><tr><th>상품번호</th><th>상품명</th><th>옵션</th>'
+                '<th style="text-align:right">수량</th><th style="text-align:right">정산금액</th>'
+                '<th style="text-align:right">택배비</th></tr></thead><tbody>'
+                + ''.join(_prows) +
+                f'</tbody></table><div class="tot">💰 정산 총액: {fmt(_sub["total_amount"])}원</div>'
+                '<button class="noprint" onclick="window.print()" '
+                'style="margin-top:20px;padding:10px 24px;font-size:14px;cursor:pointer">🖨 인쇄</button>'
+                '</body></html>'
+            )
+            _esc = _html_lib.escape(_print_html, quote=True)
 
-                _dc1, _dc2, _dc3 = st.columns([2, 2, 1])
-                if _dl_data:
-                    _dc1.download_button(
-                        "📥 엑셀 다운로드",
-                        data=_dl_data,
-                        file_name=f"장보기_{_sub['username']}_{_sub['order_date']}.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        key=f"dl_sub_{_sub['id']}",
-                        use_container_width=True,
-                    )
-                with _dc2:
-                    _components.html(
-                        f'''<button onclick="(function(){{
-                            var f=document.getElementById('pf_{_sub['id']}');
-                            if(f&&f.contentWindow){{f.contentWindow.focus();f.contentWindow.print();}}
-                        }})()" style="width:100%;padding:7px 0;background:white;
-                            border:1px solid rgba(49,51,63,0.2);border-radius:8px;cursor:pointer;
-                            font-family:'Source Sans Pro',sans-serif;font-size:14px;color:rgb(49,51,63)"
-                          onmouseover="this.style.borderColor='#ff4b4b';this.style.color='#ff4b4b'"
-                          onmouseout="this.style.borderColor='rgba(49,51,63,0.2)';this.style.color='rgb(49,51,63)'">
-                            🖨 프린트
-                        </button>
-                        <iframe id="pf_{_sub['id']}" srcdoc="{_esc}" style="display:none"></iframe>''',
-                        height=44,
-                    )
-                if _dc3.button("🗑 삭제", key=f"del_sub_{_sub['id']}", use_container_width=True):
-                    delete_shopping_submission(_sub['id'])
-                    st.rerun()
+            _dc1, _dc2, _dc3 = st.columns([2, 2, 1])
+            if _dl_data:
+                _dc1.download_button(
+                    "📥 엑셀 다운로드",
+                    data=_dl_data,
+                    file_name=f"장보기_{_sub['username']}_{_sub['order_date']}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key=f"dl_sub_{_sub['id']}",
+                    use_container_width=True,
+                )
+            with _dc2:
+                _components.html(
+                    f'''<button onclick="(function(){{
+                        var f=document.getElementById('pf_{_sub['id']}');
+                        if(f&&f.contentWindow){{f.contentWindow.focus();f.contentWindow.print();}}
+                    }})()" style="width:100%;padding:7px 0;background:white;
+                        border:1px solid rgba(49,51,63,0.2);border-radius:8px;cursor:pointer;
+                        font-family:'Source Sans Pro',sans-serif;font-size:14px;color:rgb(49,51,63)"
+                      onmouseover="this.style.borderColor='#ff4b4b';this.style.color='#ff4b4b'"
+                      onmouseout="this.style.borderColor='rgba(49,51,63,0.2)';this.style.color='rgb(49,51,63)'">
+                        🖨 프린트
+                    </button>
+                    <iframe id="pf_{_sub['id']}" srcdoc="{_esc}" style="display:none"></iframe>''',
+                    height=44,
+                )
+            if _dc3.button("🗑 삭제", key=f"del_sub_{_sub['id']}", use_container_width=True):
+                delete_shopping_submission(_sub['id'])
+                st.rerun()
+
+    # ── 당일 제출건만 리스트로 노출, 이전 날짜건은 별도 보관 ──
+    if not _all_subs:
+        st.caption("아직 제출된 장보기 목록이 없습니다. (사용자가 주문 수집 시 자동 발송되거나 '📋 장보기 목록 관리자에게 발송' 클릭 시 표시됨)")
+    else:
+        if _subs_today:
+            st.caption(f"📅 오늘({_today_str_adm}) 제출 {len(_subs_today)}건")
+            for _sub in _subs_today:
+                _render_shop_sub(_sub)
+        else:
+            st.caption(f"오늘({_today_str_adm}) 제출된 장보기 목록이 없습니다.")
+        if _subs_old:
+            with st.expander(f"📁 이전 날짜 보관 ({len(_subs_old)}건)", expanded=False):
+                for _sub in _subs_old:
+                    _render_shop_sub(_sub)
 
     # ── 로컬 설치형 라이선스 관리 (1-PC 사용 인증) ──
     st.divider()

@@ -23,11 +23,12 @@ from ui_theme import (
 from utils import fmt, get_week_range, get_month_range
 
 
-def render(USERNAME: str):
+def render(USERNAME: str, IS_ADMIN: bool = False):
     """홈 대시보드 렌더링.
 
     Args:
         USERNAME: 현재 로그인한 사용자명.
+        IS_ADMIN: 관리자 여부 (True면 달력에 사용자별 주문·구매 집계 표시).
     """
     today = datetime.today()
     w_start, w_end = get_week_range()
@@ -118,7 +119,7 @@ def render(USERNAME: str):
     st.markdown("<div style='margin-top:24px'></div>", unsafe_allow_html=True)
 
     # ── 📅 달력 (대시보드에서 이동) ──
-    _render_calendar(USERNAME, today)
+    _render_calendar(USERNAME, today, IS_ADMIN)
 
     st.divider()
 
@@ -346,8 +347,11 @@ def render(USERNAME: str):
     chart_card_close()
 
 
-def _render_calendar(USERNAME: str, today: datetime):
-    """📅 월별 달력 — 각 날짜에 주문건 · 발송건 · 수익 · 정산 표시."""
+def _render_calendar(USERNAME: str, today: datetime, IS_ADMIN: bool = False):
+    """📅 월별 달력 — 각 날짜에 주문건 · 발송건 · 수익 · 정산 표시.
+    IS_ADMIN이면 날짜별 사용자 수·코스트코 구매금액 합계를 셀에 추가하고,
+    달력 아래에 사용자별 주문건수·구매금액 상세 표를 표시한다.
+    """
     section_header("달력 (일별 주문 · 발송 · 수익 · 입금정산)",
                    "📋 입금정산 = 그날 실제 입금된 정산금(정산일 기준)", icon="📅")
 
@@ -367,6 +371,23 @@ def _render_calendar(USERNAME: str, today: datetime):
     by_date = {s['order_date']: s for s in stats}
     order_map = get_daily_order_counts(USERNAME, _d_from, _d_to)  # {주문일: 수집주문건수}
     disp_map = get_dispatch_counts(USERNAME, _d_from, _d_to)  # {date: 발송건수}
+
+    # ── [관리자] 사용자별 장보기 제출 집계 (날짜별 사용자 수·코스트코 구매금액) ──
+    adm_rows = []            # 상세표용 원본 행
+    adm_day_map = {}         # {date: {'users': set, 'amount': int, 'orders': int}}
+    if IS_ADMIN:
+        try:
+            from db import get_shopping_submissions_range
+            adm_rows = get_shopping_submissions_range(_d_from, _d_to)
+            for _r in adm_rows:
+                _dd = _r['order_date']
+                _e = adm_day_map.setdefault(_dd, {'users': set(), 'amount': 0, 'orders': 0})
+                _e['users'].add(_r['username'])
+                _e['amount'] += int(_r.get('amount') or 0)
+                _e['orders'] += int(_r.get('order_count') or 0)
+        except Exception:
+            adm_rows = []
+            adm_day_map = {}
 
     # 📋 정산금 = 그날 실제 입금된 정산금(정산일/입금일 기준) — 네이버 /daily + 쿠팡(주정산 70/30 분배)
     from db import get_all_settings, get_coupang_deposit_map
@@ -431,6 +452,10 @@ def _render_calendar(USERNAME: str, today: datetime):
             if has_dep:
                 _depcol = "#1D9E75" if dep >= 0 else "#E74C3C"
                 inner += f'<div style="font-size:14px;color:{_depcol}">📋 입금 {dep:,}</div>'
+            if IS_ADMIN and ds in adm_day_map:
+                _ae = adm_day_map[ds]
+                inner += (f'<div style="font-size:13px;color:#8e44ad;font-weight:600">'
+                          f'👥 {len(_ae["users"])}명 · 💵 {_ae["amount"]:,}</div>')
             cells.append(f'<td style="border:1px solid #e9ecef;background:{bg};'
                          f'height:118px;vertical-align:top;padding:4px">{inner}</td>')
         rows.append('<tr>' + ''.join(cells) + '</tr>')
@@ -448,3 +473,22 @@ def _render_calendar(USERNAME: str, today: datetime):
     st.caption(f"📆 {sel_month} 합계 — 주문 {m_cnt}건 · 발송 {m_disp}건 · "
                f"수익 {fmt(m_pf)}원 · 입금정산 {fmt(m_dep)}원 "
                f"(📋 입금 = 그날 실제 입금된 정산금, 정산일 기준)")
+
+    # ── [관리자] 사용자별 주문건수 · 코스트코 구매금액 상세 ──
+    if IS_ADMIN and adm_rows:
+        st.markdown("##### 👥 사용자별 주문·구매 현황 (코스트코 구매금액 = 장보기 예상금액 합)")
+        _adm_df = pd.DataFrame(adm_rows)
+        _adm_df = _adm_df.rename(columns={
+            'order_date': '날짜', 'username': '사용자',
+            'order_count': '주문건수', 'item_count': '상품종수', 'amount': '코스트코구매금액',
+        })
+        _adm_df = _adm_df[['날짜', '사용자', '주문건수', '상품종수', '코스트코구매금액']]
+        _adm_df = _adm_df.sort_values(['날짜', '사용자'], ascending=[False, True]).reset_index(drop=True)
+        st.dataframe(
+            _adm_df.style.format({'주문건수': '{:,}', '상품종수': '{:,}', '코스트코구매금액': '{:,}'}),
+            use_container_width=True, hide_index=True,
+        )
+        _tu = _adm_df['사용자'].nunique()
+        _to = int(_adm_df['주문건수'].sum())
+        _tm = int(_adm_df['코스트코구매금액'].sum())
+        st.caption(f"📊 {sel_month} 전체 — 사용자 {_tu}명 · 주문 {_to:,}건 · 코스트코 구매금액 {fmt(_tm)}원")

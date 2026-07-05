@@ -357,6 +357,10 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 # 저장은 사용자가 명시적으로 저장 버튼을 눌러야 함
                 st.session_state['orders_unsaved'] = True
 
+                # 수집 직후 자동발송 예약 (본인 카톡/텔레그램 + 관리자 제출/카톡)
+                # 아래 장보기 목록 블록에서 shopping df가 완성된 뒤 1회 실행
+                st.session_state['_auto_shop_send'] = datetime.today().strftime("%Y-%m-%d")
+
                 # status 분포 디버그
                 try:
                     _dist = naver_api.get_last_status_dist()
@@ -1036,6 +1040,109 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         kakao_token = _gs('kakao_access_token')
         tg_token = _gs('telegram_token')
         tg_chat = _gs('telegram_chat_id')
+
+        # ── 장보기 목록 items 빌더 (자동발송·관리자발송 공용) ──
+        def _build_shop_items():
+            _items_b = []
+            _total_b = 0
+            for _, _r in shopping.iterrows():
+                _est = _r.get('예상금액')
+                _est_v = int(_est) if pd.notna(_est) else 0
+                _total_b += _est_v
+                _items_b.append({
+                    "코스트코상품번호": str(_r.get('코스트코상품번호') or _r.get('상품번호') or ''),
+                    "상품명": str(_r.get('상품명', '')),
+                    "옵션정보": str(_r.get('옵션정보', '') or ''),
+                    "주문건수": int(_r.get('주문건수', 1) or 1),
+                    "주문수량": int(_r.get('주문수량', 0) or 0),
+                    "분리수량": int(_r.get('분리수량', 1) or 1),
+                    "묶음수량": int(_r.get('묶음수량', 1) or 1),
+                    "코스트코구매수량": int(_r.get('코스트코구매수량', 0) or 0),
+                    "팩단가": int(_r['팩단가']) if pd.notna(_r.get('팩단가')) else 0,
+                    "예상금액": _est_v,
+                    "정산금액": int(_r['정산금액']) if pd.notna(_r.get('정산금액')) else 0,
+                    "배송비": int(_r.get('배송비', 0) or 0),
+                })
+            return _items_b, _total_b
+
+        # ── 본인 휴대폰용 카톡 메시지 빌더 (자동발송·수동발송 공용) ──
+        def _build_self_msg():
+            _od = datetime.strptime(order_date_str, "%Y-%m-%d")
+            _lines = [f"🛒 코스트코 장보기 ({_od.strftime('%m/%d')})", ""]
+            for _, _r in shopping.iterrows():
+                _nm = str(_r.get('상품명', ''))[:40]
+                _opt = str(_r.get('옵션정보', '') or '').strip()
+                _qty = int(_r.get('코스트코구매수량', _r.get('주문수량', 0)) or 0)
+                _cnt = int(_r.get('주문건수', 0) or 0)
+                _settle = int(_r.get('정산금액', 0) or 0)
+                _ship = int(_r.get('배송비', 0) or 0)
+                _lines.append(f"• {_nm} × {_qty}개 ({_cnt}건)")
+                _dd = ([f"옵션 {_opt}"] if _opt else []) + [f"정산 {fmt(_settle)}원", f"택배 {fmt(_ship)}원"]
+                _lines.append("  " + " · ".join(_dd))
+            _tot = int(shopping['정산금액'].sum()) if '정산금액' in shopping.columns else 0
+            _lines += ["", f"💰 정산 총액: {fmt(_tot)}원 / 📦 {len(df)}건"]
+            return "\n".join(_lines)
+
+        # ── 수집 직후 자동발송 (본인 + 관리자) — 세션당 예약 1회 소비 ──
+        _auto_flag = st.session_state.pop('_auto_shop_send', None)
+        if _auto_flag and _auto_flag == order_date_str and not shopping.empty:
+            _auto_msgs = []
+            # (1) 본인 휴대폰(카톡 + 텔레그램)
+            _self_msg = _build_self_msg()
+            if kakao_token:
+                _ok, _ke = naver_api.send_kakao(
+                    kakao_token, _self_msg, rest_api_key=_gs('kakao_api_key'),
+                    refresh_token=_gs('kakao_refresh_token'), client_secret=_gs('kakao_client_secret'))
+                if _ok:
+                    _auto_msgs.append("📱 본인 카톡")
+                    if _ke and "__TOKEN_REFRESHED__" in str(_ke):
+                        _pp = str(_ke).replace("__TOKEN_REFRESHED__", "").split("||")
+                        set_setting(USERNAME, 'kakao_access_token', _pp[0])
+                        if len(_pp) > 1: set_setting(USERNAME, 'kakao_refresh_token', _pp[1])
+            if tg_token and tg_chat:
+                _okt, _ = naver_api.send_telegram(tg_token, tg_chat, _self_msg)
+                if _okt: _auto_msgs.append("📲 텔레그램")
+            # (2) 관리자 제출 + 관리자 카톡
+            _items_a, _total_a = _build_shop_items()
+            try:
+                submit_shopping_list(USERNAME, order_date_str, _items_a,
+                                     total_items=len(_items_a), total_amount=_total_a)
+                _auto_msgs.append("📋 관리자 제출")
+                try:
+                    _sender = (get_user_info(USERNAME) or {}).get('display_name') or USERNAME
+                except Exception:
+                    _sender = USERNAME
+                _adm_kakao = get_setting('admin', 'kakao_access_token')
+                if _adm_kakao:
+                    _od = datetime.strptime(order_date_str, "%Y-%m-%d")
+                    _kl = [f"🛒 [{_sender}] 장보기 목록 ({_od.strftime('%m/%d')})", ""]
+                    for _it in _items_a:
+                        _nm = str(_it.get('상품명', ''))[:40]
+                        _qty = int(_it.get('코스트코구매수량') or _it.get('주문수량') or 0)
+                        _cnt = int(_it.get('주문건수') or 0)
+                        _opt = str(_it.get('옵션정보') or '').strip()
+                        _kl.append(f"• {_nm} × {_qty}개 ({_cnt}건)")
+                        _d = ([f"옵션 {_opt}"] if _opt else []) + [
+                            f"정산 {fmt(int(_it.get('정산금액') or 0))}원",
+                            f"택배 {fmt(int(_it.get('배송비') or 0))}원",
+                        ]
+                        _kl.append("  " + " · ".join(_d))
+                    _kl += ["", f"💰 정산 총액: {fmt(sum(int(i.get('정산금액') or 0) for i in _items_a))}원 / 📦 {len(_items_a)}건"]
+                    _kok, _kerr = naver_api.send_kakao(
+                        _adm_kakao, "\n".join(_kl),
+                        rest_api_key=get_setting('admin', 'kakao_api_key'),
+                        refresh_token=get_setting('admin', 'kakao_refresh_token'),
+                        client_secret=get_setting('admin', 'kakao_client_secret'))
+                    if _kok:
+                        _auto_msgs.append("📱 관리자 카톡")
+                        if _kerr and "__TOKEN_REFRESHED__" in str(_kerr):
+                            _pp = str(_kerr).replace("__TOKEN_REFRESHED__", "").split("||")
+                            set_setting('admin', 'kakao_access_token', _pp[0])
+                            if len(_pp) > 1: set_setting('admin', 'kakao_refresh_token', _pp[1])
+            except Exception as _ae:
+                st.caption(f"⚠️ 자동 관리자 발송 일부 실패: {_ae}")
+            if _auto_msgs:
+                st.success("🚀 수집 후 자동발송 완료 — " + " · ".join(_auto_msgs))
 
         # ── 프린트용 HTML (수량/정산금액/택배비) ───────────
         _print_rows = []
