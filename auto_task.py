@@ -51,6 +51,17 @@ if not _logger.handlers:
 
 
 # ── 공통 유틸 ─────────────────────────────────
+# 현재 태스크를 실행 중인 사용자 (사용자별 로그 분리 → 타 사용자 로그 노출 방지)
+_CTX_USER = None
+USER_LOG_DIR = os.path.join(DATA_DIR, "user_logs")
+
+
+def set_log_user(username):
+    """이후 log() 호출을 해당 사용자 전용 로그에도 기록. 태스크 시작 시 호출."""
+    global _CTX_USER
+    _CTX_USER = (username or "").strip() or None
+
+
 def log(msg):
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     line = f"[{ts}] {msg}"
@@ -59,7 +70,25 @@ def log(msg):
         sys.stdout.buffer.flush()
     except Exception:
         pass
-    _logger.info(line)
+    _logger.info(line)  # 전체 로그(관리자 전용 조회)
+    # 사용자별 로그 — 일반 사용자는 자동화 페이지에서 본인 것만 조회
+    if _CTX_USER:
+        try:
+            os.makedirs(USER_LOG_DIR, exist_ok=True)
+            _uf = os.path.join(USER_LOG_DIR, f"auto_task_{_CTX_USER}.log")
+            # 과도한 증가 방지: 2MB 초과 시 뒤쪽 절반만 유지
+            try:
+                if os.path.exists(_uf) and os.path.getsize(_uf) > 2 * 1024 * 1024:
+                    with open(_uf, "r", encoding="utf-8", errors="replace") as _rf:
+                        _keep = _rf.readlines()[-2000:]
+                    with open(_uf, "w", encoding="utf-8") as _wf:
+                        _wf.writelines(_keep)
+            except Exception:
+                pass
+            with open(_uf, "a", encoding="utf-8", errors="replace") as _af:
+                _af.write(line + "\n")
+        except Exception:
+            pass
 
 
 def get_user_settings(username):
@@ -715,6 +744,8 @@ if __name__ == "__main__":
                         default="admin",
                         help="실행 대상 사용자명 (기본: admin)")
     args = parser.parse_args()
+    # 이 실행의 모든 로그를 해당 사용자 전용 로그에도 기록 (타 사용자 로그 노출 방지)
+    set_log_user(args.user)
 
     if args.task == "shopping":
         run_shopping_task(args.user)

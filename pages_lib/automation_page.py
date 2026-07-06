@@ -622,7 +622,13 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
 
     # ── 실행 로그 ──
     st.subheader("📄 자동화 실행 로그")
-    LOG_PATH = os.path.join(DATA_DIR, "auto_task.log")
+    # 관리자는 전체 로그, 일반 사용자는 본인 로그만 조회 (타 사용자 로그 노출 방지)
+    if IS_ADMIN:
+        LOG_PATH = os.path.join(DATA_DIR, "auto_task.log")
+        st.caption("👑 관리자 — 전체 사용자 로그")
+    else:
+        LOG_PATH = os.path.join(DATA_DIR, "user_logs", f"auto_task_{USERNAME}.log")
+        st.caption("👤 내 자동화 로그만 표시됩니다.")
     col_log1, col_log2 = st.columns([3, 1])
     log_lines = 50
     with col_log1:
@@ -631,7 +637,11 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         st.write("")
         st.write("")
         if st.button("🗑 로그 초기화", key="clear_log"):
-            open(LOG_PATH, "w", encoding="utf-8").close()
+            try:
+                if os.path.exists(LOG_PATH):
+                    open(LOG_PATH, "w", encoding="utf-8").close()
+            except Exception:
+                pass
             st.rerun()
 
     if os.path.exists(LOG_PATH):
@@ -640,7 +650,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         recent = "".join(all_lines[-log_lines:]) if all_lines else "(로그 없음)"
         st.code(recent, language=None)
     else:
-        st.info("아직 실행 로그가 없습니다.")
+        st.info("아직 실행 로그가 없습니다. (자동화 작업이 실행되면 기록됩니다)")
 
     st.divider()
 
