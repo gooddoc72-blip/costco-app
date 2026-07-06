@@ -254,10 +254,10 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 if _pcp > 0:
                     st.session_state['cost_overrides'][_pkey] = _pcp
                 _pship = int(_pr.get('택배원가', 0) or 0)
-                if _pship > 0:
+                if _pship > 0 and f"ship_{_psk}" not in st.session_state:
                     st.session_state[f"ship_{_psk}"] = _pship
                 _pbox = int(_pr.get('박스원가', 0) or 0)
-                if _pbox > 0:
+                if _pbox > 0 and f"box_{_psk}" not in st.session_state:
                     st.session_state[f"box_{_psk}"] = _pbox
                 _pkw = str(_pr.get('matched_keyword') or '')
                 if _pkw:
@@ -343,9 +343,9 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         continue
                     _per_ship = int(_sv.get('delivery_cost', 0) or 0)
                     _per_box  = int(_sv.get('box_cost', 0) or 0)
-                    if _per_ship > 0:
+                    if _per_ship > 0 and f"ship_{_rsk}" not in st.session_state:
                         st.session_state[f"ship_{_rsk}"] = _per_ship
-                    if _per_box > 0:
+                    if _per_box > 0 and f"box_{_rsk}" not in st.session_state:
                         st.session_state[f"box_{_rsk}"] = _per_box
                     _cp = int(_sv.get('cost_price', 0) or 0)
                     if _cp > 0:
@@ -368,9 +368,9 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                             continue
                         _per_ship = int(_sv.get('delivery_cost', 0) or 0)
                         _per_box  = int(_sv.get('box_cost', 0) or 0)
-                        if _per_ship > 0:
+                        if _per_ship > 0 and f"ship_{_rsk}" not in st.session_state:
                             st.session_state[f"ship_{_rsk}"] = _per_ship
-                        if _per_box > 0:
+                        if _per_box > 0 and f"box_{_rsk}" not in st.session_state:
                             st.session_state[f"box_{_rsk}"] = _per_box
                         # ⚠️ daily_orders의 cost_price(수집 시점 동결가)는 복원하지 않음.
                         #    단가는 products DB 신선 매칭이 기준 (가격 수정이 즉시 반영되도록).
