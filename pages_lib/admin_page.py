@@ -594,7 +594,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 _dc1.download_button(
                     "📥 엑셀 다운로드",
                     data=_dl_data,
-                    file_name=f"장보기_{_sub['username']}_{_sub['order_date']}.xlsx",
+                    file_name=f"shopping_{_sub['username']}_{_sub['order_date']}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     key=f"dl_sub_{_sub['id']}",
                     use_container_width=True,

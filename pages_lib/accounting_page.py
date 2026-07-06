@@ -313,7 +313,7 @@ def render(USERNAME: str):
                 _ws.write(2, 0, f"대표자: {_binfo['biz_owner']}")
             st.download_button("📥 간편장부 엑셀 다운로드 (세무사 제출용)",
                                data=_buf.getvalue(),
-                               file_name=f"간편장부_{_d_from}_{_d_to}.xlsx",
+                               file_name=f"ledger_{_d_from}_{_d_to}.xlsx",
                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
     # ── 복식부기 (합계잔액시산표 + 손익계산서 + 집계 분개장) ──

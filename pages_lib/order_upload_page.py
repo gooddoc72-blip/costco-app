@@ -167,7 +167,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                 pd.DataFrame(_its).to_excel(_w, index=False)
                             _x1.download_button(
                                 "📥 엑셀", data=_xb.getvalue(),
-                                file_name=f"장보기_{_sub['username']}_{_sub['order_date']}.xlsx",
+                                file_name=f"shopping_{_sub['username']}_{_sub['order_date']}.xlsx",
                                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                                 key=f"ou_dl_{_sub['id']}", use_container_width=True)
                         except Exception:
@@ -825,7 +825,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 _nv_b1.download_button(
                     label="📥 네이버 엑셀 다운로드",
                     data=_excel_bytes_nv,
-                    file_name=f"발주발송관리_{order_date_str}.xlsx",
+                    file_name=f"naver_orders_{order_date_str}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     use_container_width=True,
                     key="naver_excel_dl",
@@ -878,7 +878,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     st.download_button(
                         label="📥 쿠팡 엑셀 다운로드",
                         data=_excel_bytes_cq,
-                        file_name=f"쿠팡주문_{order_date_str}.xlsx",
+                        file_name=f"coupang_orders_{order_date_str}.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         use_container_width=False,
                         key="coupang_excel_dl",
@@ -1340,7 +1340,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             out.seek(0)
             st.download_button(
                 "📥 검색 결과 엑셀 다운로드",
-                data=out, file_name=f"주문이력_{date_from_in}_{date_to_in}.xlsx",
+                data=out, file_name=f"order_history_{date_from_in}_{date_to_in}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
         else:

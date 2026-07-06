@@ -303,7 +303,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             st.download_button(
                 label=f"📥 송장번호_일괄_등록.xlsx 다운로드 ({len(result_df)}건)",
                 data=_xl_out,
-                file_name=f"송장번호_일괄_등록_{datetime.today().strftime('%Y%m%d')}.xlsx",
+                file_name=f"tracking_upload_{datetime.today().strftime('%Y%m%d')}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True,
             )
