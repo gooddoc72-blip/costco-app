@@ -30,7 +30,10 @@ from db import (
     get_all_settings,
     get_all_products as _db_get_all_products,
     set_setting,
+    get_setting,
     get_user_db,
+    get_user_info,
+    submit_shopping_list,
 )
 from services import match_product_to_db, calc_cost
 
@@ -301,6 +304,7 @@ def run_shopping_task(username="admin"):
         # 항목 조립
         sorted_items = sorted(shopping.items(), key=lambda x: x[1]["상품명"])
         item_lines = []
+        _admin_items = []  # 관리자 제출용 구조화 항목
         for idx, (_, item) in enumerate(sorted_items, 1):
             name       = item["상품명"]
             order_qty  = item["주문수량"]
@@ -314,8 +318,10 @@ def run_shopping_task(username="admin"):
             matched_p = match_product_to_db(username, name,
                                               product_no=pno or None,
                                               _user_prods=products)
+            _pack_price = int(matched_p.get('unit_price') or 0) if matched_p else 0
+            _est_cost = calc_cost(matched_p, costco_qty) if matched_p else 0
             if matched_p:
-                total_cost += calc_cost(matched_p, costco_qty)
+                total_cost += _est_cost
             total_settlement += settlement
             total_costco_qty += costco_qty
 
@@ -332,6 +338,19 @@ def run_shopping_task(username="admin"):
             detail_parts.append(f"택배 {fmt(ship_each)}원")
             item_lines.append(name_line)
             item_lines.append("  " + " · ".join(detail_parts))
+
+            _admin_items.append({
+                "코스트코상품번호": str(pno or ''),
+                "상품명": name,
+                "옵션정보": opt or '',
+                "주문건수": int(order_cnt),
+                "주문수량": int(order_qty),
+                "코스트코구매수량": int(costco_qty),
+                "팩단가": _pack_price,
+                "예상금액": int(_est_cost),
+                "정산금액": int(settlement),
+                "배송비": int(ship_each),
+            })
 
         divider = "─" * 24
         lines = [
@@ -354,6 +373,49 @@ def run_shopping_task(username="admin"):
             log("✅ 알림 전송 완료")
         else:
             log("⚠️ 알림 채널 미설정 (카카오/텔레그램 설정 필요)")
+
+        # ── 관리자에게 장보기 목록 자동 제출(+관리자 카톡) ──
+        try:
+            _order_date = now.strftime("%Y-%m-%d")
+            submit_shopping_list(username, _order_date, _admin_items,
+                                 total_items=len(_admin_items),
+                                 total_amount=int(total_cost))
+            log(f"📋 관리자 제출 완료 ({len(_admin_items)}종 / {fmt(int(total_cost))}원)")
+            try:
+                _sender = (get_user_info(username) or {}).get('display_name') or username
+            except Exception:
+                _sender = username
+            _adm_kakao = get_setting('admin', 'kakao_access_token')
+            if _adm_kakao and _admin_items:
+                _kl = [f"🛒 [{_sender}] 장보기 목록 ({now.strftime('%m/%d')})", ""]
+                for _it in _admin_items:
+                    _nm = str(_it.get('상품명', ''))[:40]
+                    _q = int(_it.get('코스트코구매수량') or _it.get('주문수량') or 0)
+                    _c = int(_it.get('주문건수') or 0)
+                    _op = str(_it.get('옵션정보') or '').strip()
+                    _kl.append(f"• {_nm} × {_q}개 ({_c}건)")
+                    _dd = ([f"옵션 {_op}"] if _op else []) + [
+                        f"정산 {fmt(int(_it.get('정산금액') or 0))}원",
+                        f"택배 {fmt(int(_it.get('배송비') or 0))}원",
+                    ]
+                    _kl.append("  " + " · ".join(_dd))
+                _kl += ["", f"💰 정산 총액: {fmt(sum(int(i.get('정산금액') or 0) for i in _admin_items))}원 / 📦 {len(_admin_items)}건"]
+                _kok, _kerr = naver_api.send_kakao(
+                    _adm_kakao, "\n".join(_kl),
+                    rest_api_key=get_setting('admin', 'kakao_api_key'),
+                    refresh_token=get_setting('admin', 'kakao_refresh_token'),
+                    client_secret=get_setting('admin', 'kakao_client_secret'))
+                if _kok:
+                    log("📱 관리자 카톡 발송 완료")
+                    if _kerr and "__TOKEN_REFRESHED__" in str(_kerr):
+                        _pp = str(_kerr).replace("__TOKEN_REFRESHED__", "").split("||")
+                        set_setting('admin', 'kakao_access_token', _pp[0])
+                        if len(_pp) > 1:
+                            set_setting('admin', 'kakao_refresh_token', _pp[1])
+                else:
+                    log(f"⚠️ 관리자 카톡 실패: {_kerr} (목록은 관리자 페이지에 저장됨)")
+        except Exception as _ae:
+            log(f"⚠️ 관리자 제출 실패(계속 진행): {_ae}")
 
     except Exception as e:
         import traceback
