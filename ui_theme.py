@@ -206,6 +206,25 @@ section[data-testid="stSidebar"] {
   }
   [data-testid="stSidebarCollapseButton"] {display: none !important;}
 }
+/* 모바일(<768px): 사이드바 열기 버튼(햄버거)을 눈에 띄게 → 좌측 메뉴 접근 보장.
+   투명 헤더 때문에 기본 버튼이 잘 안 보여 '메뉴가 사라진 것처럼' 보이던 문제 해결. */
+@media (max-width: 767px) {
+  [data-testid="stExpandSidebarButton"] {
+    display: flex !important;
+    visibility: visible !important;
+    opacity: 1 !important;
+    background: #E31837 !important;
+    border-radius: 8px !important;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.18) !important;
+    z-index: 1000000 !important;
+  }
+  [data-testid="stExpandSidebarButton"] svg,
+  [data-testid="stExpandSidebarButton"] span,
+  [data-testid="stExpandSidebarButton"] [data-testid="stIconMaterial"] {
+    color: #fff !important;
+    fill: #fff !important;
+  }
+}
 /* 네비 항목: 패딩 + 라운드 + 호버 (폰트 확대) */
 [data-testid="stSidebarNav"] a {
     border-radius: 9px !important;
