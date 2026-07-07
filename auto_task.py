@@ -127,6 +127,47 @@ def save_daily_orders(username, orders, settings):
     )
 
 
+def auto_save_profit(username, date):
+    """daily_orders(profit 계산 포함) → profit_settlements 자동 저장 → 홈달력/통계·수익계산 반영.
+    ⚠️ 이미 저장된(수동 편집 가능) (수취인,상품)은 덮어쓰지 않고 신규만 추가한다.
+    반환: 신규 저장 건수.
+    """
+    import re as _re2
+    from db import get_daily_orders, get_profit_settlements, save_profit_settlements
+    rows = get_daily_orders(username, date)
+    if not rows:
+        return 0
+    _exist = {(str(s.get('recipient', '')), str(s.get('product_name', '')))
+              for s in (get_profit_settlements(username, date) or [])}
+    ps_rows = []
+    for r in rows:
+        _rec = str(r.get('recipient', '') or '')
+        _pnm = str(r.get('product_name', '') or '')
+        if (_rec, _pnm) in _exist:
+            continue  # 이미 저장됨(수동 편집 포함) → 보존
+        _sm = _re2.search(r'x\s*(\d+)\s*개', _pnm, _re2.IGNORECASE)
+        _sf = int(_sm.group(1)) if _sm and 1 < int(_sm.group(1)) <= 50 else 1
+        ps_rows.append({
+            'order_no': '', 'recipient': _rec, 'product_name': _pnm,
+            'product_no': str(r.get('product_no', '') or ''),
+            'option_info': str(r.get('option_info', '') or ''),
+            'qty': int(r.get('qty', 1) or 1),
+            'order_amount': int(r.get('order_amount', 0) or 0),
+            'shipping_fee': int(r.get('shipping_fee', 0) or 0),
+            'extra_shipping': int(r.get('extra_shipping', 0) or 0),
+            'settlement_amount': int(r.get('settlement', 0) or 0),
+            'cost_price': int(r.get('cost_price', 0) or 0),
+            'delivery_cost': int(r.get('delivery_cost', 0) or 0),
+            'box_cost': int(r.get('box_cost', 0) or 0),
+            'profit': int(r.get('profit', 0) or 0),
+            'matched_keyword': '', 'matched_product_no': str(r.get('product_no', '') or ''),
+            'match_source': '자동', 'split_qty': 1, 'sell_factor': _sf,
+        })
+    if not ps_rows:
+        return 0
+    return save_profit_settlements(username, date, ps_rows)
+
+
 def send_notification(settings, msg, username=None):
     """카카오 + 텔레그램 둘 다에 '전체' 메시지 발송.
     카카오는 길면(7500자 초과) 자동으로 나눠 전부 발송(잘림 없음)."""
@@ -280,6 +321,13 @@ def run_shopping_task(username="admin"):
     log(f"✅ {len(orders)}건 조회 완료")
     try:
         save_daily_orders(username, orders, settings)
+        # 수익계산 자동 저장 (profit_settlements) → 홈달력/통계 수익 반영
+        try:
+            _pn = auto_save_profit(username, datetime.now().strftime("%Y-%m-%d"))
+            if _pn:
+                log(f"💰 수익계산 자동 저장: {_pn}건 (신규)")
+        except Exception as _pe:
+            log(f"⚠️ 수익계산 자동 저장 실패(계속): {_pe}")
     except Exception as e:
         log(f"⚠️ 주문 DB 저장 실패 (계속 진행): {e}")
 
@@ -625,6 +673,13 @@ def run_fetch_orders_task(username="admin"):
                   if o.get('플랫폼') == '쿠팡' or o.get('주문상태', '') in _ACTIONABLE]
         save_daily_orders(username, _daily, settings)
         log(f"💾 daily_orders 자동 저장: {len(_daily)}건 (처리대상)")
+        # 수익계산 자동 저장 (profit_settlements) → 홈달력/통계 수익 반영
+        try:
+            _pn = auto_save_profit(username, datetime.now().strftime("%Y-%m-%d"))
+            if _pn:
+                log(f"💰 수익계산 자동 저장: {_pn}건 (신규)")
+        except Exception as _pe:
+            log(f"⚠️ 수익계산 자동 저장 실패(계속): {_pe}")
     except Exception as e:
         log(f"❌ DB 저장 실패: {e}")
         return False
