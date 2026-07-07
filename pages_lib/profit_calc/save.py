@@ -21,8 +21,8 @@ def save_settlements(df, USERNAME, calc_date_str, shipping_cost, box_cost, _chec
         _ssk  = str(_ids_save[_si])
         _skey = f"{_sr['수취인명']}_{_sr['상품명']}_{_ssk}_{calc_date_str}"
         _cost = _cost_ov_s.get(_skey, int(_sr.get('구입가격', 0) or 0))
-        _per_ship = int(st.session_state.get(f"ship_{_ssk}", shipping_cost) or shipping_cost)
-        _per_box  = int(st.session_state.get(f"box_{_ssk}", box_cost) or box_cost)
+        _per_ship = int(st.session_state.get(f"ship_{_ssk}", shipping_cost))
+        _per_box  = int(st.session_state.get(f"box_{_ssk}", box_cost))
         _kw_s     = _kw_ov_s.get(_ssk) or str(_sr.get('매칭제품', '') or '')
         _qty_s    = max(1, int(_sr.get('수량', 1) or 1))
         _settle_s = int(_sr.get('정산예정금액', 0) or 0)
@@ -88,8 +88,8 @@ def save_price_db(df, USERNAME, calc_date_str, shipping_cost, box_cost, _preload
         _rcsk   = str(_ids_rc[_rci])
         _rckey  = f"{_rcr['수취인명']}_{_rcr['상품명']}_{_rcsk}_{calc_date_str}"
         _rccost = _co_rc.get(_rckey, int(_rcr.get('구입가격', 0) or 0))
-        _rcship = int(st.session_state.get(f"ship_{_rcsk}", shipping_cost) or shipping_cost)
-        _rcbox  = int(st.session_state.get(f"box_{_rcsk}", box_cost) or box_cost)
+        _rcship = int(st.session_state.get(f"ship_{_rcsk}", shipping_cost))
+        _rcbox  = int(st.session_state.get(f"box_{_rcsk}", box_cost))
         _rckw   = _kw_ov_rc.get(_rcsk) or str(_rcr.get('매칭제품', '') or '')
         _rcsettle = int(_rcr.get('정산예정금액', 0) or 0)
         _rcshipf  = int(_rcr.get('배송비 합계', 0) or 0)
@@ -180,8 +180,8 @@ def save_all(df, USERNAME, calc_date_str, shipping_cost, box_cost, _preload_user
         _allsk  = str(_ids_all[_alli])
         _allkey = f"{_allr['수취인명']}_{_allr['상품명']}_{_allsk}_{calc_date_str}"
         _allcost = _co_all.get(_allkey, int(_allr.get('구입가격', 0) or 0))
-        _allship = int(st.session_state.get(f"ship_{_allsk}", shipping_cost) or shipping_cost)
-        _allbox  = int(st.session_state.get(f"box_{_allsk}", box_cost) or box_cost)
+        _allship = int(st.session_state.get(f"ship_{_allsk}", shipping_cost))
+        _allbox  = int(st.session_state.get(f"box_{_allsk}", box_cost))
         _allkw   = _kw_ov_all.get(_allsk) or str(_allr.get('매칭제품', '') or '')
         _alls    = int(_allr.get('정산예정금액', 0) or 0)
         _allsf_m = _re_all.search(r'x\s*(\d+)\s*개', str(_allr.get('상품명', '') or ''), _re_all.IGNORECASE)

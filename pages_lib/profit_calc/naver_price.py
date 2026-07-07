@@ -138,16 +138,16 @@ def render_loss_price_panel(df, USERNAME, api_id, api_secret,
 
                 # ── 수정 판매가 / 택배비 입력 ──
                 _ca, _cb, _cd, _cc = st.columns([1, 3, 2, 1])
-                _do = _ca.checkbox("적용", value=True, key=f"lp_chk_{_li}")
+                _do = _ca.checkbox("적용", value=True, key=f"lp_chk_{_li}_{_disp_key}")
                 _new_price = _cb.number_input(
                     "🔧 수정 판매가 (원)",
                     value=_suggested, min_value=100, step=100,
-                    key=f"lp_price_{_li}"
+                    key=f"lp_price_{_li}_{_disp_key}"
                 )
                 _new_cfee = _cd.number_input(
                     "🔧 수정 택배비 (원)",
                     value=_unit_cfee, min_value=0, step=100,
-                    key=f"lp_cfee_{_li}",
+                    key=f"lp_cfee_{_li}_{_disp_key}",
                     help="1개 기준 고객택배비"
                 )
                 # 1개 단위 수익: 정산(판매가×0.945) + 고객배송비 − 구입가 − 택배비 − 박스비 (모두 1개 기준)
@@ -337,11 +337,11 @@ def render_selected_price_panel(df, USERNAME, api_id, api_secret,
                 st.markdown(_card, unsafe_allow_html=True)
 
                 _ca, _cb, _cd, _cc = st.columns([1, 3, 2, 1])
-                _do = _ca.checkbox("적용", value=True, key=f"np_chk_{_nei}")
+                _do = _ca.checkbox("적용", value=True, key=f"np_chk_{_nei}_{_dk}")
                 _new_price = _cb.number_input("🔧 수정 판매가 (원)", value=_suggested,
-                                              min_value=100, step=100, key=f"np_price_{_nei}")
+                                              min_value=100, step=100, key=f"np_price_{_nei}_{_dk}")
                 _new_cfee = _cd.number_input("🔧 수정 택배비 (원)", value=_unit_cfee,
-                                             min_value=0, step=100, key=f"np_cfee_{_nei}",
+                                             min_value=0, step=100, key=f"np_cfee_{_nei}_{_dk}",
                                              help="1개 기준 고객택배비")
                 # 1개 단위 수익: 정산(판매가×0.945) + 고객배송비 − 구입가 − 택배비 − 박스비 (모두 1개 기준)
                 _new_settle = int(round(_new_price * 0.945))

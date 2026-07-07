@@ -68,10 +68,10 @@ def load_settlement_df(USERNAME, calc_date_str, _cached_daily_orders=None):
                 if _pcp > 0:
                     st.session_state['cost_overrides'][_pkey] = _pcp
                 _pship = int(_pr.get('택배원가', 0) or 0)
-                if _pship > 0 and f"ship_{_psk}" not in st.session_state:
+                if f"ship_{_psk}" not in st.session_state:
                     st.session_state[f"ship_{_psk}"] = _pship
                 _pbox = int(_pr.get('박스원가', 0) or 0)
-                if _pbox > 0 and f"box_{_psk}" not in st.session_state:
+                if f"box_{_psk}" not in st.session_state:
                     st.session_state[f"box_{_psk}"] = _pbox
                 _pkw = str(_pr.get('matched_keyword') or '')
                 if _pkw:

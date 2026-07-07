@@ -248,9 +248,9 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         continue
                     _per_ship = int(_sv.get('delivery_cost', 0) or 0)
                     _per_box  = int(_sv.get('box_cost', 0) or 0)
-                    if _per_ship > 0 and f"ship_{_rsk}" not in st.session_state:
+                    if f"ship_{_rsk}" not in st.session_state:
                         st.session_state[f"ship_{_rsk}"] = _per_ship
-                    if _per_box > 0 and f"box_{_rsk}" not in st.session_state:
+                    if f"box_{_rsk}" not in st.session_state:
                         st.session_state[f"box_{_rsk}"] = _per_box
                     _cp = int(_sv.get('cost_price', 0) or 0)
                     if _cp > 0:
@@ -273,9 +273,9 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                             continue
                         _per_ship = int(_sv.get('delivery_cost', 0) or 0)
                         _per_box  = int(_sv.get('box_cost', 0) or 0)
-                        if _per_ship > 0 and f"ship_{_rsk}" not in st.session_state:
+                        if f"ship_{_rsk}" not in st.session_state:
                             st.session_state[f"ship_{_rsk}"] = _per_ship
-                        if _per_box > 0 and f"box_{_rsk}" not in st.session_state:
+                        if f"box_{_rsk}" not in st.session_state:
                             st.session_state[f"box_{_rsk}"] = _per_box
                         # ⚠️ daily_orders의 cost_price(수집 시점 동결가)는 복원하지 않음.
                         #    단가는 products DB 신선 매칭이 기준 (가격 수정이 즉시 반영되도록).
@@ -765,7 +765,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             else:
                 _pv_str = fmt(_pv_int)
                 _pv_color = '#1D9E75' if _pv_int >= 0 else '#E74C3C'
-            _cur_box_disp = int(r.get('박스원가', box_cost) or box_cost)
+            _cur_box_disp = int(r.get('박스원가', box_cost))
             _box_str = fmt(_cur_box_disp) if _cur_box_disp > 0 else '-'
 
             row_html = (
@@ -797,12 +797,12 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 st.session_state['cost_overrides'][key] = new_cost
 
             # 행별 택배원가 (발송비)
-            _cur_ship_row = int(r.get('택배원가', shipping_cost) or shipping_cost)
+            _cur_ship_row = int(r.get('택배원가', shipping_cost))
             c_ship.number_input("", value=_cur_ship_row, min_value=0, step=100,
                                 label_visibility="collapsed", key=f"ship_{sk}",
                                 help=f"이 주문의 택배 발송비 (기본: {fmt(shipping_cost)}원)")
             # 행별 박스원가
-            _cur_box_row = int(r.get('박스원가', box_cost) or box_cost)
+            _cur_box_row = int(r.get('박스원가', box_cost))
             c_box.number_input("", value=_cur_box_row, min_value=0, step=100,
                                label_visibility="collapsed", key=f"box_{sk}",
                                help=f"이 주문의 박스비 (기본: {fmt(box_cost)}원)")
