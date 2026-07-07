@@ -421,12 +421,36 @@ def dispatch_orders(access_key: str, secret_key: str, vendor_id: str, ship_data:
 
 def get_revenue_history(access_key: str, secret_key: str, vendor_id: str,
                         date_from: str, date_to: str):
-    """쿠팡 매출/정산 내역(revenue-history) 조회 — 매출인식일 기준.
-    Returns: (records, error). record(item 단위):
-      order_id, vendor_item_id, product_id, product_name, sale_date,
+    """쿠팡 매출/정산 내역 조회. 쿠팡 API는 '기간 1개월 미만'만 허용하므로
+    범위를 27일 단위로 자동 분할해 조회·병합한다. Returns: (records, error).
+    """
+    from datetime import datetime as _dt, timedelta as _td
+    try:
+        _d0 = _dt.strptime(date_from, "%Y-%m-%d").date()
+        _d1 = _dt.strptime(date_to, "%Y-%m-%d").date()
+    except Exception:
+        _d0 = _d1 = None
+    if not _d0 or not _d1 or _d0 > _d1:
+        return _fetch_revenue_chunk(access_key, secret_key, vendor_id, date_from, date_to)
+    out, _cur = [], _d0
+    while _cur <= _d1:
+        _end = min(_cur + _td(days=26), _d1)  # 27일 구간(1개월 미만)
+        recs, err = _fetch_revenue_chunk(
+            access_key, secret_key, vendor_id,
+            _cur.strftime("%Y-%m-%d"), _end.strftime("%Y-%m-%d"))
+        if err:
+            return out, err
+        out.extend(recs)
+        _cur = _end + _td(days=1)
+    return out, None
+
+
+def _fetch_revenue_chunk(access_key: str, secret_key: str, vendor_id: str,
+                         date_from: str, date_to: str):
+    """revenue-history 단일 구간(≤1개월) 페이지네이션 조회 — 매출인식일 기준.
+    record(item 단위): order_id, vendor_item_id, product_id, product_name, sale_date,
       recognition_date, settlement_date, sale_amount, service_fee(수수료+VAT),
-      settlement_amount(정산금=수수료 차감 후), delivery_settlement(배송비 정산),
-      quantity. (광고비는 revenue-history에 없음 — 별도)
+      settlement_amount, delivery_settlement, quantity.
     """
     from urllib.parse import urlparse
     path = "/v2/providers/openapi/apis/api/v1/revenue-history"
