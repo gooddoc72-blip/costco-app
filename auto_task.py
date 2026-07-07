@@ -251,10 +251,22 @@ def run_shopping_task(username="admin"):
     except Exception as e:
         log(f"⚠️ 발송상태 동기화 실패(계속 진행): {e}")
 
-    log("📋 배송준비(READY) 주문 조회 중...")
-    orders, err = naver_api.get_new_orders(api_id, api_secret,
-                                           hours_back=48, status_type="READY")
-    if err:
+    # 장보기 대상 = 결제완료(신규) + 발송대기(READY) 모두. 발주확인 전(PAYED) 주문도 사야 하므로 포함.
+    log("📋 주문 조회 중 (결제완료 + 발송대기)...")
+    orders, err = [], None
+    _seen_ono = set()
+    for _stt in ("READY", "PAYED"):
+        _o, _e = naver_api.get_new_orders(api_id, api_secret, hours_back=48, status_type=_stt)
+        if _o:
+            for _od in _o:
+                _ono = str(_od.get("상품주문번호", ""))
+                if _ono and _ono in _seen_ono:
+                    continue
+                _seen_ono.add(_ono)
+                orders.append(_od)
+        elif _e:
+            err = _e
+    if err and not orders:
         log(f"❌ API 오류: {err}")
         return False
 
