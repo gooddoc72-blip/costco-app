@@ -225,6 +225,10 @@ section[data-testid="stSidebar"] {
     fill: #fff !important;
   }
 }
+/* 상단 ☰ 메뉴 expander — 데스크톱(≥768px)에선 숨김(좌측 사이드바 사용), 모바일에서만 노출 */
+@media (min-width: 768px) {
+  [data-testid="stExpander"]:has(.mnav-flag) { display: none !important; }
+}
 /* 네비 항목: 패딩 + 라운드 + 호버 (폰트 확대) */
 [data-testid="stSidebarNav"] a {
     border-radius: 9px !important;

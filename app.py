@@ -381,6 +381,21 @@ if _persist_sid and _get_qparam('sid') != _persist_sid:
 # 라우팅 실행 — Streamlit이 사이드바 네비게이션 메뉴 자동 생성 + 페이지 전환 시 잔상 자동 제거
 pg = st.navigation(_pages)
 
+# 홈 퀵버튼(_pending_tab) → 실제 페이지 전환. st.navigation은 이 값을 자동 소비하지 않으므로
+# 여기서 친숙한 라벨을 페이지 제목에 매핑해 st.switch_page 로 이동시킨다. (홈 버튼 미작동 수정)
+_TAB_TITLE = {
+    "📋 주문 업로드": "일일 주문 수집",
+    "🧾 영수증 등록": "수익 계산",
+    "📈 순위 체크":   "순위 체크",
+    "🤖 자동화":      "자동화",
+}
+_title_to_page = {getattr(p, 'title', ''): p for _lst in _pages.values() for p in _lst}
+_pending_tab = st.session_state.pop('_pending_tab', None)
+if _pending_tab:
+    _target_pg = _title_to_page.get(_TAB_TITLE.get(_pending_tab, _pending_tab))
+    if _target_pg is not None:
+        st.switch_page(_target_pg)
+
 # ── 저장하지 않은 변경 경고 (메뉴 이동 직후 모달) ──
 # Streamlit은 이동 자체를 막지 못하므로, 떠난 페이지에 미저장이 있으면 이동 직후 1회 경고.
 # (데이터는 세션에 남아 있어 돌아가서 저장 가능)
@@ -404,5 +419,17 @@ try:
     st.session_state['_last_page'] = _cur_page
 except Exception:
     pass
+
+# ── 상단 ☰ 메뉴 (모바일에서 좌측 사이드바 접근이 어려울 때 페이지 이동용) ──
+#    데스크톱에서는 CSS(@media ≥768px)로 숨김 → 좌측 사이드바 사용.
+with st.expander("☰ 메뉴 (페이지 이동)", expanded=False):
+    st.markdown('<span class="mnav-flag"></span>', unsafe_allow_html=True)
+    _flat_pages = [p for _lst in _pages.values() for p in _lst]
+    _mcols = st.columns(2)
+    for _mi, _mp in enumerate(_flat_pages):
+        try:
+            _mcols[_mi % 2].page_link(_mp)
+        except Exception:
+            pass
 
 pg.run()
