@@ -639,15 +639,22 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             st.divider()
         # ── (참고) 정산일 기준 입금 상세 ──
         _cpc1, _cpc2, _cpc3 = st.columns([1.4, 1.4, 1.2])
+        _cp_yesterday = (datetime.today() - timedelta(days=1)).date()
         _cp_from = _cpc1.date_input("매출인식일 From", value=datetime.today() - timedelta(days=45),
                                     key="cp_from", help="이 기간의 쿠팡 매출/정산을 수집합니다(매출인식일 기준).")
-        _cp_to = _cpc2.date_input("매출인식일 To", value=datetime.today(), key="cp_to")
+        _cp_to = _cpc2.date_input("매출인식일 To", value=_cp_yesterday, max_value=_cp_yesterday,
+                                  key="cp_to", help="쿠팡 API 규정상 '어제'까지만 조회됩니다(오늘 불가).")
         _cpc3.write(""); _cpc3.write("")
         if _cpc3.button("📥 쿠팡 정산 수집·저장", type="primary", use_container_width=True, key="cp_fetch"):
+            # 쿠팡 규정: To는 '어제' 이하만 허용 → 오늘/미래 선택 시 어제로 제한
+            _cp_to_eff = min(_cp_to, _cp_yesterday)
+            _cp_from_eff = min(_cp_from, _cp_to_eff)
+            if _cp_to != _cp_to_eff:
+                st.caption(f"ℹ️ 쿠팡 규정상 종료일을 어제({_cp_to_eff})로 조정해 조회합니다.")
             with st.spinner("쿠팡 매출/정산 조회 중..."):
                 _cp_recs, _cp_err = coupang_api.get_revenue_history(
                     _cp_ak, _cp_sk, _cp_vid,
-                    _cp_from.strftime("%Y-%m-%d"), _cp_to.strftime("%Y-%m-%d"))
+                    _cp_from_eff.strftime("%Y-%m-%d"), _cp_to_eff.strftime("%Y-%m-%d"))
             if _cp_err:
                 st.error(f"❌ {_cp_err}")
             else:
