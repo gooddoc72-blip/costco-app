@@ -229,6 +229,15 @@ section[data-testid="stSidebar"] {
 @media (min-width: 768px) {
   [data-testid="stExpander"]:has(.mnav-flag) { display: none !important; }
 }
+/* 모바일: 상단 여백 축소 + ☰ 메뉴 위 간격 최소화 */
+@media (max-width: 767px) {
+  .main .block-container,
+  [data-testid="stAppViewBlockContainer"],
+  section.main > div.block-container {
+    padding-top: 0.3rem !important;
+  }
+  [data-testid="stExpander"]:has(.mnav-flag) { margin-top: 0 !important; }
+}
 /* 네비 항목: 패딩 + 라운드 + 호버 (폰트 확대) */
 [data-testid="stSidebarNav"] a {
     border-radius: 9px !important;

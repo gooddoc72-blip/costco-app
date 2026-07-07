@@ -421,15 +421,16 @@ except Exception:
     pass
 
 # ── 상단 ☰ 메뉴 (모바일에서 좌측 사이드바 접근이 어려울 때 페이지 이동용) ──
-#    데스크톱에서는 CSS(@media ≥768px)로 숨김 → 좌측 사이드바 사용.
-with st.expander("☰ 메뉴 (페이지 이동)", expanded=False):
+#    · 데스크톱에서는 CSS(@media ≥768px)로 숨김 → 좌측 사이드바 사용
+#    · 라벨에 현재 페이지를 포함 → 페이지 이동 시 expander가 새로 생성되어 자동 접힘
+#    · 단일 열로 렌더 → 사이드바(웹)와 동일한 순서 유지
+with st.expander(f"☰ 메뉴 · 현재: {getattr(pg, 'title', '')}", expanded=False):
     st.markdown('<span class="mnav-flag"></span>', unsafe_allow_html=True)
-    _flat_pages = [p for _lst in _pages.values() for p in _lst]
-    _mcols = st.columns(2)
-    for _mi, _mp in enumerate(_flat_pages):
-        try:
-            _mcols[_mi % 2].page_link(_mp)
-        except Exception:
-            pass
+    for _lst in _pages.values():
+        for _mp in _lst:
+            try:
+                st.page_link(_mp)
+            except Exception:
+                pass
 
 pg.run()
