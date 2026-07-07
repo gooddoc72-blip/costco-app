@@ -1564,6 +1564,16 @@ def fetch_order_details_by_ids(client_id, client_secret, order_ids):
                     "매출연동 수수료":           -_sales_commission if _sales_commission else 0,
                     "정산예정금액":              expected_settlement,
                 })
+                # 발송(배송) 정보 — item['delivery']에 발송일(sendDate)·송장·택배사가 있음
+                _dv = item.get("delivery") or {}
+                _send = str(_dv.get("sendDate", "") or "")
+                if _dv.get("trackingNumber"):
+                    d["송장번호"] = str(_dv.get("trackingNumber") or "")
+                if _dv.get("deliveryCompany"):
+                    d["택배사"] = str(_dv.get("deliveryCompany") or "")
+                if _send:
+                    d["발송일"] = _send.replace("T", " ")[:10]
+                    d["발송처리일"] = _send.replace("T", " ")[:19]
                 orders.append(d)
         except Exception:
             pass

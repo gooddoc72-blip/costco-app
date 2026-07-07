@@ -1175,6 +1175,7 @@ def sync_active_order_status(username, client_id, client_secret):
     coupang_active = [r for r in active if r.get('order_no') and '-' in str(r['order_no'])]
 
     # ── 네이버: 각 주문의 현재 상태 조회 → 미발송 아니면 제외 ──
+    _dispatch_to_log = []  # 네이버에서 직접 발송된 건 → dispatch_log 자동 기록용
     nv_ids = [str(r['order_no']) for r in naver_active if r.get('order_no')]
     if nv_ids and client_id and client_secret:
         rows, _nerr = _na.fetch_order_details_by_ids(client_id, client_secret, nv_ids)
@@ -1190,6 +1191,32 @@ def sync_active_order_status(username, client_id, client_secret):
             status_map[ono] = {'status': stt, 'tracking_no': tno}
             if stt not in _ACTIVE:
                 cleared += 1
+                # 네이버에서 발송처리된 건 → 실제 발송일(sendDate)로 발송기록 자동 저장
+                _sd = str(r.get('발송처리일', '') or r.get('발송일', ''))[:10]
+                if _sd:
+                    _dispatch_to_log.append({
+                        'order_no': ono, 'dispatched_at': _sd,
+                        'recipient': r.get('수취인명', '') or '',
+                        'product_name': r.get('상품명', '') or '',
+                        'tracking_no': tno or str(r.get('송장번호', '') or ''),
+                        'courier': r.get('택배사', '') or '',
+                    })
+
+    # 네이버 직접 발송건을 dispatch_log에 기록 (발송일 그룹별, idempotent) → 정산 역추적 매칭에 잡힘
+    if _dispatch_to_log:
+        try:
+            from db import log_dispatch_success as _lds
+            from collections import defaultdict as _dd
+            _by_date = _dd(list)
+            for _row in _dispatch_to_log:
+                _by_date[_row['dispatched_at']].append(_row)
+            for _date, _rows in _by_date.items():
+                try:
+                    _lds(username, _rows, _date, platform='naver')
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
     # ── 쿠팡: 현재 '대기'(ACCEPT+INSTRUCT) 목록에 없으면 = 발송됨 → 제외 ──
     if coupang_active:
