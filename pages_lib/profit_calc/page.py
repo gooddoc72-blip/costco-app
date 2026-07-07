@@ -909,6 +909,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 # 정산표 행 key = order_no (order_history/profit_settlements 인덱스) 기준 삭제
                 _conn_del.execute(f"DELETE FROM order_history WHERE order_no IN ({_ph_del})", _checked_rows)
                 _conn_del.execute(f"DELETE FROM profit_settlements WHERE order_no IN ({_ph_del})", _checked_rows)
+                # daily_orders에서도 제거 → 자동 수익저장이 취소건을 되살리지 않도록 (영구 삭제)
+                _conn_del.execute(f"DELETE FROM daily_orders WHERE order_no IN ({_ph_del})", _checked_rows)
                 _conn_del.commit()
                 _conn_del.close()
                 # 캐시·복원플래그·선택 초기화 → 즉시 반영

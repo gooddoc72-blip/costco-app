@@ -35,9 +35,17 @@ def save_daily_orders(username, order_date, orders_df, shipping_cost, box_cost):
     except Exception:
         pass
 
-    conn.execute("DELETE FROM daily_orders WHERE order_date=?", (order_date,))
+    # 병합 저장: 설정 수집시간(예: 12시) 저장분을 보존하고 신규 주문만 추가 → 재수집이 줄이지 못함.
+    #   (취소건은 수익계산 '선택 삭제'로 제거. 옛 order_no 없는 행은 전환 정리 후 재삽입.)
+    conn.execute("DELETE FROM daily_orders WHERE order_date=? AND COALESCE(order_no,'')=''", (order_date,))
+    _existing_onos = {row[0] for row in conn.execute(
+        "SELECT order_no FROM daily_orders WHERE order_date=? AND COALESCE(order_no,'')<>''",
+        (order_date,)).fetchall()}
 
     for _, r in orders_df.iterrows():
+        _ono = str(r.get('상품주문번호', '') or '').strip()
+        if _ono and _ono in _existing_onos:
+            continue  # 이미 저장됨(설정시간 수집 등) → 보존, 덮어쓰지 않음
         cost = r.get('구입가격', 0) or 0
         ship_fee = int(r['배송비 합계'])
         settlement = int(r['정산예정금액'])
@@ -49,7 +57,6 @@ def save_daily_orders(username, order_date, orders_df, shipping_cost, box_cost):
         profit = ((settlement + round(ship_fee * _factor)) - (int(cost) + per_ship + per_box)
                   if int(cost) > 0 else 0)
         p_no = r.get('상품번호', '')
-        _ono = str(r.get('상품주문번호', '') or '').strip()
         conn.execute("""INSERT INTO daily_orders
             (order_date,order_no,recipient,product_name,product_no,option_info,option_code,qty,
              order_amount,shipping_fee,extra_shipping,settlement,
@@ -60,6 +67,8 @@ def save_daily_orders(username, order_date, orders_df, shipping_cost, box_cost):
              int(r['수량']), int(r['최종 상품별 총 주문금액']), ship_fee,
              int(r.get('제주/도서 추가배송비', 0)), settlement,
              int(cost), per_ship, per_box, profit, 1 if cost > 0 else 0, now))
+        if _ono:
+            _existing_onos.add(_ono)  # 같은 배치 내 중복 방지
     conn.commit()
     conn.close()
     return len(orders_df)
