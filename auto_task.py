@@ -128,18 +128,19 @@ def save_daily_orders(username, orders, settings):
 
 
 def auto_save_profit(username, date):
-    """daily_orders(profit 계산 포함) → profit_settlements 자동 저장 → 홈달력/통계·수익계산 반영.
-    ⚠️ 이미 저장된(수동 편집 가능) (수취인,상품)은 덮어쓰지 않고 신규만 추가한다.
-    반환: 신규 저장 건수.
+    """daily_orders(profit 계산 포함) → profit_settlements 자동 저장(order_no 기준) → 홈달력/통계·수익계산 반영.
+    · '자동' 저장분은 매번 daily에서 재생성(삭제 후 재삽입) → 옛 데이터 누적 방지
+    · 수동 편집/저장분(match_source != '자동')은 order_no로 보존
+    반환: 저장 건수.
     """
     import re as _re2
     from datetime import datetime as _dt2, timedelta as _td2
     from db import (get_daily_orders, get_profit_settlements, save_profit_settlements,
-                    search_order_history)
+                    search_order_history, get_user_db)
     rows = get_daily_orders(username, date)
     if not rows:
         return 0
-    # order_no 매핑(정산 매칭 반영용) — 최근 30일 주문이력에서 (수취인,상품)→상품주문번호
+    # order_no 매핑(daily에 order_no 없는 옛 데이터 보조) — 최근 30일 주문이력에서 (수취인,상품)→상품주문번호
     _ono_map = {}
     try:
         _df_from = (_dt2.strptime(date, "%Y-%m-%d") - _td2(days=30)).strftime("%Y-%m-%d")
@@ -149,8 +150,18 @@ def auto_save_profit(username, date):
                 _ono_map[_hk] = str(_h.get('order_no'))
     except Exception:
         _ono_map = {}
-    _exist = {str(s.get('order_no', '') or '')
-              for s in (get_profit_settlements(username, date) or []) if s.get('order_no')}
+    # 수동 저장분(사용자 편집)은 order_no로 보존, '자동' 저장분은 삭제 후 재생성
+    _existing = get_profit_settlements(username, date) or []
+    _manual = {str(s.get('order_no', '') or '')
+               for s in _existing if s.get('match_source') != '자동' and s.get('order_no')}
+    try:
+        _dc = get_user_db(username)
+        _dc.execute("DELETE FROM profit_settlements WHERE settlement_date=? AND match_source='자동'",
+                    (date,))
+        _dc.commit(); _dc.close()
+    except Exception:
+        pass
+    _exist = _manual
     ps_rows = []
     for r in rows:
         _rec = str(r.get('recipient', '') or '')
