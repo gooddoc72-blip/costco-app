@@ -1633,3 +1633,72 @@ def keyword_tool(ad_api_key, ad_secret, customer_id, keyword):
         return out, None
     except Exception as e:
         return [], str(e)
+
+
+def naver_autocomplete(keyword):
+    """네이버 자동완성 키워드 목록 (ac.search.naver.com). 실패 시 []."""
+    try:
+        r = requests.get(
+            "https://ac.search.naver.com/nx/ac",
+            params={"q": keyword, "st": 111, "r_format": "json", "frm": "nv", "ans": 2},
+            timeout=10,
+        )
+        j = r.json()
+        seen, out = set(), []
+        for grp in (j.get("items") or []):
+            for item in (grp or []):
+                if item and item[0] and item[0] not in seen:
+                    seen.add(item[0]); out.append(item[0])
+        return out
+    except Exception:
+        return []
+
+
+def _norm_kw(s):
+    return str(s or "").replace(" ", "").upper()
+
+
+def keyword_volumes(ad_api_key, ad_secret, customer_id, keywords):
+    """키워드 리스트의 월간 검색량 조회 (keywordstool 5개씩 배치). {정규화키: (pc, mo, comp)}"""
+    vol = {}
+    kws = [k for k in keywords if k]
+    for i in range(0, len(kws), 5):
+        rows, err = keyword_tool(ad_api_key, ad_secret, customer_id, ",".join(kws[i:i + 5]))
+        if err or not rows:
+            continue
+        for r in rows:
+            vol[_norm_kw(r["키워드"])] = (r["PC검색량"], r["모바일검색량"], r.get("경쟁도", ""))
+    return vol
+
+
+def keyword_research(ad_api_key, ad_secret, customer_id, keyword):
+    """키워드 통합 리서치. 반환 rows에 '구분'(연관검색어/함께찾는/자동완성) 포함.
+    - 연관검색어: 검색어 자신(현재)
+    - 함께찾는:   keywordstool 연관 키워드(월간 검색량 有)
+    - 자동완성:   네이버 자동완성(검색량은 keywordstool로 보완)
+    """
+    rel_rows, err = keyword_tool(ad_api_key, ad_secret, customer_id, keyword)
+    if err:
+        return [], err
+    _qn = _norm_kw(keyword)
+    out, seen = [], set()
+    for r in (rel_rows or []):
+        _n = _norm_kw(r["키워드"])
+        if _n in seen:
+            continue
+        seen.add(_n)
+        out.append({**r, "구분": ("연관검색어" if _n == _qn else "함께찾는")})
+    _ac_new = [k for k in naver_autocomplete(keyword) if _norm_kw(k) not in seen]
+    if _ac_new:
+        _vol = keyword_volumes(ad_api_key, ad_secret, customer_id, _ac_new)
+        for k in _ac_new:
+            _n = _norm_kw(k)
+            if _n in seen:
+                continue
+            seen.add(_n)
+            _pc, _mo, _cp = _vol.get(_n, (0, 0, ""))
+            out.append({"키워드": k, "PC검색량": _pc, "모바일검색량": _mo,
+                        "총검색량": _pc + _mo, "경쟁도": _cp, "구분": "자동완성"})
+    # 현재 검색어 최상단 → 이후 총검색량 내림차순
+    out.sort(key=lambda x: (0 if x["구분"] == "연관검색어" else 1, -x["총검색량"]))
+    return out, None

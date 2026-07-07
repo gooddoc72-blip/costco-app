@@ -107,27 +107,45 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             _kw_q = _kc1.text_input("검색 키워드", placeholder="예: 검은콩, 그릭요거트",
                                     key="kw_tool_q", label_visibility="collapsed")
             _kw_go = _kc2.button("🔎 검색", key="kw_tool_go", use_container_width=True, type="primary")
+            # 검색 결과를 리스트에 누적 (같은 키워드 재검색 시 최신으로 갱신, 최근 검색이 위)
+            _kw_hist = st.session_state.setdefault('_kw_tool_hist', [])
             if _kw_go and _kw_q.strip():
-                with st.spinner("네이버 검색광고 조회 중..."):
-                    _rows, _kerr = naver_api.keyword_tool(_ad_key, _ad_sec, _ad_cust, _kw_q.strip())
-                st.session_state['_kw_tool_result'] = {'q': _kw_q.strip(), 'rows': _rows, 'err': _kerr}
-            _res = st.session_state.get('_kw_tool_result')
-            if _res:
-                if _res.get('err'):
-                    st.error(f"❌ 조회 실패: {_res['err']}")
-                elif not _res.get('rows'):
+                _q = _kw_q.strip()
+                with st.spinner("네이버 검색광고·자동완성 조회 중..."):
+                    _rows, _kerr = naver_api.keyword_research(_ad_key, _ad_sec, _ad_cust, _q)
+                _kw_hist[:] = [h for h in _kw_hist if h['q'] != _q]   # 중복 제거
+                _kw_hist.insert(0, {'q': _q, 'rows': _rows, 'err': _kerr})
+                st.rerun()
+
+            if not _kw_hist:
+                st.caption("키워드를 입력하고 검색하면 아래에 누적됩니다. (연관검색어 · 함께찾는 · 자동완성)")
+            _TAG = {'연관검색어': '🟡 연관검색어', '함께찾는': '🟢 함께찾는', '자동완성': '⚪ 자동완성'}
+            import pandas as _pd
+            for _hi, _h in enumerate(list(_kw_hist)):
+                _hc1, _hc2 = st.columns([6, 1])
+                _n = 0 if _h.get('err') else len(_h.get('rows') or [])
+                _hc1.markdown(f"**🔎 {_h['q']}** — {_n}개")
+                if _hc2.button("🗑 삭제", key=f"kw_del_{_hi}_{_h['q']}", use_container_width=True):
+                    _kw_hist[:] = [x for x in _kw_hist if x['q'] != _h['q']]
+                    st.rerun()
+                if _h.get('err'):
+                    st.error(f"❌ 조회 실패: {_h['err']}")
+                elif not _h.get('rows'):
                     st.info("연관 키워드가 없습니다.")
                 else:
-                    import pandas as _pd
-                    _df_kw = _pd.DataFrame(_res['rows'])
-                    st.caption(f"🔎 '{_res['q']}' 연관 키워드 {len(_df_kw)}개 · 월간 검색량 순 정렬")
+                    _df_kw = _pd.DataFrame(_h['rows'])
+                    if '구분' in _df_kw.columns:
+                        _df_kw['구분'] = _df_kw['구분'].map(lambda x: _TAG.get(x, x))
+                        _df_kw = _df_kw[['구분', '키워드', 'PC검색량', '모바일검색량', '총검색량', '경쟁도']]
                     st.dataframe(
-                        _df_kw.head(100).style.format(
+                        _df_kw.head(200).style.format(
                             {'PC검색량': '{:,}', '모바일검색량': '{:,}', '총검색량': '{:,}'}),
                         use_container_width=True, hide_index=True,
                     )
-                    st.caption("💡 총검색량 = PC + 모바일 월간 검색수 · 경쟁도(낮음/중간/높음) · "
-                               "'< 10' 등 소량은 10 미만입니다.")
+                st.divider()
+            if _kw_hist:
+                st.caption("💡 구분: 🟡연관검색어(현재) · 🟢함께찾는(연관어) · ⚪자동완성 · "
+                           "총검색량=PC+모바일 월간 검색수 · '< 10'은 10 미만")
 
     open_cid  = _gs('naver_open_client_id')
     open_csec = _gs('naver_open_client_secret')
