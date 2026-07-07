@@ -30,6 +30,10 @@ def save_daily_orders(username, order_date, orders_df, shipping_cost, box_cost):
         conn.execute("ALTER TABLE daily_orders ADD COLUMN option_code TEXT DEFAULT ''")
     except Exception:
         pass
+    try:
+        conn.execute("ALTER TABLE daily_orders ADD COLUMN order_no TEXT DEFAULT ''")
+    except Exception:
+        pass
 
     conn.execute("DELETE FROM daily_orders WHERE order_date=?", (order_date,))
 
@@ -45,12 +49,13 @@ def save_daily_orders(username, order_date, orders_df, shipping_cost, box_cost):
         profit = ((settlement + round(ship_fee * _factor)) - (int(cost) + per_ship + per_box)
                   if int(cost) > 0 else 0)
         p_no = r.get('상품번호', '')
+        _ono = str(r.get('상품주문번호', '') or '').strip()
         conn.execute("""INSERT INTO daily_orders
-            (order_date,recipient,product_name,product_no,option_info,option_code,qty,
+            (order_date,order_no,recipient,product_name,product_no,option_info,option_code,qty,
              order_amount,shipping_fee,extra_shipping,settlement,
              cost_price,delivery_cost,box_cost,profit,matched,created_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (order_date, r['수취인명'], r['상품명'], str(p_no), r.get('옵션정보', ''),
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (order_date, _ono, r['수취인명'], r['상품명'], str(p_no), r.get('옵션정보', ''),
              str(r.get('옵션번호', '') or ''),
              int(r['수량']), int(r['최종 상품별 총 주문금액']), ship_fee,
              int(r.get('제주/도서 추가배송비', 0)), settlement,

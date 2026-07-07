@@ -8,8 +8,7 @@ from db_core import get_user_db
 
 # ── 테이블 초기화 ──────────────────────────────────────────
 
-def _ensure_tables(conn):
-    conn.execute("""CREATE TABLE IF NOT EXISTS profit_settlements (
+_PS_TABLE_SQL = """CREATE TABLE {name} (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         settlement_date TEXT NOT NULL,
         order_no TEXT DEFAULT '',
@@ -32,8 +31,26 @@ def _ensure_tables(conn):
         split_qty INTEGER DEFAULT 1,
         sell_factor INTEGER DEFAULT 1,
         created_at TEXT NOT NULL,
-        UNIQUE(settlement_date, recipient, product_name)
-    )""")
+        UNIQUE(settlement_date, order_no)
+    )"""
+
+
+def _ensure_tables(conn):
+    conn.execute(_PS_TABLE_SQL.format(name="IF NOT EXISTS profit_settlements"))
+    # ── 마이그레이션: 옛 UNIQUE(settlement_date, recipient, product_name)
+    #    → (settlement_date, order_no). 각 주문을 상품주문번호로 개별 보존. ──
+    _r = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='profit_settlements'").fetchone()
+    _s = (_r[0] if _r else '') or ''
+    if 'recipient, product_name' in _s and 'settlement_date, order_no' not in _s:
+        # order_no 비어있는 옛 행 → 합성키(_r{id})로 충돌 방지 (개별 보존)
+        conn.execute("UPDATE profit_settlements SET order_no='_r'||id WHERE COALESCE(order_no,'')=''")
+        # 같은 (날짜, order_no) 중복은 최신 1건만 유지
+        conn.execute("DELETE FROM profit_settlements WHERE id NOT IN "
+                     "(SELECT MAX(id) FROM profit_settlements GROUP BY settlement_date, order_no)")
+        conn.execute("ALTER TABLE profit_settlements RENAME TO _ps_old")
+        conn.execute(_PS_TABLE_SQL.format(name="profit_settlements"))
+        conn.execute("INSERT INTO profit_settlements SELECT * FROM _ps_old")
+        conn.execute("DROP TABLE _ps_old")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_ps_date ON profit_settlements(settlement_date)"
     )
@@ -62,6 +79,9 @@ def save_profit_settlements(username: str, date: str, rows: list) -> int:
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     saved = 0
     for r in rows:
+        # order_no(상품주문번호)를 키로 각 주문 개별 저장. 비어있으면 수취인|상품으로 합성(구버전 호환).
+        _ono = (str(r.get('order_no', '') or '').strip()
+                or f"{str(r.get('recipient','') or '')}|{str(r.get('product_name','') or '')}")
         conn.execute(
             """INSERT INTO profit_settlements
                (settlement_date, order_no, recipient, product_name, product_no, option_info,
@@ -70,8 +90,9 @@ def save_profit_settlements(username: str, date: str, rows: list) -> int:
                 matched_keyword, matched_product_no, match_source,
                 split_qty, sell_factor, created_at)
                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-               ON CONFLICT(settlement_date, recipient, product_name) DO UPDATE SET
-                   order_no           = excluded.order_no,
+               ON CONFLICT(settlement_date, order_no) DO UPDATE SET
+                   recipient          = excluded.recipient,
+                   product_name       = excluded.product_name,
                    product_no         = excluded.product_no,
                    qty                = excluded.qty,
                    order_amount       = excluded.order_amount,
@@ -89,7 +110,7 @@ def save_profit_settlements(username: str, date: str, rows: list) -> int:
                    sell_factor        = excluded.sell_factor,
                    created_at         = excluded.created_at""",
             (date,
-             str(r.get('order_no', '') or ''),
+             _ono,
              str(r.get('recipient', '') or ''),
              str(r.get('product_name', '') or ''),
              str(r.get('product_no', '') or ''),

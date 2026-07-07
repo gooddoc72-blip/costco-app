@@ -149,18 +149,20 @@ def auto_save_profit(username, date):
                 _ono_map[_hk] = str(_h.get('order_no'))
     except Exception:
         _ono_map = {}
-    _exist = {(str(s.get('recipient', '')), str(s.get('product_name', '')))
-              for s in (get_profit_settlements(username, date) or [])}
+    _exist = {str(s.get('order_no', '') or '')
+              for s in (get_profit_settlements(username, date) or []) if s.get('order_no')}
     ps_rows = []
     for r in rows:
         _rec = str(r.get('recipient', '') or '')
         _pnm = str(r.get('product_name', '') or '')
-        if (_rec, _pnm) in _exist:
+        # order_no(상품주문번호): daily_orders 저장값 우선, 없으면 주문이력에서 매핑
+        _ono = str(r.get('order_no', '') or '').strip() or _ono_map.get((_rec, _pnm), '')
+        if _ono and _ono in _exist:
             continue  # 이미 저장됨(수동 편집 포함) → 보존
         _sm = _re2.search(r'x\s*(\d+)\s*개', _pnm, _re2.IGNORECASE)
         _sf = int(_sm.group(1)) if _sm and 1 < int(_sm.group(1)) <= 50 else 1
         ps_rows.append({
-            'order_no': _ono_map.get((_rec, _pnm), ''), 'recipient': _rec, 'product_name': _pnm,
+            'order_no': _ono, 'recipient': _rec, 'product_name': _pnm,
             'product_no': str(r.get('product_no', '') or ''),
             'option_info': str(r.get('option_info', '') or ''),
             'qty': int(r.get('qty', 1) or 1),
