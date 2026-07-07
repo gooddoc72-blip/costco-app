@@ -30,6 +30,7 @@ from db import (
     get_dashboard_kpi, get_daily_profit_trend, get_week_best_products,
     get_price_history_monthly, save_price_changes_to_history, get_price_change_history,
     add_keyword_tracking, get_keyword_trackings, delete_keyword_tracking,
+    update_keyword_tracking,
     save_rank_result, get_rank_history, get_latest_ranks,
     get_daily_ranks_in_month, get_yearly_rank_history, delete_trackings_bulk,
     get_rank_drops,
@@ -372,7 +373,14 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 else:
                     st.session_state['rk_graph_tid'] = _t['id']
                 st.rerun()
-            _row[2].markdown(f"<small>{_t['search_keyword']}</small>", unsafe_allow_html=True)
+            if _row[2].button(f"✏️ {_t['search_keyword']}", key=f"kw_edit_btn_{_t['id']}",
+                               help="클릭하면 검색 키워드/상품/스토어명을 수정합니다",
+                               use_container_width=True):
+                if st.session_state.get('_rk_edit_tid') == _t['id']:
+                    st.session_state.pop('_rk_edit_tid', None)
+                else:
+                    st.session_state['_rk_edit_tid'] = _t['id']
+                st.rerun()
 
             # 일별 순위 셀 (HTML 한 줄). 전일 대비 순위 하락 시 적색.
             _cells = []
@@ -433,6 +441,39 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 )
             else:
                 _row[4].markdown("<small>-</small>", unsafe_allow_html=True)
+
+            # ── ✏️ 추적 항목 수정 (검색 KW 클릭 시) ──
+            if st.session_state.get('_rk_edit_tid') == _t['id']:
+                st.markdown(
+                    "<div style='background:#fff8e1;border:1px solid #ffe082;border-radius:6px;"
+                    "padding:8px 12px;margin:2px 0'>", unsafe_allow_html=True)
+                _ec = st.columns([2.6, 2.6, 2.6, 1.0, 1.0])
+                _e_kw = _ec[0].text_input("네이버 검색 키워드", value=_t['search_keyword'],
+                                          key=f"e_kw_{_t['id']}")
+                _e_prod = _ec[1].text_input("상품 키워드(매칭명)", value=_t['product_keyword'],
+                                            key=f"e_prod_{_t['id']}")
+                _e_store = _ec[2].text_input("내 스토어명", value=_t.get('store_name', '') or '',
+                                             key=f"e_store_{_t['id']}")
+                _ec[3].write(""); _ec[3].write("")
+                if _ec[3].button("💾 저장", key=f"e_save_{_t['id']}", type="primary",
+                                 use_container_width=True):
+                    if _e_kw.strip() and _e_prod.strip():
+                        update_keyword_tracking(
+                            USERNAME, _t['id'],
+                            search_keyword=_e_kw.strip(),
+                            product_keyword=_e_prod.strip(),
+                            store_name=_e_store.strip())
+                        st.session_state.pop('_rk_edit_tid', None)
+                        st.toast("✅ 추적 항목 수정 완료", icon="✏️")
+                        st.rerun()
+                    else:
+                        _ec[3].error("검색 키워드·상품 키워드는 비울 수 없습니다.")
+                _ec[4].write(""); _ec[4].write("")
+                if _ec[4].button("✖ 취소", key=f"e_cancel_{_t['id']}", use_container_width=True):
+                    st.session_state.pop('_rk_edit_tid', None)
+                    st.rerun()
+                st.markdown("</div>", unsafe_allow_html=True)
+
             st.markdown("<hr style='margin:6px 0;border:none;border-top:1px solid #f0f0f0'>", unsafe_allow_html=True)
 
         # ── 1년 그래프 (상품명 클릭 시 표시) ──────────────────

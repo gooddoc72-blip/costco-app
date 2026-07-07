@@ -89,6 +89,7 @@ from db_ranks import (
     add_keyword_tracking,
     get_keyword_trackings,
     delete_keyword_tracking,
+    update_keyword_tracking,
     save_rank_result,
     get_daily_ranks_in_month,
     get_yearly_rank_history,

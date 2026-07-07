@@ -77,6 +77,24 @@ def delete_keyword_tracking(username, tracking_id):
     conn.close()
 
 
+def update_keyword_tracking(username, tracking_id, search_keyword=None,
+                            product_keyword=None, store_name=None):
+    """추적 항목 수정 — 검색 키워드/상품 키워드/스토어명 (None인 항목은 미변경)."""
+    conn = get_user_db(username)
+    _sets, _params = [], []
+    if search_keyword is not None:
+        _sets.append("search_keyword=?"); _params.append(search_keyword)
+    if product_keyword is not None:
+        _sets.append("product_keyword=?"); _params.append(product_keyword)
+    if store_name is not None:
+        _sets.append("store_name=?"); _params.append(store_name)
+    if _sets:
+        _params.append(int(tracking_id))
+        conn.execute(f"UPDATE keyword_tracking SET {', '.join(_sets)} WHERE id=?", _params)
+        conn.commit()
+    conn.close()
+
+
 def save_rank_result(username, tracking_id, rank_wonbu, rank_solo, rank_compare=None):
     conn = get_user_db(username)
     _ensure_rank_tables(conn)
