@@ -93,6 +93,42 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         "(절대 순위보다 **매일 변동 추세** 파악용으로 보세요)"
     )
 
+    # ── 🔍 키워드 검색 — 월간 검색량·연관검색어 (네이버 검색광고 API) ──
+    _ad_key  = _gs('naver_ad_api_key')
+    _ad_sec  = _gs('naver_ad_secret')
+    _ad_cust = _gs('naver_ad_customer_id')
+    with st.expander("🔍 키워드 검색 — 월간 검색량 · 연관검색어", expanded=False):
+        if not (_ad_key and _ad_sec and _ad_cust):
+            st.warning("⚙️ 설정 탭 > **네이버 검색광고 API**에 API_KEY·SECRET·고객ID를 등록하면 사용할 수 있습니다.")
+            st.caption("발급: [searchad.naver.com](https://searchad.naver.com) 로그인 → 도구 → **API 사용 관리** → 발급 "
+                       "(네이버 Open API·커머스 API와 별개).")
+        else:
+            _kc1, _kc2 = st.columns([4, 1])
+            _kw_q = _kc1.text_input("검색 키워드", placeholder="예: 검은콩, 그릭요거트",
+                                    key="kw_tool_q", label_visibility="collapsed")
+            _kw_go = _kc2.button("🔎 검색", key="kw_tool_go", use_container_width=True, type="primary")
+            if _kw_go and _kw_q.strip():
+                with st.spinner("네이버 검색광고 조회 중..."):
+                    _rows, _kerr = naver_api.keyword_tool(_ad_key, _ad_sec, _ad_cust, _kw_q.strip())
+                st.session_state['_kw_tool_result'] = {'q': _kw_q.strip(), 'rows': _rows, 'err': _kerr}
+            _res = st.session_state.get('_kw_tool_result')
+            if _res:
+                if _res.get('err'):
+                    st.error(f"❌ 조회 실패: {_res['err']}")
+                elif not _res.get('rows'):
+                    st.info("연관 키워드가 없습니다.")
+                else:
+                    import pandas as _pd
+                    _df_kw = _pd.DataFrame(_res['rows'])
+                    st.caption(f"🔎 '{_res['q']}' 연관 키워드 {len(_df_kw)}개 · 월간 검색량 순 정렬")
+                    st.dataframe(
+                        _df_kw.head(100).style.format(
+                            {'PC검색량': '{:,}', '모바일검색량': '{:,}', '총검색량': '{:,}'}),
+                        use_container_width=True, hide_index=True,
+                    )
+                    st.caption("💡 총검색량 = PC + 모바일 월간 검색수 · 경쟁도(낮음/중간/높음) · "
+                               "'< 10' 등 소량은 10 미만입니다.")
+
     open_cid  = _gs('naver_open_client_id')
     open_csec = _gs('naver_open_client_secret')
 

@@ -1568,3 +1568,68 @@ def fetch_order_details_by_ids(client_id, client_secret, order_ids):
         except Exception:
             pass
     return orders, None
+
+# ── 네이버 검색광고 API — 키워드 도구(월간 검색량·연관검색어) ──────────────
+def keyword_tool(ad_api_key, ad_secret, customer_id, keyword):
+    """네이버 검색광고 keywordstool 조회.
+    입력 키워드의 월간 검색량(PC/모바일) + 연관검색어 목록을 반환.
+    반환: (rows, error). rows=[{키워드, PC검색량, 모바일검색량, 총검색량, 경쟁도}], 총검색량 내림차순.
+    검색광고 API 키는 광고주센터(searchad.naver.com) > 도구 > API 관리에서 발급 (Open API와 별개).
+    """
+    import hmac as _hmac, hashlib as _hashlib, base64 as _b64
+    if not (ad_api_key and ad_secret and customer_id):
+        return [], "검색광고 API 키(API_KEY/SECRET/고객ID) 미설정"
+    _ts = str(int(time.time() * 1000))
+    _method, _uri = "GET", "/keywordstool"
+    _msg = f"{_ts}.{_method}.{_uri}"
+    _sig = _b64.b64encode(
+        _hmac.new(str(ad_secret).encode("utf-8"), _msg.encode("utf-8"), _hashlib.sha256).digest()
+    ).decode("utf-8")
+    _headers = {
+        "X-Timestamp": _ts,
+        "X-API-KEY": str(ad_api_key),
+        "X-Customer": str(customer_id),
+        "X-Signature": _sig,
+    }
+    _hint = str(keyword or "").replace(" ", "")
+    if not _hint:
+        return [], "키워드를 입력하세요."
+
+    def _num(v):
+        if isinstance(v, str):
+            v = v.replace("<", "").replace(",", "").strip()
+        try:
+            return int(v)
+        except Exception:
+            return 0
+
+    try:
+        r = requests.get(
+            "https://api.searchad.naver.com/keywordstool",
+            headers=_headers,
+            params={"hintKeywords": _hint, "showDetail": "1"},
+            timeout=15,
+        )
+        if r.status_code != 200:
+            try:
+                _em = r.json()
+                _msg2 = _em.get("title") or _em.get("message") or r.text[:200]
+            except Exception:
+                _msg2 = r.text[:200]
+            return [], f"[{r.status_code}] {_msg2}"
+        _list = r.json().get("keywordList", []) or []
+        out = []
+        for it in _list:
+            _pc = _num(it.get("monthlyPcQcCnt", 0))
+            _mo = _num(it.get("monthlyMobileQcCnt", 0))
+            out.append({
+                "키워드": it.get("relKeyword", ""),
+                "PC검색량": _pc,
+                "모바일검색량": _mo,
+                "총검색량": _pc + _mo,
+                "경쟁도": it.get("compIdx", "") or "",
+            })
+        out.sort(key=lambda x: x["총검색량"], reverse=True)
+        return out, None
+    except Exception as e:
+        return [], str(e)

@@ -240,6 +240,21 @@ def _render_settings_content(USERNAME: str, _gs):
         set_setting(USERNAME, 'naver_open_client_secret', _new_open_csec)
         st.success("✅ Open API 키 저장 완료!")
 
+    # ── 네이버 검색광고 API (키워드 검색량·연관검색어용) ─────────
+    st.divider()
+    st.subheader("📊 네이버 검색광고 API (키워드 검색량·연관검색어용)")
+    st.caption("searchad.naver.com(광고주센터) > 도구 > **API 사용 관리**에서 발급. "
+               "월간 검색량·연관검색어 조회에 사용됩니다. Open API·커머스 API와 별개입니다.")
+    _ac1, _ac2, _ac3 = st.columns(3)
+    _new_ad_key  = _ac1.text_input("API_KEY (액세스라이선스)", value=_gs('naver_ad_api_key'), key="ad_key_in")
+    _new_ad_sec  = _ac2.text_input("SECRET_KEY (비밀키)", value=_gs('naver_ad_secret'), type="password", key="ad_sec_in")
+    _new_ad_cust = _ac3.text_input("고객 ID (CUSTOMER_ID)", value=_gs('naver_ad_customer_id'), key="ad_cust_in")
+    if st.button("검색광고 API 저장", key="save_ad_api"):
+        set_setting(USERNAME, 'naver_ad_api_key',     _new_ad_key.strip())
+        set_setting(USERNAME, 'naver_ad_secret',      _new_ad_sec.strip())
+        set_setting(USERNAME, 'naver_ad_customer_id', _new_ad_cust.strip())
+        st.success("✅ 검색광고 API 키 저장 완료!")
+
     # ── 고정 비용 ─────────────────────────────────────────
     st.divider()
     st.subheader("📦 고정 비용")
