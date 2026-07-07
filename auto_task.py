@@ -618,8 +618,13 @@ def run_fetch_orders_task(username="admin"):
         _df = _pd.DataFrame(all_orders)
         saved = _save_hist(username, _df)
         log(f"💾 order_history UPSERT: {saved}건")
-        # 일별 주문 통계
-        save_daily_orders(username, all_orders, settings)
+        # daily_orders(수익계산·홈달력용)에는 '오늘 처리할' 주문만 저장 → 항상 자동 저장.
+        #   네이버: 결제완료/발주확인/발송대기 (발송완료 등 제외), 쿠팡: 수집분 전체(신규).
+        _ACTIONABLE = {'발주확인', '결제완료', '발송대기'}
+        _daily = [o for o in all_orders
+                  if o.get('플랫폼') == '쿠팡' or o.get('주문상태', '') in _ACTIONABLE]
+        save_daily_orders(username, _daily, settings)
+        log(f"💾 daily_orders 자동 저장: {len(_daily)}건 (처리대상)")
     except Exception as e:
         log(f"❌ DB 저장 실패: {e}")
         return False
