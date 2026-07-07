@@ -133,10 +133,22 @@ def auto_save_profit(username, date):
     반환: 신규 저장 건수.
     """
     import re as _re2
-    from db import get_daily_orders, get_profit_settlements, save_profit_settlements
+    from datetime import datetime as _dt2, timedelta as _td2
+    from db import (get_daily_orders, get_profit_settlements, save_profit_settlements,
+                    search_order_history)
     rows = get_daily_orders(username, date)
     if not rows:
         return 0
+    # order_no 매핑(정산 매칭 반영용) — 최근 30일 주문이력에서 (수취인,상품)→상품주문번호
+    _ono_map = {}
+    try:
+        _df_from = (_dt2.strptime(date, "%Y-%m-%d") - _td2(days=30)).strftime("%Y-%m-%d")
+        for _h in (search_order_history(username, date_from=_df_from, date_to=date, limit=3000) or []):
+            _hk = (str(_h.get('recipient', '') or ''), str(_h.get('product_name', '') or ''))
+            if _hk not in _ono_map and _h.get('order_no'):
+                _ono_map[_hk] = str(_h.get('order_no'))
+    except Exception:
+        _ono_map = {}
     _exist = {(str(s.get('recipient', '')), str(s.get('product_name', '')))
               for s in (get_profit_settlements(username, date) or [])}
     ps_rows = []
@@ -148,7 +160,7 @@ def auto_save_profit(username, date):
         _sm = _re2.search(r'x\s*(\d+)\s*개', _pnm, _re2.IGNORECASE)
         _sf = int(_sm.group(1)) if _sm and 1 < int(_sm.group(1)) <= 50 else 1
         ps_rows.append({
-            'order_no': '', 'recipient': _rec, 'product_name': _pnm,
+            'order_no': _ono_map.get((_rec, _pnm), ''), 'recipient': _rec, 'product_name': _pnm,
             'product_no': str(r.get('product_no', '') or ''),
             'option_info': str(r.get('option_info', '') or ''),
             'qty': int(r.get('qty', 1) or 1),
@@ -166,6 +178,50 @@ def auto_save_profit(username, date):
     if not ps_rows:
         return 0
     return save_profit_settlements(username, date, ps_rows)
+
+
+def auto_settlement_match(username, api_id, api_secret, days=10):
+    """최근 N일 네이버 정산을 자동 수집·역추적 매칭·저장하고, 실제 정산액을
+    profit_settlements에 반영한다(홈 달력/통계 '실정산' 반영). 반환: (처리일수, 매칭건, 수익반영건)."""
+    if not (api_id and api_secret):
+        return 0, 0, 0
+    from db import (save_naver_settlements, delete_naver_settlements_by_date,
+                    get_naver_settlements_by_date, get_dispatch_by_order_nos,
+                    save_settlement_matches, apply_actual_settlements_to_profit)
+    from settlement_service import match_settled_to_dispatch
+    _dates = _n_match = _n_upd = 0
+    _yesterday = datetime.now().date() - timedelta(days=1)
+    for _i in range(days):
+        _d = (_yesterday - timedelta(days=_i)).strftime("%Y-%m-%d")
+        try:
+            _res = naver_api.get_settlement_history(api_id, api_secret, _d, _d)
+            recs, err = _res[0], _res[1]
+        except Exception:
+            continue
+        if err or not recs:
+            continue
+        try:
+            delete_naver_settlements_by_date(username, _d)
+            save_naver_settlements(username, _d, recs)
+        except Exception:
+            continue
+        _settled = get_naver_settlements_by_date(username, _d)
+        if not _settled:
+            continue
+        _po = [str(r.get('product_order_no', '')) for r in _settled]
+        _disp = get_dispatch_by_order_nos(username, _po, platform='naver')
+        _rt = match_settled_to_dispatch(_settled, _disp)
+        _rows = ([{**r, 'match_status': 'matched'} for r in _rt['matched']]
+                 + [{**r, 'match_status': 'mismatched'} for r in _rt['mismatched']]
+                 + [{**r, 'match_status': 'no_dispatch'} for r in _rt['no_dispatch']])
+        if _rows:
+            _n_match += save_settlement_matches(username, _d, _rows)
+            _actuals = {r['product_order_no']: {'actual': int(r.get('actual') or 0)}
+                        for r in _rows if int(r.get('actual') or 0) > 0}
+            if _actuals:
+                _n_upd += apply_actual_settlements_to_profit(username, _actuals)
+        _dates += 1
+    return _dates, _n_match, _n_upd
 
 
 def send_notification(settings, msg, username=None):
@@ -652,6 +708,14 @@ def run_fetch_orders_task(username="admin"):
             errors.append(f"쿠팡: {e}")
     else:
         log("  ⏭ 쿠팡 API 키 미설정 — 건너뜀")
+
+    # 정산 매칭 자동 (주문 유무와 무관) — 최근 정산건 수집·역추적 매칭·실정산 반영
+    try:
+        _sd, _sm, _su = auto_settlement_match(username, api_id, api_secret, days=10)
+        if _sm or _su:
+            log(f"💳 정산매칭 자동: {_sd}일 처리 / 매칭 {_sm}건 / 실정산 수익반영 {_su}건")
+    except Exception as _se:
+        log(f"⚠️ 정산매칭 자동 실패(계속): {_se}")
 
     if not all_orders:
         log("ℹ️ 수집된 주문 없음 → 종료")
