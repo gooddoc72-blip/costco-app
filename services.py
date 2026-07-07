@@ -155,66 +155,68 @@ def process_and_save_orders(username, df, order_date, shipping_cost, box_cost,
 
 
 # ── 상품 매칭 ─────────────────────────────────────────────
-@lru_cache(maxsize=4096)
-def _token_score(a: str, b: str) -> float:
-    """가중 토큰 매칭. 짧은 한 단어 매칭(예: '주스')의 false positive 방지.
-       기준: Jaccard + 사이즈 페널티 + 일반어 가중치 감소 + 부분 substring 매칭
-       lru_cache: 같은 (a,b) 쌍 반복 호출 시 즉시 반환 (영수증 매칭 등에서 동일 이름 반복 빈번).
+# 토큰 매칭용 상수 (모듈 레벨 — 특징 사전계산 캐시와 공유)
+_GENERIC = {
+    '주스','과자','음료','우유','요거트','요구르트','빵','쿠키','초콜릿','초코',
+    '코스트코','커클랜드','대용량','소용량','선물','세트','과일','채소','고기','육포',
+    '신상','특가','행사','할인','정품','한정','베스트','정도','신선','냉장','냉동'
+}
+_STORE = {'코스트코','커클랜드','대용량','소용량','선물','세트','신상',
+          '특가','행사','할인','정품','한정','베스트','신선','냉장','냉동'}
+_TOKEN_RE = re.compile(r'[가-힣a-zA-Z0-9]+')
+_SIZE_RE = re.compile(r'\d+\s*(?:g|kg|ml|l|개|팩|매|장|봉)')
+
+
+@lru_cache(maxsize=16384)
+def _token_features(s: str):
+    """문자열의 토큰 매칭 특징을 1회만 계산·캐시.
+    반환: (meaningful: frozenset, sizes: frozenset, core: str)
+    noise(길이<2·숫자시작)는 토큰별 성질이라 쌍(pair)과 무관하게 사전계산 가능 →
+    _token_score 원본과 수학적으로 동일한 meaningful/core를 산출한다.
     """
-    # 일반 단어 (의미 약함) — 매칭 점수에서 가중치 낮춤
-    GENERIC = {
-        '주스','과자','음료','우유','요거트','요구르트','빵','쿠키','초콜릿','초코',
-        '코스트코','커클랜드','대용량','소용량','선물','세트','과일','채소','고기','육포',
-        '신상','특가','행사','할인','정품','한정','베스트','정도','신선','냉장','냉동'
-    }
-    ta = set(re.findall(r'[가-힣a-zA-Z0-9]+', a.lower()))
-    tb = set(re.findall(r'[가-힣a-zA-Z0-9]+', b.lower()))
-    if not ta or not tb:
+    s_low = (s or '').lower()
+    toks = _TOKEN_RE.findall(s_low)
+    ts = set(toks)
+    noise = frozenset(t for t in ts if len(t) < 2 or t[0].isdigit())
+    meaningful = frozenset(ts - _GENERIC - noise)
+    sizes = frozenset(_SIZE_RE.findall(s_low))
+    core = ''.join(t for t in toks if t not in noise and t not in _STORE)
+    return (meaningful, sizes, core)
+
+
+def _token_score_ff(fa, fb) -> float:
+    """사전계산된 특징 2개로 점수 계산 — _token_score 원본과 동일 결과."""
+    ma, sa, ca = fa
+    mb, sb, cb = fb
+    if not ma or not mb:
         return 0.0
-    # 단독 문자(x, g)·숫자로 시작하는 토큰(4, 12, 5kg, 40g, 12개 등 수량/용량) 제거.
-    # → '5kg' 같은 용량 토큰이 우연히 겹쳐 무관한 짧은-이름 상품(배 7.5kg ↔ 커피사탕 1.5kg)이
-    #    1.0 점수로 오매칭되는 것을 방지 (용량 일치 여부는 아래 사이즈 페널티에서 별도 처리).
-    _noise = {t for t in ta | tb if len(t) < 2 or t[0].isdigit()}
-    common = ta & tb
-    # 일반어 + 노이즈 제외 후 의미있는 토큰만
-    _skip = GENERIC | _noise
-    meaningful_common = common - _skip
-    meaningful_a = ta - _skip
-    meaningful_b = tb - _skip
-    if not meaningful_a or not meaningful_b:
-        return 0.0
-    # 부분 substring 매칭 (예: '메르시' ⊂ '메르시초콜릿'): 0.5 가중
-    extra_partial = 0
-    a_left = meaningful_a - meaningful_common
-    b_left = meaningful_b - meaningful_common
+    mcommon = ma & mb
+    a_left = ma - mcommon
+    b_left = mb - mcommon
+    extra = 0
     for t in a_left:
         if len(t) >= 3:
             for t2 in b_left:
                 if len(t2) >= 3 and (t in t2 or t2 in t):
-                    extra_partial += 0.5
+                    extra += 0.5
                     break
-    # Containment(짧은 쪽 기준) + 부분 매칭 가중
-    # 영수증명/네이버명 길이 차이가 클 때 짧은 쪽이 긴 쪽에 얼마나 포함되는지로 측정
-    denom = min(len(meaningful_a), len(meaningful_b))
-    score = (len(meaningful_common) + extra_partial) / max(denom, 1)
-    # 사이즈 페널티: 양쪽 사이즈 있는데 다르면 감점
-    sa = set(re.findall(r'\d+\s*(?:g|kg|ml|l|개|팩|매|장|봉)', a.lower()))
-    sb = set(re.findall(r'\d+\s*(?:g|kg|ml|l|개|팩|매|장|봉)', b.lower()))
+    denom = min(len(ma), len(mb))
+    score = (len(mcommon) + extra) / max(denom, 1)
     if sa and sb and not (sa & sb):
         score *= 0.3
-    # 공백 없는 핵심 연결 포함 매칭 — '부추고기순대'(붙임) ⊂ '부추 고기 순대'(띄어쓰기) 보강.
-    #   매장/마케팅어(코스트코 등)와 숫자/용량만 제거하고 식품명 토큰(고기·치즈 등)은 유지해야
-    #   붙여쓴 키워드('부추고기순대')와 정확히 이어붙일 수 있음.
-    _STORE = {'코스트코', '커클랜드', '대용량', '소용량', '선물', '세트', '신상',
-              '특가', '행사', '할인', '정품', '한정', '베스트', '신선', '냉장', '냉동'}
-    _drop = _noise | _STORE
-    _ca = ''.join(t for t in re.findall(r'[가-힣a-zA-Z0-9]+', a.lower()) if t not in _drop)
-    _cb = ''.join(t for t in re.findall(r'[가-힣a-zA-Z0-9]+', b.lower()) if t not in _drop)
-    if len(_ca) >= 4 and len(_cb) >= 4:
-        _short, _long = (_ca, _cb) if len(_ca) <= len(_cb) else (_cb, _ca)
+    if len(ca) >= 4 and len(cb) >= 4:
+        _short, _long = (ca, cb) if len(ca) <= len(cb) else (cb, ca)
         if len(_short) >= 4 and _short in _long:
             score = max(score, 0.7)
     return min(1.0, score)
+
+
+@lru_cache(maxsize=16384)
+def _token_score(a: str, b: str) -> float:
+    """가중 토큰 매칭 (특징 사전계산 캐시 사용 — 결과 불변, 반복 호출 시 대폭 빠름).
+    Jaccard + 사이즈 페널티 + 일반어 가중치 감소 + 부분 substring + 붙임/띄어쓰기 연결매칭.
+    """
+    return _token_score_ff(_token_features(a), _token_features(b))
 
 
 def _find_db_product(products, order_name: str, order_pno: str = '', pno_map: dict = None):
