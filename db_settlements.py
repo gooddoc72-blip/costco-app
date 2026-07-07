@@ -238,7 +238,8 @@ def get_coupang_settled_map(username: str) -> dict:
     _ensure_coupang_table(conn)
     rows = conn.execute(
         "SELECT order_id, SUM(settlement_amount) s, SUM(service_fee) f, "
-        "SUM(delivery_settlement) d, MAX(settle_date) sd, MAX(final_settle_date) fsd "
+        "SUM(delivery_settlement) d, MAX(settle_date) sd, MAX(final_settle_date) fsd, "
+        "MAX(recognition_date) rd "
         "FROM coupang_settlements GROUP BY order_id"
     ).fetchall()
     conn.close()
@@ -257,6 +258,7 @@ def get_coupang_settled_map(username: str) -> dict:
         out[str(r['order_id'])] = {
             'settlement': s, 'service_fee': int(r['f'] or 0), 'delivery': int(r['d'] or 0),
             'settle_date': sd, 'final_settle_date': fsd,
+            'recognition_date': r['rd'] or '',   # 구매확정일(매출확정일)
             'cycle': '월정산' if monthly else '주정산',
             'first_amt': first_amt, 'second_amt': second_amt,
         }
