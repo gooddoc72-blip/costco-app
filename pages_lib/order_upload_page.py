@@ -886,7 +886,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 st.dataframe(_prep_coupang, use_container_width=True, hide_index=True)
 
         st.subheader("🛒 코스트코 장보기 목록")
-        shop_cols = ['상품번호', '상품명', '옵션정보', '수량', '정산예정금액', '배송비 합계']
+        shop_cols = ['상품번호', '상품명', '옵션정보', '수취인명', '수량', '정산예정금액', '배송비 합계']
         available_cols = [c for c in shop_cols if c in df.columns]
         shopping = df[available_cols].copy()
         shopping['옵션정보'] = shopping['옵션정보'].fillna('') if '옵션정보' in shopping.columns else ''
@@ -899,6 +899,13 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         group_cols = [c for c in ['상품번호', '상품명', '옵션정보'] if c in shopping.columns]
         # 주문건수: 동일 상품의 고객 수 (row 수)
         _order_cnt = shopping.groupby(group_cols, sort=True, dropna=False).size().reset_index(name='주문건수')
+        # 주문자(수취인) 명단 — 상품별로 주문한 사람들 (중복 제거·순서 유지). 집계 전에 산출.
+        _recips = None
+        if '수취인명' in shopping.columns:
+            _recips = (shopping.groupby(group_cols, sort=True, dropna=False)['수취인명']
+                       .apply(lambda s: ', '.join(dict.fromkeys(
+                           str(x).strip() for x in s if pd.notna(x) and str(x).strip())))
+                       .reset_index(name='주문자'))
         agg_map = {'수량': 'sum'}
         if '정산예정금액' in shopping.columns:
             agg_map['정산예정금액'] = 'sum'
@@ -915,6 +922,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         if '배송비' in shopping.columns:
             shopping['배송비'] = shopping['배송비'].round().astype(int)
         shopping = shopping.merge(_order_cnt, on=group_cols, how='left')
+        if _recips is not None:
+            shopping = shopping.merge(_recips, on=group_cols, how='left')
 
         # ── 묶음수량 추출 (옵션/상품명 기반) ──
         if not shopping.empty:
@@ -966,6 +975,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         has_split = (shopping['분리수량'] > 1).any()
         has_multi = (shopping['묶음수량'] > 1).any()
         disp_cols = [c for c in ['상품번호', '상품명', '옵션정보'] if c in shopping.columns]
+        if '주문자' in shopping.columns:
+            disp_cols += ['주문자']
         disp_cols += ['주문수량']
         if '정산금액' in shopping.columns:
             disp_cols += ['정산금액']
@@ -1123,6 +1134,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 f'<td>{r.get("상품번호","")}</td>'
                 f'<td>{str(r.get("상품명",""))}</td>'
                 f'<td>{str(r.get("옵션정보","") or "-")}</td>'
+                f'<td>{str(r.get("주문자","") or "-")}</td>'
                 f'<td style="text-align:right">{int(r.get("주문수량",0))}</td>'
                 f'<td style="text-align:right;font-weight:600">{fmt(_settle)}원</td>'
                 f'<td style="text-align:right;color:#555">{fmt(_ship_v)}원</td>'
@@ -1145,7 +1157,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             f'<h1>🛒 코스트코 장보기 — {order_date_str}</h1>'
             f'<div class="meta">총 {len(shopping)}종 · 정산 총액 {fmt(_total_settle_print)}원</div>'
             '<table><thead><tr>'
-            '<th>상품번호</th><th>상품명</th><th>옵션정보</th>'
+            '<th>상품번호</th><th>상품명</th><th>옵션정보</th><th>주문자</th>'
             '<th style="text-align:right">수량</th>'
             '<th style="text-align:right">정산금액</th>'
             '<th style="text-align:right">택배비</th>'
