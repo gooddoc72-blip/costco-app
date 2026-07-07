@@ -271,6 +271,7 @@ def _parse_order_and_excel(order: dict, seq_no: int) -> tuple:
             "상품명":       item_name,
             "옵션정보":     item.get("externalVendorSkuCode") or "",
             "수량":         qty,
+            "상품가격":     unit_price,   # 판매단가(orderPrice) — 네이버와 동일하게 수집
             "최종 상품별 총 주문금액": unit_price * qty,
             "배송비 합계":  ship_fee,
             "제주/도서 추가배송비": 0,
