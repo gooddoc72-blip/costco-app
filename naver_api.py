@@ -1712,3 +1712,84 @@ def keyword_research(ad_api_key, ad_secret, customer_id, keyword):
     # 현재 검색어 최상단 → 이후 총검색량 내림차순
     out.sort(key=lambda x: (0 if x["구분"] == "연관검색어" else 1, -x["총검색량"]))
     return out, None
+
+
+def datalab_search_trend(client_id, client_secret, keyword, pc_now=0, mo_now=0):
+    """네이버 데이터랩 검색어트렌드 → 최근 12개월 월별 검색량 추이(PC/모바일/합계).
+    데이터랩은 '상대비율(0~100)'만 주므로, keywordstool 현재월 PC/모바일 절대치로 앵커링해
+    추정 절대값으로 환산한다. Open API 키(developers.naver.com)는 순위체크용과 동일.
+    반환: (dict{'months','total','pc','mo'}, error).
+    """
+    import json as _json
+    from datetime import date as _date, timedelta as _td
+    if not (client_id and client_secret):
+        return None, "네이버 Open API 키 미설정"
+    _kw = str(keyword or "").strip()
+    if not _kw:
+        return None, "키워드를 입력하세요."
+    # 완결월(지난달 말일) 기준 최근 12개월
+    _end = _date.today().replace(day=1) - _td(days=1)
+    _sy, _sm = _end.year, _end.month - 11
+    while _sm <= 0:
+        _sm += 12; _sy -= 1
+    _start = _date(_sy, _sm, 1)
+    _hdr = {
+        "X-Naver-Client-Id": str(client_id),
+        "X-Naver-Client-Secret": str(client_secret),
+        "Content-Type": "application/json",
+    }
+
+    def _fetch(device):
+        body = {
+            "startDate": _start.strftime("%Y-%m-%d"),
+            "endDate": _end.strftime("%Y-%m-%d"),
+            "timeUnit": "month",
+            "keywordGroups": [{"groupName": _kw, "keywords": [_kw]}],
+        }
+        if device:
+            body["device"] = device
+        try:
+            r = requests.post("https://openapi.naver.com/v1/datalab/search",
+                              headers=_hdr, data=_json.dumps(body), timeout=15)
+            if r.status_code != 200:
+                try:
+                    _m2 = r.json().get("errorMessage") or r.text[:200]
+                except Exception:
+                    _m2 = r.text[:200]
+                return None, f"[{r.status_code}] {_m2}"
+            _res = r.json().get("results") or []
+            _data = _res[0].get("data", []) if _res else []
+            return {d["period"][:7]: float(d.get("ratio") or 0) for d in _data}, None
+        except Exception as e:
+            return None, str(e)
+
+    _pc_r, _e1 = _fetch("pc")
+    if _e1:
+        return None, _e1
+    _mo_r, _e2 = _fetch("mo")
+    if _e2:
+        return None, _e2
+    _months = sorted(set(_pc_r) | set(_mo_r))
+    if not _months:
+        return None, "데이터랩 결과 없음"
+    # 앵커: 마지막(최근) 월 비율 → 현재월 절대치(pc_now/mo_now)
+    _pc_last = _pc_r.get(_months[-1], 0) or 0
+    _mo_last = _mo_r.get(_months[-1], 0) or 0
+    _pc_scale = (float(pc_now) / _pc_last) if (_pc_last > 0 and pc_now > 0) else 0
+    _mo_scale = (float(mo_now) / _mo_last) if (_mo_last > 0 and mo_now > 0) else 0
+    _anchored = bool(_pc_scale or _mo_scale)
+    out = {"months": [], "total": [], "pc": [], "mo": [], "anchored": _anchored}
+    for mth in _months:
+        _pr = _pc_r.get(mth, 0) or 0
+        _mr = _mo_r.get(mth, 0) or 0
+        if _anchored:
+            _pcv = int(round(_pr * _pc_scale))
+            _mov = int(round(_mr * _mo_scale))
+        else:
+            # 앵커 불가(현재월 절대치 없음) → 상대지수 그대로 표시
+            _pcv, _mov = int(round(_pr)), int(round(_mr))
+        out["months"].append(mth[2:])   # 'YY-MM'
+        out["pc"].append(_pcv)
+        out["mo"].append(_mov)
+        out["total"].append(_pcv + _mov)
+    return out, None

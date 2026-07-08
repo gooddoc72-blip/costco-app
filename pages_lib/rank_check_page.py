@@ -114,8 +114,23 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 _q = _kw_q.strip()
                 with st.spinner("네이버 검색광고·자동완성 조회 중..."):
                     _rows, _kerr = naver_api.keyword_research(_ad_key, _ad_sec, _ad_cust, _q)
+                # 📈 최근 12개월 검색량 추이 (데이터랩 — 순위체크용 Open API 키 재사용)
+                _trend, _terr = None, None
+                _open_cid  = _gs('naver_open_client_id')
+                _open_csec = _gs('naver_open_client_secret')
+                if not _kerr and _open_cid and _open_csec:
+                    # 검색어 자신(연관검색어 행)의 현재월 PC/모바일 → 절대치 앵커
+                    _selfrow = next((r for r in (_rows or [])
+                                     if r.get('구분') == '연관검색어'),
+                                    (_rows or [{}])[0] if _rows else {})
+                    _pc_now = int(_selfrow.get('PC검색량', 0) or 0)
+                    _mo_now = int(_selfrow.get('모바일검색량', 0) or 0)
+                    with st.spinner("데이터랩 12개월 추이 조회 중..."):
+                        _trend, _terr = naver_api.datalab_search_trend(
+                            _open_cid, _open_csec, _q, _pc_now, _mo_now)
                 _kw_hist[:] = [h for h in _kw_hist if h['q'] != _q]   # 중복 제거
-                _kw_hist.insert(0, {'q': _q, 'rows': _rows, 'err': _kerr})
+                _kw_hist.insert(0, {'q': _q, 'rows': _rows, 'err': _kerr,
+                                    'trend': _trend, 'terr': _terr})
                 st.rerun()
 
             if not _kw_hist:
@@ -143,6 +158,20 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                             {'PC검색량': '{:,}', '모바일검색량': '{:,}', '총검색량': '{:,}'}),
                         use_container_width=True, hide_index=True,
                     )
+                # 📈 최근 12개월 검색량 추이 (Total / PC / Mobile)
+                _tr = _h.get('trend')
+                if _tr and _tr.get('months'):
+                    st.markdown(f"**📈 \"{_h['q']}\" 최근 12개월 검색량 추이**")
+                    _tdf = _pd.DataFrame(
+                        {'Total': _tr['total'], 'PC': _tr['pc'], 'Mobile': _tr['mo']},
+                        index=_tr['months'])
+                    st.line_chart(_tdf)
+                    if _tr.get('anchored'):
+                        st.caption("💡 데이터랩 상대추이 × 검색광고 현재월 검색량으로 환산한 **추정 절대치**입니다.")
+                    else:
+                        st.caption("💡 현재월 절대 검색량이 없어 **상대지수(0~100)** 로 표시됩니다.")
+                elif _h.get('terr'):
+                    st.caption(f"📈 추이 조회 실패: {_h['terr']}")
                 st.divider()
             if _kw_hist:
                 st.caption("💡 구분: 🟡연관검색어(현재) · 🟢함께찾는(연관어) · ⚪자동완성 · "
