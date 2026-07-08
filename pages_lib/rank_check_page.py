@@ -169,6 +169,9 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                             use_container_width=True, hide_index=True, height=640,
                         )
                     with _rc:
+                        # ⚠️ render() 하단의 지역 `import plotly... as go`가 go를 지역변수로 만들어
+                        #    모듈 상단 import를 가림 → 여기서도 사용 전 import 필요 (UnboundLocalError 방지)
+                        import plotly.graph_objects as go
                         _ga = _h.get('ga')
                         if _ga and _ga.get('gender'):
                             _gf = _ga['gender'].get('여성', 0)
