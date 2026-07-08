@@ -255,7 +255,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
 
     # ── Task 1: 장보기 목록 발송 ──
     st.subheader("📋 Task 1 — 장보기 목록 카카오 발송")
-    st.caption("매일 지정 시간에 배송준비 주문을 조회하고 장보기 목록을 카카오톡/텔레그램으로 전송합니다.")
+    st.caption("매일 지정 시간에 배송준비 주문을 조회하고 장보기 목록을 카카오톡으로 전송합니다.")
 
     task1_en = _gs('auto_shopping_enabled') == '1'
     task1_time_str = _gs('auto_shopping_time') or '09:00'

@@ -298,7 +298,6 @@ def init_user_db(username):
     default_settings = [
         ('shipping_cost', '1800'), ('box_cost', '300'), ('excel_password', ''),
         ('api_client_id', ''), ('api_client_secret', ''),
-        ('telegram_token', ''), ('telegram_chat_id', ''),
         ('kakao_api_key', ''), ('kakao_access_token', ''), ('kakao_refresh_token', ''),
         ('cj_api_id', ''), ('cj_api_pw', ''), ('cj_account_no', ''),
         ('default_courier', 'CJGLS'), ('target_margin', '10'),

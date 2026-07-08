@@ -1047,10 +1047,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         c1.metric("정산 총액", f"{fmt(_total_settle)}원")
         c2.metric("종 수", f"{len(shopping)}종")
 
-        # 휴대폰으로 장보기 목록 전송
+        # 휴대폰으로 장보기 목록 전송 (카카오톡 — 텔레그램은 2026-07 삭제)
         kakao_token = _gs('kakao_access_token')
-        tg_token = _gs('telegram_token')
-        tg_chat = _gs('telegram_chat_id')
 
         # ── 장보기 목록 items 빌더 (자동발송·관리자발송 공용) ──
         def _build_shop_items():
@@ -1098,7 +1096,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         _auto_flag = st.session_state.pop('_auto_shop_send', None)
         if _auto_flag and _auto_flag == order_date_str and not shopping.empty:
             _auto_msgs = []
-            # (1) 본인 휴대폰(카톡 + 텔레그램)
+            # (1) 본인 휴대폰(카톡)
             _self_msg = _build_self_msg()
             if kakao_token:
                 _ok, _ke = naver_api.send_kakao(
@@ -1110,9 +1108,6 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         _pp = str(_ke).replace("__TOKEN_REFRESHED__", "").split("||")
                         set_setting(USERNAME, 'kakao_access_token', _pp[0])
                         if len(_pp) > 1: set_setting(USERNAME, 'kakao_refresh_token', _pp[1])
-            if tg_token and tg_chat:
-                _okt, _ = naver_api.send_telegram(tg_token, tg_chat, _self_msg)
-                if _okt: _auto_msgs.append("📲 텔레그램")
             # (2) 관리자 제출 (관리자 카톡 발송은 안 함 — 관리자 페이지 목록에서 확인)
             _items_a, _total_a = _build_shop_items()
             try:
@@ -1283,8 +1278,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             kakao_refresh = _gs('kakao_refresh_token')
             kakao_secret = _gs('kakao_client_secret')
 
-            # 카카오 + 텔레그램 둘 다에 '전체' 발송.
-            # 카카오는 7500자 초과 시 자동으로 줄 단위 분할해 전부 발송 → 잘림 없음.
+            # 카카오 '전체' 발송 — 7500자 초과 시 자동으로 줄 단위 분할해 전부 발송 → 잘림 없음.
             if kakao_token:
                 ok, kerr = naver_api.send_kakao(kakao_token, msg, rest_api_key=kakao_api_key, refresh_token=kakao_refresh, client_secret=kakao_secret)
                 if ok:
@@ -1295,17 +1289,11 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         if len(parts) > 1: set_setting(USERNAME, 'kakao_refresh_token', parts[1])
                 else:
                     st.error(f"❌ 카카오톡 실패: {kerr}")
-            if tg_token and tg_chat:
-                ok_tg, terr = naver_api.send_telegram(tg_token, tg_chat, msg)
-                if ok_tg:
-                    sent_ok = True
-                else:
-                    st.error(f"❌ 텔레그램 실패: {terr}")
 
             if sent_ok:
                 st.success("✅ 휴대폰으로 전송 완료!")
-            elif not kakao_token and not tg_token:
-                st.warning("💡 설정에서 카카오톡 또는 텔레그램을 설정해주세요.")
+            elif not kakao_token:
+                st.warning("💡 설정에서 카카오톡을 설정해주세요.")
 
     # ── 주문 이력 검색 ──────────────────────────────────────────
     st.divider()

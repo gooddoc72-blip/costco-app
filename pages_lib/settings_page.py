@@ -215,18 +215,7 @@ def _render_settings_content(USERNAME: str, _gs):
         set_setting(USERNAME, 'cj_account_no', new_cj_acc)
         st.success(f"✅ 택배사 설정 저장 완료! (기본: {sel_courier})")
 
-    # ── 텔레그램 알림 ─────────────────────────────────────
-    st.divider()
-    st.subheader("📱 텔레그램 알림 (백업)")
-    tg_token = _gs('telegram_token')
-    tg_chat = _gs('telegram_chat_id')
-    c1, c2 = st.columns(2)
-    new_tg_token = c1.text_input("봇 토큰", value=tg_token, type="password", key="tg_token_input")
-    new_tg_chat = c2.text_input("Chat ID", value=tg_chat, key="tg_chat_input")
-    if st.button("텔레그램 저장", key="save_tg"):
-        set_setting(USERNAME, 'telegram_token', new_tg_token)
-        set_setting(USERNAME, 'telegram_chat_id', new_tg_chat)
-        st.success("✅ 텔레그램 설정 저장!")
+    # (텔레그램 알림 설정 — 2026-07 삭제. 사용빈도 낮음, 필요 시 재추가)
 
     # ── 네이버 Open API ───────────────────────────────────
     st.divider()

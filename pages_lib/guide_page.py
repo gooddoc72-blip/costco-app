@@ -280,19 +280,6 @@ URL 예시: `https://wing.coupang.com/vendor/` <span style='background:#ffe082;p
 """
         )
 
-        st.markdown("---")
-        st.subheader("📱 텔레그램 알림 (선택)")
-        st.markdown(
-            """
-카카오톡 대신 텔레그램으로 알림을 받을 수 있습니다.
-
-1. 텔레그램 앱에서 **@BotFather** 검색 → `/newbot` 명령어 입력
-2. 봇 이름 입력 → **봇 토큰** 복사
-3. **@userinfobot** 에 아무 메시지 발송 → **Chat ID** 확인
-4. ⚙️ 설정 탭 > 텔레그램 알림에 입력 후 저장
-"""
-        )
-
     # ═══════════════════════════════════════════════════════
     st.divider()
 

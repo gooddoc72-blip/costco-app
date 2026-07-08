@@ -258,13 +258,11 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict, embedded: bool = False
                     })
                 st.dataframe(pd.DataFrame(change_rows), use_container_width=True, hide_index=True)
 
-                # ── 카카오/텔레그램 알림 ──
+                # ── 카카오 알림 (텔레그램은 2026-07 삭제) ──
                 kakao_token = _gs('kakao_access_token')
-                tg_token = _gs('telegram_token')
-                tg_chat = _gs('telegram_chat_id')
 
                 col_notif, col_save = st.columns([1, 1])
-                if col_notif.button("📲 가격변동 알림 카톡/텔레그램 발송", key="send_price_alert", use_container_width=True):
+                if col_notif.button("📲 가격변동 알림 카톡 발송", key="send_price_alert", use_container_width=True):
                     alert_msg = build_price_alert_msg(price_changes)
                     sent_ok = False
                     if HAS_NAVER_API and kakao_token:
@@ -280,18 +278,12 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict, embedded: bool = False
                                 if len(parts) > 1: set_setting(USERNAME, 'kakao_refresh_token', parts[1])
                         else:
                             st.error(f"카카오 실패: {kerr}")
-                    if not sent_ok and HAS_NAVER_API and tg_token and tg_chat:
-                        ok, terr = naver_api.send_telegram(tg_token, tg_chat, alert_msg)
-                        if ok:
-                            sent_ok = True
-                        else:
-                            st.error(f"텔레그램 실패: {terr}")
                     if sent_ok:
                         # 알림 발송 이력 저장
                         save_price_changes_to_history(USERNAME, price_changes)
                         st.success("✅ 가격 변동 알림 발송 완료!")
-                    elif not kakao_token and not tg_token:
-                        st.warning("설정에서 카카오톡 또는 텔레그램을 먼저 설정해주세요.")
+                    elif not kakao_token:
+                        st.warning("설정에서 카카오톡을 먼저 설정해주세요.")
 
 
             else:

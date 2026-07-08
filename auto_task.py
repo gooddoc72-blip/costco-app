@@ -3,7 +3,7 @@
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Task 1 (shopping) - 장보기 목록 발송
   · 네이버 READY 주문 조회
-  · 장보기 목록 생성 → 카카오톡/텔레그램 발송
+  · 장보기 목록 생성 → 카카오톡 발송
 
 Task 2 (shipping) - 자동 발송처리
   · 네이버 READY 주문 조회
@@ -238,14 +238,12 @@ def auto_settlement_match(username, api_id, api_secret, days=10):
 
 
 def send_notification(settings, msg, username=None):
-    """카카오 + 텔레그램 둘 다에 '전체' 메시지 발송.
+    """카카오톡으로 '전체' 메시지 발송. (텔레그램은 2026-07 삭제 — 사용빈도 낮음)
     카카오는 길면(7500자 초과) 자동으로 나눠 전부 발송(잘림 없음)."""
     kakao_token = settings.get("kakao_access_token", "")
     kakao_api_key = settings.get("kakao_api_key", "")
     kakao_refresh = settings.get("kakao_refresh_token", "")
     kakao_secret = settings.get("kakao_client_secret", "")
-    tg_token = settings.get("telegram_token", "")
-    tg_chat = settings.get("telegram_chat_id", "")
 
     def _save_refreshed_token(err):
         if err and "__TOKEN_REFRESHED__" in str(err) and username:
@@ -258,8 +256,6 @@ def send_notification(settings, msg, username=None):
             except Exception as e:
                 log(f"⚠️ 카카오 토큰 갱신 저장 실패: {e}")
 
-    # 카카오 + 텔레그램 둘 다에 '전체' 발송.
-    # 카카오는 7500자 초과 시 자동으로 줄 단위 분할해 전부 발송 → 잘림 없음.
     sent_any = False
     if kakao_token:
         ok_k, kerr = naver_api.send_kakao(kakao_token, msg,
@@ -271,12 +267,6 @@ def send_notification(settings, msg, username=None):
             sent_any = True
         else:
             log(f"  카카오톡 실패: {kerr}")
-    if tg_token and tg_chat:
-        ok_t, terr = naver_api.send_telegram(tg_token, tg_chat, msg)
-        if ok_t:
-            sent_any = True
-        else:
-            log(f"  텔레그램 실패: {terr}")
     return sent_any
 
 
@@ -501,7 +491,7 @@ def run_shopping_task(username="admin"):
         if send_notification(settings, msg, username):
             log("✅ 알림 전송 완료")
         else:
-            log("⚠️ 알림 채널 미설정 (카카오/텔레그램 설정 필요)")
+            log("⚠️ 알림 채널 미설정 (카카오 설정 필요)")
 
         # ── 관리자에게 장보기 목록 자동 제출 (관리자 카톡 발송은 안 함) ──
         #    관리자는 관리자 페이지 '사용자별 장보기 목록'에서 확인
