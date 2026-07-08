@@ -133,6 +133,25 @@ def reverse_engineer_settlement_stats(settle_rows: List[Dict],
     }
 
 
+def detect_settle_mode(quick_share, yesterday_dispatched_n: int,
+                       yesterday_settled_n: int) -> str:
+    """판매자 정산방식(빠른/일반) 자동 판정 — 정산건 수집 데이터 기준.
+
+    1) 실측 빠른정산 비중 ≥ 50% → 'quick'
+    2) 전날 발송건이 있는데 정산에 하나도 안 잡힘 → 'normal'
+       (빠른정산이면 집하 D+1 정산이므로, 전날 발송건 정산 부재 = 일반정산 구조)
+    3) 실측 비중이 있고 50% 미만 → 'normal'
+    4) 판단 근거 없음 → '' (미정)
+    """
+    if quick_share is not None and quick_share >= 50:
+        return 'quick'
+    if yesterday_dispatched_n > 0 and yesterday_settled_n == 0:
+        return 'normal'
+    if quick_share is not None:
+        return 'normal'
+    return ''
+
+
 def find_unsettled_dispatches(dispatch_rows: List[Dict], settled_po_set: set,
                               today_str: str, delay_threshold: int = 10,
                               is_quick_seller: bool = False,
