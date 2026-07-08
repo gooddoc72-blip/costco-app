@@ -720,6 +720,23 @@ def run_fetch_orders_task(username="admin"):
     except Exception as _se:
         log(f"⚠️ 정산매칭 자동 실패(계속): {_se}")
 
+    # 🤖 AI 정산 브리핑 자동 발송 (설정: anthropic_api_key + ai_briefing_auto='1')
+    try:
+        _ai_key = settings.get('anthropic_api_key', '')
+        if _ai_key and settings.get('ai_briefing_auto', '') == '1':
+            from ai_service import generate_settlement_briefing
+            _btxt, _berr = generate_settlement_briefing(username, _ai_key)
+            if _btxt:
+                _sent_b = send_notification(
+                    settings,
+                    f"🤖 정산 브리핑 ({datetime.now().strftime('%m/%d')})\n\n{_btxt}",
+                    username)
+                log(f"🤖 AI 정산 브리핑 {'발송 완료' if _sent_b else '발송 실패(카카오 미설정?)'}")
+            elif _berr:
+                log(f"⚠️ AI 브리핑 생성 실패(계속): {_berr}")
+    except Exception as _ae:
+        log(f"⚠️ AI 브리핑 실패(계속): {_ae}")
+
     if not all_orders:
         log("ℹ️ 수집된 주문 없음 → 종료")
         if errors:

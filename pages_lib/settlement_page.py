@@ -726,6 +726,50 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 st.dataframe(_df_ship, use_container_width=True, hide_index=True)
 
     # ══════════════════════════════════════════════════════════════════
+    # 🤖 AI 정산 브리핑 (Claude) — 역산통계·미정산·발송분류 요약
+    # ══════════════════════════════════════════════════════════════════
+    st.divider()
+    st.subheader("🤖 AI 정산 브리핑")
+    _ai_key = _gs('anthropic_api_key')
+    if not _ai_key:
+        st.info("⚙️ 설정 탭 > **🤖 AI 설정**에 Anthropic API 키를 등록하면 "
+                "오늘의 정산 브리핑(입금·발송분류·누락의심·수수료)을 AI가 요약해줍니다.")
+    else:
+        _ai_b1, _ai_b2 = st.columns([1.2, 1])
+        if _ai_b1.button("🤖 오늘 정산 브리핑 생성", key="ai_brief_gen", type="primary",
+                         use_container_width=True):
+            from ai_service import generate_settlement_briefing
+            with st.spinner("AI가 정산 데이터를 분석 중..."):
+                _btxt, _berr = generate_settlement_briefing(USERNAME, _ai_key)
+            if _berr:
+                st.session_state.pop('_ai_brief_text', None)
+                st.error(f"❌ 브리핑 생성 실패: {_berr}")
+            else:
+                st.session_state['_ai_brief_text'] = _btxt
+        _brief_txt = st.session_state.get('_ai_brief_text')
+        if _brief_txt:
+            st.info(f"📋 **{datetime.today().strftime('%Y-%m-%d')} 정산 브리핑**\n\n{_brief_txt}")
+            _kakao_tok = _gs('kakao_access_token')
+            if _kakao_tok and _ai_b2.button("📲 카톡으로 발송", key="ai_brief_kakao",
+                                            use_container_width=True):
+                _okb, _keb = naver_api.send_kakao(
+                    _kakao_tok,
+                    f"🤖 정산 브리핑 ({datetime.today().strftime('%m/%d')})\n\n{_brief_txt}",
+                    rest_api_key=_gs('kakao_api_key'),
+                    refresh_token=_gs('kakao_refresh_token'),
+                    client_secret=_gs('kakao_client_secret'))
+                if _okb:
+                    if _keb and "__TOKEN_REFRESHED__" in str(_keb):
+                        _pb = str(_keb).replace("__TOKEN_REFRESHED__", "").split("||")
+                        set_setting(USERNAME, 'kakao_access_token', _pb[0])
+                        if len(_pb) > 1:
+                            set_setting(USERNAME, 'kakao_refresh_token', _pb[1])
+                    st.success("✅ 카톡 발송 완료!")
+                else:
+                    st.error(f"카톡 실패: {_keb}")
+        st.caption("💡 설정에서 '정산수집 후 카톡 자동발송'을 켜면 매일 자동화 수집 후 브리핑이 자동 발송됩니다.")
+
+    # ══════════════════════════════════════════════════════════════════
     # 🛒 쿠팡 정산 매칭 (Wing revenue-history)
     # ══════════════════════════════════════════════════════════════════
     st.divider()

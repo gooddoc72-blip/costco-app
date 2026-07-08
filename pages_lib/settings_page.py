@@ -215,7 +215,22 @@ def _render_settings_content(USERNAME: str, _gs):
         set_setting(USERNAME, 'cj_account_no', new_cj_acc)
         st.success(f"✅ 택배사 설정 저장 완료! (기본: {sel_courier})")
 
-    # (텔레그램 알림 설정 — 2026-07 삭제. 사용빈도 낮음, 필요 시 재추가)
+    # ── 🤖 AI (Claude) 설정 ───────────────────────────────
+    st.divider()
+    st.subheader("🤖 AI 설정 (Claude)")
+    st.caption("Anthropic API 키를 등록하면 정산 매칭 탭에서 **일일 정산 AI 브리핑**을 사용할 수 있습니다. "
+               "발급: [console.anthropic.com](https://console.anthropic.com) → API Keys")
+    _ai_c1, _ai_c2 = st.columns([3, 1])
+    _new_ai_key = _ai_c1.text_input("Anthropic API 키", value=_gs('anthropic_api_key'),
+                                    type="password", key="ai_key_in",
+                                    placeholder="sk-ant-...")
+    _ai_auto = _ai_c2.checkbox("정산수집 후 카톡 자동발송", key="ai_auto_in",
+                               value=(_gs('ai_briefing_auto') == '1'),
+                               help="자동화 주문수집·정산매칭 후 AI 브리핑을 카카오톡으로 발송")
+    if st.button("AI 설정 저장", key="save_ai"):
+        set_setting(USERNAME, 'anthropic_api_key', _new_ai_key.strip())
+        set_setting(USERNAME, 'ai_briefing_auto', '1' if _ai_auto else '0')
+        st.success("✅ AI 설정 저장!")
 
     # ── 네이버 Open API ───────────────────────────────────
     st.divider()
