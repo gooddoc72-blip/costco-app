@@ -68,6 +68,71 @@ def _lag_days(ship_date: str, settle_date: str) -> int:
         return None
 
 
+def reverse_engineer_settlement_stats(settle_rows: List[Dict],
+                                      dispatch_by_po: Dict) -> Dict:
+    """수집된 정산건에서 역산: 실효 수수료율·배송비 정산율·발송→정산 소요일(빠른/일반).
+    등급 입력 없이 내 스토어 실제 데이터 기준.
+
+    Args:
+        settle_rows: naver_settlements 행 (get_naver_settlements_range)
+        dispatch_by_po: {상품주문번호: dispatch_log 행} (소요일 계산용)
+    Returns: dict — comm_rate/ship_rate(%, median), quick/normal lag median·p90,
+             quick_share(빠른정산 비중), 표본수. 표본 부족 항목은 None.
+    """
+    def _median(xs):
+        xs = sorted(xs)
+        return xs[len(xs) // 2] if xs else None
+
+    def _p90(xs):
+        xs = sorted(xs)
+        return xs[min(len(xs) - 1, int(len(xs) * 0.9))] if xs else None
+
+    comm_rates, ship_rates = [], []
+    quick_lags, normal_lags = [], []
+    quick_n = normal_n = 0
+    for r in settle_rows:
+        _type = settle_type_kr(r.get('settle_type', ''))
+        if _type == '공제':
+            continue
+        _is_delivery = str(r.get('product_order_type', '') or '') == 'DELIVERY'
+        _sales = int(r.get('sales_amount') or 0)
+        if _is_delivery:
+            _settle = int(r.get('settle_amount') or 0)
+            if _sales > 0 and 0 < _settle <= _sales:
+                ship_rates.append(_settle / _sales * 100)
+            continue
+        _comm = int(r.get('commission') or 0)
+        if _sales > 0 and 0 < _comm < _sales:
+            comm_rates.append(_comm / _sales * 100)
+        # 소요일: 발송기록과 조인
+        _d = dispatch_by_po.get(str(r.get('product_order_no', '')))
+        if _d:
+            _lag = _lag_days(_d.get('dispatched_at', ''), r.get('settle_date', ''))
+            if _lag is not None and 0 <= _lag <= 60:
+                if _type == '빠른정산':
+                    quick_lags.append(_lag)
+                else:
+                    normal_lags.append(_lag)
+        if _type == '빠른정산':
+            quick_n += 1
+        else:
+            normal_n += 1
+
+    _tot = quick_n + normal_n
+    return {
+        'comm_rate':    round(_median(comm_rates), 2) if comm_rates else None,
+        'ship_rate':    round(_median(ship_rates), 2) if ship_rates else None,
+        'quick_lag':    _median(quick_lags),
+        'quick_lag_p90': _p90(quick_lags),
+        'normal_lag':   _median(normal_lags),
+        'normal_lag_p90': _p90(normal_lags),
+        'quick_share':  round(quick_n / _tot * 100, 1) if _tot else None,
+        'n_comm': len(comm_rates), 'n_ship': len(ship_rates),
+        'n_quick_lag': len(quick_lags), 'n_normal_lag': len(normal_lags),
+        'n_total': _tot,
+    }
+
+
 def find_unsettled_dispatches(dispatch_rows: List[Dict], settled_po_set: set,
                               today_str: str, delay_threshold: int = 10) -> Dict:
     """발송건 중 아직 정산되지 않은 건 추출 + 정산지연/누락의심 분류 (순방향).

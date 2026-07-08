@@ -15,6 +15,7 @@ from db import (
     get_dispatch_log_by_date, get_dispatch_dates, get_dispatch_by_order_nos,
     get_settled_product_order_nos, save_settlement_matches,
     apply_actual_settlements_to_profit,
+    get_naver_settlements_in_range, get_daily_orders,
     save_coupang_settlements, get_coupang_settlements_by_date, get_coupang_settle_dates,
     get_coupang_settled_map, get_dispatch_by_order_id, get_orders_by_order_ids,
 )
@@ -28,7 +29,7 @@ from settlement_service import (
     match_shipped_vs_settled, shipped_orders_from_db_rows,
     match_daily_total, analyze_shipping_commission,
     match_settled_to_dispatch, find_unsettled_dispatches,
-    infer_purchase_decision,
+    infer_purchase_decision, reverse_engineer_settlement_stats,
 )
 from naver_settlement_parser import parse_naver_quicksettle_csv
 from utils import fmt
@@ -208,6 +209,29 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         _disp_by_po = get_dispatch_by_order_nos(USERNAME, _po_list, platform='naver')
         _rt = match_settled_to_dispatch(_settled_rt, _disp_by_po)
         _s = _rt['summary']
+
+        # ── 🧾 구매확정 유형 (전체 정산건) — 고객확정 vs 시스템 자동확정 ──
+        _pdec_all_key = f"_pdec_all_{settle_date_str}"
+        if st.button("🧾 구매확정 유형 조회 — 👤고객확정 / 🤖시스템(자동)확정 표시",
+                     key=f"btn_pdec_all_{settle_date_str}",
+                     help="이 정산일 전체 정산건의 구매확정 일시를 조회해 각 행에 표시합니다 (새벽 확정=시스템 자동)"):
+            with st.spinner(f"구매확정 일시 조회 중... ({len(_po_list)}건)"):
+                st.session_state[_pdec_all_key] = naver_api.get_purchase_decisions(
+                    api_id, api_secret, _po_list)
+        _decmap_all = st.session_state.get(_pdec_all_key) or {}
+        if _decmap_all:
+            _dec_auto = _dec_manual = 0
+            for _po_d in _po_list:
+                _lbl_d, _ = infer_purchase_decision(
+                    (_decmap_all.get(_po_d) or {}).get('decision_date', ''))
+                if '자동' in _lbl_d:
+                    _dec_auto += 1
+                elif '수동' in _lbl_d:
+                    _dec_manual += 1
+            st.caption(f"🧾 구매확정 유형: 👤 고객확정 **{_dec_manual}건** · "
+                       f"🤖 시스템(자동)확정 **{_dec_auto}건** · "
+                       f"미확인 {len(_po_list) - _dec_auto - _dec_manual}건 "
+                       "— 아래 표 '구매확정' 열 참고 (새벽 0~4시 확정=시스템 추정)")
         # ── 건별 정산 합계 (상품 / 배송비) — /case 기준, 혜택정산 차감 전 ──
         _g1, _g2, _g3 = st.columns(3)
         _g1.metric("상품 정산 합계(건별)", f"{fmt(_s['settle_total'])}원",
@@ -266,6 +290,16 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     _df[_c] = ''
             _df = _df[_cols]
             _df.columns = _names
+            # 🧾 구매확정 유형 조회됐으면 각 행에 표시 (👤고객 / 🤖시스템)
+            if _decmap_all:
+                _dec_lbls, _dec_ats = [], []
+                for _po_r in _df['상품주문번호']:
+                    _lbl_r, _at_r = infer_purchase_decision(
+                        (_decmap_all.get(str(_po_r)) or {}).get('decision_date', ''))
+                    _dec_lbls.append(_lbl_r.replace('자동(추정)', '시스템').replace('수동(추정)', '고객') or '—')
+                    _dec_ats.append(_at_r)
+                _df.insert(6, '구매확정', _dec_lbls)
+                _df.insert(7, '확정일시', _dec_ats)
             st.dataframe(_df, use_container_width=True, hide_index=True)
 
         _rt1, _rt2, _rt3 = st.tabs([
@@ -324,6 +358,84 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 st.success("차액 없음 — 예상 = 실제 정산.")
 
     # ══════════════════════════════════════════════════════════════
+    # 📐 정산 역산 통계 — 수집된 정산건에서 수수료율·소요일 실측 (등급 입력 불필요)
+    # ══════════════════════════════════════════════════════════════
+    st.divider()
+    _today_str_rs = datetime.today().strftime("%Y-%m-%d")
+    _rs_from = (datetime.today() - timedelta(days=60)).strftime("%Y-%m-%d")
+    _rs_rows = get_naver_settlements_in_range(USERNAME, _rs_from, _today_str_rs)
+    _rs_stats = None
+    if _rs_rows:
+        _rs_pos = [str(r.get('product_order_no', '')) for r in _rs_rows]
+        _rs_disp = get_dispatch_by_order_nos(USERNAME, _rs_pos, platform='naver')
+        _rs_stats = reverse_engineer_settlement_stats(_rs_rows, _rs_disp)
+    with st.expander("📐 정산 역산 통계 — 수집된 정산건 기준 실측 (최근 60일)", expanded=False):
+        if not _rs_stats or not _rs_stats.get('n_total'):
+            st.info("수집된 정산건이 없습니다. 위에서 📥 정산 수집을 먼저 하세요. "
+                    "(수집이 쌓일수록 수수료율·정산소요일이 내 스토어 실측 기준으로 정확해집니다)")
+        else:
+            _q1, _q2, _q3, _q4 = st.columns(4)
+            _q1.metric("실효 수수료율", f"{_rs_stats['comm_rate']}%" if _rs_stats['comm_rate'] is not None else "—",
+                       delta=f"표본 {_rs_stats['n_comm']}건",
+                       help="정산건별 수수료÷결제금액 중앙값 (주문관리+매출연동 합산 실효율)")
+            _q2.metric("배송비 정산율", f"{_rs_stats['ship_rate']}%" if _rs_stats['ship_rate'] is not None else "—",
+                       delta=f"표본 {_rs_stats['n_ship']}건",
+                       help="고객부담 배송비 중 실제 입금 비율 (100−배송비 수수료율)")
+            _q3.metric("⚡ 빠른정산 소요일",
+                       f"{_rs_stats['quick_lag']}일" if _rs_stats['quick_lag'] is not None else "—",
+                       delta=f"p90 {_rs_stats['quick_lag_p90']}일" if _rs_stats['quick_lag_p90'] is not None else None,
+                       help="발송→정산 실측 중앙값 (빠른정산 = 집하 다음 영업일)")
+            _q4.metric("🕐 일반정산 소요일",
+                       f"{_rs_stats['normal_lag']}일" if _rs_stats['normal_lag'] is not None else "—",
+                       delta=f"p90 {_rs_stats['normal_lag_p90']}일" if _rs_stats['normal_lag_p90'] is not None else None,
+                       help="발송→정산 실측 중앙값 (일반 = 구매확정 +1영업일, 자동확정 포함)")
+            if _rs_stats['quick_share'] is not None:
+                st.caption(f"⚡ 빠른정산 비중 **{_rs_stats['quick_share']}%** "
+                           f"(총 {_rs_stats['n_total']}건) — "
+                           + ("**빠른정산 이용 판매자**로 판단됩니다 (집하 D+1 입금)."
+                              if _rs_stats['quick_share'] >= 50 else
+                              "**일반정산 위주**입니다 (구매확정 후 입금)."))
+
+    # ══════════════════════════════════════════════════════════════
+    # ⚡ 오늘 주문 발송/미발송 분류 — 빠른정산 D+1 예상
+    # ══════════════════════════════════════════════════════════════
+    st.divider()
+    st.subheader("⚡ 오늘 주문 발송 분류 — 발송건은 다음 영업일 빠른정산")
+    _td_orders = get_daily_orders(USERNAME, _today_str_rs) or []
+    _td_disp = get_dispatch_log_by_date(USERNAME, _today_str_rs, platform='naver') or []
+    _td_disp_set = {str(d.get('order_no', '')) for d in _td_disp}
+    if not _td_orders:
+        st.info(f"오늘({_today_str_rs}) 수집된 주문이 없습니다. (일일 주문 수집 후 표시)")
+    else:
+        _td_shipped, _td_pending = [], []
+        for _o in _td_orders:
+            _ono_t = str(_o.get('order_no', '') or '')
+            (_td_shipped if (_ono_t and _ono_t in _td_disp_set) else _td_pending).append(_o)
+        _sh_amt = sum(int(o.get('settlement') or 0) for o in _td_shipped)
+        _pd_amt = sum(int(o.get('settlement') or 0) for o in _td_pending)
+        _t1, _t2, _t3 = st.columns(3)
+        _t1.metric("오늘 주문", f"{len(_td_orders)}건")
+        _t2.metric("✅ 오늘 발송(집하)", f"{len(_td_shipped)}건",
+                   delta=f"내일 정산예정 {fmt(_sh_amt)}원" if _sh_amt else None,
+                   help="빠른정산: 집하 다음 영업일 100% 입금")
+        _t3.metric("⏳ 미발송", f"{len(_td_pending)}건",
+                   delta=f"-{fmt(_pd_amt)}원 대기" if _pd_amt else None, delta_color="inverse",
+                   help="발송하는 날 +1영업일로 정산이 밀립니다")
+        if _td_pending:
+            _df_pd = pd.DataFrame([{
+                '상품주문번호': str(o.get('order_no', '') or ''),
+                '수취인': o.get('recipient', ''),
+                '상품명': o.get('product_name', ''),
+                '수량': int(o.get('qty', 1) or 1),
+                '정산예정': int(o.get('settlement') or 0),
+            } for o in _td_pending])
+            st.dataframe(_df_pd, use_container_width=True, hide_index=True)
+            st.caption("💡 미발송건은 오늘 집하하면 내일, 내일 집하하면 모레 빠른정산됩니다. "
+                       "(일반정산 판매자는 구매확정 후 입금)")
+        else:
+            st.success("✅ 오늘 주문 전건 발송 완료 — 내일 빠른정산 예정입니다.")
+
+    # ══════════════════════════════════════════════════════════════
     # 📦 미정산 추적 (발송일 기준 순방향) — 발송했는데 아직 정산 안 된 건
     # ══════════════════════════════════════════════════════════════
     st.divider()
@@ -342,7 +454,15 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     else:
         _settled_set = get_settled_product_order_nos(USERNAME)
         _today = datetime.today().strftime("%Y-%m-%d")
-        _us = find_unsettled_dispatches(_disp_us, _settled_set, _today, delay_threshold=10)
+        # 누락 임계일 = 역산 실측 소요일 p90 + 2일 여유 (표본 없으면 10일)
+        _thr = 10
+        if _rs_stats:
+            _p90_n = _rs_stats.get('normal_lag_p90')
+            _p90_q = _rs_stats.get('quick_lag_p90')
+            _base_p90 = _p90_n if _p90_n is not None else _p90_q
+            if _base_p90 is not None:
+                _thr = max(3, int(_base_p90) + 2)
+        _us = find_unsettled_dispatches(_disp_us, _settled_set, _today, delay_threshold=_thr)
         _us_s = _us['summary']
         _u1, _u2, _u3, _u4 = st.columns(4)
         _u1.metric("발송", f"{_us_s['dispatch_n']}건")
@@ -357,7 +477,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             _df_us.columns = ['상품주문번호', '수취인', '상품명', '발송일',
                               '경과일', '정산예정금액', '상태']
             st.dataframe(_df_us, use_container_width=True, hide_index=True)
-            st.caption("💡 '누락 의심'(발송 10일 초과 미정산)은 네이버 정산관리에서 직접 확인을 권장합니다. "
+            st.caption(f"💡 '누락 의심'(발송 **{_thr}일** 초과 미정산 — 역산 실측 소요일 p90+2 기준)은 "
+                       "네이버 정산관리에서 직접 확인을 권장합니다. "
                        "'정산지연'은 구매확정 전이거나 정산예정일 미도래로 정상입니다.")
         else:
             st.success("✅ 이 발송일의 모든 주문이 정산 완료되었습니다.")

@@ -154,12 +154,12 @@ def get_naver_settlements_by_date(username: str, settle_date: str) -> list:
 
 
 def get_naver_settlements_in_range(username: str, start_date: str, end_date: str) -> list:
+    """기간 내 정산 레코드 전체(SELECT *) — 역산 통계(수수료율·배송비정산율·소요일)에
+    settle_type/product_order_type 필요."""
     conn = get_user_db(username)
     _ensure_table(conn)
     rows = conn.execute(
-        """SELECT product_order_no, order_no, settle_date,
-                  sales_amount, commission, settle_amount, status
-           FROM naver_settlements WHERE settle_date BETWEEN ? AND ?
+        """SELECT * FROM naver_settlements WHERE settle_date BETWEEN ? AND ?
            ORDER BY settle_date, product_order_no""",
         (start_date, end_date)
     ).fetchall()
