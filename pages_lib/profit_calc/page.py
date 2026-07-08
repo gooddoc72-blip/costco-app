@@ -872,8 +872,9 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                     # 캐시 업데이트 실패 시 안전하게 무효화
                                     st.session_state.pop('_pcalc_match_cache', None)
                             # 위젯 state 버퍼 (⚓ stable_key)
+                            # ⚠️ 위젯 = '1주문 단가' → 단가(_ip)만 넣어야 함. (총액을 넣으면 저장 시 ×수량 되어 이중계산)
                             st.session_state[f'_buf_k_{sk}'] = _in
-                            st.session_state[f'_buf_c_{sk}'] = _ip * _qty_row
+                            st.session_state[f'_buf_c_{sk}'] = _ip
                             st.session_state['_rcpt_pick_toast'] = (
                                 f"✅ 영수증 매칭: {r['수취인명']} → {_in[:30]} "
                                 f"({_ip:,}원 × {_qty_row}개)"
