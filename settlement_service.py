@@ -134,14 +134,24 @@ def reverse_engineer_settlement_stats(settle_rows: List[Dict],
 
 
 def find_unsettled_dispatches(dispatch_rows: List[Dict], settled_po_set: set,
-                              today_str: str, delay_threshold: int = 10) -> Dict:
-    """발송건 중 아직 정산되지 않은 건 추출 + 정산지연/누락의심 분류 (순방향).
+                              today_str: str, delay_threshold: int = 10,
+                              is_quick_seller: bool = False,
+                              quick_threshold: int = 2,
+                              normal_lag: int = None) -> Dict:
+    """발송건 중 아직 정산되지 않은 건 추출 + 상태 분류 (순방향).
+
+    빠른정산 판매자여도 빠른정산 제외건은 일반정산(구매확정 기준)으로 넘어가므로,
+    빠른정산 기한(quick_threshold) 초과 미정산건은 자동으로 '일반정산 전환'으로 분류해
+    일반정산 기한(delay_threshold)까지는 누락으로 취급하지 않는다.
 
     Args:
         dispatch_rows: dispatch_log 행 리스트 (order_no=상품주문번호, dispatched_at, ...)
         settled_po_set: 정산된 상품주문번호 집합 (get_settled_product_order_nos)
         today_str: 오늘 날짜 'YYYY-MM-DD' (경과일 계산용)
-        delay_threshold: 발송 후 이 일수 초과 + 미정산이면 '누락 의심'
+        delay_threshold: 발송 후 이 일수 초과 + 미정산이면 '누락 의심' (일반정산 기한, 실측 p90+2)
+        is_quick_seller: 빠른정산 이용 판매자 여부 (역산 quick_share 기반)
+        quick_threshold: 빠른정산 기대 소요일 (기본 2 = 집하 D+1 영업일 여유)
+        normal_lag: 일반정산 실측 중앙값 소요일 → 예상 정산일 계산용
     """
     unsettled, settled_n = [], 0
     for d in dispatch_rows:
@@ -153,13 +163,35 @@ def find_unsettled_dispatches(dispatch_rows: List[Dict], settled_po_set: set,
             continue
         ship = d.get('dispatched_at', '')
         elapsed = _lag_days(ship, today_str)
-        cls = '누락 의심' if (elapsed is not None and elapsed > delay_threshold) else '정산지연(대기)'
+        # 상태 분류: 빠른대기 → (기한 초과 시) 일반정산 전환 → (일반 기한 초과) 누락 의심
+        if elapsed is None:
+            cls = '정산지연(대기)'
+        elif elapsed > delay_threshold:
+            cls = '누락 의심'
+        elif is_quick_seller and elapsed <= quick_threshold:
+            cls = '⚡ 빠른정산 대기'
+        elif is_quick_seller:
+            cls = '🕐 일반정산 전환(구매확정 대기)'
+        else:
+            cls = '🕐 일반정산 대기(구매확정 전)'
+        # 예상 정산일: 빠른대기=발송+quick_threshold, 그 외=발송+normal_lag(실측 중앙값)
+        expected_date = ''
+        try:
+            from datetime import datetime as _dt, timedelta as _td
+            _sd = _dt.strptime(str(ship)[:10], "%Y-%m-%d")
+            if cls == '⚡ 빠른정산 대기':
+                expected_date = (_sd + _td(days=quick_threshold)).strftime("%Y-%m-%d")
+            elif normal_lag is not None:
+                expected_date = (_sd + _td(days=int(normal_lag))).strftime("%Y-%m-%d")
+        except Exception:
+            pass
         unsettled.append({
             'product_order_no':    po,
             'recipient':           d.get('recipient', ''),
             'product_name':        d.get('product_name', ''),
             'ship_date':           ship,
             'elapsed_days':        elapsed,
+            'expected_date':       expected_date,
             'expected_settlement': int(d.get('expected_settlement') or 0),
             'status':              cls,
         })
@@ -172,6 +204,9 @@ def find_unsettled_dispatches(dispatch_rows: List[Dict], settled_po_set: set,
             'settled_n':        settled_n,
             'unsettled_n':      len(unsettled),
             'suspect_n':        sum(1 for u in unsettled if u['status'] == '누락 의심'),
+            'quick_wait_n':     sum(1 for u in unsettled if u['status'] == '⚡ 빠른정산 대기'),
+            'normal_wait_n':    sum(1 for u in unsettled
+                                    if u['status'].startswith('🕐') or u['status'] == '정산지연(대기)'),
             'pending_n':        sum(1 for u in unsettled if u['status'] != '누락 의심'),
             'unsettled_amount': sum(u['expected_settlement'] for u in unsettled),
         }

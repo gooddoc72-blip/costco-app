@@ -454,32 +454,50 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     else:
         _settled_set = get_settled_product_order_nos(USERNAME)
         _today = datetime.today().strftime("%Y-%m-%d")
-        # 누락 임계일 = 역산 실측 소요일 p90 + 2일 여유 (표본 없으면 10일)
+        # 누락 임계일 = 일반정산 실측 소요일 p90 + 2일 여유 (표본 없으면 10일)
+        # ⚠️ 빠른정산 판매자여도 빠른정산 제외건은 일반정산으로 넘어가므로 일반 기한 기준.
         _thr = 10
+        _is_quick = False
+        _q_thr = 2
+        _n_lag = None
         if _rs_stats:
             _p90_n = _rs_stats.get('normal_lag_p90')
+            if _p90_n is not None:
+                _thr = max(3, int(_p90_n) + 2)
+            _is_quick = (_rs_stats.get('quick_share') or 0) >= 50
             _p90_q = _rs_stats.get('quick_lag_p90')
-            _base_p90 = _p90_n if _p90_n is not None else _p90_q
-            if _base_p90 is not None:
-                _thr = max(3, int(_base_p90) + 2)
-        _us = find_unsettled_dispatches(_disp_us, _settled_set, _today, delay_threshold=_thr)
+            if _p90_q is not None:
+                _q_thr = max(1, int(_p90_q) + 1)
+            _n_lag = _rs_stats.get('normal_lag')
+        _us = find_unsettled_dispatches(_disp_us, _settled_set, _today,
+                                        delay_threshold=_thr,
+                                        is_quick_seller=_is_quick,
+                                        quick_threshold=_q_thr,
+                                        normal_lag=_n_lag)
         _us_s = _us['summary']
-        _u1, _u2, _u3, _u4 = st.columns(4)
+        _u1, _u2, _u3, _u4, _u5 = st.columns(5)
         _u1.metric("발송", f"{_us_s['dispatch_n']}건")
         _u2.metric("✅ 정산완료", f"{_us_s['settled_n']}건")
-        _u3.metric("⏳ 정산지연(대기)", f"{_us_s['pending_n']}건")
-        _u4.metric("🔴 누락 의심", f"{_us_s['suspect_n']}건",
+        _u3.metric("⚡ 빠른정산 대기", f"{_us_s['quick_wait_n']}건",
+                   help="집하 다음 영업일 입금 예정 (빠른정산 판매자)")
+        _u4.metric("🕐 일반정산 대기", f"{_us_s['normal_wait_n']}건",
+                   help="빠른정산 기한 초과 → 일반정산(구매확정 기준)으로 자동 전환된 건 포함")
+        _u5.metric("🔴 누락 의심", f"{_us_s['suspect_n']}건",
                    delta=fmt(_us_s['unsettled_amount']) + "원" if _us_s['unsettled_amount'] else None)
         if _us['unsettled']:
             _df_us = pd.DataFrame(_us['unsettled'])[
                 ['product_order_no', 'recipient', 'product_name', 'ship_date',
-                 'elapsed_days', 'expected_settlement', 'status']]
+                 'elapsed_days', 'expected_date', 'expected_settlement', 'status']]
             _df_us.columns = ['상품주문번호', '수취인', '상품명', '발송일',
-                              '경과일', '정산예정금액', '상태']
+                              '경과일', '예상정산일', '정산예정금액', '상태']
             st.dataframe(_df_us, use_container_width=True, hide_index=True)
-            st.caption(f"💡 '누락 의심'(발송 **{_thr}일** 초과 미정산 — 역산 실측 소요일 p90+2 기준)은 "
+            _quick_note = (f"⚡ 빠른정산 기한({_q_thr}일) 초과 미정산건은 **자동으로 "
+                           f"🕐 일반정산(구매확정 기준)으로 전환**해 추적합니다. "
+                           if _is_quick else "")
+            st.caption(f"💡 {_quick_note}"
+                       f"'누락 의심'은 발송 **{_thr}일** 초과 미정산(일반정산 실측 p90+2 기준) — "
                        "네이버 정산관리에서 직접 확인을 권장합니다. "
-                       "'정산지연'은 구매확정 전이거나 정산예정일 미도래로 정상입니다.")
+                       "예상정산일은 내 스토어 실측 소요일(중앙값) 기준입니다.")
         else:
             st.success("✅ 이 발송일의 모든 주문이 정산 완료되었습니다.")
 
