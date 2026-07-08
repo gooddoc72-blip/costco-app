@@ -182,39 +182,54 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict, embedded: bool = False
                 st.session_state[_rcm_state] = _match_result
                 st.session_state[_rcm_state + '_key'] = _rcm_key
 
-            # ── 미매칭 영수증 → 주문 교차매칭 (수익계산 탭에서 embedded 시에만) ──
+            # ── 미매칭 영수증 → 공유DB 등록 (영수증 매칭) ──
+            #  퍼지 '주문 교차매칭'(이름 유사도로 주문에 억지 링크 → 오매칭 다발)을 폐기.
+            #  영수증의 코스트코번호·상품명·매입가를 공유DB에 그대로 등록 → 주문은 번호로 자동 매칭.
             _unmatched_after = _match_result.get('unmatched_receipt', []) or []
             if embedded and order_date and _unmatched_after:
                 st.divider()
-                st.subheader("📦 주문 교차매칭 — 미등록 신규 상품 자동 등록")
+                st.subheader("🧾 영수증 매칭 — 미등록 신규 상품 공유DB 등록")
                 st.caption(
                     f"네이버 상품 DB에 없는 영수증 항목 **{len(_unmatched_after)}건**을 "
-                    f"**{order_date}** 주문 내역과 교차 매칭합니다. "
-                    "매칭 성공 시 상품번호·매입가가 제품 DB에 등록되고 수익정산이 갱신됩니다."
+                    "영수증의 **코스트코 상품번호·상품명·매입가** 그대로 공유DB에 등록합니다. "
+                    "이름 유사도로 주문에 억지로 링크하지 않으므로 오매칭이 없고, "
+                    "이후 주문은 공유DB 상품번호로 자동 매칭됩니다."
                 )
-                if st.button("🔗 주문 교차매칭 실행", key="cross_match_orders_btn", type="primary"):
-                    _cross_results = apply_receipt_to_unmatched_daily_orders(
-                        USERNAME, _unmatched_after, order_date
-                    )
-                    _ok   = [r for r in _cross_results if r['status'] == '등록완료']
-                    _skip = [r for r in _cross_results if r['status'] != '등록완료']
-                    if _ok:
-                        st.success(f"✅ {len(_ok)}개 신규 상품 등록 완료 (product_no + 단가 저장, 수익정산 갱신)")
-                        _cross_df = pd.DataFrame([{
-                            '영수증상품명': r['receipt_name'],
-                            '주문상품명':   r['order_name'],
-                            '상품번호':     r['product_no'],
-                            '단가':         r['unit_price'],
-                        } for r in _ok])
-                        st.dataframe(_cross_df, use_container_width=True, hide_index=True)
-                    for r in _skip:
-                        st.warning(f"⚠️ {r['receipt_name'][:40]}: {r['status']}")
-                    if not _ok and not _skip:
-                        st.info("교차매칭 결과가 없습니다. (주문 내역에서 유사한 상품을 찾지 못했습니다)")
-                    try:
-                        invalidate_data_cache()
-                    except Exception:
-                        pass
+                if st.button("🧾 공유DB에 영수증 등록", key="receipt_to_shared_btn", type="primary"):
+                    _reg_ok, _reg_skip = 0, []
+                    for _um in _unmatched_after:
+                        _um_name = (_um.get('상품명') or '').strip()
+                        _um_pno  = str(_um.get('상품번호') or '').strip()
+                        try:
+                            _um_price = int(float(_um.get('단가') or 0))
+                        except Exception:
+                            _um_price = 0
+                        # 공유DB는 코스트코 상품번호 기준 → 번호·단가 없으면 건너뜀
+                        if not _um_pno or _um_price <= 0:
+                            _reg_skip.append(_um_name or _um_pno or '?')
+                            continue
+                        upsert_shared_store_price(
+                            costco_name=_um_name, keyword=_um_name,
+                            price=_um_price, product_no=_um_pno,
+                            updated_by=USERNAME,
+                            receipt_date=_um.get('receipt_date', ''),
+                        )
+                        _reg_ok += 1
+                    if _reg_ok:
+                        st.session_state['_shared_cache_dirty'] = True
+                        try:
+                            invalidate_data_cache()
+                        except Exception:
+                            pass
+                        st.success(
+                            f"✅ {_reg_ok}종 공유DB 등록 완료 (코스트코번호·상품명·매입가). "
+                            "주문은 상품번호로 자동 매칭됩니다."
+                        )
+                    if _reg_skip:
+                        st.warning(
+                            f"⚠️ 상품번호/단가 없음 {len(_reg_skip)}건 건너뜀: "
+                            f"{', '.join(_reg_skip[:5])}"
+                        )
                     st.rerun()
 
             # ── 가격 변동 감지 ──────────────────────────────────────
