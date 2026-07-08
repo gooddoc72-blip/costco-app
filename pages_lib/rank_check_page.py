@@ -548,6 +548,42 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 if _ec[4].button("✖ 취소", key=f"e_cancel_{_t['id']}", use_container_width=True):
                     st.session_state.pop('_rk_edit_tid', None)
                     st.rerun()
+
+                # ── 🏪 네이버 스토어 상품명 실제 변경 (별도 버튼 — 로컬 저장과 독립) ──
+                _npno_edit = str(_t.get('naver_product_no', '') or '').strip()
+                _has_keys = bool(api_id and api_secret)
+                st.caption("🏪 아래 버튼은 위 '상품 키워드(매칭명)' 값으로 **네이버 스토어의 실제 상품명**을 "
+                           "변경합니다. (로컬 저장과 별개 · 라이브 반영 · 검색 노출/순위에 영향 가능)")
+                _sc1, _sc2 = st.columns([2, 4])
+                if not _npno_edit:
+                    _sc1.button("🏪 네이버 상품명 변경", key=f"e_napi_{_t['id']}",
+                                disabled=True, use_container_width=True,
+                                help="이 항목에 네이버 상품번호가 없어 스토어 수정 불가 (이름 매칭으로 추가된 항목)")
+                    _sc2.caption("⚠️ 네이버 상품번호가 없는 항목입니다. '새 키워드 추적 추가'에서 상품을 선택해 등록하면 번호가 저장됩니다.")
+                elif not _has_keys:
+                    _sc1.button("🏪 네이버 상품명 변경", key=f"e_napi_{_t['id']}",
+                                disabled=True, use_container_width=True,
+                                help="설정 탭 > 네이버 커머스 API 키 등록 필요")
+                    _sc2.caption("⚠️ 설정 탭 > 네이버 커머스 API 키(api_client_id/secret)를 먼저 등록하세요.")
+                else:
+                    if _sc1.button("🏪 네이버 상품명 변경", key=f"e_napi_{_t['id']}",
+                                   type="secondary", use_container_width=True,
+                                   help=f"스토어 상품(#{_npno_edit})명을 위 입력값으로 실제 변경"):
+                        _new_nm = _e_prod.strip()
+                        if not _new_nm:
+                            _sc2.error("상품 키워드(매칭명)를 먼저 입력하세요.")
+                        else:
+                            with st.spinner("네이버 스토어 상품명 변경 중..."):
+                                _okn, _errn, _usedno = naver_api.update_product_name(
+                                    api_id, api_secret, _npno_edit, _new_nm)
+                            if _okn:
+                                # 로컬 라벨도 동기화 (스토어와 일치)
+                                update_keyword_tracking(USERNAME, _t['id'], product_keyword=_new_nm)
+                                st.session_state.pop('_rk_edit_tid', None)
+                                st.toast(f"✅ 네이버 스토어 상품명 변경 완료 (#{_usedno})", icon="🏪")
+                                st.rerun()
+                            else:
+                                _sc2.error(f"변경 실패: {_errn}")
                 st.markdown("</div>", unsafe_allow_html=True)
 
             st.markdown("<hr style='margin:6px 0;border:none;border-top:1px solid #f0f0f0'>", unsafe_allow_html=True)

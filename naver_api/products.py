@@ -632,4 +632,61 @@ def update_product_price(client_id, client_secret, origin_product_no, new_price,
         return False, f"판매가 수정 예외: {e}", None
 
 
+def update_product_name(client_id, client_secret, product_no, new_name):
+    """스마트스토어 상품명 수정 (originProduct.name 교체).
+    update_product_price와 동일한 GET origin-products → sanitize → PUT 구조 재사용.
+    번호가 channelProductNo면 GET 404 → originProductNo로 변환 후 재조회.
+    반환: (ok, err, used_origin_no)
+    """
+    _nm = str(new_name or '').strip()
+    if not _nm:
+        return False, "변경할 상품명이 비어 있습니다.", None
+    token, err = get_token(client_id, client_secret)
+    if not token:
+        return False, err, None
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    pno = str(product_no).strip()
+    if not pno:
+        return False, "상품번호가 비어 있습니다.", None
+
+    def _get(p):
+        return requests.get(
+            f"https://api.commerce.naver.com/external/v2/products/origin-products/{p}",
+            headers=headers, timeout=15)
+
+    try:
+        g = _get(pno)
+        if g.status_code in (403, 404):
+            new_origin, rerr = resolve_origin_product_no(client_id, client_secret, pno)
+            if new_origin and new_origin != pno:
+                pno = new_origin
+                g = _get(pno)
+            else:
+                return False, f"원상품번호를 찾지 못했습니다({g.status_code}). {rerr or ''}".strip(), None
+        if g.status_code != 200:
+            return False, f"상품 조회 실패({g.status_code}: {_format_naver_err(g)})", None
+
+        data = g.json()
+        origin_product = data.get('originProduct') or {}
+        if not origin_product:
+            return False, f"GET 응답에 originProduct 없음: {str(data)[:200]}", None
+
+        origin_product = _sanitize_for_put(dict(origin_product))
+        origin_product['name'] = _nm  # ⭐ 상품명만 교체 (가격·옵션 등 나머지는 원본 유지)
+
+        put_body = {"originProduct": origin_product}
+        smartstore = data.get('smartstoreChannelProduct')
+        if smartstore:
+            put_body["smartstoreChannelProduct"] = _sanitize_for_put(dict(smartstore))
+
+        put_resp = requests.put(
+            f"https://api.commerce.naver.com/external/v2/products/origin-products/{pno}",
+            headers=headers, json=put_body, timeout=20)
+        if put_resp.status_code == 200:
+            return True, None, pno
+        return False, f"상품명 수정 실패({put_resp.status_code}: {_format_naver_err(put_resp)})", None
+    except Exception as e:
+        return False, f"상품명 수정 예외: {e}", None
+
+
 # ── 정산 내역 조회 ─────────────────────────────────────────
