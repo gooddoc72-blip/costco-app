@@ -50,6 +50,7 @@ from .keywords import (
     keyword_volumes,
     keyword_research,
     datalab_search_trend,
+    datalab_keyword_gender_age,
     _last_match_info,
 )
 from .messaging import (

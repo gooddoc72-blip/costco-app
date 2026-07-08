@@ -128,9 +128,16 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     with st.spinner("데이터랩 12개월 추이 조회 중..."):
                         _trend, _terr = naver_api.datalab_search_trend(
                             _open_cid, _open_csec, _q, _pc_now, _mo_now)
+                # 👫 성별·연령 검색 비율 (데이터랩 쇼핑인사이트 — 카테고리 자동탐지)
+                _ga, _gaerr = None, None
+                if not _kerr and _open_cid and _open_csec:
+                    with st.spinner("성별·연령 비율 조회 중..."):
+                        _ga, _gaerr = naver_api.datalab_keyword_gender_age(
+                            _open_cid, _open_csec, _q)
                 _kw_hist[:] = [h for h in _kw_hist if h['q'] != _q]   # 중복 제거
                 _kw_hist.insert(0, {'q': _q, 'rows': _rows, 'err': _kerr,
-                                    'trend': _trend, 'terr': _terr})
+                                    'trend': _trend, 'terr': _terr,
+                                    'ga': _ga, 'gaerr': _gaerr})
                 st.rerun()
 
             if not _kw_hist:
@@ -149,29 +156,66 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 elif not _h.get('rows'):
                     st.info("연관 키워드가 없습니다.")
                 else:
-                    _df_kw = _pd.DataFrame(_h['rows'])
-                    if '구분' in _df_kw.columns:
-                        _df_kw['구분'] = _df_kw['구분'].map(lambda x: _TAG.get(x, x))
-                        _df_kw = _df_kw[['구분', '키워드', 'PC검색량', '모바일검색량', '총검색량', '경쟁도']]
-                    st.dataframe(
-                        _df_kw.head(200).style.format(
-                            {'PC검색량': '{:,}', '모바일검색량': '{:,}', '총검색량': '{:,}'}),
-                        use_container_width=True, hide_index=True,
-                    )
-                # 📈 최근 12개월 검색량 추이 (Total / PC / Mobile)
-                _tr = _h.get('trend')
-                if _tr and _tr.get('months'):
-                    st.markdown(f"**📈 \"{_h['q']}\" 최근 12개월 검색량 추이**")
-                    _tdf = _pd.DataFrame(
-                        {'Total': _tr['total'], 'PC': _tr['pc'], 'Mobile': _tr['mo']},
-                        index=_tr['months'])
-                    st.line_chart(_tdf)
-                    if _tr.get('anchored'):
-                        st.caption("💡 데이터랩 상대추이 × 검색광고 현재월 검색량으로 환산한 **추정 절대치**입니다.")
-                    else:
-                        st.caption("💡 현재월 절대 검색량이 없어 **상대지수(0~100)** 로 표시됩니다.")
-                elif _h.get('terr'):
-                    st.caption(f"📈 추이 조회 실패: {_h['terr']}")
+                    # 좌: 키워드 표 / 우: 성별·연령·12개월 추이 패널
+                    _lc, _rc = st.columns([3, 2])
+                    with _lc:
+                        _df_kw = _pd.DataFrame(_h['rows'])
+                        if '구분' in _df_kw.columns:
+                            _df_kw['구분'] = _df_kw['구분'].map(lambda x: _TAG.get(x, x))
+                            _df_kw = _df_kw[['구분', '키워드', 'PC검색량', '모바일검색량', '총검색량', '경쟁도']]
+                        st.dataframe(
+                            _df_kw.head(200).style.format(
+                                {'PC검색량': '{:,}', '모바일검색량': '{:,}', '총검색량': '{:,}'}),
+                            use_container_width=True, hide_index=True, height=640,
+                        )
+                    with _rc:
+                        _ga = _h.get('ga')
+                        if _ga and _ga.get('gender'):
+                            _gf = _ga['gender'].get('여성', 0)
+                            _gm = _ga['gender'].get('남성', 0)
+                            st.markdown(f"**👫 성별 검색 비율** <span style='color:#999;font-size:12px'>"
+                                        f"(쇼핑 {_ga.get('category','')} 기준)</span>", unsafe_allow_html=True)
+                            _figg = go.Figure(go.Pie(
+                                labels=['여성', '남성'], values=[_gf, _gm], hole=0.55,
+                                marker=dict(colors=['#F2637B', '#5470F2']),
+                                texttemplate='%{label} %{value}%', textposition='outside'))
+                            _figg.update_layout(height=190, margin=dict(l=10, r=10, t=6, b=6),
+                                                showlegend=False)
+                            st.plotly_chart(_figg, use_container_width=True,
+                                            key=f"kwga_g_{_hi}_{_h['q']}")
+                            st.markdown("**👥 연령별 검색 비율**")
+                            _ages = _ga.get('ages', {})
+                            _figa = go.Figure(go.Bar(
+                                x=list(_ages.keys()), y=list(_ages.values()),
+                                text=[f"{v}%" for v in _ages.values()], textposition='outside',
+                                marker_color='#7B8CF5'))
+                            _figa.update_layout(height=200, margin=dict(l=10, r=10, t=14, b=6),
+                                                yaxis=dict(visible=False))
+                            st.plotly_chart(_figa, use_container_width=True,
+                                            key=f"kwga_a_{_hi}_{_h['q']}")
+                        elif _h.get('gaerr'):
+                            st.caption(f"👫 성별·연령 조회 실패: {_h['gaerr']}")
+                        # 📈 최근 12개월 검색량 추이 (Total / PC / Mobile)
+                        _tr = _h.get('trend')
+                        if _tr and _tr.get('months'):
+                            st.markdown("**📈 최근 1년간 월별 검색량 추이**")
+                            _figt = go.Figure()
+                            for _nm2, _ys, _cl in (('Total', _tr['total'], '#E74C3C'),
+                                                   ('PC', _tr['pc'], '#9AC1F5'),
+                                                   ('Mobile', _tr['mo'], '#2E6FDB')):
+                                _figt.add_trace(go.Scatter(
+                                    x=_tr['months'], y=_ys, name=_nm2, mode='lines',
+                                    line=dict(color=_cl, width=2)))
+                            _figt.update_layout(
+                                height=230, margin=dict(l=10, r=10, t=6, b=6),
+                                legend=dict(orientation='h', yanchor='top', y=-0.25, x=0.2))
+                            st.plotly_chart(_figt, use_container_width=True,
+                                            key=f"kwga_t_{_hi}_{_h['q']}")
+                            st.caption("💡 데이터랩 상대추이 × 검색광고 현재월 검색량 환산 **추정치**"
+                                       if _tr.get('anchored') else
+                                       "💡 현재월 절대 검색량이 없어 **상대지수(0~100)** 표시")
+                        elif _h.get('terr'):
+                            st.caption(f"📈 추이 조회 실패: {_h['terr']}")
                 st.divider()
             if _kw_hist:
                 st.caption("💡 구분: 🟡연관검색어(현재) · 🟢함께찾는(연관어) · ⚪자동완성 · "

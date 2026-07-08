@@ -378,3 +378,104 @@ def datalab_search_trend(client_id, client_secret, keyword, pc_now=0, mo_now=0):
         out["mo"].append(_mov)
         out["total"].append(_pcv + _mov)
     return out, None
+
+
+# ── 데이터랩 쇼핑인사이트 — 키워드 성별/연령 비율 ─────────────
+# 쇼핑 최상위 카테고리 ID (datalab shopping insight 필수 파라미터)
+_SHOP_CAT_IDS = {
+    "패션의류": "50000000", "패션잡화": "50000001", "화장품/미용": "50000002",
+    "디지털/가전": "50000003", "가구/인테리어": "50000004", "출산/육아": "50000005",
+    "식품": "50000006", "스포츠/레저": "50000007", "생활/건강": "50000008",
+    "여가/생활편의": "50000009", "면세점": "50000010", "도서": "50005542",
+}
+
+
+def _detect_shop_category(client_id, client_secret, keyword):
+    """쇼핑검색 상위 10개 결과의 category1 다수결로 최상위 카테고리 탐지."""
+    try:
+        r = requests.get(
+            "https://openapi.naver.com/v1/search/shop.json",
+            headers={"X-Naver-Client-Id": str(client_id),
+                     "X-Naver-Client-Secret": str(client_secret)},
+            params={"query": keyword, "display": 10},
+            timeout=10,
+        )
+        if r.status_code != 200:
+            return None, None
+        _cnt = {}
+        for it in (r.json().get("items") or []):
+            c1 = (it.get("category1") or "").strip()
+            if c1 in _SHOP_CAT_IDS:
+                _cnt[c1] = _cnt.get(c1, 0) + 1
+        if not _cnt:
+            return None, None
+        _name = max(_cnt, key=_cnt.get)
+        return _SHOP_CAT_IDS[_name], _name
+    except Exception:
+        return None, None
+
+
+def datalab_keyword_gender_age(client_id, client_secret, keyword):
+    """키워드의 성별/연령별 검색 비율 (데이터랩 쇼핑인사이트, 최근 12개월 합산).
+    카테고리는 쇼핑검색 상위 결과에서 자동 탐지.
+    반환: (dict{'gender':{'여성','남성'}, 'ages':{'10대'..'50대+'}, 'category'}, error)
+    """
+    import json as _json
+    from datetime import date as _date, timedelta as _td
+    if not (client_id and client_secret):
+        return None, "네이버 Open API 키 미설정"
+    _kw = str(keyword or "").strip()
+    if not _kw:
+        return None, "키워드를 입력하세요."
+    _cat, _cat_name = _detect_shop_category(client_id, client_secret, _kw)
+    if not _cat:
+        return None, "쇼핑 카테고리 탐지 실패 (쇼핑 검색결과 없음)"
+    _end = _date.today().replace(day=1) - _td(days=1)
+    _sy, _sm = _end.year, _end.month - 11
+    while _sm <= 0:
+        _sm += 12; _sy -= 1
+    _hdr = {"X-Naver-Client-Id": str(client_id),
+            "X-Naver-Client-Secret": str(client_secret),
+            "Content-Type": "application/json"}
+    _body = {"startDate": _date(_sy, _sm, 1).strftime("%Y-%m-%d"),
+             "endDate": _end.strftime("%Y-%m-%d"),
+             "timeUnit": "month", "category": _cat, "keyword": _kw}
+
+    def _fetch(kind):
+        try:
+            r = requests.post(
+                f"https://openapi.naver.com/v1/datalab/shopping/category/keyword/{kind}",
+                headers=_hdr, data=_json.dumps(_body), timeout=15)
+            if r.status_code != 200:
+                try:
+                    _m2 = r.json().get("errorMessage") or r.text[:200]
+                except Exception:
+                    _m2 = r.text[:200]
+                return None, f"[{r.status_code}] {_m2}"
+            _res = r.json().get("results") or []
+            _sum = {}
+            for d in (_res[0].get("data", []) if _res else []):
+                g = str(d.get("group") or "")
+                _sum[g] = _sum.get(g, 0.0) + float(d.get("ratio") or 0)
+            return _sum, None
+        except Exception as e:
+            return None, str(e)
+
+    _g, _e1 = _fetch("gender")
+    if _e1:
+        return None, _e1
+    _a, _e2 = _fetch("age")
+    if _e2:
+        return None, _e2
+    _gt = sum(_g.values()) or 1.0
+    gender = {"여성": round(_g.get("f", 0) / _gt * 100, 1),
+              "남성": round(_g.get("m", 0) / _gt * 100, 1)}
+    # 연령: 50대+60대 합산 → '50대+' (이미지 표기와 동일)
+    _a50 = _a.get("50", 0) + _a.get("60", 0)
+    _at = (sum(_a.values()) or 1.0)
+    ages = {"10대": round(_a.get("10", 0) / _at * 100, 1),
+            "20대": round(_a.get("20", 0) / _at * 100, 1),
+            "30대": round(_a.get("30", 0) / _at * 100, 1),
+            "40대": round(_a.get("40", 0) / _at * 100, 1),
+            "50대+": round(_a50 / _at * 100, 1)}
+    return {"gender": gender, "ages": ages, "category": _cat_name}, None
