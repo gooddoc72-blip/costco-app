@@ -238,12 +238,16 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             # 1순위: profit_settlements (새 DB)
             _saved_ps = get_profit_settlements(USERNAME, calc_date_str)
             if _saved_ps:
+                # order_no(상품주문번호) 우선 매칭 — 상품명 미세 차이로 인한 복원 실패(발송비/박스비 되돌아옴) 방지.
+                _sv_by_ono = {str(_sd.get('order_no', '') or ''): _sd
+                              for _sd in _saved_ps if str(_sd.get('order_no', '') or '')}
                 _sv_map = {(str(_sd['recipient']), str(_sd['product_name'])): _sd
                            for _sd in _saved_ps}
                 for _ri, (_ridx, _rrow) in enumerate(df.iterrows()):
                     _rsk = str(_ids_restore[_ri])
                     _rk = (str(_rrow.get('수취인명', '')), str(_rrow.get('상품명', '')))
-                    _sv = _sv_map.get(_rk)
+                    # df.index = order_no (loader 설정) → order_no 1순위, (수취인,상품명) 2순위
+                    _sv = _sv_by_ono.get(str(_ridx)) or _sv_map.get(_rk)
                     if not _sv:
                         continue
                     _per_ship = int(_sv.get('delivery_cost', 0) or 0)
@@ -263,12 +267,14 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 # 2순위 fallback: daily_orders (구 DB 호환)
                 _saved_daily = get_daily_orders(USERNAME, calc_date_str)
                 if _saved_daily:
+                    _sv_by_ono = {str(_sd.get('order_no', '') or ''): _sd
+                                  for _sd in _saved_daily if str(_sd.get('order_no', '') or '')}
                     _sv_map = {(str(_sd.get('recipient', '')), str(_sd.get('product_name', ''))): _sd
                                for _sd in _saved_daily}
                     for _ri, (_ridx, _rrow) in enumerate(df.iterrows()):
                         _rsk = str(_ids_restore[_ri])
                         _rk = (str(_rrow.get('수취인명', '')), str(_rrow.get('상품명', '')))
-                        _sv = _sv_map.get(_rk)
+                        _sv = _sv_by_ono.get(str(_ridx)) or _sv_map.get(_rk)
                         if not _sv:
                             continue
                         _per_ship = int(_sv.get('delivery_cost', 0) or 0)
