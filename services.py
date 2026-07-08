@@ -24,6 +24,23 @@ from db import (
 # id 변경 → 자동 무효화.
 _INDEX_CACHE: dict = {}
 
+# ── 공유 네이버↔코스트코 매핑 캐시 ─────────────────────────
+# 수동매칭으로 공유DB(shared_naver_map)에 누적된 {네이버번호: 코스트코번호} 맵.
+# 주문의 네이버번호가 공유상품(코스트코번호)으로 직접 안 잡힐 때 이 맵으로 해석한다.
+_SHARED_NAVER_MAP: dict = {'v': None}
+
+def get_shared_naver_map() -> dict:
+    if _SHARED_NAVER_MAP['v'] is None:
+        try:
+            from db_products import get_shared_naver_costco_map
+            _SHARED_NAVER_MAP['v'] = get_shared_naver_costco_map() or {}
+        except Exception:
+            _SHARED_NAVER_MAP['v'] = {}
+    return _SHARED_NAVER_MAP['v']
+
+def invalidate_shared_naver_map():
+    _SHARED_NAVER_MAP['v'] = None
+
 def _index_products(products: list) -> dict:
     if not products:
         return {'by_pno': {}, 'by_kw': {}, 'has_pno': [], 'by_naver_pno': {}, 'by_naver_channel': {}}
@@ -356,6 +373,12 @@ def match_shared_product(product_name, product_no=None, return_score=False,
                or idx.get('by_naver_pno', {}).get(str(product_no)))
         if hit:
             return (hit, 1.0) if return_score else hit
+        # 공유 네이버↔코스트코 매핑: 주문 네이버번호 → 코스트코번호 → 공유상품(=공유가격)
+        _cp = get_shared_naver_map().get(str(product_no))
+        if _cp:
+            hit = idx['by_pno'].get(str(_cp))
+            if hit:
+                return (hit, 1.0) if return_score else hit
     best_score, best_p = 0.0, None
     for p in products:
         for field in ('match_keyword', 'costco_name'):

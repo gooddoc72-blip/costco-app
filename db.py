@@ -42,6 +42,7 @@ from db_products import (
     _ensure_products_columns,
     get_all_products,
     link_naver_to_shared, unlink_naver_from_shared,
+    upsert_shared_naver_map, get_shared_naver_map_rows, get_shared_naver_costco_map,
     set_naver_origin_pno,
     bulk_update_category,
     upsert_user_private,

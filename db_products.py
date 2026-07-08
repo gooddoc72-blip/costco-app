@@ -130,6 +130,101 @@ def delete_shared_product(shared_id):
     conn.close()
 
 
+# ── 공유 네이버↔코스트코 매핑 (auth.db/shared_naver_map) ────────
+#  공유DB의 코스트코 상품번호에 "각 사용자의 네이버 상품번호"를 매칭해 누적 저장.
+#  네이버번호는 판매자마다 다르므로 (username, naver_pno) 단위로 저장하되,
+#  코스트코번호는 공유 → 한 명이 수동매칭하면 그 사용자의 주문은 이후 자동 해석된다.
+
+def _ensure_shared_naver_map(conn):
+    conn.execute("""CREATE TABLE IF NOT EXISTS shared_naver_map (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        costco_pno TEXT NOT NULL,
+        username TEXT DEFAULT '',
+        naver_pno TEXT DEFAULT '',
+        naver_origin_pno TEXT DEFAULT '',
+        product_name TEXT DEFAULT '',
+        updated_at TEXT DEFAULT '',
+        UNIQUE(username, naver_pno)
+    )""")
+    for idx_sql in [
+        "CREATE INDEX IF NOT EXISTS idx_snm_naver ON shared_naver_map(naver_pno)",
+        "CREATE INDEX IF NOT EXISTS idx_snm_origin ON shared_naver_map(naver_origin_pno)",
+        "CREATE INDEX IF NOT EXISTS idx_snm_costco ON shared_naver_map(costco_pno)",
+    ]:
+        try:
+            conn.execute(idx_sql)
+        except Exception:
+            pass
+
+
+def upsert_shared_naver_map(costco_pno, username, naver_pno='', naver_origin_pno='',
+                            product_name=''):
+    """공유DB에 (코스트코번호 ↔ 사용자 네이버번호) 매핑 저장/갱신.
+    수동매칭 시 호출 → 이후 그 네이버번호 주문이 오면 코스트코번호=공유가격으로 자동 해석."""
+    costco_pno = str(costco_pno or '').strip()
+    naver_pno = str(naver_pno or '').strip()
+    naver_origin_pno = str(naver_origin_pno or '').strip()
+    # 네이버번호가 하나도 없거나 코스트코번호가 없으면 저장 불가
+    if not costco_pno or (not naver_pno and not naver_origin_pno):
+        return False
+    conn = sqlite3.connect(AUTH_DB)
+    _ensure_shared_naver_map(conn)
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    conn.execute(
+        """INSERT INTO shared_naver_map
+           (costco_pno, username, naver_pno, naver_origin_pno, product_name, updated_at)
+           VALUES (?,?,?,?,?,?)
+           ON CONFLICT(username, naver_pno) DO UPDATE SET
+               costco_pno=excluded.costco_pno,
+               naver_origin_pno=excluded.naver_origin_pno,
+               product_name=excluded.product_name,
+               updated_at=excluded.updated_at""",
+        (costco_pno, str(username or ''), naver_pno, naver_origin_pno,
+         str(product_name or ''), now)
+    )
+    conn.commit()
+    conn.close()
+    # 매칭 캐시 무효화 (같은 프로세스 내 즉시 반영)
+    try:
+        import services
+        services.invalidate_shared_naver_map()
+    except Exception:
+        pass
+    return True
+
+
+def get_shared_naver_map_rows():
+    """공유 네이버↔코스트코 매핑 전체 행 조회 (관리/표시용)."""
+    conn = sqlite3.connect(AUTH_DB)
+    conn.row_factory = sqlite3.Row
+    _ensure_shared_naver_map(conn)
+    rows = conn.execute(
+        "SELECT * FROM shared_naver_map ORDER BY costco_pno, username"
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_shared_naver_costco_map():
+    """{네이버번호(channel/origin): 코스트코번호} 통합 맵 (전체 사용자 누적)."""
+    conn = sqlite3.connect(AUTH_DB)
+    _ensure_shared_naver_map(conn)
+    rows = conn.execute(
+        "SELECT costco_pno, naver_pno, naver_origin_pno FROM shared_naver_map"
+    ).fetchall()
+    conn.close()
+    out = {}
+    for cp, npno, org in rows:
+        cp = str(cp or '').strip()
+        if not cp:
+            continue
+        if npno and str(npno).strip():
+            out[str(npno).strip()] = cp
+        if org and str(org).strip():
+            out.setdefault(str(org).strip(), cp)
+    return out
+
+
 def get_product_detail(shared_id):
     conn = sqlite3.connect(AUTH_DB)
     conn.row_factory = sqlite3.Row
@@ -345,12 +440,29 @@ def link_naver_to_shared(username: str, user_product_id: int, shared_id: int):
 
     conn = get_user_db(username)
     _ensure_products_columns(conn)
+    # 사용자 네이버번호 조회 — 공유DB 매핑에 함께 저장하기 위함
+    _up = conn.execute(
+        "SELECT naver_channel_pno, naver_origin_pno, costco_name FROM products WHERE id=?",
+        (user_product_id,)
+    ).fetchone()
     conn.execute(
         "UPDATE products SET linked_shared_id=?, product_no=? WHERE id=?",
         (shared_id, costco_pno, user_product_id)
     )
     conn.commit()
     conn.close()
+
+    # 공유DB에 (코스트코번호 ↔ 이 사용자 네이버번호) 매핑 누적 저장
+    if costco_pno and _up:
+        try:
+            upsert_shared_naver_map(
+                costco_pno, username,
+                naver_pno=str(_up['naver_channel_pno'] or ''),
+                naver_origin_pno=str(_up['naver_origin_pno'] or ''),
+                product_name=str(_up['costco_name'] or '')
+            )
+        except Exception:
+            pass
 
 
 def unlink_naver_from_shared(username: str, user_product_id: int):
