@@ -49,9 +49,16 @@ def save_daily_orders(username, order_date, orders_df, shipping_cost, box_cost):
         cost = r.get('구입가격', 0) or 0
         ship_fee = int(r['배송비 합계'])
         settlement = int(r['정산예정금액'])
-        # 행별 택배원가/박스원가 우선 사용 (정산표에서 개별 수정된 값 보존)
-        per_ship = int(r.get('택배원가', shipping_cost) or shipping_cost)
-        per_box  = int(r.get('박스원가',  box_cost)      or box_cost)
+        # 행별 택배원가/박스원가 우선 사용 (정산표에서 개별 수정된 값 보존).
+        #   0을 그대로 보존 (기존 'or 기본값'은 0을 1800/300으로 되돌리는 버그).
+        try:
+            per_ship = int(r.get('택배원가', shipping_cost))
+        except (TypeError, ValueError):
+            per_ship = int(shipping_cost)
+        try:
+            per_box = int(r.get('박스원가', box_cost))
+        except (TypeError, ValueError):
+            per_box = int(box_cost)
         # 실정산배송비(고객배송비 - 네이버 수수료)로 수익 계산 → 수익계산 페이지와 일치.
         # 구입가 미산정(0)인 행은 수익 0 처리 (페이지 합계가 제외하는 것과 동일).
         profit = ((settlement + round(ship_fee * _factor)) - (int(cost) + per_ship + per_box)
