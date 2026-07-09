@@ -539,13 +539,13 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                             search_keyword=_e_kw.strip(),
                             product_keyword=_e_prod.strip(),
                             store_name=_e_store.strip())
-                        st.session_state.pop('_rk_edit_tid', None)
-                        st.toast("✅ 추적 항목 수정 완료", icon="✏️")
+                        # 자동 닫힘 제거 — 저장 후 '네이버 상품명 변경'을 이어서 누를 수 있도록 패널 유지
+                        st.toast("✅ 저장 완료 — 이어서 '네이버 상품명 변경' 가능", icon="✏️")
                         st.rerun()
                     else:
                         _ec[3].error("검색 키워드·상품 키워드는 비울 수 없습니다.")
                 _ec[4].write(""); _ec[4].write("")
-                if _ec[4].button("✖ 취소", key=f"e_cancel_{_t['id']}", use_container_width=True):
+                if _ec[4].button("✖ 닫기", key=f"e_cancel_{_t['id']}", use_container_width=True):
                     st.session_state.pop('_rk_edit_tid', None)
                     st.rerun()
 
@@ -577,13 +577,16 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                 _okn, _errn, _usedno = naver_api.update_product_name(
                                     api_id, api_secret, _npno_edit, _new_nm)
                             if _okn:
-                                # 로컬 라벨도 동기화 (스토어와 일치)
+                                # 로컬 라벨도 동기화 (스토어와 일치) — 패널은 유지, '닫기'로만 닫음
                                 update_keyword_tracking(USERNAME, _t['id'], product_keyword=_new_nm)
-                                st.session_state.pop('_rk_edit_tid', None)
-                                st.toast(f"✅ 네이버 스토어 상품명 변경 완료 (#{_usedno})", icon="🏪")
+                                st.session_state[f'_rk_napi_done_{_t["id"]}'] = f"✅ 네이버 스토어 상품명 변경 완료 (#{_usedno})"
                                 st.rerun()
                             else:
                                 _sc2.error(f"변경 실패: {_errn}")
+                # 변경 완료 메시지 (rerun 후에도 패널에 표시 — 자동 닫힘 없음)
+                _napi_msg = st.session_state.pop(f'_rk_napi_done_{_t["id"]}', None)
+                if _napi_msg:
+                    st.success(_napi_msg + " · '✖ 닫기'로 패널을 닫으세요.")
                 st.markdown("</div>", unsafe_allow_html=True)
 
             st.markdown("<hr style='margin:6px 0;border:none;border-top:1px solid #f0f0f0'>", unsafe_allow_html=True)
