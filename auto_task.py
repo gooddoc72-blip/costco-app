@@ -497,10 +497,15 @@ def run_shopping_task(username="admin"):
         #    관리자는 관리자 페이지 '사용자별 장보기 목록'에서 확인
         try:
             _order_date = now.strftime("%Y-%m-%d")
-            submit_shopping_list(username, _order_date, _admin_items,
-                                 total_items=len(_admin_items),
-                                 total_amount=int(total_cost))
-            log(f"📋 관리자 제출 완료 ({len(_admin_items)}종 / {fmt(int(total_cost))}원)")
+            # 하루 1회만 관리자 제출 (예약 최초 1회). 이미 오늘 발송됐으면 생략.
+            if get_setting(username, 'admin_shop_sent_date') == _order_date:
+                log("📋 관리자 제출 생략 (오늘 이미 발송됨)")
+            else:
+                submit_shopping_list(username, _order_date, _admin_items,
+                                     total_items=len(_admin_items),
+                                     total_amount=int(total_cost))
+                set_setting(username, 'admin_shop_sent_date', _order_date)
+                log(f"📋 관리자 제출 완료 ({len(_admin_items)}종 / {fmt(int(total_cost))}원)")
         except Exception as _ae:
             log(f"⚠️ 관리자 제출 실패(계속 진행): {_ae}")
 

@@ -1108,14 +1108,19 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         _pp = str(_ke).replace("__TOKEN_REFRESHED__", "").split("||")
                         set_setting(USERNAME, 'kakao_access_token', _pp[0])
                         if len(_pp) > 1: set_setting(USERNAME, 'kakao_refresh_token', _pp[1])
-            # (2) 관리자 제출 (관리자 카톡 발송은 안 함 — 관리자 페이지 목록에서 확인)
-            _items_a, _total_a = _build_shop_items()
-            try:
-                submit_shopping_list(USERNAME, order_date_str, _items_a,
-                                     total_items=len(_items_a), total_amount=_total_a)
-                _auto_msgs.append("📋 관리자 제출")
-            except Exception as _ae:
-                st.caption(f"⚠️ 자동 관리자 발송 일부 실패: {_ae}")
+            # (2) 관리자 제출 — 하루 1회만 (예약/최초 수집 1회).
+            #     이후 수동 재수집의 자동발송은 생략 (관리자는 최초 제출본 유지).
+            if get_setting(USERNAME, 'admin_shop_sent_date') == order_date_str:
+                _auto_msgs.append("📋 관리자 제출 생략(오늘 이미 발송됨)")
+            else:
+                _items_a, _total_a = _build_shop_items()
+                try:
+                    submit_shopping_list(USERNAME, order_date_str, _items_a,
+                                         total_items=len(_items_a), total_amount=_total_a)
+                    set_setting(USERNAME, 'admin_shop_sent_date', order_date_str)
+                    _auto_msgs.append("📋 관리자 제출")
+                except Exception as _ae:
+                    st.caption(f"⚠️ 자동 관리자 발송 일부 실패: {_ae}")
             if _auto_msgs:
                 st.success("🚀 수집 후 자동발송 완료 — " + " · ".join(_auto_msgs))
 
@@ -1241,11 +1246,14 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     "배송비": int(r.get('배송비', 0) or 0),
                 })
             try:
+                _already = get_setting(USERNAME, 'admin_shop_sent_date') == order_date_str
                 submit_shopping_list(USERNAME, order_date_str, _items,
                                      total_items=len(_items),
                                      total_amount=_total_amount)
+                set_setting(USERNAME, 'admin_shop_sent_date', order_date_str)
                 # 관리자 카톡 발송은 하지 않음 — 관리자 페이지 목록에서 확인
-                st.success(f"✅ 관리자 페이지에 저장 완료 — {len(_items)}개 상품 ({fmt(_total_amount)}원)")
+                _msg_re = " (오늘 이미 발송된 건을 수동으로 갱신)" if _already else ""
+                st.success(f"✅ 관리자 페이지에 저장 완료 — {len(_items)}개 상품 ({fmt(_total_amount)}원){_msg_re}")
             except Exception as _se:
                 st.error(f"❌ 전송 실패: {_se}")
 
