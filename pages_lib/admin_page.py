@@ -520,8 +520,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     st.subheader("🛒 사용자별 장보기 목록")
     _today_str_adm = datetime.now().strftime("%Y-%m-%d")
     _all_subs = get_recent_shopping_submissions(limit=200)
+    # 당일(order_date==오늘) 제출건만 노출 — 일자가 바뀌면 전날건은 리스트에서 자동 제외
     _subs_today = [s for s in _all_subs if s.get('order_date') == _today_str_adm]
-    _subs_old = [s for s in _all_subs if s.get('order_date') != _today_str_adm]
 
     def _render_shop_sub(_sub):
         _label = (f"📅 {_sub['order_date']}  |  👤 {_sub['username']}  |  "
@@ -618,20 +618,14 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 delete_shopping_submission(_sub['id'])
                 st.rerun()
 
-    # ── 당일 제출건만 리스트로 노출, 이전 날짜건은 별도 보관 ──
-    if not _all_subs:
-        st.caption("아직 제출된 장보기 목록이 없습니다. (사용자가 주문 수집 시 자동 발송되거나 '📋 장보기 목록 관리자에게 발송' 클릭 시 표시됨)")
+    # ── 당일 제출건만 리스트로 노출 — 전날건은 일자가 바뀌면 노출하지 않음 ──
+    if _subs_today:
+        st.caption(f"📅 오늘({_today_str_adm}) 제출 {len(_subs_today)}건")
+        for _sub in _subs_today:
+            _render_shop_sub(_sub)
     else:
-        if _subs_today:
-            st.caption(f"📅 오늘({_today_str_adm}) 제출 {len(_subs_today)}건")
-            for _sub in _subs_today:
-                _render_shop_sub(_sub)
-        else:
-            st.caption(f"오늘({_today_str_adm}) 제출된 장보기 목록이 없습니다.")
-        if _subs_old:
-            with st.expander(f"📁 이전 날짜 보관 ({len(_subs_old)}건)", expanded=False):
-                for _sub in _subs_old:
-                    _render_shop_sub(_sub)
+        st.caption(f"오늘({_today_str_adm}) 제출된 장보기 목록이 없습니다. "
+                   "(사용자가 주문 수집 시 자동 발송되거나 '📋 장보기 목록 관리자에게 발송' 클릭 시 표시됨)")
 
     # ── 로컬 설치형 라이선스 관리 (1-PC 사용 인증) ──
     st.divider()
