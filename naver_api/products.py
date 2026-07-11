@@ -227,6 +227,7 @@ def register_product(client_id, client_secret, product_info):
             },
             "detailAttribute": {
                 "minorPurchasable": True,   # 미성년자 구매가능
+                "unitCapacity": {"unitPriceYn": False},  # 가격표시제 대상(화장지 등) 필수
                 "afterServiceInfo": {
                     "afterServiceTelephoneNumber": as_tel,
                     "afterServiceGuideContent": "판매자에게 문의해 주세요.",
@@ -241,6 +242,7 @@ def register_product(client_id, client_secret, product_info):
                         "itemName":                  name,
                         "modelName":                 name,
                         "manufacturer":              product_info.get("manufacturer") or "상품 상세페이지 참조",
+                        "afterServiceDirector":      as_tel,
                         "returnCostReason":          "상품 상세페이지 참조",
                         "noRefundReason":            "상품 상세페이지 참조",
                         "qualityAssuranceStandard":  "상품 상세페이지 참조",
