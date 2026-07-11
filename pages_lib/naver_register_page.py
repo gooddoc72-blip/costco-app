@@ -132,7 +132,6 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             _ph_margin = st.number_input("추가 마진 % (사진 속 가격에 얹기, 0=그대로)",
                                          min_value=0, max_value=300, value=0, step=5, key="ph_margin")
             _ph_files = st.file_uploader("신상품 사진 업로드 (여러 장 · 가격표 포함)",
-                                         type=['jpg', 'jpeg', 'png', 'webp'],
                                          accept_multiple_files=True, key="ph_files")
             st.caption("사진 1장 = 상품 1개. Claude가 상품명·가격(가격표)·카테고리를 판단해 네이버에 자동 등록합니다.")
             _ph_go = st.button(f"🤖 사진 분석 → 자동등록 ({len(_ph_files) if _ph_files else 0}장)",
@@ -143,7 +142,12 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 _prows = []; _pprog = st.progress(0.0)
                 for _pi, _pf in enumerate(_ph_files):
                     _pprog.progress((_pi + 1) / len(_ph_files))
-                    _pb = _pf.getvalue(); _pmt = _pf.type or 'image/jpeg'
+                    _pb = _pf.getvalue()
+                    _pmt = _pf.type or 'image/jpeg'
+                    if not str(_pmt).startswith('image/'):
+                        _ext_l = _pf.name.rsplit('.', 1)[-1].lower()
+                        _pmt = {'png': 'image/png', 'webp': 'image/webp',
+                                'gif': 'image/gif'}.get(_ext_l, 'image/jpeg')
                     _info, _ie = ai_service.analyze_product_photo(_ph_aikey, _pb, _pmt)
                     if _ie or not _info:
                         _prows.append({'파일': _pf.name[:18], '상태': f'❌ 분석실패 {str(_ie)[:18]}'}); continue

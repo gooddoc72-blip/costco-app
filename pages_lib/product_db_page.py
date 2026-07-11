@@ -116,8 +116,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             else:
                 _pt_img = st.camera_input("가격표 촬영 (폰 카메라)", key="pt_cam")
                 if not _pt_img:
-                    _pt_img = st.file_uploader("또는 가격표 사진 업로드", type=['jpg', 'jpeg', 'png', 'webp'],
-                                               key="pt_up")
+                    _pt_img = st.file_uploader("또는 가격표 사진 업로드", key="pt_up")
                 if _pt_img is not None and st.button("🔎 가격표 판독", key="pt_read", type="primary"):
                     import ai_service
                     _b = _pt_img.getvalue(); _mt = getattr(_pt_img, 'type', None) or 'image/jpeg'
