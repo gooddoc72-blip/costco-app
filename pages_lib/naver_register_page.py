@@ -134,27 +134,29 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         return {'png': 'image/png', 'webp': 'image/webp', 'gif': 'image/gif'}.get(_e, 'image/jpeg')
 
     if _ph_aikey:
-        with st.expander("📷 제품사진 + 가격사진으로 신상품 등록 (건별)", expanded=False):
+        with st.expander("📷 제품사진(여러 장) + 가격사진으로 신상품 등록 (건별)", expanded=False):
             if not (_ph_oc and _ph_os):
                 st.info("카테고리 자동판단에 **네이버 Open API(쇼핑검색)** 키가 필요합니다. (설정 탭)")
             _ph_margin = st.number_input("마진율 %", min_value=0, max_value=300, step=5,
                                          value=int(_gs('cafe24_naver_margin') or 10), key="ph_margin",
                                          help="네이버 판매가 = 코스트코가 ×(1+마진%) ÷0.945 (수수료 5.5% 감안)")
             _uc1, _uc2 = st.columns(2)
-            _prod_img = _uc1.file_uploader("① 제품 사진 (리스팅 이미지)", accept_multiple_files=False, key="ph_prod")
+            _prod_imgs = _uc1.file_uploader("① 제품 사진들 (여러 장 — 첫 장이 대표이미지)",
+                                            accept_multiple_files=True, key="ph_prod")
             _price_img = _uc2.file_uploader("② 가격 사진 (코스트코 가격표)", accept_multiple_files=False, key="ph_price")
-            if _prod_img:
-                _uc1.image(_prod_img, width=150)
+            if _prod_imgs:
+                _uc1.image([im for im in _prod_imgs[:9]], width=90)
             if _price_img:
                 _uc2.image(_price_img, width=150)
-            st.caption("제품사진 = 이미지·상품명·카테고리 / 가격사진 = 코스트코가 판독 → 마진 붙여 판매가 산정.")
+            st.caption("제품사진 = 리스팅 이미지(여러 장: 대표+추가) + 상품명·카테고리 / "
+                       "가격사진 = 코스트코가 판독 → 마진 붙여 판매가 산정.")
 
             if st.button("🔎 사진 분석 (미리보기)", type="primary", key="ph_analyze",
-                         disabled=not (_prod_img and _price_img), use_container_width=True):
+                         disabled=not (_prod_imgs and _price_img), use_container_width=True):
                 import ai_service
                 set_setting(USERNAME, 'cafe24_naver_margin', str(int(_ph_margin)))
                 with st.spinner("제품사진·가격사진 분석 중..."):
-                    _i1, _e1 = ai_service.analyze_product_photo(_ph_aikey, _prod_img.getvalue(), _ph_mt(_prod_img))
+                    _i1, _e1 = ai_service.analyze_product_photo(_ph_aikey, _prod_imgs[0].getvalue(), _ph_mt(_prod_imgs[0]))
                     _i2, _e2 = ai_service.analyze_price_tag(_ph_aikey, _price_img.getvalue(), _ph_mt(_price_img))
                 if _e1 or not _i1:
                     st.error(f"제품사진 분석 실패: {_e1}")
@@ -196,24 +198,29 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 if _pv['cat_full']:
                     st.caption(f"📂 {_pv['cat_full']}")
                 if st.button("🛍 네이버 등록", type="primary", key="ph_reg1",
-                             disabled=not (_prod_img and _en.strip() and _ec.strip() and _es > 0)):
+                             disabled=not (_prod_imgs and _en.strip() and _ec.strip() and _es > 0)):
                     import tempfile, os as _os3
-                    _pb1 = _prod_img.getvalue()
-                    _ex = {'image/png': '.png', 'image/webp': '.webp'}.get(_ph_mt(_prod_img), '.jpg')
-                    _fd, _tp = tempfile.mkstemp(suffix=_ex); _os3.close(_fd)
-                    with open(_tp, 'wb') as _w:
-                        _w.write(_pb1)
-                    with st.spinner("제품사진 업로드 → 네이버 등록 중..."):
-                        _cdn, _ue = naver_api.upload_product_image(api_id, api_secret, _tp)
-                        try: _os3.remove(_tp)
-                        except Exception: pass
-                        if not _cdn:
-                            st.error(f"이미지 업로드 실패: {_ue}")
+                    with st.spinner(f"제품사진 {len(_prod_imgs)}장 업로드 → 네이버 등록 중..."):
+                        _cdns = []
+                        for _im in _prod_imgs[:10]:   # 대표+추가 최대 10장
+                            _ex = {'image/png': '.png', 'image/webp': '.webp'}.get(_ph_mt(_im), '.jpg')
+                            _fd, _tp = tempfile.mkstemp(suffix=_ex); _os3.close(_fd)
+                            with open(_tp, 'wb') as _w:
+                                _w.write(_im.getvalue())
+                            _cu, _ue = naver_api.upload_product_image(api_id, api_secret, _tp)
+                            try: _os3.remove(_tp)
+                            except Exception: pass
+                            if _cu:
+                                _cdns.append(_cu)
+                        if not _cdns:
+                            st.error("이미지 업로드 실패 — 대표이미지를 못 올렸습니다.")
                         else:
                             _res, _re2 = naver_api.register_product(api_id, api_secret, {
                                 "name": _en.strip(), "sale_price": int(_es),
-                                "image_url": _cdn, "category_id": _ec.strip(),
-                                "detail_html": f"<p>{_en.strip()}</p><img src='{_cdn}'>",
+                                "image_url": _cdns[0], "extra_image_urls": _cdns[1:],
+                                "category_id": _ec.strip(),
+                                "detail_html": f"<p>{_en.strip()}</p>"
+                                    + "".join(f"<img src='{u}'>" for u in _cdns),
                                 "shipping_fee": 0, "origin_code": "03",
                                 "after_service_tel": _gs("naver_as_tel") or "1588-1234",
                                 "manufacturer": _pv.get('brand') or "상품 상세페이지 참조",
@@ -222,7 +229,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                 st.error(f"❌ 등록 실패: {_re2}")
                             else:
                                 st.success(f"✅ 네이버 등록 완료! (origin #{_res.get('origin_product_no')}) "
-                                           f"— {_en.strip()[:20]} / {fmt(int(_es))}원")
+                                           f"— {_en.strip()[:20]} / {fmt(int(_es))}원 / 이미지 {len(_cdns)}장")
                                 st.session_state.pop('_ph_pv', None)
         st.divider()
 
