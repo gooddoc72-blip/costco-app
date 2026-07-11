@@ -264,6 +264,36 @@ def update_product_price(creds, product_no, new_price, save_tokens=None):
     return True, None
 
 
+def get_all_products(creds, save_tokens=None, max_total=3000):
+    """카페24 전체 상품 페이지네이션 조회. 반환: (products, err).
+    각 항목: {product_no, product_name, price, selling}. max_total로 상한."""
+    out = []
+    offset = 0
+    while offset < max_total:
+        data, err = _admin_request(creds, "GET", "/api/v2/admin/products", save_tokens,
+                                   params={"limit": 100, "offset": offset})
+        if err:
+            return (out or None), err
+        _ps = (data or {}).get("products", []) or []
+        if not _ps:
+            break
+        for p in _ps:
+            try:
+                _pr = int(float(p.get("price", 0) or 0))
+            except Exception:
+                _pr = 0
+            out.append({
+                "product_no": p.get("product_no"),
+                "product_name": p.get("product_name", ""),
+                "price": _pr,
+                "selling": p.get("selling", ""),
+            })
+        if len(_ps) < 100:
+            break
+        offset += 100
+    return out, None
+
+
 def get_product(creds, product_no, save_tokens=None):
     """상품 단건 조회 (가격 확인용). 반환: (product_dict, err)."""
     data, err = _admin_request(

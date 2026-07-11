@@ -435,6 +435,16 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 st.session_state['_cf2n_prods'] = [] if _cf2n_err else (_cf2n_prods or [])
                 if _cf2n_err:
                     st.error(f"조회 실패: {_cf2n_err}")
+            if st.button("📋 전체 제품 가져오기 (카페24 카탈로그 전부)", key="cf2n_all",
+                         use_container_width=True):
+                set_setting(USERNAME, 'cafe24_naver_margin', str(int(_margin)))
+                with st.spinner("카페24 전체 제품 가져오는 중... (수백 개면 시간이 걸립니다)"):
+                    _cf_all, _cf_allerr = cafe24_api.get_all_products(_cf_creds, save_tokens=_cf_save)
+                st.session_state['_cf2n_prods'] = [] if _cf_allerr else (_cf_all or [])
+                if _cf_allerr:
+                    st.error(f"전체 가져오기 실패: {_cf_allerr}")
+                else:
+                    st.success(f"✅ 카페24 전체 {len(_cf_all or [])}개 가져옴")
             _cf2n_list = st.session_state.get('_cf2n_prods') or []
             if _cf2n_list:
                 st.caption(f"{len(_cf2n_list)}개 — 상품 펼쳐 카테고리 검색·선택 후 '네이버 등록', "
