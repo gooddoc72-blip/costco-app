@@ -232,6 +232,48 @@ def _render_settings_content(USERNAME: str, _gs):
         set_setting(USERNAME, 'ai_briefing_auto', '1' if _ai_auto else '0')
         st.success("✅ AI 설정 저장!")
 
+    # ── 🛒 카페24 연동 (주문 수집 + 상품 가격 수정) ───────────
+    st.divider()
+    st.subheader("🛒 카페24 연동")
+    st.caption("카페24 쇼핑몰의 주문을 수집하고 상품 가격을 수정합니다. "
+               "[developers.cafe24.com](https://developers.cafe24.com)에서 앱 등록 후 "
+               "Redirect URI `https://cocobiz.shop/`, 권한 `주문 읽기·상품 읽기/쓰기`로 설정하세요.")
+    _cf1, _cf2, _cf3 = st.columns(3)
+    _new_cf_mall = _cf1.text_input("쇼핑몰 ID", value=_gs('cafe24_mall_id'),
+                                   key="cf_mall_in", placeholder="예: coco-busan",
+                                   help="관리자주소 https://□□□.cafe24.com 의 □□□ 부분")
+    _new_cf_cid = _cf2.text_input("Client ID", value=_gs('cafe24_client_id'),
+                                  key="cf_cid_in")
+    _new_cf_sec = _cf3.text_input("Client Secret", value=_gs('cafe24_client_secret'),
+                                  type="password", key="cf_sec_in")
+    if st.button("💾 카페24 키 저장", key="save_cafe24"):
+        set_setting(USERNAME, 'cafe24_mall_id', _new_cf_mall.strip())
+        set_setting(USERNAME, 'cafe24_client_id', _new_cf_cid.strip())
+        set_setting(USERNAME, 'cafe24_client_secret', _new_cf_sec.strip())
+        st.success("✅ 카페24 키 저장! 아래 '카페24 인증'을 진행하세요.")
+        st.rerun()
+
+    # 인증 상태 + 인증 버튼
+    _cf_mall = _gs('cafe24_mall_id')
+    _cf_cid = _gs('cafe24_client_id')
+    _cf_tok = _gs('cafe24_access_token')
+    if _cf_mall and _cf_cid:
+        if _cf_tok:
+            st.success("🔗 카페24 인증됨 — 주문 수집·가격 수정 사용 가능 "
+                       "(토큰 만료 시 자동 갱신)")
+            st.caption("스토어를 바꾸거나 인증이 풀리면 아래 버튼으로 재인증하세요.")
+        try:
+            import cafe24_api
+            _sid = st.session_state.get('_sid') or USERNAME
+            _auth_url = cafe24_api.get_authorize_url(_cf_mall, _cf_cid, _sid)
+            st.link_button("🔗 카페24 인증하기" + (" (재인증)" if _cf_tok else ""),
+                           _auth_url, use_container_width=False)
+            st.caption("클릭 → 카페24 로그인·동의 → 자동으로 이 앱에 인증 코드가 등록됩니다.")
+        except Exception as _ce:
+            st.error(f"인증 URL 생성 실패: {_ce}")
+    else:
+        st.info("쇼핑몰 ID와 Client ID/Secret을 입력·저장하면 '카페24 인증' 버튼이 나타납니다.")
+
     # ── 네이버 Open API ───────────────────────────────────
     st.divider()
     st.subheader("🔍 네이버 Open API (순위 체크용)")
