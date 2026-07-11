@@ -133,6 +133,66 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         _e = _f.name.rsplit('.', 1)[-1].lower()
         return {'png': 'image/png', 'webp': 'image/webp', 'gif': 'image/gif'}.get(_e, 'image/jpeg')
 
+    def _ph_upload_cdn(_f):
+        """업로드 파일 → 네이버 CDN URL."""
+        if not _f:
+            return None
+        import tempfile, os as _oscd
+        _ex = {'image/png': '.png', 'image/webp': '.webp'}.get(_ph_mt(_f), '.jpg')
+        _fd, _tp = tempfile.mkstemp(suffix=_ex); _oscd.close(_fd)
+        with open(_tp, 'wb') as _w:
+            _w.write(_f.getvalue())
+        _u, _ = naver_api.upload_product_image(api_id, api_secret, _tp)
+        try: _oscd.remove(_tp)
+        except Exception: pass
+        return _u
+
+    # ── 공통 상세 이미지(상단·하단) + 상세HTML 빌더 ──
+    _top_img = _gs('naver_detail_top_img'); _bottom_img = _gs('naver_detail_bottom_img')
+
+    def _build_detail(name, imgs):
+        """상세HTML: [공통상단] + 상품명(큰폰트) + 제품이미지들 + [공통하단]."""
+        _p = []
+        if _top_img:
+            _p.append(f'<img src="{_top_img}" style="max-width:100%;display:block;margin:0 auto">')
+        _p.append(f'<div style="font-size:32px;font-weight:800;text-align:center;'
+                  f'padding:20px 12px;line-height:1.35">{name}</div>')
+        for _u in imgs:
+            _p.append(f'<img src="{_u}" style="max-width:100%;display:block;margin:0 auto">')
+        if _bottom_img:
+            _p.append(f'<img src="{_bottom_img}" style="max-width:100%;display:block;margin:0 auto">')
+        return '<div style="text-align:center">' + ''.join(_p) + '</div>'
+
+    with st.expander("🖼 공통 상세 이미지 설정 (모든 상품 상단·하단에 자동 삽입)", expanded=False):
+        st.caption("상단 이미지 = 상품명 위 / 하단 이미지 = 제품사진 다음. 한 번 저장하면 이후 등록되는 모든 상품 상세에 공통 삽입됩니다.")
+        _dc1, _dc2 = st.columns(2)
+        if _top_img:
+            _dc1.image(_top_img, caption="현재 상단 공통", width=160)
+        if _bottom_img:
+            _dc2.image(_bottom_img, caption="현재 하단 공통", width=160)
+        _up_top = _dc1.file_uploader("상단 공통 이미지 (교체)", accept_multiple_files=False, key="detail_top_up")
+        _up_bot = _dc2.file_uploader("하단 공통 이미지 (교체)", accept_multiple_files=False, key="detail_bot_up")
+        _sd1, _sd2 = st.columns(2)
+        if _sd1.button("💾 공통 이미지 저장", key="save_detail_imgs", type="primary", use_container_width=True):
+            _msgs = []
+            with st.spinner("네이버 CDN 업로드 중..."):
+                if _up_top:
+                    _u = _ph_upload_cdn(_up_top)
+                    if _u:
+                        set_setting(USERNAME, 'naver_detail_top_img', _u); _msgs.append('상단')
+                if _up_bot:
+                    _u = _ph_upload_cdn(_up_bot)
+                    if _u:
+                        set_setting(USERNAME, 'naver_detail_bottom_img', _u); _msgs.append('하단')
+            if _msgs:
+                st.success(f"✅ 공통 {'·'.join(_msgs)} 이미지 저장 완료"); st.rerun()
+            else:
+                st.warning("업로드할 이미지를 선택하세요.")
+        if _sd2.button("🗑 공통 이미지 해제", key="clear_detail_imgs", use_container_width=True):
+            set_setting(USERNAME, 'naver_detail_top_img', '')
+            set_setting(USERNAME, 'naver_detail_bottom_img', '')
+            st.success("공통 이미지 해제됨"); st.rerun()
+
     if _ph_aikey:
         with st.expander("📷 제품사진(여러 장) + 가격사진으로 신상품 등록 (건별)", expanded=False):
             if not (_ph_oc and _ph_os):
@@ -219,8 +279,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                 "name": _en.strip(), "sale_price": int(_es),
                                 "image_url": _cdns[0], "extra_image_urls": _cdns[1:],
                                 "category_id": _ec.strip(),
-                                "detail_html": f"<p>{_en.strip()}</p>"
-                                    + "".join(f"<img src='{u}'>" for u in _cdns),
+                                "detail_html": _build_detail(_en.strip(), _cdns),
                                 "shipping_fee": 0, "origin_code": "03",
                                 "after_service_tel": _gs("naver_as_tel") or "1588-1234",
                                 "manufacturer": _pv.get('brand') or "상품 상세페이지 참조",
@@ -298,7 +357,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         _brows.append({'제품파일': _pf.name[:14], '상품': _nm[:16], '상태': '❌ 이미지업로드 실패'}); continue
                     _res, _re2 = naver_api.register_product(api_id, api_secret, {
                         "name": _nm, "sale_price": _sale, "image_url": _cdn, "category_id": _cid,
-                        "detail_html": f"<p>{_nm}</p><img src='{_cdn}'>",
+                        "detail_html": _build_detail(_nm, [_cdn]),
                         "shipping_fee": 0, "origin_code": "03",
                         "after_service_tel": _gs("naver_as_tel") or "1588-1234",
                         "manufacturer": _i1.get('brand') or "상품 상세페이지 참조",
