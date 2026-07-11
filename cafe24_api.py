@@ -15,7 +15,7 @@ from datetime import datetime, timedelta, timezone
 
 import requests
 
-API_VERSION = "2024-06-01"
+API_VERSION = "2026-03-01"   # 앱 기본 버전 (cocostor 앱 기준)
 REDIRECT_URI = "https://cocobiz.shop/"
 # 주문 읽기 + 상품 읽기/쓰기(가격수정) + 앱 읽기
 SCOPES = "mall.read_order,mall.read_product,mall.write_product,mall.read_application"
