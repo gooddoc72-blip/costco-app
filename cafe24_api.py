@@ -271,3 +271,30 @@ def get_product(creds, product_no, save_tokens=None):
     if err:
         return None, err
     return (data or {}).get("product", {}), None
+
+
+def search_products(creds, keyword="", limit=50, save_tokens=None):
+    """상품 검색(상품명 부분일치) 또는 최근 상품 목록. 반환: (products, err).
+    각 항목: {product_no, product_name, price, selling(판매여부)}
+    """
+    params = {"limit": min(100, limit), "offset": 0}
+    kw = str(keyword or "").strip()
+    if kw:
+        params["product_name"] = kw          # 상품명 부분검색
+    data, err = _admin_request(creds, "GET", "/api/v2/admin/products", save_tokens,
+                               params=params)
+    if err:
+        return None, err
+    out = []
+    for p in (data or {}).get("products", []) or []:
+        try:
+            _pr = int(float(p.get("price", 0) or 0))
+        except Exception:
+            _pr = 0
+        out.append({
+            "product_no": p.get("product_no"),
+            "product_name": p.get("product_name", ""),
+            "price": _pr,
+            "selling": p.get("selling", ""),
+        })
+    return out, None

@@ -92,6 +92,55 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     st.header("📦 제품 가격 DB 관리")
     st.caption("🔗 공유 필드(매입가·상품명)는 읽기전용 — 영수증 업로드 또는 관리자 탭에서 수정 | ✏️ 판매가·배송비는 개인별 수정 가능")
 
+    # ── 🛒 카페24 상품 가격 수정 (라이브 스토어 반영) ────────────
+    _cf_mall = _gs('cafe24_mall_id'); _cf_cid = _gs('cafe24_client_id'); _cf_tok = _gs('cafe24_access_token')
+    if _cf_mall and _cf_cid and _cf_tok:
+        with st.expander("🛒 카페24 상품 가격 수정 — 검색 후 새 가격 입력·변경 (라이브 반영)", expanded=False):
+            import cafe24_api
+            _cf_creds = {'mall_id': _cf_mall, 'client_id': _cf_cid,
+                         'client_secret': _gs('cafe24_client_secret'),
+                         'access_token': _cf_tok, 'refresh_token': _gs('cafe24_refresh_token'),
+                         'expires_at': _gs('cafe24_token_expires_at')}
+            def _cf_save(t):
+                set_setting(USERNAME, 'cafe24_access_token', t.get('access_token', ''))
+                set_setting(USERNAME, 'cafe24_refresh_token', t.get('refresh_token', ''))
+                set_setting(USERNAME, 'cafe24_token_expires_at', t.get('expires_at', ''))
+            _cq1, _cq2 = st.columns([4, 1])
+            _cf_q = _cq1.text_input("상품명 검색", key="cf_price_q",
+                                    placeholder="상품명 일부 입력 (비우면 최근 등록 상품)",
+                                    label_visibility="collapsed")
+            if _cq2.button("🔎 조회", key="cf_price_search", use_container_width=True):
+                with st.spinner("카페24 상품 조회 중..."):
+                    _prods, _perr = cafe24_api.search_products(_cf_creds, _cf_q, save_tokens=_cf_save)
+                st.session_state['_cf_prods'] = [] if _perr else (_prods or [])
+                if _perr:
+                    st.error(f"조회 실패: {_perr}")
+            _cf_prods = st.session_state.get('_cf_prods') or []
+            if _cf_prods:
+                st.caption(f"{len(_cf_prods)}개 — 새 가격 입력 후 '가격변경'을 누르면 카페24 스토어에 즉시 반영됩니다.")
+                for _p in _cf_prods[:30]:
+                    _pno = _p['product_no']
+                    _pc1, _pc2, _pc3 = st.columns([4, 1.6, 1.2])
+                    _pc1.markdown(
+                        f"<div style='padding-top:6px'>{str(_p['product_name'])[:42]} "
+                        f"<span style='color:#999;font-size:11px'>#{_pno} · 현재 {fmt(int(_p['price']))}원</span></div>",
+                        unsafe_allow_html=True)
+                    _new_price = _pc2.number_input("새가격", value=int(_p['price']), min_value=0,
+                                                   step=100, key=f"cfp_{_pno}",
+                                                   label_visibility="collapsed")
+                    if _pc3.button("가격변경", key=f"cfpb_{_pno}", use_container_width=True):
+                        with st.spinner("변경 중..."):
+                            _ok, _uerr = cafe24_api.update_product_price(
+                                _cf_creds, _pno, _new_price, save_tokens=_cf_save)
+                        if _ok:
+                            _p['price'] = int(_new_price)   # 목록 캐시 갱신
+                            st.success(f"✅ {str(_p['product_name'])[:20]} → {fmt(int(_new_price))}원 변경 완료")
+                            st.rerun()
+                        else:
+                            _pc3.error("실패"); st.error(f"가격변경 실패: {_uerr}")
+            else:
+                st.caption("상품명으로 검색하거나 빈 칸으로 조회하면 카페24 상품이 나타납니다.")
+
     # ── 네이버 상품 등록 폼 ─────────────────────────────────────────
     _nreg_sp_id = st.session_state.get('naver_reg_sp_id')
     if _nreg_sp_id is not None:
