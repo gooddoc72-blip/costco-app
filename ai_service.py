@@ -212,6 +212,43 @@ def analyze_product_photo(api_key, image_bytes, media_type):
     }, None
 
 
+_PRICETAG_SYSTEM = (
+    "너는 코스트코 매장 가격표(라벨) 판독 전문가다. 사진 속 가격표를 보고 JSON으로만 출력한다.\n"
+    '출력(JSON만): {"product_no":"상품번호","price":정수,"product_name":"상품명"}\n'
+    "규칙:\n"
+    "- product_no: 라벨 좌측 상단의 코스트코 상품번호(보통 6자리 숫자, 예: 713160). 숫자만.\n"
+    "- price: 실제 지불 가격 = **가장 큰 최종 가격**(할인 적용가). 정가/할인액이 같이 있으면 "
+    "맨 아래 큰 숫자(최종가)를 쓴다. 숫자만(콤마·원 제거).\n"
+    "- product_name: 라벨의 영문/한글 상품명.\n"
+    "숫자를 지어내지 말 것. 안 보이면 product_no는 '' , price는 0."
+)
+
+
+def analyze_price_tag(api_key, image_bytes, media_type):
+    """코스트코 가격표 사진 → {product_no, price, product_name}. 반환: (dict, error)."""
+    _txt, _err = claude_vision(api_key, image_bytes, media_type, _PRICETAG_SYSTEM,
+                               "이 코스트코 가격표에서 상품번호와 최종 판매가를 읽어 JSON으로 출력해줘.")
+    if _err or not _txt:
+        return None, _err or "빈 응답"
+    _s = _txt.strip()
+    _i, _j = _s.find("{"), _s.rfind("}")
+    if _i >= 0 and _j > _i:
+        _s = _s[_i:_j + 1]
+    try:
+        _d = json.loads(_s)
+    except Exception:
+        return None, f"JSON 파싱 실패: {_txt[:120]}"
+    try:
+        _price = int(float(str(_d.get("price", 0)).replace(",", "") or 0))
+    except Exception:
+        _price = 0
+    return {
+        "product_no": "".join(ch for ch in str(_d.get("product_no", "") or "") if ch.isdigit()),
+        "price": _price,
+        "product_name": str(_d.get("product_name", "") or "").strip(),
+    }, None
+
+
 _CAT_SYSTEM = (
     "너는 네이버 쇼핑 카테고리 분류 전문가다. 상품명과 '후보 카테고리 경로' 목록을 보고 "
     "그 상품에 가장 정확한 카테고리 경로 하나만 고른다.\n"

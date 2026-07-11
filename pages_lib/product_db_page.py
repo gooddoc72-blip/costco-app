@@ -92,6 +92,87 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     st.header("📦 제품 가격 DB 관리")
     st.caption("🔗 공유 필드(매입가·상품명)는 읽기전용 — 영수증 업로드 또는 관리자 탭에서 수정 | ✏️ 판매가·배송비는 개인별 수정 가능")
 
+    # ── 🏷 바코드·사진으로 매입가(코스트코 가격) 수정 (매장용) ────────
+    with st.expander("🏷 바코드·사진으로 매입가 수정 — 매장에서 스캔/촬영", expanded=False):
+        _sp_all = cached_shared_products() if callable(cached_shared_products) else get_shared_products()
+        _sp_by_pno = {str(s.get('product_no', '')).strip(): s for s in _sp_all
+                      if str(s.get('product_no', '')).strip()}
+        st.caption("코스트코 매장에서 가격표를 촬영하거나 바코드를 스캔/입력 → 그 상품의 **공유 매입가**를 수정합니다.")
+
+        def _save_price(pno, sp, price, name=''):
+            _cn = (sp or {}).get('costco_name') or name or pno
+            _kw = (sp or {}).get('match_keyword') or _cn
+            upsert_shared_store_price(costco_name=_cn, keyword=_kw, price=int(price),
+                                      product_no=pno, updated_by=USERNAME)
+            if callable(invalidate_data_cache):
+                invalidate_data_cache()
+
+        _tab_cam, _tab_scan = st.tabs(["📷 사진/카메라 판독", "⌨ 바코드/번호 입력"])
+
+        with _tab_cam:
+            _pt_key = _gs('anthropic_api_key')
+            if not _pt_key:
+                st.info("사진 판독은 설정 탭 > 🤖 AI 설정에 Anthropic 키가 필요합니다.")
+            else:
+                _pt_img = st.camera_input("가격표 촬영 (폰 카메라)", key="pt_cam")
+                if not _pt_img:
+                    _pt_img = st.file_uploader("또는 가격표 사진 업로드", type=['jpg', 'jpeg', 'png', 'webp'],
+                                               key="pt_up")
+                if _pt_img is not None and st.button("🔎 가격표 판독", key="pt_read", type="primary"):
+                    import ai_service
+                    _b = _pt_img.getvalue(); _mt = getattr(_pt_img, 'type', None) or 'image/jpeg'
+                    with st.spinner("가격표 판독 중..."):
+                        _pinfo, _pe = ai_service.analyze_price_tag(_pt_key, _b, _mt)
+                    st.session_state['_pt_read'] = None if _pe else _pinfo
+                    if _pe:
+                        st.error(f"판독 실패: {_pe}")
+                _r = st.session_state.get('_pt_read')
+                if _r:
+                    _pno = _r['product_no']; _sp = _sp_by_pno.get(_pno)
+                    st.markdown(f"**판독 결과** — 상품번호 `{_pno or '?'}` · 가격 **{fmt(_r['price'])}원** · "
+                                f"{str(_r['product_name'])[:34]}")
+                    if not _pno:
+                        st.warning("상품번호를 못 읽었습니다. 가격표(좌상단 번호)가 선명하게 나오도록 다시 촬영하세요.")
+                    elif _sp:
+                        st.markdown(f"공유DB: **{str(_sp['costco_name'])[:30]}** · 현재 매입가 "
+                                    f"{fmt(int(_sp.get('unit_price') or 0))}원")
+                        _np = st.number_input("새 매입가", value=int(_r['price']), min_value=0, step=100, key="pt_np")
+                        if st.button("💾 매입가 수정", key="pt_save", type="primary"):
+                            _save_price(_pno, _sp, _np)
+                            st.session_state.pop('_pt_read', None)
+                            st.success(f"✅ {str(_sp['costco_name'])[:20]} 매입가 → {fmt(_np)}원"); st.rerun()
+                    else:
+                        st.warning(f"공유DB에 상품번호 {_pno}가 없습니다 — 신규로 등록합니다.")
+                        _nm = st.text_input("상품명", value=_r['product_name'], key="pt_addname")
+                        _np = st.number_input("매입가", value=int(_r['price']), min_value=0, step=100, key="pt_addprice")
+                        if st.button("➕ 공유DB 신규 등록", key="pt_add", type="primary") and _np > 0:
+                            _save_price(_pno, None, _np, name=_nm)
+                            st.session_state.pop('_pt_read', None)
+                            st.success(f"✅ {_pno} 신규 등록 {fmt(_np)}원"); st.rerun()
+
+        with _tab_scan:
+            st.caption("블루투스 바코드 스캐너(키보드형)로 스캔하면 번호가 자동 입력됩니다. 없으면 직접 입력.")
+            _sc = st.text_input("바코드 스캔 / 상품번호", key="pt_scan_no",
+                                placeholder="예: 713160 (스캔 시 자동입력)")
+            _sc = "".join(ch for ch in (_sc or '') if ch.isdigit())
+            if _sc:
+                _sp = _sp_by_pno.get(_sc)
+                if _sp:
+                    st.markdown(f"**{str(_sp['costco_name'])[:34]}** · 현재 매입가 "
+                                f"{fmt(int(_sp.get('unit_price') or 0))}원")
+                    _np = st.number_input("새 매입가", value=int(_sp.get('unit_price') or 0),
+                                          min_value=0, step=100, key="pt_scan_np")
+                    if st.button("💾 매입가 수정", key="pt_scan_save", type="primary"):
+                        _save_price(_sc, _sp, _np)
+                        st.success(f"✅ 매입가 → {fmt(_np)}원"); st.rerun()
+                else:
+                    st.warning(f"공유DB에 상품번호 {_sc}가 없습니다 — 신규로 등록합니다.")
+                    _nm = st.text_input("상품명", key="pt_scan_name")
+                    _np = st.number_input("매입가", min_value=0, step=100, key="pt_scan_addprice")
+                    if st.button("➕ 신규 등록", key="pt_scan_add", type="primary") and _np > 0:
+                        _save_price(_sc, None, _np, name=_nm)
+                        st.success(f"✅ {_sc} 신규 등록 {fmt(_np)}원"); st.rerun()
+
     # ── 🛒 카페24 상품 가격 수정 (라이브 스토어 반영) ────────────
     _cf_mall = _gs('cafe24_mall_id'); _cf_cid = _gs('cafe24_client_id'); _cf_tok = _gs('cafe24_access_token')
     if _cf_mall and _cf_cid and _cf_tok:
