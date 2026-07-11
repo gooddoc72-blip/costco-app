@@ -105,6 +105,94 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     _st3.metric("미등록",   f"{len(_nr_unreg)}개")
     st.divider()
 
+    # ── 카테고리 경로(A>B>C>D) → 네이버 리프카테고리ID 공용 변환 ──
+    def _nr_resolve_leaf(path):
+        _leaf = str(path).split(">")[-1].strip()
+        if not _leaf:
+            return None, None
+        _cr, _ = naver_api.search_naver_categories(api_id, api_secret, _leaf)
+        if not _cr:
+            return None, None
+        _pt = set(str(path).replace(">", " ").replace("/", " ").split())
+        _best, _bs = None, -1
+        for _c in _cr:
+            _ct = set(str(_c.get('full_name', '')).replace(">", " ").replace("/", " ").split())
+            _s = len(_pt & _ct)
+            if _s > _bs:
+                _bs, _best = _s, _c
+        return (_best.get('id'), _best.get('full_name')) if _best else (None, None)
+
+    # ── 📷 사진으로 신상품 자동등록 (AI 이미지·가격표 분석 → 등록) ──
+    _ph_aikey = _gs('anthropic_api_key')
+    _ph_oc = _gs('naver_open_client_id'); _ph_os = _gs('naver_open_client_secret')
+    if _ph_aikey:
+        with st.expander("📷 사진으로 신상품 자동등록 — AI가 사진·가격표 분석 후 등록", expanded=False):
+            if not (_ph_oc and _ph_os):
+                st.info("카테고리 자동판단에 **네이버 Open API(쇼핑검색)** 키가 필요합니다. (설정 탭)")
+            _ph_margin = st.number_input("추가 마진 % (사진 속 가격에 얹기, 0=그대로)",
+                                         min_value=0, max_value=300, value=0, step=5, key="ph_margin")
+            _ph_files = st.file_uploader("신상품 사진 업로드 (여러 장 · 가격표 포함)",
+                                         type=['jpg', 'jpeg', 'png', 'webp'],
+                                         accept_multiple_files=True, key="ph_files")
+            st.caption("사진 1장 = 상품 1개. Claude가 상품명·가격(가격표)·카테고리를 판단해 네이버에 자동 등록합니다.")
+            if _ph_files and st.button(f"🤖 사진 분석 → 자동등록 ({len(_ph_files)}장)",
+                                       type="primary", key="ph_auto"):
+                import ai_service, tempfile, os as _os2
+                _prows = []; _pprog = st.progress(0.0)
+                for _pi, _pf in enumerate(_ph_files):
+                    _pprog.progress((_pi + 1) / len(_ph_files))
+                    _pb = _pf.getvalue(); _pmt = _pf.type or 'image/jpeg'
+                    _info, _ie = ai_service.analyze_product_photo(_ph_aikey, _pb, _pmt)
+                    if _ie or not _info:
+                        _prows.append({'파일': _pf.name[:18], '상태': f'❌ 분석실패 {str(_ie)[:18]}'}); continue
+                    _pname = _info['name']; _pprice = _info['price']
+                    if not _pname:
+                        _prows.append({'파일': _pf.name[:18], '상태': '❌ 상품명 판독실패'}); continue
+                    if _pprice <= 0:
+                        _prows.append({'파일': _pf.name[:18], '상품': _pname[:18], '상태': '❌ 가격표 판독실패(0원)'}); continue
+                    _psale = int(round(_pprice * (1 + _ph_margin / 100.0) / 10) * 10)
+                    _pcat_id = None; _pcat_full = ''
+                    if _ph_oc and _ph_os:
+                        _pitems, _ = naver_api.naver_shopping_search(_ph_oc, _ph_os, _pname)
+                        _ppaths = [">".join([x for x in (it.get('category1'), it.get('category2'),
+                                                         it.get('category3'), it.get('category4')) if x])
+                                   for it in (_pitems or [])]
+                        _ppaths = [p for p in _ppaths if p]
+                        if _ppaths:
+                            _pchosen, _ = ai_service.suggest_naver_category(_ph_aikey, _pname, _ppaths)
+                            _pcat_id, _pcat_full = _nr_resolve_leaf(_pchosen or _ppaths[0])
+                    if not _pcat_id and _info.get('category'):
+                        _pcr, _ = naver_api.search_naver_categories(api_id, api_secret, _info['category'])
+                        if _pcr:
+                            _pcat_id, _pcat_full = _pcr[0]['id'], _pcr[0]['full_name']
+                    if not _pcat_id:
+                        _prows.append({'파일': _pf.name[:18], '상품': _pname[:18], '상태': '❌ 카테고리 판단실패'}); continue
+                    _pext = {'image/png': '.png', 'image/webp': '.webp'}.get(_pmt, '.jpg')
+                    _pfd, _ptp = tempfile.mkstemp(suffix=_pext); _os2.close(_pfd)
+                    with open(_ptp, 'wb') as _pw:
+                        _pw.write(_pb)
+                    _pcdn, _pue = naver_api.upload_product_image(api_id, api_secret, _ptp)
+                    try: _os2.remove(_ptp)
+                    except Exception: pass
+                    if not _pcdn:
+                        _prows.append({'파일': _pf.name[:18], '상품': _pname[:18], '상태': '❌ 이미지업로드 실패'}); continue
+                    _pres, _pre2 = naver_api.register_product(api_id, api_secret, {
+                        "name": _pname, "sale_price": _psale, "image_url": _pcdn,
+                        "category_id": _pcat_id,
+                        "detail_html": f"<p>{_pname}</p><img src='{_pcdn}'>",
+                        "shipping_fee": 0, "origin_code": "03",
+                        "after_service_tel": _gs("naver_as_tel") or "1588-1234",
+                        "manufacturer": _info.get('brand') or "상품 상세페이지 참조",
+                    })
+                    _prows.append({'파일': _pf.name[:18], '상품': _pname[:22],
+                                   '카테고리': str(_pcat_full)[:20], '가격': _psale,
+                                   '상태': '✅ 등록완료' if not _pre2 else f'❌ {str(_pre2)[:24]}'})
+                _pok = sum(1 for r in _prows if r.get('상태', '').startswith('✅'))
+                st.success(f"📷 사진 자동등록 완료 — 성공 {_pok} / 전체 {len(_prows)}건")
+                st.dataframe(pd.DataFrame(_prows), use_container_width=True, hide_index=True)
+                st.caption("💡 가격표가 안 읽힌 건은 가격표가 잘 보이는 사진으로 다시, 카테고리 오류건은 상품명 수정 후 재시도하세요.")
+        st.divider()
+
     # ── 🛒→N 카페24 상품을 네이버에 등록 (건별 카테고리 선택 + 마진율 판매가) ──
     _cf_mall = _gs('cafe24_mall_id'); _cf_cid = _gs('cafe24_client_id'); _cf_tok = _gs('cafe24_access_token')
     if _cf_mall and _cf_cid and _cf_tok:

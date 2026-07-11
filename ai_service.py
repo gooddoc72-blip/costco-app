@@ -4,11 +4,13 @@ anthropic SDK 없이 HTTPS 직접 호출 (서버 의존성 최소화).
 API 키는 사용자 설정 'anthropic_api_key' (설정 탭 > AI 설정).
 """
 import json
+import base64
 import requests
 from datetime import datetime, timedelta
 
 ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
 DEFAULT_MODEL = "claude-haiku-4-5-20251001"   # 저비용 — 브리핑 1회 ≈ 1원 미만
+VISION_MODEL = "claude-sonnet-5"               # 사진 판독(가격표 등)은 정확도 우선
 
 
 def claude_complete(api_key: str, system: str, user_msg: str,
@@ -134,6 +136,80 @@ _BRIEF_SYSTEM = (
     "- 데이터에 없는 수치를 지어내지 말 것. null/0이면 '데이터 없음'으로 표현.\n"
     "- 금액은 천단위 콤마 + '원'."
 )
+
+
+def claude_vision(api_key, image_bytes, media_type, system, user_text,
+                  max_tokens=600, model=None):
+    """이미지 1장 + 텍스트 → Claude 멀티모달 응답. 반환: (text, error)."""
+    if not api_key:
+        return None, "Anthropic API 키 미설정"
+    try:
+        _b64 = base64.standard_b64encode(image_bytes).decode("ascii")
+        r = requests.post(
+            ANTHROPIC_URL,
+            headers={"x-api-key": api_key.strip(), "anthropic-version": "2023-06-01",
+                     "content-type": "application/json"},
+            json={
+                "model": model or VISION_MODEL, "max_tokens": max_tokens, "system": system,
+                "messages": [{"role": "user", "content": [
+                    {"type": "image", "source": {"type": "base64",
+                                                 "media_type": media_type, "data": _b64}},
+                    {"type": "text", "text": user_text},
+                ]}],
+            }, timeout=90)
+        if r.status_code != 200:
+            try:
+                _e = r.json().get("error", {}).get("message") or r.text[:200]
+            except Exception:
+                _e = r.text[:200]
+            return None, f"[{r.status_code}] {_e}"
+        _blocks = r.json().get("content") or []
+        _text = "".join(b.get("text", "") for b in _blocks if b.get("type") == "text")
+        return (_text.strip() or None), (None if _text.strip() else "빈 응답")
+    except Exception as e:
+        return None, str(e)
+
+
+_PHOTO_SYSTEM = (
+    "너는 네이버 스마트스토어 상품등록 전문가다. 상품 사진(가격표·라벨 포함 가능)을 분석해 "
+    "등록용 정보를 JSON으로만 출력한다.\n"
+    "출력 형식(JSON만, 설명 금지):\n"
+    '{"name":"상품명","price":정수,"category":"카테고리키워드","origin":"원산지","brand":"브랜드"}\n'
+    "규칙:\n"
+    "- name: 브랜드+제품명+용량/수량 포함, 네이버 검색이 잘 되는 실제 판매용 상품명.\n"
+    "- price: 사진 속 가격표/라벨에서 읽은 판매가(숫자만, 원 단위). 할인가가 있으면 할인가. 가격 안 보이면 0.\n"
+    "- category: 상품 분류 키워드(예: 어묵, 키친타월, 견과류).\n"
+    "- origin: 원산지(모르면 '국산'). brand: 브랜드(모르면 '').\n"
+    "가격을 지어내지 말 것 — 안 보이면 반드시 0."
+)
+
+
+def analyze_product_photo(api_key, image_bytes, media_type):
+    """상품 사진 → {name, price, category, origin, brand}. 반환: (dict, error)."""
+    _txt, _err = claude_vision(api_key, image_bytes, media_type, _PHOTO_SYSTEM,
+                               "이 상품 사진을 분석해 등록용 JSON을 출력해줘.")
+    if _err or not _txt:
+        return None, _err or "빈 응답"
+    _s = _txt.strip()
+    # 코드블록/여분 텍스트 제거 후 JSON 파싱
+    _i, _j = _s.find("{"), _s.rfind("}")
+    if _i >= 0 and _j > _i:
+        _s = _s[_i:_j + 1]
+    try:
+        _d = json.loads(_s)
+    except Exception:
+        return None, f"JSON 파싱 실패: {_txt[:120]}"
+    try:
+        _price = int(float(_d.get("price", 0) or 0))
+    except Exception:
+        _price = 0
+    return {
+        "name": str(_d.get("name", "") or "").strip()[:100],
+        "price": _price,
+        "category": str(_d.get("category", "") or "").strip(),
+        "origin": str(_d.get("origin", "") or "국산").strip(),
+        "brand": str(_d.get("brand", "") or "").strip(),
+    }, None
 
 
 _CAT_SYSTEM = (
