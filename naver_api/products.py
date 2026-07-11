@@ -238,6 +238,7 @@ def register_product(client_id, client_secret, product_info):
                     "productInfoProvidedNoticeType": "ETC",
                     "etc": {
                         "itemName":                  name,
+                        "modelName":                 name,
                         "manufacturer":              product_info.get("manufacturer") or "상품 상세페이지 참조",
                         "returnCostReason":          "상품 상세페이지 참조",
                         "noRefundReason":            "상품 상세페이지 참조",
