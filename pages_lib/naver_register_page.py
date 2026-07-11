@@ -276,6 +276,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         'name': _nm, 'cost': _cost, 'sale': _sale,
                         'cat_id': str(_cid or ''), 'cat_full': _cfull or '',
                         'origin': _i1.get('origin', '국산'), 'brand': _i1.get('brand', ''),
+                        'costco_no': str((_i2 or {}).get('product_no', '') or ''),
                     }
 
             _pv = st.session_state.get('_ph_pv')
@@ -311,6 +312,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                 "name": _en.strip(), "sale_price": int(_es),
                                 "image_url": _cdns[0], "extra_image_urls": _cdns[1:],
                                 "category_id": _ec.strip(),
+                                "seller_code": _pv.get('costco_no', ''),
                                 "detail_html": _build_detail(_en.strip(), _cdns),
                                 "shipping_fee": 0, "origin_code": "03",
                                 "after_service_tel": _gs("naver_as_tel") or "1588-1234",
@@ -389,6 +391,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         _brows.append({'제품파일': _pf.name[:14], '상품': _nm[:16], '상태': '❌ 이미지업로드 실패'}); continue
                     _res, _re2 = naver_api.register_product(api_id, api_secret, {
                         "name": _nm, "sale_price": _sale, "image_url": _cdn, "category_id": _cid,
+                        "seller_code": str((_i2 or {}).get('product_no', '') or ''),
                         "detail_html": _build_detail(_nm, [_cdn]),
                         "shipping_fee": 0, "origin_code": "03",
                         "after_service_tel": _gs("naver_as_tel") or "1588-1234",

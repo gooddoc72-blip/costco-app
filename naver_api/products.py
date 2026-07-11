@@ -276,6 +276,12 @@ def register_product(client_id, client_secret, product_info):
             "channelProductDisplayStatusType": "ON",
         },
     }
+    # 판매자 상품코드(코스트코 번호 등) — 있으면 sellerCodeInfo에 설정
+    _seller_code = str(product_info.get("seller_code") or "").strip()
+    if _seller_code:
+        payload["originProduct"]["detailAttribute"]["sellerCodeInfo"] = {
+            "sellerManagementCode": _seller_code[:50],
+        }
 
     try:
         resp = requests.post(
