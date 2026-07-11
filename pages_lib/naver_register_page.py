@@ -173,6 +173,28 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             _p.append(f'<img src="{_bottom_img}" style="max-width:100%;display:block;margin:0 auto">')
         return ''.join(_p)
 
+    def _cafe24_imgs_to_cdn(html, max_n=15):
+        """카페24 상세HTML에서 <img> URL 추출 → 네이버 CDN 업로드 → CDN URL 리스트.
+        (c) 이미지형: 편집 가능한 이미지 블록으로 재구성용."""
+        import re as _reimg
+        _srcs = _reimg.findall(r'''<img[^>]+src=["']([^"']+)["']''', html or '', _reimg.I)
+        _out = []
+        for _s in _srcs[:max_n]:
+            _s = _s.strip()
+            if not _s.startswith('http'):
+                continue
+            _u, _ = naver_api.upload_product_image(api_id, api_secret, _s)
+            if _u:
+                _out.append(_u)
+        return _out
+
+    def _cafe24_detail(mode, name, rep_cdn, description):
+        """카페24 상세 생성. mode='a': 카페24 상세 그대로+공통 / mode='c': 이미지형(편집 쉬움)."""
+        if mode == 'c':
+            _imgs = _cafe24_imgs_to_cdn(description)
+            return _build_detail(name, _imgs or [rep_cdn])
+        return _wrap_common(description or f"<p>{name}</p>")
+
     with st.expander("🖼 공통 상세 이미지 설정 (모든 상품 상단·하단에 자동 삽입)", expanded=False):
         st.caption("상단 이미지 = 상품명 위 / 하단 이미지 = 제품사진 다음. 한 번 저장하면 이후 등록되는 모든 상품 상세에 공통 삽입됩니다.")
         _dc1, _dc2 = st.columns(2)
@@ -394,6 +416,9 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 set_setting(USERNAME, 'cafe24_access_token', t.get('access_token', ''))
                 set_setting(USERNAME, 'cafe24_refresh_token', t.get('refresh_token', ''))
                 set_setting(USERNAME, 'cafe24_token_expires_at', t.get('expires_at', ''))
+            _cf_dmode = st.radio("상세페이지 형식", ['a', 'c'], horizontal=True, key="cf_dmode",
+                                 format_func=lambda x: "a) 카페24 상세 그대로 + 공통이미지"
+                                 if x == 'a' else "c) 이미지형(카페24 이미지 추출 → 네이버에서 편집 쉬움)")
             _mc1, _mc2, _mc3 = st.columns([1, 3, 1])
             _margin = _mc1.number_input("마진율 %", min_value=0, max_value=300, step=5,
                                         value=int(_gs('cafe24_naver_margin') or 10), key="cf2n_margin",
@@ -466,7 +491,9 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                             _res, _re2 = naver_api.register_product(api_id, api_secret, {
                                 "name": (_full or {}).get('product_name', _name), "sale_price": _sale,
                                 "image_url": _cdn, "category_id": _cat_id,
-                                "detail_html": _wrap_common((_full or {}).get('description') or f"<p>{_name}</p>"),
+                                "detail_html": _cafe24_detail(_cf_dmode,
+                                    (_full or {}).get('product_name', _name), _cdn,
+                                    (_full or {}).get('description')),
                                 "shipping_fee": 0, "origin_code": "03",
                                 "after_service_tel": _gs("naver_as_tel") or "1588-1234",
                             })
@@ -519,8 +546,9 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                                 "name": _full.get('product_name', _p['product_name']),
                                                 "sale_price": int(_sale), "image_url": _cdn,
                                                 "category_id": _cat_id,
-                                                "detail_html": _wrap_common(_full.get('description')
-                                                    or f"<p>{_p['product_name']}</p>"),
+                                                "detail_html": _cafe24_detail(_cf_dmode,
+                                                    _full.get('product_name', _p['product_name']),
+                                                    _cdn, _full.get('description')),
                                                 "shipping_fee": 0, "origin_code": "03",
                                                 "after_service_tel": _gs("naver_as_tel") or "1588-1234",
                                             })
