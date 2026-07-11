@@ -105,12 +105,15 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     st.header("📋 일일 주문 수집")
     st.caption("주문을 가져온 뒤 검토하고 **💾 저장** 버튼을 눌러야 수익계산에 반영됩니다.")
 
-    # ── (관리자 전용) 타 사용자가 제출한 장보기 목록 — 여기서 바로 확인·프린트 ──
+    # ── (관리자 전용) 타 사용자가 제출한 장보기 목록 — 당일건만 노출 (전날건은 제외) ──
     if IS_ADMIN:
-        _subs = get_recent_shopping_submissions(limit=50)
-        with st.expander(f"🛒 사용자별 장보기 목록 (타 사용자 제출 {len(_subs)}건)", expanded=bool(_subs)):
+        _today_str_sub = datetime.today().strftime("%Y-%m-%d")
+        _subs = [s for s in get_recent_shopping_submissions(limit=50)
+                 if s.get('order_date') == _today_str_sub]
+        with st.expander(f"🛒 사용자별 장보기 목록 (오늘 제출 {len(_subs)}건)", expanded=bool(_subs)):
             if not _subs:
-                st.caption("아직 제출된 장보기 목록이 없습니다. (사용자가 '📋 장보기 목록 관리자에게 발송' 클릭 시 표시)")
+                st.caption(f"오늘({_today_str_sub}) 제출된 장보기 목록이 없습니다. "
+                           "(사용자가 주문 수집 시 자동 제출되거나 '📋 관리자에게 발송' 클릭 시 표시)")
             else:
                 import html as _hl
                 import streamlit.components.v1 as _cmp
