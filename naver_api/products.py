@@ -211,15 +211,9 @@ def register_product(client_id, client_secret, product_info):
                     "baseFee": shipping_fee,
                     "deliveryFeePayType": "PREPAID",
                 },
-                "returnDeliveryFee": {
-                    "deliveryFeeType": "CHARGE",
-                    "baseFee": 5000,
-                    "deliveryFeePayType": "COLLECT",
-                },
-                "exchangeDeliveryFee": {
-                    "deliveryFeeType": "CHARGE",
-                    "baseFee": 5000,
-                    "deliveryFeePayType": "COLLECT",
+                "claimDeliveryInfo": {
+                    "returnDeliveryFee": 5000,
+                    "exchangeDeliveryFee": 5000,
                 },
             },
             "benefitInfo": {
@@ -231,6 +225,7 @@ def register_product(client_id, client_secret, product_info):
                 }
             },
             "detailAttribute": {
+                "minorPurchasable": True,   # 미성년자 구매가능
                 "afterServiceInfo": {
                     "afterServiceTelephoneNumber": as_tel,
                     "afterServiceGuideContent": "판매자에게 문의해 주세요.",
@@ -242,6 +237,8 @@ def register_product(client_id, client_secret, product_info):
                 "productInfoProvidedNotice": {
                     "productInfoProvidedNoticeType": "ETC",
                     "etc": {
+                        "itemName":                  name,
+                        "manufacturer":              product_info.get("manufacturer") or "상품 상세페이지 참조",
                         "returnCostReason":          "상품 상세페이지 참조",
                         "noRefundReason":            "상품 상세페이지 참조",
                         "qualityAssuranceStandard":  "상품 상세페이지 참조",
@@ -250,7 +247,12 @@ def register_product(client_id, client_secret, product_info):
                     },
                 },
             },
-        }
+        },
+        # 스마트스토어 채널 노출 설정 (필수 — 없으면 등록 400)
+        "smartstoreChannelProduct": {
+            "naverShoppingRegistration": True,
+            "channelProductDisplayStatusType": "ON",
+        },
     }
 
     try:
@@ -264,8 +266,7 @@ def register_product(client_id, client_secret, product_info):
             data = resp.json()
             pno = str(data.get("originProductNo") or data.get("productNo") or "")
             return {"origin_product_no": pno}, None
-        msg = resp.json().get("message") or resp.text[:400]
-        return None, f"상품 등록 실패({resp.status_code}): {msg}"
+        return None, f"상품 등록 실패({resp.status_code}): {_format_naver_err(resp)}"
     except Exception as e:
         return None, str(e)
 
