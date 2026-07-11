@@ -206,6 +206,7 @@ def register_product(client_id, client_secret, product_info):
             "deliveryInfo": {
                 "deliveryType": "DELIVERY",
                 "deliveryAttributeType": "NORMAL",
+                "deliveryCompany": product_info.get("delivery_company") or "CJGLS",
                 "deliveryFee": {
                     "deliveryFeeType": fee_type,
                     "baseFee": shipping_fee,
