@@ -122,83 +122,108 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 _bs, _best = _s, _c
         return (_best.get('id'), _best.get('full_name')) if _best else (None, None)
 
-    # ── 📷 사진으로 신상품 자동등록 (AI 이미지·가격표 분석 → 등록) ──
+    # ── 📷 제품사진 + 가격사진으로 신상품 등록 (건별) ──
     _ph_aikey = _gs('anthropic_api_key')
     _ph_oc = _gs('naver_open_client_id'); _ph_os = _gs('naver_open_client_secret')
+
+    def _ph_mt(_f):
+        _m = getattr(_f, 'type', None) or ''
+        if str(_m).startswith('image/'):
+            return _m
+        _e = _f.name.rsplit('.', 1)[-1].lower()
+        return {'png': 'image/png', 'webp': 'image/webp', 'gif': 'image/gif'}.get(_e, 'image/jpeg')
+
     if _ph_aikey:
-        with st.expander("📷 사진으로 신상품 자동등록 — AI가 사진·가격표 분석 후 등록", expanded=False):
+        with st.expander("📷 제품사진 + 가격사진으로 신상품 등록 (건별)", expanded=False):
             if not (_ph_oc and _ph_os):
                 st.info("카테고리 자동판단에 **네이버 Open API(쇼핑검색)** 키가 필요합니다. (설정 탭)")
-            _ph_price = st.number_input("임시 등록 판매가 (원) — 모든 상품 공통, 등록 후 판매자센터에서 수정",
-                                        min_value=100, value=int(_gs('photo_reg_price') or 10000),
-                                        step=1000, key="ph_price")
-            _ph_files = st.file_uploader("신상품 사진 업로드 (상품 사진 · 여러 장)",
-                                         accept_multiple_files=True, key="ph_files")
-            st.caption("사진 1장 = 상품 1개. **사진(상품 이미지) + 상품명 + 카테고리**만 자동 등록하고, "
-                       "**판매가는 사진 속 가격을 쓰지 않고 위 임시가로 등록**합니다 (나중에 스토어에서 수정).")
-            _ph_go = st.button(f"🤖 사진 분석 → 자동등록 ({len(_ph_files) if _ph_files else 0}장)",
-                               type="primary", key="ph_auto", disabled=not _ph_files,
-                               use_container_width=True)
-            if _ph_go and _ph_files:
-                import ai_service, tempfile, os as _os2
-                set_setting(USERNAME, 'photo_reg_price', str(int(_ph_price)))
-                _prows = []; _pprog = st.progress(0.0)
-                for _pi, _pf in enumerate(_ph_files):
-                    _pprog.progress((_pi + 1) / len(_ph_files))
-                    _pb = _pf.getvalue()
-                    _pmt = _pf.type or 'image/jpeg'
-                    if not str(_pmt).startswith('image/'):
-                        _ext_l = _pf.name.rsplit('.', 1)[-1].lower()
-                        _pmt = {'png': 'image/png', 'webp': 'image/webp',
-                                'gif': 'image/gif'}.get(_ext_l, 'image/jpeg')
-                    _info, _ie = ai_service.analyze_product_photo(_ph_aikey, _pb, _pmt)
-                    if _ie or not _info:
-                        _prows.append({'파일': _pf.name[:18], '상태': f'❌ 분석실패 {str(_ie)[:18]}'}); continue
-                    _pname = _info['name']
-                    if not _pname:
-                        _prows.append({'파일': _pf.name[:18], '상태': '❌ 상품명 판독실패'}); continue
-                    # 판매가는 사진 속 코스트코 가격을 쓰지 않고 임시 등록가 사용 (나중에 수정)
-                    _psale = int(_ph_price)
-                    _pcat_id = None; _pcat_full = ''
-                    if _ph_oc and _ph_os:
-                        _pitems, _ = naver_api.naver_shopping_search(_ph_oc, _ph_os, _pname)
-                        _ppaths = [">".join([x for x in (it.get('category1'), it.get('category2'),
-                                                         it.get('category3'), it.get('category4')) if x])
-                                   for it in (_pitems or [])]
-                        _ppaths = [p for p in _ppaths if p]
-                        if _ppaths:
-                            _pchosen, _ = ai_service.suggest_naver_category(_ph_aikey, _pname, _ppaths)
-                            _pcat_id, _pcat_full = _nr_resolve_leaf(_pchosen or _ppaths[0])
-                    if not _pcat_id and _info.get('category'):
-                        _pcr, _ = naver_api.search_naver_categories(api_id, api_secret, _info['category'])
-                        if _pcr:
-                            _pcat_id, _pcat_full = _pcr[0]['id'], _pcr[0]['full_name']
-                    if not _pcat_id:
-                        _prows.append({'파일': _pf.name[:18], '상품': _pname[:18], '상태': '❌ 카테고리 판단실패'}); continue
-                    _pext = {'image/png': '.png', 'image/webp': '.webp'}.get(_pmt, '.jpg')
-                    _pfd, _ptp = tempfile.mkstemp(suffix=_pext); _os2.close(_pfd)
-                    with open(_ptp, 'wb') as _pw:
-                        _pw.write(_pb)
-                    _pcdn, _pue = naver_api.upload_product_image(api_id, api_secret, _ptp)
-                    try: _os2.remove(_ptp)
-                    except Exception: pass
-                    if not _pcdn:
-                        _prows.append({'파일': _pf.name[:18], '상품': _pname[:18], '상태': '❌ 이미지업로드 실패'}); continue
-                    _pres, _pre2 = naver_api.register_product(api_id, api_secret, {
-                        "name": _pname, "sale_price": _psale, "image_url": _pcdn,
-                        "category_id": _pcat_id,
-                        "detail_html": f"<p>{_pname}</p><img src='{_pcdn}'>",
-                        "shipping_fee": 0, "origin_code": "03",
-                        "after_service_tel": _gs("naver_as_tel") or "1588-1234",
-                        "manufacturer": _info.get('brand') or "상품 상세페이지 참조",
-                    })
-                    _prows.append({'파일': _pf.name[:18], '상품': _pname[:22],
-                                   '카테고리': str(_pcat_full)[:20], '가격': _psale,
-                                   '상태': '✅ 등록완료' if not _pre2 else f'❌ {str(_pre2)[:24]}'})
-                _pok = sum(1 for r in _prows if r.get('상태', '').startswith('✅'))
-                st.success(f"📷 사진 자동등록 완료 — 성공 {_pok} / 전체 {len(_prows)}건")
-                st.dataframe(pd.DataFrame(_prows), use_container_width=True, hide_index=True)
-                st.caption("💡 가격표가 안 읽힌 건은 가격표가 잘 보이는 사진으로 다시, 카테고리 오류건은 상품명 수정 후 재시도하세요.")
+            _ph_margin = st.number_input("마진율 %", min_value=0, max_value=300, step=5,
+                                         value=int(_gs('cafe24_naver_margin') or 10), key="ph_margin",
+                                         help="네이버 판매가 = 코스트코가 ×(1+마진%) ÷0.945 (수수료 5.5% 감안)")
+            _uc1, _uc2 = st.columns(2)
+            _prod_img = _uc1.file_uploader("① 제품 사진 (리스팅 이미지)", accept_multiple_files=False, key="ph_prod")
+            _price_img = _uc2.file_uploader("② 가격 사진 (코스트코 가격표)", accept_multiple_files=False, key="ph_price")
+            if _prod_img:
+                _uc1.image(_prod_img, width=150)
+            if _price_img:
+                _uc2.image(_price_img, width=150)
+            st.caption("제품사진 = 이미지·상품명·카테고리 / 가격사진 = 코스트코가 판독 → 마진 붙여 판매가 산정.")
+
+            if st.button("🔎 사진 분석 (미리보기)", type="primary", key="ph_analyze",
+                         disabled=not (_prod_img and _price_img), use_container_width=True):
+                import ai_service
+                set_setting(USERNAME, 'cafe24_naver_margin', str(int(_ph_margin)))
+                with st.spinner("제품사진·가격사진 분석 중..."):
+                    _i1, _e1 = ai_service.analyze_product_photo(_ph_aikey, _prod_img.getvalue(), _ph_mt(_prod_img))
+                    _i2, _e2 = ai_service.analyze_price_tag(_ph_aikey, _price_img.getvalue(), _ph_mt(_price_img))
+                if _e1 or not _i1:
+                    st.error(f"제품사진 분석 실패: {_e1}")
+                elif _e2 or not _i2:
+                    st.error(f"가격사진 분석 실패: {_e2}")
+                else:
+                    _nm = _i1.get('name') or _i2.get('product_name', '')
+                    _cost = int(_i2.get('price') or 0)
+                    _sale = int(round(_cost * (1 + _ph_margin / 100.0) / 0.945 / 10) * 10) if _cost > 0 else 0
+                    _cid = None; _cfull = ''
+                    if _ph_oc and _ph_os and _nm:
+                        _its, _ = naver_api.naver_shopping_search(_ph_oc, _ph_os, _nm)
+                        _pth = [">".join([x for x in (it.get('category1'), it.get('category2'),
+                                                      it.get('category3'), it.get('category4')) if x])
+                                for it in (_its or [])]
+                        _pth = [p for p in _pth if p]
+                        if _pth:
+                            _ch, _ = ai_service.suggest_naver_category(_ph_aikey, _nm, _pth)
+                            _cid, _cfull = _nr_resolve_leaf(_ch or _pth[0])
+                    if not _cid and _i1.get('category'):
+                        _cr2, _ = naver_api.search_naver_categories(api_id, api_secret, _i1['category'])
+                        if _cr2:
+                            _cid, _cfull = _cr2[0]['id'], _cr2[0]['full_name']
+                    st.session_state['_ph_pv'] = {
+                        'name': _nm, 'cost': _cost, 'sale': _sale,
+                        'cat_id': str(_cid or ''), 'cat_full': _cfull or '',
+                        'origin': _i1.get('origin', '국산'), 'brand': _i1.get('brand', ''),
+                    }
+
+            _pv = st.session_state.get('_ph_pv')
+            if _pv:
+                st.markdown(f"**미리보기** — 코스트코가 {fmt(_pv['cost'])}원 → 네이버 판매가 **{fmt(_pv['sale'])}원** "
+                            f"(마진 {_ph_margin}%)")
+                _en = st.text_input("상품명", value=_pv['name'], key="ph_en")
+                _ecols = st.columns(2)
+                _es = _ecols[0].number_input("네이버 판매가", value=int(_pv['sale']), min_value=0, step=100, key="ph_es")
+                _ec = _ecols[1].text_input("카테고리ID (자동판단)", value=_pv['cat_id'],
+                                           key="ph_ec", help=f"{_pv['cat_full'] or '카테고리 자동판단 실패 — 직접 입력'}")
+                if _pv['cat_full']:
+                    st.caption(f"📂 {_pv['cat_full']}")
+                if st.button("🛍 네이버 등록", type="primary", key="ph_reg1",
+                             disabled=not (_prod_img and _en.strip() and _ec.strip() and _es > 0)):
+                    import tempfile, os as _os3
+                    _pb1 = _prod_img.getvalue()
+                    _ex = {'image/png': '.png', 'image/webp': '.webp'}.get(_ph_mt(_prod_img), '.jpg')
+                    _fd, _tp = tempfile.mkstemp(suffix=_ex); _os3.close(_fd)
+                    with open(_tp, 'wb') as _w:
+                        _w.write(_pb1)
+                    with st.spinner("제품사진 업로드 → 네이버 등록 중..."):
+                        _cdn, _ue = naver_api.upload_product_image(api_id, api_secret, _tp)
+                        try: _os3.remove(_tp)
+                        except Exception: pass
+                        if not _cdn:
+                            st.error(f"이미지 업로드 실패: {_ue}")
+                        else:
+                            _res, _re2 = naver_api.register_product(api_id, api_secret, {
+                                "name": _en.strip(), "sale_price": int(_es),
+                                "image_url": _cdn, "category_id": _ec.strip(),
+                                "detail_html": f"<p>{_en.strip()}</p><img src='{_cdn}'>",
+                                "shipping_fee": 0, "origin_code": "03",
+                                "after_service_tel": _gs("naver_as_tel") or "1588-1234",
+                                "manufacturer": _pv.get('brand') or "상품 상세페이지 참조",
+                            })
+                            if _re2:
+                                st.error(f"❌ 등록 실패: {_re2}")
+                            else:
+                                st.success(f"✅ 네이버 등록 완료! (origin #{_res.get('origin_product_no')}) "
+                                           f"— {_en.strip()[:20]} / {fmt(int(_es))}원")
+                                st.session_state.pop('_ph_pv', None)
         st.divider()
 
     # ── 🛒→N 카페24 상품을 네이버에 등록 (건별 카테고리 선택 + 마진율 판매가) ──
