@@ -226,6 +226,85 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                 st.session_state.pop('_ph_pv', None)
         st.divider()
 
+    # ── 📷 여러 개 한번에 등록 (일괄) — 제품사진들 + 가격사진들 1:1 순서매칭 ──
+    if _ph_aikey:
+        with st.expander("📷 여러 개 한번에 등록 (일괄) — 제품사진들 + 가격사진들", expanded=False):
+            if not (_ph_oc and _ph_os):
+                st.info("카테고리 자동판단에 **네이버 Open API(쇼핑검색)** 키가 필요합니다. (설정 탭)")
+            _bm = st.number_input("마진율 %", min_value=0, max_value=300, step=5,
+                                  value=int(_gs('cafe24_naver_margin') or 10), key="ph_bmargin",
+                                  help="네이버 판매가 = 코스트코가 ×(1+마진%) ÷0.945")
+            _bc1, _bc2 = st.columns(2)
+            _bprod = _bc1.file_uploader("① 제품 사진들 (여러 장)", accept_multiple_files=True, key="ph_bprod")
+            _bprice = _bc2.file_uploader("② 가격 사진들 (여러 장 · 같은 순서)", accept_multiple_files=True, key="ph_bprice")
+            st.caption("제품사진·가격사진을 **같은 개수·같은 순서(파일명 순)** 로 올리세요. 순서대로 1:1 짝지어 일괄 등록합니다.")
+            _np = len(_bprod or []); _npr = len(_bprice or [])
+            if _bprod or _bprice:
+                st.caption(f"제품 {_np}장 · 가격 {_npr}장 — "
+                           + ("✅ 짝 맞음" if _np == _npr and _np > 0 else "⚠️ 개수가 다릅니다 (같아야 등록)"))
+            _bgo = st.button(f"🤖 일괄 분석·등록 ({min(_np, _npr)}개)", type="primary", key="ph_bgo",
+                             disabled=not (_bprod and _bprice and _np == _npr), use_container_width=True)
+            if _bgo and _bprod and _bprice and _np == _npr:
+                import ai_service, tempfile, os as _os4
+                set_setting(USERNAME, 'cafe24_naver_margin', str(int(_bm)))
+                _bp = sorted(_bprod, key=lambda f: f.name)
+                _bpr = sorted(_bprice, key=lambda f: f.name)
+                _brows = []; _bprog = st.progress(0.0)
+                for _bi in range(len(_bp)):
+                    _bprog.progress((_bi + 1) / len(_bp))
+                    _pf = _bp[_bi]; _rf = _bpr[_bi]
+                    _i1, _e1 = ai_service.analyze_product_photo(_ph_aikey, _pf.getvalue(), _ph_mt(_pf))
+                    _i2, _e2 = ai_service.analyze_price_tag(_ph_aikey, _rf.getvalue(), _ph_mt(_rf))
+                    if _e1 or not _i1:
+                        _brows.append({'제품파일': _pf.name[:14], '상태': '❌ 제품사진 분석실패'}); continue
+                    _nm = _i1.get('name') or (_i2 or {}).get('product_name', '')
+                    if not _nm:
+                        _brows.append({'제품파일': _pf.name[:14], '상태': '❌ 상품명 판독실패'}); continue
+                    _cost = int((_i2 or {}).get('price') or 0)
+                    if _cost <= 0:
+                        _brows.append({'제품파일': _pf.name[:14], '상품': _nm[:16], '상태': '❌ 가격 판독실패(0원)'}); continue
+                    _sale = int(round(_cost * (1 + _bm / 100.0) / 0.945 / 10) * 10)
+                    _cid = None; _cfull = ''
+                    if _ph_oc and _ph_os:
+                        _its, _ = naver_api.naver_shopping_search(_ph_oc, _ph_os, _nm)
+                        _pth = [">".join([x for x in (it.get('category1'), it.get('category2'),
+                                                      it.get('category3'), it.get('category4')) if x])
+                                for it in (_its or [])]
+                        _pth = [p for p in _pth if p]
+                        if _pth:
+                            _ch, _ = ai_service.suggest_naver_category(_ph_aikey, _nm, _pth)
+                            _cid, _cfull = _nr_resolve_leaf(_ch or _pth[0])
+                    if not _cid and _i1.get('category'):
+                        _cr, _ = naver_api.search_naver_categories(api_id, api_secret, _i1['category'])
+                        if _cr:
+                            _cid, _cfull = _cr[0]['id'], _cr[0]['full_name']
+                    if not _cid:
+                        _brows.append({'제품파일': _pf.name[:14], '상품': _nm[:16], '상태': '❌ 카테고리 판단실패'}); continue
+                    _ex = {'image/png': '.png', 'image/webp': '.webp'}.get(_ph_mt(_pf), '.jpg')
+                    _fd, _tp = tempfile.mkstemp(suffix=_ex); _os4.close(_fd)
+                    with open(_tp, 'wb') as _w:
+                        _w.write(_pf.getvalue())
+                    _cdn, _ue = naver_api.upload_product_image(api_id, api_secret, _tp)
+                    try: _os4.remove(_tp)
+                    except Exception: pass
+                    if not _cdn:
+                        _brows.append({'제품파일': _pf.name[:14], '상품': _nm[:16], '상태': '❌ 이미지업로드 실패'}); continue
+                    _res, _re2 = naver_api.register_product(api_id, api_secret, {
+                        "name": _nm, "sale_price": _sale, "image_url": _cdn, "category_id": _cid,
+                        "detail_html": f"<p>{_nm}</p><img src='{_cdn}'>",
+                        "shipping_fee": 0, "origin_code": "03",
+                        "after_service_tel": _gs("naver_as_tel") or "1588-1234",
+                        "manufacturer": _i1.get('brand') or "상품 상세페이지 참조",
+                    })
+                    _brows.append({'제품파일': _pf.name[:14], '상품': _nm[:18],
+                                   '카테고리': str(_cfull)[:16], '판매가': _sale,
+                                   '상태': '✅ 등록' if not _re2 else f'❌ {str(_re2)[:20]}'})
+                _bok = sum(1 for r in _brows if r.get('상태', '').startswith('✅'))
+                st.success(f"📷 일괄 등록 완료 — 성공 {_bok} / 전체 {len(_brows)}건")
+                st.dataframe(pd.DataFrame(_brows), use_container_width=True, hide_index=True)
+                st.caption("💡 짝이 안 맞으면 제품·가격 사진을 같은 순서·개수로 다시 올리세요. 실패건은 위 건별로 재등록.")
+        st.divider()
+
     # ── 🛒→N 카페24 상품을 네이버에 등록 (건별 카테고리 선택 + 마진율 판매가) ──
     _cf_mall = _gs('cafe24_mall_id'); _cf_cid = _gs('cafe24_client_id'); _cf_tok = _gs('cafe24_access_token')
     if _cf_mall and _cf_cid and _cf_tok:
