@@ -163,6 +163,16 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             _p.append(f'<img src="{_bottom_img}" style="max-width:100%;display:block;margin:0 auto">')
         return '<div style="text-align:center">' + ''.join(_p) + '</div>'
 
+    def _wrap_common(inner):
+        """기존 상세HTML(inner) 위·아래에 공통 상단/하단 이미지만 감쌈 (카페24 상세 보존용)."""
+        _p = []
+        if _top_img:
+            _p.append(f'<img src="{_top_img}" style="max-width:100%;display:block;margin:0 auto">')
+        _p.append(inner or '')
+        if _bottom_img:
+            _p.append(f'<img src="{_bottom_img}" style="max-width:100%;display:block;margin:0 auto">')
+        return ''.join(_p)
+
     with st.expander("🖼 공통 상세 이미지 설정 (모든 상품 상단·하단에 자동 삽입)", expanded=False):
         st.caption("상단 이미지 = 상품명 위 / 하단 이미지 = 제품사진 다음. 한 번 저장하면 이후 등록되는 모든 상품 상세에 공통 삽입됩니다.")
         _dc1, _dc2 = st.columns(2)
@@ -456,7 +466,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                             _res, _re2 = naver_api.register_product(api_id, api_secret, {
                                 "name": (_full or {}).get('product_name', _name), "sale_price": _sale,
                                 "image_url": _cdn, "category_id": _cat_id,
-                                "detail_html": (_full or {}).get('description') or f"<p>{_name}</p>",
+                                "detail_html": _wrap_common((_full or {}).get('description') or f"<p>{_name}</p>"),
                                 "shipping_fee": 0, "origin_code": "03",
                                 "after_service_tel": _gs("naver_as_tel") or "1588-1234",
                             })
@@ -509,8 +519,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                                 "name": _full.get('product_name', _p['product_name']),
                                                 "sale_price": int(_sale), "image_url": _cdn,
                                                 "category_id": _cat_id,
-                                                "detail_html": _full.get('description')
-                                                    or f"<p>{_p['product_name']}</p>",
+                                                "detail_html": _wrap_common(_full.get('description')
+                                                    or f"<p>{_p['product_name']}</p>"),
                                                 "shipping_fee": 0, "origin_code": "03",
                                                 "after_service_tel": _gs("naver_as_tel") or "1588-1234",
                                             })
