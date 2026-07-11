@@ -136,6 +136,34 @@ _BRIEF_SYSTEM = (
 )
 
 
+_CAT_SYSTEM = (
+    "너는 네이버 쇼핑 카테고리 분류 전문가다. 상품명과 '후보 카테고리 경로' 목록을 보고 "
+    "그 상품에 가장 정확한 카테고리 경로 하나만 고른다.\n"
+    "규칙: 반드시 후보 목록 중 하나를 골라 'A>B>C>D' 형식 **그대로** 한 줄만 출력한다. "
+    "설명·번호·따옴표 등 다른 텍스트는 절대 붙이지 않는다."
+)
+
+
+def suggest_naver_category(api_key, product_name, candidate_paths):
+    """상품명 + 쇼핑검색 후보 카테고리 경로들 → 최적 경로 1개 선택.
+    api_key 없거나 실패 시 최빈(majority) 경로로 폴백. 반환: (path, err)."""
+    from collections import Counter
+    _uniq = list(dict.fromkeys([p for p in candidate_paths if p]))
+    if not _uniq:
+        return None, "후보 카테고리 없음"
+    _majority = Counter([p for p in candidate_paths if p]).most_common(1)[0][0]
+    if not api_key:
+        return _majority, None
+    _msg = (f"상품명: {product_name}\n\n후보 카테고리 경로:\n"
+            + "\n".join(f"- {p}" for p in _uniq))
+    _txt, _err = claude_complete(api_key, _CAT_SYSTEM, _msg, max_tokens=120)
+    if _err or not _txt:
+        return _majority, None
+    _pick = _txt.strip().splitlines()[0].strip().strip('"').strip()
+    # AI가 후보 밖 값을 내면 최빈으로 폴백 (안전)
+    return (_pick if _pick in _uniq else _majority), None
+
+
 def generate_settlement_briefing(username: str, api_key: str, date: str = ""):
     """일일 정산 AI 브리핑 생성. 반환: (text, error)."""
     try:

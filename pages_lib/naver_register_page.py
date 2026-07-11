@@ -133,8 +133,76 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     st.error(f"조회 실패: {_cf2n_err}")
             _cf2n_list = st.session_state.get('_cf2n_prods') or []
             if _cf2n_list:
-                st.caption(f"{len(_cf2n_list)}개 — 상품 펼쳐 카테고리 검색·선택 후 '네이버 등록'을 누르세요. "
-                           "(카페24 상세설명·이미지를 그대로 가져옴)")
+                st.caption(f"{len(_cf2n_list)}개 — 상품 펼쳐 카테고리 검색·선택 후 '네이버 등록', "
+                           "또는 아래 🤖 버튼으로 AI가 카테고리 자동판단 후 일괄 등록.")
+
+                # ── 🤖 AI 자동 카테고리·등록 (상품명 → 쇼핑검색 → AI 카테고리 → 등록) ──
+                _oc = _gs('naver_open_client_id'); _os = _gs('naver_open_client_secret')
+                _ai_key = _gs('anthropic_api_key')
+                if not (_oc and _os):
+                    st.info("🤖 AI 자동등록은 **설정 탭 > 네이버 Open API**(쇼핑검색) 키가 필요합니다.")
+                else:
+                    def _cf2n_resolve_leaf(path):
+                        """카테고리 경로(A>B>C>D) → 네이버 리프카테고리ID. (leaf명으로 검색 후 경로 최다일치 선택)"""
+                        _leaf = str(path).split(">")[-1].strip()
+                        if not _leaf:
+                            return None, None
+                        _cr, _ = naver_api.search_naver_categories(api_id, api_secret, _leaf)
+                        if not _cr:
+                            return None, None
+                        _pt = set(str(path).replace(">", " ").replace("/", " ").split())
+                        _best, _bs = None, -1
+                        for _c in _cr:
+                            _ct = set(str(_c.get('full_name', '')).replace(">", " ").replace("/", " ").split())
+                            _s = len(_pt & _ct)
+                            if _s > _bs:
+                                _bs, _best = _s, _c
+                        return (_best.get('id'), _best.get('full_name')) if _best else (None, None)
+
+                    if st.button(f"🤖 AI 자동 카테고리·등록 (검색된 {min(30, len(_cf2n_list))}개 일괄)",
+                                 key="cf2n_ai_auto", type="primary"):
+                        import ai_service
+                        _rows = []
+                        _prog = st.progress(0.0)
+                        _targets = _cf2n_list[:30]
+                        for _i, _p in enumerate(_targets):
+                            _prog.progress((_i + 1) / len(_targets))
+                            _name = str(_p['product_name']); _cfprice = int(_p['price'])
+                            _sale = int(round(_cfprice * (1 + _margin / 100.0) / 0.945 / 10) * 10)
+                            _items, _serr = naver_api.naver_shopping_search(_oc, _os, _name)
+                            _paths = [">".join([x for x in (it.get('category1'), it.get('category2'),
+                                                            it.get('category3'), it.get('category4')) if x])
+                                      for it in (_items or [])]
+                            _paths = [p for p in _paths if p]
+                            if not _paths:
+                                _rows.append({'상품': _name[:26], '상태': '❌ 쇼핑검색 카테고리 없음'}); continue
+                            _chosen, _ = ai_service.suggest_naver_category(_ai_key, _name, _paths)
+                            _cat_id, _cat_full = _cf2n_resolve_leaf(_chosen or _paths[0])
+                            if not _cat_id:
+                                _rows.append({'상품': _name[:26], '카테고리': _chosen or '', '상태': '❌ 카테고리ID 변환실패'}); continue
+                            _full, _fe = cafe24_api.get_product(_cf_creds, _p['product_no'], save_tokens=_cf_save)
+                            _rep = (_full or {}).get('detail_image') or (_full or {}).get('list_image') or ''
+                            if not _rep:
+                                _rows.append({'상품': _name[:26], '상태': '❌ 이미지 없음'}); continue
+                            _cdn, _ue = naver_api.upload_product_image(api_id, api_secret, _rep)
+                            if not _cdn:
+                                _rows.append({'상품': _name[:26], '상태': f'❌ 이미지업로드 실패'}); continue
+                            _res, _re2 = naver_api.register_product(api_id, api_secret, {
+                                "name": (_full or {}).get('product_name', _name), "sale_price": _sale,
+                                "image_url": _cdn, "category_id": _cat_id,
+                                "detail_html": (_full or {}).get('description') or f"<p>{_name}</p>",
+                                "shipping_fee": 0, "origin_code": "03",
+                                "after_service_tel": _gs("naver_as_tel") or "1588-1234",
+                            })
+                            _rows.append({
+                                '상품': _name[:26], '카테고리': str(_cat_full or '')[:24],
+                                '판매가': _sale,
+                                '상태': ('✅ 등록완료' if not _re2 else f'❌ {str(_re2)[:28]}'),
+                            })
+                        _ok_n = sum(1 for r in _rows if r.get('상태', '').startswith('✅'))
+                        st.success(f"🤖 AI 자동등록 완료 — 성공 {_ok_n} / 전체 {len(_rows)}건")
+                        st.dataframe(pd.DataFrame(_rows), use_container_width=True, hide_index=True)
+                        st.caption("💡 카테고리가 잘못 잡힌 건은 아래에서 상품 펼쳐 수동 카테고리로 다시 등록하세요.")
             for _p in _cf2n_list[:20]:
                 _pno = _p['product_no']; _cfprice = int(_p['price'])
                 _nprice_default = int(round(_cfprice * (1 + _margin / 100.0) / 0.945 / 10) * 10)

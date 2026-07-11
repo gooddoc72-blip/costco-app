@@ -226,6 +226,36 @@ def keyword_tool(ad_api_key, ad_secret, customer_id, keyword):
 
 
 
+def naver_shopping_search(open_client_id, open_client_secret, query, display=10):
+    """네이버 쇼핑 검색 (카테고리·시세 파악용). 반환: (items, err).
+    item = {title, category1~4, lprice(최저가)}
+    """
+    import re as _re
+    if not (open_client_id and open_client_secret):
+        return None, "네이버 Open API 키 미설정"
+    try:
+        r = requests.get(
+            "https://openapi.naver.com/v1/search/shop.json",
+            headers={"X-Naver-Client-Id": str(open_client_id),
+                     "X-Naver-Client-Secret": str(open_client_secret)},
+            params={"query": str(query), "display": min(20, max(1, display)), "sort": "sim"},
+            timeout=10,
+        )
+        if r.status_code != 200:
+            return None, f"[{r.status_code}] {r.text[:150]}"
+        items = []
+        for it in r.json().get("items", []) or []:
+            items.append({
+                "title": _re.sub(r"<[^>]+>", "", it.get("title", "") or ""),
+                "category1": it.get("category1", ""), "category2": it.get("category2", ""),
+                "category3": it.get("category3", ""), "category4": it.get("category4", ""),
+                "lprice": int(it.get("lprice", 0) or 0),
+            })
+        return items, None
+    except Exception as e:
+        return None, str(e)
+
+
 def naver_autocomplete(keyword):
     """네이버 자동완성 키워드 목록 (ac.search.naver.com). 실패 시 []."""
     try:
