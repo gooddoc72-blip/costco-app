@@ -135,8 +135,10 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                          type=['jpg', 'jpeg', 'png', 'webp'],
                                          accept_multiple_files=True, key="ph_files")
             st.caption("사진 1장 = 상품 1개. Claude가 상품명·가격(가격표)·카테고리를 판단해 네이버에 자동 등록합니다.")
-            if _ph_files and st.button(f"🤖 사진 분석 → 자동등록 ({len(_ph_files)}장)",
-                                       type="primary", key="ph_auto"):
+            _ph_go = st.button(f"🤖 사진 분석 → 자동등록 ({len(_ph_files) if _ph_files else 0}장)",
+                               type="primary", key="ph_auto", disabled=not _ph_files,
+                               use_container_width=True)
+            if _ph_go and _ph_files:
                 import ai_service, tempfile, os as _os2
                 _prows = []; _pprog = st.progress(0.0)
                 for _pi, _pf in enumerate(_ph_files):
