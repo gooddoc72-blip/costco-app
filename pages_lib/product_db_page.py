@@ -114,9 +114,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             if not _pt_key:
                 st.info("사진 판독은 설정 탭 > 🤖 AI 설정에 Anthropic 키가 필요합니다.")
             else:
-                _pt_img = st.camera_input("가격표 촬영 (폰 카메라)", key="pt_cam")
-                if not _pt_img:
-                    _pt_img = st.file_uploader("또는 가격표 사진 업로드", key="pt_up")
+                _pt_img = st.file_uploader("가격표 사진 (모바일은 파일선택 시 '촬영' 가능)", key="pt_up")
                 if _pt_img is not None and st.button("🔎 가격표 판독", key="pt_read", type="primary"):
                     import ai_service
                     _b = _pt_img.getvalue(); _mt = getattr(_pt_img, 'type', None) or 'image/jpeg'
