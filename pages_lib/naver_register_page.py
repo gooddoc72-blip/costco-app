@@ -105,6 +105,90 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     _st3.metric("미등록",   f"{len(_nr_unreg)}개")
     st.divider()
 
+    # ── 🛒→N 카페24 상품을 네이버에 등록 (건별 카테고리 선택 + 마진율 판매가) ──
+    _cf_mall = _gs('cafe24_mall_id'); _cf_cid = _gs('cafe24_client_id'); _cf_tok = _gs('cafe24_access_token')
+    if _cf_mall and _cf_cid and _cf_tok:
+        import cafe24_api
+        with st.expander("🛒→N 카페24 상품을 네이버에 등록", expanded=False):
+            _cf_creds = {'mall_id': _cf_mall, 'client_id': _cf_cid,
+                         'client_secret': _gs('cafe24_client_secret'),
+                         'access_token': _cf_tok, 'refresh_token': _gs('cafe24_refresh_token'),
+                         'expires_at': _gs('cafe24_token_expires_at')}
+            def _cf_save(t):
+                set_setting(USERNAME, 'cafe24_access_token', t.get('access_token', ''))
+                set_setting(USERNAME, 'cafe24_refresh_token', t.get('refresh_token', ''))
+                set_setting(USERNAME, 'cafe24_token_expires_at', t.get('expires_at', ''))
+            _mc1, _mc2, _mc3 = st.columns([1, 3, 1])
+            _margin = _mc1.number_input("마진율 %", min_value=0, max_value=300, step=5,
+                                        value=int(_gs('cafe24_naver_margin') or 10), key="cf2n_margin",
+                                        help="네이버 판매가 = 카페24가 ×(1+마진%) ÷0.945 (수수료 5.5% 감안)")
+            _cf2n_q = _mc2.text_input("카페24 상품명 검색", key="cf2n_q",
+                                      placeholder="상품명 일부 (비우면 최근 상품)", label_visibility="collapsed")
+            if _mc3.button("🔎 조회", key="cf2n_search", use_container_width=True):
+                set_setting(USERNAME, 'cafe24_naver_margin', str(int(_margin)))
+                with st.spinner("카페24 상품 조회 중..."):
+                    _cf2n_prods, _cf2n_err = cafe24_api.search_products(_cf_creds, _cf2n_q, save_tokens=_cf_save)
+                st.session_state['_cf2n_prods'] = [] if _cf2n_err else (_cf2n_prods or [])
+                if _cf2n_err:
+                    st.error(f"조회 실패: {_cf2n_err}")
+            _cf2n_list = st.session_state.get('_cf2n_prods') or []
+            if _cf2n_list:
+                st.caption(f"{len(_cf2n_list)}개 — 상품 펼쳐 카테고리 검색·선택 후 '네이버 등록'을 누르세요. "
+                           "(카페24 상세설명·이미지를 그대로 가져옴)")
+            for _p in _cf2n_list[:20]:
+                _pno = _p['product_no']; _cfprice = int(_p['price'])
+                _nprice_default = int(round(_cfprice * (1 + _margin / 100.0) / 0.945 / 10) * 10)
+                with st.expander(f"{str(_p['product_name'])[:44]} · 카페24 {fmt(_cfprice)}원 "
+                                 f"→ 네이버 {fmt(_nprice_default)}원", expanded=False):
+                    _rc1, _rc2 = st.columns([1, 2])
+                    _sale = _rc1.number_input("네이버 판매가", value=_nprice_default, min_value=0,
+                                              step=100, key=f"cf2n_price_{_pno}")
+                    _rcc1, _rcc2 = _rc2.columns([4, 1])
+                    _catkw = _rcc1.text_input("네이버 카테고리 검색", key=f"cf2n_catkw_{_pno}",
+                                              placeholder="예: 어묵, 반찬, 냉동식품",
+                                              label_visibility="collapsed")
+                    if _rcc2.button("🔍", key=f"cf2n_catbtn_{_pno}") and _catkw.strip():
+                        _cr, _ce = naver_api.search_naver_categories(api_id, api_secret, _catkw.strip())
+                        st.session_state[f'_cf2n_cats_{_pno}'] = _cr or []
+                        if _ce:
+                            st.error(_ce)
+                    _cats = st.session_state.get(f'_cf2n_cats_{_pno}') or []
+                    if _cats:
+                        _opts = [f"{c['id']} — {c['full_name']}" for c in _cats]
+                        _sel = st.selectbox("카테고리 선택", _opts, key=f"cf2n_catsel_{_pno}")
+                        _cat_id = _sel.split(" — ")[0].strip()
+                        if st.button("🛍 네이버 등록", key=f"cf2n_reg_{_pno}", type="primary"):
+                            with st.spinner("카페24 상세 조회 → 이미지 업로드 → 네이버 등록 중..."):
+                                _full, _fe = cafe24_api.get_product(_cf_creds, _pno, save_tokens=_cf_save)
+                                if _fe or not _full:
+                                    st.error(f"카페24 상세 조회 실패: {_fe}")
+                                else:
+                                    _rep = _full.get('detail_image') or _full.get('list_image') or ''
+                                    if not _rep:
+                                        st.error("대표 이미지가 없어 등록할 수 없습니다.")
+                                    else:
+                                        _cdn, _ue = naver_api.upload_product_image(api_id, api_secret, _rep)
+                                        if not _cdn:
+                                            st.error(f"이미지 업로드 실패: {_ue}")
+                                        else:
+                                            _res, _re2 = naver_api.register_product(api_id, api_secret, {
+                                                "name": _full.get('product_name', _p['product_name']),
+                                                "sale_price": int(_sale), "image_url": _cdn,
+                                                "category_id": _cat_id,
+                                                "detail_html": _full.get('description')
+                                                    or f"<p>{_p['product_name']}</p>",
+                                                "shipping_fee": 0, "origin_code": "03",
+                                                "after_service_tel": _gs("naver_as_tel") or "1588-1234",
+                                            })
+                                            if _re2:
+                                                st.error(f"❌ 네이버 등록 실패: {_re2}")
+                                            else:
+                                                st.success(f"✅ 네이버 등록 완료! (origin #{_res.get('origin_product_no')}) "
+                                                           f"— 스마트스토어에서 확인하세요.")
+                    else:
+                        st.caption("네이버 카테고리를 검색·선택하면 '네이버 등록' 버튼이 나타납니다.")
+        st.divider()
+
     # ── 개별 등록 폼 (제품 DB 탭 🛍 버튼 클릭 시) ──────────────────
     _nr_kw_sel = st.session_state.get("nreg2_kw")
     _nr_prod   = next((p for p in _nr_all if p["match_keyword"] == _nr_kw_sel), None) if _nr_kw_sel else None
