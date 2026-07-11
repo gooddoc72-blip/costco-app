@@ -545,6 +545,67 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     elif HAS_COUPANG_API and not cq_access:
         st.caption("💡 설정에서 쿠팡 Wing API 키를 등록하면 쿠팡 주문도 자동 조회됩니다.")
 
+    # ── 카페24 주문 자동 조회 ─────────────────────────────────
+    _cf_mall = _gs('cafe24_mall_id')
+    _cf_cid  = _gs('cafe24_client_id')
+    _cf_tok  = _gs('cafe24_access_token')
+    if _cf_mall and _cf_cid:
+        if not _cf_tok:
+            st.info("🛒 카페24 키는 등록됐지만 인증 전입니다. **설정 탭 > 🛒 카페24 연동 > 카페24 인증하기**를 먼저 진행하세요.")
+        else:
+            _cfc1, _cfc2, _cfc3 = st.columns([2.4, 2.4, 1])
+            _cf_from = _cfc1.date_input("카페24 시작일", value=datetime.today() - timedelta(days=14),
+                                        key="cf_date_from")
+            _cf_to   = _cfc2.date_input("카페24 종료일", value=datetime.today(), key="cf_date_to")
+            _cfc3.write(""); _cfc3.write("")
+            _cf_fetch = _cfc3.button("🛒 카페24 주문 조회", type="primary", key="cf_fetch",
+                                     use_container_width=True)
+            if _cf_fetch:
+                import cafe24_api
+                _creds = {
+                    'mall_id': _cf_mall, 'client_id': _cf_cid,
+                    'client_secret': _gs('cafe24_client_secret'),
+                    'access_token': _cf_tok, 'refresh_token': _gs('cafe24_refresh_token'),
+                    'expires_at': _gs('cafe24_token_expires_at'),
+                }
+                def _cf_save_tokens(t):
+                    set_setting(USERNAME, 'cafe24_access_token', t.get('access_token', ''))
+                    set_setting(USERNAME, 'cafe24_refresh_token', t.get('refresh_token', ''))
+                    set_setting(USERNAME, 'cafe24_token_expires_at', t.get('expires_at', ''))
+                with st.spinner(f"카페24 주문 조회 중... ({_cf_from} ~ {_cf_to})"):
+                    _cf_rows, _cf_err = cafe24_api.get_orders(
+                        _creds, _cf_from.strftime("%Y-%m-%d"), _cf_to.strftime("%Y-%m-%d"),
+                        save_tokens=_cf_save_tokens)
+                if _cf_err:
+                    st.error(f"❌ 카페24 조회 실패: {_cf_err}")
+                elif not _cf_rows:
+                    st.info("조회된 카페24 주문이 없습니다.")
+                else:
+                    _cf_df = pd.DataFrame(_cf_rows)
+                    for _c in ['수량', '최종 상품별 총 주문금액', '배송비 합계', '정산예정금액', '상품가격']:
+                        if _c in _cf_df.columns:
+                            _cf_df[_c] = pd.to_numeric(_cf_df[_c], errors='coerce').fillna(0).astype(int)
+                    _cf_df = _cf_df.sort_values('상품명').reset_index(drop=True)
+                    from services import process_and_save_orders
+                    _s_cost = int(_gs('shipping_cost') or 1800)
+                    _b_cost = int(_gs('box_cost') or 300)
+                    _cf_result = process_and_save_orders(
+                        USERNAME, _cf_df, datetime.today().strftime("%Y-%m-%d"),
+                        _s_cost, _b_cost, save_history=True, save_daily=False)
+                    _cf_df = _cf_result['df']
+                    _cf_df['플랫폼'] = '🔵 카페24'
+                    st.session_state['order_full'] = _cf_df.copy()
+                    # 기존 주문 보존 후 병합
+                    _prev = st.session_state.get('orders')
+                    if _prev is not None and not _prev.empty:
+                        _cf_df = pd.concat([_prev, _cf_df], ignore_index=True).sort_values('상품명').reset_index(drop=True)
+                    st.session_state['orders'] = _cf_df
+                    st.session_state['order_date'] = datetime.today().strftime("%Y-%m-%d")
+                    st.session_state['orders_unsaved'] = True
+                    st.success(f"✅ 카페24 주문 {len(_cf_rows)}건 조회 완료! (아래 📦 주문 목록에서 확인·저장)")
+                    st.rerun()
+        st.divider()
+
     col1, col2, col3 = st.columns([2, 1, 1])
     with col1:
         uploaded = st.file_uploader("네이버 스마트스토어 발주발송관리 xlsx 파일", type=['xlsx', 'xls'], key="order_upload")
