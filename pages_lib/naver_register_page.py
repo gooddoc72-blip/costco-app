@@ -129,16 +129,19 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         with st.expander("📷 사진으로 신상품 자동등록 — AI가 사진·가격표 분석 후 등록", expanded=False):
             if not (_ph_oc and _ph_os):
                 st.info("카테고리 자동판단에 **네이버 Open API(쇼핑검색)** 키가 필요합니다. (설정 탭)")
-            _ph_margin = st.number_input("추가 마진 % (사진 속 가격에 얹기, 0=그대로)",
-                                         min_value=0, max_value=300, value=0, step=5, key="ph_margin")
-            _ph_files = st.file_uploader("신상품 사진 업로드 (여러 장 · 가격표 포함)",
+            _ph_price = st.number_input("임시 등록 판매가 (원) — 모든 상품 공통, 등록 후 판매자센터에서 수정",
+                                        min_value=100, value=int(_gs('photo_reg_price') or 10000),
+                                        step=1000, key="ph_price")
+            _ph_files = st.file_uploader("신상품 사진 업로드 (상품 사진 · 여러 장)",
                                          accept_multiple_files=True, key="ph_files")
-            st.caption("사진 1장 = 상품 1개. Claude가 상품명·가격(가격표)·카테고리를 판단해 네이버에 자동 등록합니다.")
+            st.caption("사진 1장 = 상품 1개. **사진(상품 이미지) + 상품명 + 카테고리**만 자동 등록하고, "
+                       "**판매가는 사진 속 가격을 쓰지 않고 위 임시가로 등록**합니다 (나중에 스토어에서 수정).")
             _ph_go = st.button(f"🤖 사진 분석 → 자동등록 ({len(_ph_files) if _ph_files else 0}장)",
                                type="primary", key="ph_auto", disabled=not _ph_files,
                                use_container_width=True)
             if _ph_go and _ph_files:
                 import ai_service, tempfile, os as _os2
+                set_setting(USERNAME, 'photo_reg_price', str(int(_ph_price)))
                 _prows = []; _pprog = st.progress(0.0)
                 for _pi, _pf in enumerate(_ph_files):
                     _pprog.progress((_pi + 1) / len(_ph_files))
@@ -151,12 +154,11 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     _info, _ie = ai_service.analyze_product_photo(_ph_aikey, _pb, _pmt)
                     if _ie or not _info:
                         _prows.append({'파일': _pf.name[:18], '상태': f'❌ 분석실패 {str(_ie)[:18]}'}); continue
-                    _pname = _info['name']; _pprice = _info['price']
+                    _pname = _info['name']
                     if not _pname:
                         _prows.append({'파일': _pf.name[:18], '상태': '❌ 상품명 판독실패'}); continue
-                    if _pprice <= 0:
-                        _prows.append({'파일': _pf.name[:18], '상품': _pname[:18], '상태': '❌ 가격표 판독실패(0원)'}); continue
-                    _psale = int(round(_pprice * (1 + _ph_margin / 100.0) / 10) * 10)
+                    # 판매가는 사진 속 코스트코 가격을 쓰지 않고 임시 등록가 사용 (나중에 수정)
+                    _psale = int(_ph_price)
                     _pcat_id = None; _pcat_full = ''
                     if _ph_oc and _ph_os:
                         _pitems, _ = naver_api.naver_shopping_search(_ph_oc, _ph_os, _pname)
