@@ -156,6 +156,24 @@ def upload_images_batch(client_id, client_secret, image_sources, max_images=9):
 
 
 
+def _sanitize_detail_html(html):
+    """상세HTML 정제 — 네이버 detailContent가 지원 안 하는 요소 제거.
+    카페24 에디봇 등의 <style>/<script>/<head> CSS가 네이버에서 '코드 그대로' 노출되는 문제 해결.
+    이미지·본문은 유지."""
+    import re as _re
+    h = str(html or "")
+    # 문서 래퍼/헤드 제거 (style·meta 포함)
+    h = _re.sub(r"<!DOCTYPE[^>]*>", "", h, flags=_re.IGNORECASE)
+    h = _re.sub(r"<head\b[^>]*>.*?</head>", "", h, flags=_re.IGNORECASE | _re.DOTALL)
+    # 어디에 있든 style/script 블록 제거
+    h = _re.sub(r"<style\b[^>]*>.*?</style>", "", h, flags=_re.IGNORECASE | _re.DOTALL)
+    h = _re.sub(r"<script\b[^>]*>.*?</script>", "", h, flags=_re.IGNORECASE | _re.DOTALL)
+    h = _re.sub(r"<link\b[^>]*>", "", h, flags=_re.IGNORECASE)
+    # html/body 래퍼 태그만 제거(내용 유지)
+    h = _re.sub(r"</?(?:html|body)\b[^>]*>", "", h, flags=_re.IGNORECASE)
+    return h.strip()
+
+
 def register_product(client_id, client_secret, product_info):
     """
     네이버 스마트스토어 상품 등록.
@@ -176,11 +194,11 @@ def register_product(client_id, client_secret, product_info):
     fee_type = "FREE" if shipping_fee == 0 else "CHARGE"
     name = (product_info.get("name") or "")[:100]
     # detail_html (코스트코 상세) 우선, 없으면 detail_content, 없으면 기본값
-    detail = (
+    detail = _sanitize_detail_html(
         product_info.get("detail_html")
         or product_info.get("detail_content")
-        or f"<p>{name}</p>"
-    )
+        or ""
+    ) or f"<p>{name}</p>"
     as_tel = product_info.get("after_service_tel") or "1588-1234"
     origin = product_info.get("origin_code") or "03"
 
