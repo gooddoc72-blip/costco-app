@@ -230,6 +230,35 @@ def _sanitize_detail_html(html):
     return h.strip()
 
 
+def _build_food_notice(fn, name):
+    """식품 라벨 dict(fn) → 네이버 FOOD 상품정보제공고시 객체. fn 없으면 None.
+    fn 키: food_type, volume, ingredients, storage, manufacturer, importer, expiration, nutrition.
+    미상 필드는 '상품 상세페이지 참조'로 채움(고시 누락 방지)."""
+    if not fn or not any((fn or {}).values()):
+        return None
+    _ref = "상품 상세페이지 참조"
+    _prod = (fn.get("manufacturer") or "").strip()
+    _imp = (fn.get("importer") or "").strip()
+    _producer = " / ".join([x for x in (_prod, _imp) if x]) or _ref
+    _vol = (fn.get("volume") or "").strip() or _ref
+    food = {
+        "foodItem":           (fn.get("food_type") or "").strip() or str(name)[:50],
+        "producer":           _producer,
+        "weight":             _vol,
+        "amount":             _vol,
+        "packDate":           _ref,
+        "expirationDate":     (fn.get("expiration") or "").strip() or _ref,
+        "productComposition": (fn.get("ingredients") or "").strip() or _ref,
+    }
+    _keep = (fn.get("storage") or "").strip()
+    if _keep:
+        food["keep"] = _keep
+    _cau = (fn.get("nutrition") or "").strip()
+    if _cau:
+        food["adCaution"] = _cau[:500]
+    return {"productInfoProvidedNoticeType": "FOOD", "food": food}
+
+
 def register_product(client_id, client_secret, product_info):
     """
     네이버 스마트스토어 상품 등록.
@@ -358,6 +387,13 @@ def register_product(client_id, client_secret, product_info):
         else:
             _has_tags = False
 
+    # 식품 상품정보제공고시(FOOD) — 라벨 데이터 있으면 ETC 대신 FOOD 사용
+    _etc_notice = payload["originProduct"]["detailAttribute"]["productInfoProvidedNotice"]
+    _food_notice_obj = _build_food_notice(product_info.get("food_notice"), name)
+    _has_food = bool(_food_notice_obj)
+    if _has_food:
+        payload["originProduct"]["detailAttribute"]["productInfoProvidedNotice"] = _food_notice_obj
+
     def _do_post(_pl):
         resp = requests.post(
             "https://api.commerce.naver.com/external/v2/products",
@@ -373,12 +409,18 @@ def register_product(client_id, client_secret, product_info):
 
     try:
         _res, _err = _do_post(payload)
-        # 태그 때문에 등록 실패 시 → 태그 빼고 1회 재시도 (등록 자체는 반드시 성공하도록)
-        if _err and _has_tags:
-            payload["originProduct"]["detailAttribute"].pop("seoInfo", None)
+        # 실패 시 안전 베이스라인으로 1회 재시도: 태그 제거 + 식품고시→ETC 복원
+        if _err and (_has_tags or _has_food):
+            _da = payload["originProduct"]["detailAttribute"]
+            _dropped = []
+            if _has_tags and _da.pop("seoInfo", None) is not None:
+                _dropped.append("태그")
+            if _has_food:
+                _da["productInfoProvidedNotice"] = _etc_notice
+                _dropped.append("식품고시")
             _res2, _err2 = _do_post(payload)
             if not _err2:
-                return _res2, "⚠️ 태그가 거부되어 태그 없이 등록했습니다."
+                return _res2, f"⚠️ {'·'.join(_dropped)} 거부되어 제외하고 등록했습니다. (원인: {_err})"
         return _res, _err
     except Exception as e:
         return None, str(e)

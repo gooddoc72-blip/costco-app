@@ -481,6 +481,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                 "category_id": _ec.strip(),
                                 "seller_code": _costco_no.strip(),
                                 "seller_tags": _sel_tags,
+                                "food_notice": _food,
                                 "detail_html": _build_detail(_en.strip(), _cdns, _desc,
                                                              _food_info_html(_food)),
                                 "shipping_fee": 0, "origin_code": "03",
