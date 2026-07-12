@@ -175,6 +175,7 @@ _DESC_SYSTEM = (
     "구매욕을 높이는 한국어 상세설명을 작성한다.\n"
     "규칙:\n"
     "- 3~5문장, 각 문장 간결하게. 제품 특징·용량/구성·활용법·코스트코 프리미엄 느낌 중심.\n"
+    "- **한 문장마다 줄바꿈(엔터)해서 한 줄에 한 문장씩** 작성 (가운데 정렬로 읽기 좋게).\n"
     "- 사진에서 확인되는 사실 위주. 과장·허위·없는 정보 지어내기 금지.\n"
     "- 식품이면 효능·효과·다이어트·의학적 표현 금지(식품 과대광고 규제).\n"
     "- 이모지 1~3개 자연스럽게 사용 가능.\n"
@@ -182,13 +183,30 @@ _DESC_SYSTEM = (
 )
 
 
+def _desc_to_lines(text):
+    """상세설명을 문장 단위로 나누고 사이에 빈 줄(한 줄 띄움)을 넣어 정리.
+    이미 줄바꿈 있으면 그 줄을, 없으면 문장부호(. ! ?)로 분리. 문장 사이는 빈 줄로 구분."""
+    import re as _re
+    t = (text or "").strip()
+    if not t:
+        return t
+    if "\n" in t:   # AI가 이미 줄바꿈 → 비어있지 않은 줄만 추출
+        _parts = [l.strip() for l in t.splitlines() if l.strip()]
+    else:           # 한 덩어리면 문장 끝(. ! ?) 뒤에서 분리
+        _parts = [p.strip() for p in _re.split(r'(?<=[.!?])\s+', t) if p.strip()]
+    return "\n\n".join(_parts)   # 문장 사이 빈 줄
+
+
 def generate_product_description(api_key, image_bytes, media_type, name="", category=""):
-    """상품 사진 + 상품명/카테고리로 상세페이지 설명 초안 생성. 반환: (text, error)."""
+    """상품 사진 + 상품명/카테고리로 상세페이지 설명 초안 생성 (문장별 줄바꿈). 반환: (text, error)."""
     if not api_key:
         return None, "Anthropic API 키 미설정 (설정 탭 > 🤖 AI 설정)"
     _u = (f"상품명: {name or '(미상)'}\n카테고리: {category or '(미상)'}\n"
-          "이 상품 사진을 보고 상세페이지에 넣을 상세설명을 작성해줘.")
-    return claude_vision(api_key, image_bytes, media_type, _DESC_SYSTEM, _u, max_tokens=500)
+          "이 상품 사진을 보고 상세페이지에 넣을 상세설명을 작성해줘. 문장마다 줄바꿈해서.")
+    _txt, _err = claude_vision(api_key, image_bytes, media_type, _DESC_SYSTEM, _u, max_tokens=500)
+    if _txt:
+        return _desc_to_lines(_txt), None
+    return None, _err
 
 
 _PHOTO_SYSTEM = (
