@@ -195,9 +195,11 @@ _PHOTO_SYSTEM = (
     "너는 네이버 스마트스토어 상품등록 전문가다. 상품 사진(가격표·라벨 포함 가능)을 분석해 "
     "등록용 정보를 JSON으로만 출력한다.\n"
     "출력 형식(JSON만, 설명 금지):\n"
-    '{"name":"상품명","price":정수,"category":"카테고리키워드","origin":"원산지","brand":"브랜드"}\n'
+    '{"name":"상품명","volume":"용량/수량","price":정수,"category":"카테고리키워드","origin":"원산지","brand":"브랜드"}\n'
     "규칙:\n"
-    "- name: 브랜드+제품명+용량/수량 포함, 네이버 검색이 잘 되는 실제 판매용 상품명.\n"
+    "- volume: 포장에 표기된 용량·중량·수량을 반드시 읽어서 넣는다 "
+    "(예: '260mL x 3개입', '1.5kg', '30개입', '500g x 2입', '1L x 6'). 정말 안 보이면 ''.\n"
+    "- name: 브랜드+제품명+용량/수량을 모두 포함한 실제 판매용 상품명. **용량/수량을 절대 빠뜨리지 말 것.**\n"
     "- price: 사진 속 가격표/라벨에서 읽은 판매가(숫자만, 원 단위). 할인가가 있으면 할인가. 가격 안 보이면 0.\n"
     "- category: 상품 분류 키워드(예: 어묵, 키친타월, 견과류).\n"
     "- origin: 원산지(모르면 '국산'). brand: 브랜드(모르면 '').\n"
@@ -224,8 +226,13 @@ def analyze_product_photo(api_key, image_bytes, media_type):
         _price = int(float(_d.get("price", 0) or 0))
     except Exception:
         _price = 0
+    # 용량/수량이 상품명에 빠졌으면 자동으로 뒤에 붙임 (누락 방지)
+    _name = str(_d.get("name", "") or "").strip()
+    _vol = str(_d.get("volume", "") or "").strip()
+    if _vol and _vol.replace(" ", "").lower() not in _name.replace(" ", "").lower():
+        _name = (_name + " " + _vol).strip()
     return {
-        "name": str(_d.get("name", "") or "").strip()[:100],
+        "name": _name[:100],
         "price": _price,
         "category": str(_d.get("category", "") or "").strip(),
         "origin": str(_d.get("origin", "") or "국산").strip(),
