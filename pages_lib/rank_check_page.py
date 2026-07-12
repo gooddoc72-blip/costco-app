@@ -385,7 +385,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         _rk_h1, _rk_h2 = st.columns([4, 1])
         _rk_h1.subheader("📊 현재 순위 현황")
         if _rk_api_ready:
-            if _rk_h2.button("🔄 전체 체크", type="primary", use_container_width=True, key="rk_check_all"):
+            if _rk_h2.button("🔄 전체 순위조회", type="primary", use_container_width=True, key="rk_check_all",
+                             help="등록된 모든 추적 항목의 순위를 지금 조회"):
                 _run_rank_check(trackings)
         elif not open_cid:
             _rk_h2.caption("API 키 미등록")
@@ -407,7 +408,15 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         _sel_ids = [t['id'] for t in trackings if st.session_state.get(f"sel_t_{t['id']}", False)]
 
         # 상단 액션 바
-        _act1, _act2, _act3 = st.columns([2, 2, 6])
+        _act0, _act1, _act2, _act3 = st.columns([2, 2, 2, 4])
+        _all_sel_now = bool(trackings) and all(
+            st.session_state.get(f"sel_t_{t['id']}", False) for t in trackings)
+        if _act0.button("◻️ 전체해제" if _all_sel_now else "☑️ 전체선택",
+                        key="rk_sel_all_toggle", use_container_width=True,
+                        help="모든 항목의 체크박스를 선택/해제"):
+            for _tt in trackings:
+                st.session_state[f"sel_t_{_tt['id']}"] = not _all_sel_now
+            st.rerun()
         if _act1.button(f"✅ 선택 체크 ({len(_sel_ids)})",
                          disabled=not _sel_ids or not _rk_api_ready, key="rk_check_sel",
                          type="primary", use_container_width=True,
