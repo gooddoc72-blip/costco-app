@@ -429,6 +429,21 @@ def get_all_products(username):
     return [dict(r) for r in rows]
 
 
+def delete_user_products_by_ids(username, ids):
+    """사용자 DB의 products에서 id 목록을 삭제. 반환: 삭제된 행 수."""
+    _ids = [int(i) for i in (ids or []) if str(i).strip()]
+    if not _ids:
+        return 0
+    conn = get_user_db(username)
+    _ensure_products_columns(conn)
+    _ph = ",".join("?" * len(_ids))
+    cur = conn.execute(f"DELETE FROM products WHERE id IN ({_ph})", _ids)
+    conn.commit()
+    n = cur.rowcount
+    conn.close()
+    return n
+
+
 def link_naver_to_shared(username: str, user_product_id: int, shared_id: int):
     conn_auth = sqlite3.connect(AUTH_DB)
     sp_row = conn_auth.execute(

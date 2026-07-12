@@ -92,6 +92,65 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     st.header("📦 제품 가격 DB 관리")
     st.caption("🔗 공유 필드(매입가·상품명)는 읽기전용 — 영수증 업로드 또는 관리자 탭에서 수정 | ✏️ 판매가·배송비는 개인별 수정 가능")
 
+    # ── 🧹 이전 스토어 상품 정리 (현재 API 키 스토어에 없는 네이버 상품 삭제) ──
+    with st.expander("🧹 이전 스토어 상품 정리 — 현재 스토어에 없는 네이버 상품 삭제", expanded=False):
+        st.caption("스토어를 옮긴 경우 DB에 남은 **이전 스토어 상품**(현재 API 키로 접근 불가·순위추적/태그에서 혼란)을 정리합니다. "
+                   "현재 스토어 상품목록을 API로 조회해, 거기 없는 네이버(from_naver) 상품만 삭제합니다.")
+        if not (api_id and api_secret):
+            st.info("설정 탭 > 네이버 커머스 API 키가 필요합니다.")
+        else:
+            from db import get_all_products as _get_all_prods, delete_user_products_by_ids as _del_prods
+            import naver_api as _clean_napi
+            if st.button("🔎 분석 (삭제 대상 미리보기)", key="clean_analyze", use_container_width=True):
+                with st.spinner("현재 스토어 상품목록 조회 중..."):
+                    _cur_list, _cerr = _clean_napi.get_product_list(api_id, api_secret)
+                if _cerr:
+                    st.error(f"현재 스토어 조회 실패: {_cerr}")
+                else:
+                    _valid = set()
+                    for _it in (_cur_list or []):
+                        for _k in ('originProductNo', 'channelProductNo'):
+                            _v = str(_it.get(_k) or '').strip()
+                            if _v:
+                                _valid.add(_v)
+                    _stale = []
+                    for _p in _get_all_prods(USERNAME):
+                        if int(_p.get('from_naver') or 0) != 1:
+                            continue
+                        _nos = {str(_p.get('naver_origin_pno') or '').strip(),
+                                str(_p.get('naver_channel_pno') or '').strip()}
+                        _nos.discard('')
+                        if not (_nos & _valid):   # 현재 스토어에 하나도 없으면 이전 스토어 상품
+                            _stale.append(_p)
+                    st.session_state['_clean_stale_ids'] = [_p['id'] for _p in _stale]
+                    st.session_state['_clean_cur_n'] = len(_valid)
+                    st.session_state['_clean_stale_sample'] = [
+                        str(_p.get('costco_name') or '')[:45] for _p in _stale[:10]]
+                    st.rerun()
+
+            _stale_ids = st.session_state.get('_clean_stale_ids')
+            if _stale_ids is not None:
+                st.warning(f"현재 스토어 상품 {st.session_state.get('_clean_cur_n', 0)}개 확인 · "
+                           f"**삭제 대상(이전 스토어) 상품: {len(_stale_ids)}개**")
+                for _nm in st.session_state.get('_clean_stale_sample', []):
+                    st.caption(f"• {_nm}")
+                if len(_stale_ids) > 10:
+                    st.caption(f"… 외 {len(_stale_ids) - 10}개")
+                if _stale_ids:
+                    _cc1, _cc2 = st.columns([1, 2])
+                    if _cc1.button(f"🗑 {len(_stale_ids)}개 삭제 실행", key="clean_delete",
+                                   type="primary", use_container_width=True):
+                        _n = _del_prods(USERNAME, _stale_ids)
+                        if callable(invalidate_data_cache):
+                            invalidate_data_cache()
+                        for _k in ('_clean_stale_ids', '_clean_cur_n', '_clean_stale_sample'):
+                            st.session_state.pop(_k, None)
+                        st.success(f"✅ 이전 스토어 상품 {_n}개 삭제 완료")
+                        st.rerun()
+                    _cc2.caption("⚠️ 되돌릴 수 없습니다. 현재 스토어 상품은 삭제되지 않습니다.")
+                else:
+                    st.success("✅ 삭제할 이전 스토어 상품이 없습니다. (모두 현재 스토어 소속)")
+
     # ── 관리자 전용: 카페24·바코드/사진 매입가 수정 ──
     if IS_ADMIN:
         # ── 🏷 바코드·사진으로 매입가(코스트코 가격) 수정 (매장용) ────────
