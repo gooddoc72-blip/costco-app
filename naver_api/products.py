@@ -283,11 +283,30 @@ def register_product(client_id, client_secret, product_info):
             "sellerManagementCode": _seller_code[:50],
         }
 
-    try:
+    # 연관태그(SEO sellerTags) — [{code, text}] 목록. 있으면 seoInfo에 주입 (최대 10개)
+    _seller_tags = product_info.get("seller_tags") or []
+    _has_tags = bool(_seller_tags)
+    if _has_tags:
+        _st_clean = []
+        for _t in _seller_tags[:10]:
+            _txt = str((_t or {}).get("text") or "").strip()
+            if not _txt:
+                continue
+            _entry = {"text": _txt}
+            _code = (_t or {}).get("code")
+            if _code not in (None, "", 0):
+                _entry["code"] = int(_code)   # 사전 등록 태그만 code 부여
+            _st_clean.append(_entry)
+        if _st_clean:
+            payload["originProduct"]["detailAttribute"]["seoInfo"] = {"sellerTags": _st_clean}
+        else:
+            _has_tags = False
+
+    def _do_post(_pl):
         resp = requests.post(
             "https://api.commerce.naver.com/external/v2/products",
             headers=headers,
-            json=payload,
+            json=_pl,
             timeout=30,
         )
         if resp.status_code in (200, 201):
@@ -295,8 +314,193 @@ def register_product(client_id, client_secret, product_info):
             pno = str(data.get("originProductNo") or data.get("productNo") or "")
             return {"origin_product_no": pno}, None
         return None, f"상품 등록 실패({resp.status_code}): {_format_naver_err(resp)}"
+
+    try:
+        _res, _err = _do_post(payload)
+        # 태그 때문에 등록 실패 시 → 태그 빼고 1회 재시도 (등록 자체는 반드시 성공하도록)
+        if _err and _has_tags:
+            payload["originProduct"]["detailAttribute"].pop("seoInfo", None)
+            _res2, _err2 = _do_post(payload)
+            if not _err2:
+                return _res2, "⚠️ 태그가 거부되어 태그 없이 등록했습니다."
+        return _res, _err
     except Exception as e:
         return None, str(e)
+
+
+# ── 연관태그(SEO sellerTags) 자동 생성 ─────────────────────────────
+# 네이버 쇼핑 태그는 '태그사전'에 등록된 태그(code 有)만 검색에 반영됨.
+#   · 추천(사전등록) 태그 검색: GET /external/v2/tags/recommend-tags?keyword=  → [{code, text}]
+#   · 제한 태그 여부(배치) 조회: GET /external/v2/tags/restricted-tags?tags=... → [{tag, restricted}]
+_TAG_RECOMMEND_URL  = "https://api.commerce.naver.com/external/v2/tags/recommend-tags"
+_TAG_RESTRICTED_URL = "https://api.commerce.naver.com/external/v2/tags/restricted-tags"
+
+
+def _recommend_tags_with_token(token, keyword):
+    """토큰 재사용용 내부 helper. 반환: [{code:int, text:str}] (code 있는 사전태그만)."""
+    kw = (keyword or "").strip()
+    if not kw:
+        return []
+    try:
+        resp = requests.get(
+            _TAG_RECOMMEND_URL,
+            headers={"Authorization": f"Bearer {token}"},
+            params={"keyword": kw},
+            timeout=15,
+        )
+        if resp.status_code != 200:
+            return []
+        data = resp.json()
+        out = []
+        for it in (data if isinstance(data, list) else []):
+            _code = it.get("code")
+            _text = (it.get("text") or "").strip()
+            if _text and _code is not None:
+                out.append({"code": int(_code), "text": _text})
+        return out
+    except Exception:
+        return []
+
+
+def search_recommend_tags(client_id, client_secret, keyword):
+    """추천(사전 등록) 태그 검색. 반환: ([{code, text}], err).
+    code가 붙은 태그만 = 검색에 실제 반영되는 '효과 있는' 태그."""
+    token, err = get_token(client_id, client_secret)
+    if not token:
+        return [], err
+    return _recommend_tags_with_token(token, keyword), None
+
+
+def _restricted_set_with_token(token, tag_texts):
+    """제한 태그(등록 불가) 텍스트 집합을 반환. 조회 실패 시 빈 집합(전부 통과)."""
+    _texts = [t for t in {(x or "").strip() for x in tag_texts} if t]
+    if not _texts:
+        return set()
+    try:
+        resp = requests.get(
+            _TAG_RESTRICTED_URL,
+            headers={"Authorization": f"Bearer {token}"},
+            params={"tags": _texts},   # string[] — requests가 tags=a&tags=b 로 직렬화
+            timeout=15,
+        )
+        if resp.status_code != 200:
+            return set()
+        data = resp.json()
+        return {
+            (it.get("tag") or "").strip()
+            for it in (data if isinstance(data, list) else [])
+            if it.get("restricted") and (it.get("tag") or "").strip()
+        }
+    except Exception:
+        return set()
+
+
+def filter_restricted_tags(client_id, client_secret, tag_texts):
+    """제한 태그를 제거하고 남은 태그명 리스트 반환. 반환: (남은 리스트, err)."""
+    token, err = get_token(client_id, client_secret)
+    if not token:
+        return list(tag_texts), err
+    _bad = _restricted_set_with_token(token, tag_texts)
+    return [t for t in tag_texts if (t or "").strip() not in _bad], None
+
+
+_TAG_CAND_SYSTEM = (
+    "너는 네이버 스마트스토어 SEO 태그 전문가다. 주어진 상품에 대해 "
+    "구매자가 실제로 검색할 법한 한국어 검색 키워드 후보를 관련도 높은 순으로 제안한다. "
+    "규칙: (1) 브랜드명·카테고리명 단독은 태그로 부적합하니 제외, (2) 2~10자 명사형 위주, "
+    "(3) 특수문자·이모지·공백만 있는 것 제외, (4) 중복 제거. "
+    "출력은 오직 JSON 배열 하나. 예: [\"키워드1\",\"키워드2\"] — 설명·코드블록 금지."
+)
+
+
+def _ai_tag_candidates(ai_key, name, category_path, detail, n=24):
+    """Claude로 검색 키워드 후보 생성 (관련도순). 실패 시 상품명 토큰 폴백."""
+    _cands = []
+    try:
+        import ai_service, json as _json2, re as _re2
+        _msg = (
+            f"상품명: {name}\n"
+            f"카테고리: {category_path or '미상'}\n"
+            f"상세(발췌): {(detail or '')[:300]}\n\n"
+            f"위 상품의 검색 키워드 후보를 관련도순으로 {n}개 JSON 배열로."
+        )
+        _txt, _err = ai_service.claude_complete(ai_key, _TAG_CAND_SYSTEM, _msg, max_tokens=700)
+        if _txt:
+            _m = _re2.search(r"\[.*\]", _txt, _re2.S)
+            if _m:
+                _arr = _json2.loads(_m.group(0))
+                _cands = [str(x).strip() for x in _arr if str(x).strip()]
+    except Exception:
+        _cands = []
+    if not _cands:  # AI 실패 → 상품명 토큰 폴백
+        _cands = [w for w in str(name).replace("/", " ").split() if len(w) >= 2][:n]
+    # 정규화 중복 제거 (순서 유지 = 관련도 유지)
+    _seen, _out = set(), []
+    for _c in _cands:
+        _k = _c.lower().replace(" ", "")
+        if _k and _k not in _seen:
+            _seen.add(_k); _out.append(_c)
+    return _out[:n]
+
+
+def build_seller_tags(client_id, client_secret, ai_key, name, category_path="",
+                      detail="", ad_creds=None, limit=10):
+    """상품등록용 sellerTags 상위 N개 생성.
+    1) AI로 검색 키워드 후보 → 2) 추천태그 API 검증(code 有) → 3) 제한태그 제거
+    → 4) (ad_creds 있으면) 검색량 우선, 없으면 관련도순 → 상위 limit개.
+    반환: ([{code:int, text:str}], info_dict).  info_dict: 진단용(후보수/검증수/제한제거수).
+    """
+    info = {"candidates": 0, "validated": 0, "after_restricted": 0, "err": None}
+    token, err = get_token(client_id, client_secret)
+    if not token:
+        info["err"] = err
+        return [], info
+
+    cands = _ai_tag_candidates(ai_key, name, category_path, detail)
+    info["candidates"] = len(cands)
+
+    # 2) 후보별 추천태그 검증 — code 있는 사전태그만 수집 (관련도 순위 = rank 보존)
+    validated = {}   # text → {"code", "rank"}
+    for _rank, _kw in enumerate(cands):
+        for _t in _recommend_tags_with_token(token, _kw):
+            _tx = _t["text"]
+            if _tx not in validated:
+                validated[_tx] = {"code": _t["code"], "rank": _rank}
+        time.sleep(0.08)   # rate limit 대비 소량 스로틀
+        if len(validated) >= 40:   # 충분히 모이면 조기 종료(호출 절약)
+            break
+    info["validated"] = len(validated)
+    if not validated:
+        return [], info
+
+    # 3) 제한 태그 배치 1회 제거
+    _bad = _restricted_set_with_token(token, list(validated.keys()))
+    for _b in _bad:
+        validated.pop(_b, None)
+    info["after_restricted"] = len(validated)
+    if not validated:
+        return [], info
+
+    # 4) 정렬: 검색량 우선(ad_creds) → 없으면 관련도(rank)
+    _vols = {}
+    if ad_creds and all(ad_creds):
+        try:
+            from .keywords import keyword_volumes, _norm_kw
+            _vmap = keyword_volumes(ad_creds[0], ad_creds[1], ad_creds[2], list(validated.keys()))
+            for _tx in validated:
+                _pc, _mo, _ = _vmap.get(_norm_kw(_tx), (0, 0, 0))
+                _vols[_tx] = int(_pc) + int(_mo)
+        except Exception:
+            _vols = {}
+
+    def _sort_key(item):
+        _tx, _v = item
+        return (-_vols.get(_tx, 0), _v["rank"])   # 검색량 desc, 관련도 asc
+
+    _ordered = sorted(validated.items(), key=_sort_key)
+    tags = [{"code": v["code"], "text": tx} for tx, v in _ordered[:limit]]
+    info["volumes"] = {tx: _vols.get(tx, 0) for tx, _ in _ordered[:limit]}
+    return tags, info
 
 
 # 매칭 정보 디버그 출력용 (마지막 매칭 결과 저장)

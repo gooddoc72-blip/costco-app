@@ -290,6 +290,61 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                            key="ph_ec", help=f"{_pv['cat_full'] or '카테고리 자동판단 실패 — 직접 입력'}")
                 if _pv['cat_full']:
                     st.caption(f"📂 {_pv['cat_full']}")
+
+                # ── 🏷 AI 연관태그 (생성 → 검토 → 등록) ─────────────────
+                st.markdown("**🏷 연관태그 (검색 노출용 · 최대 10개)**")
+                _adc = (_gs('naver_ad_api_key'), _gs('naver_ad_secret'), _gs('naver_ad_customer_id'))
+                _tgc1, _tgc2 = st.columns([1, 2])
+                if _tgc1.button("🤖 AI 태그 10개 생성", key="ph_tag_gen", use_container_width=True):
+                    with st.spinner("AI 후보 → 태그사전 검증 → 제한태그 제거..."):
+                        _tags, _tinfo = naver_api.build_seller_tags(
+                            api_id, api_secret, _ph_aikey,
+                            _en.strip(), _pv.get('cat_full', ''), _en.strip(),
+                            ad_creds=_adc if all(_adc) else None,
+                        )
+                    st.session_state['_ph_tags'] = _tags
+                    st.session_state['_ph_tags_info'] = _tinfo
+                    if not _tags:
+                        st.warning(f"검증된 사전 태그 없음 (후보 {_tinfo.get('candidates',0)}개). "
+                                   + (f"오류: {_tinfo['err']}" if _tinfo.get('err')
+                                      else "상품명을 더 일반적인 키워드로 바꿔 재시도해보세요."))
+                if not all(_adc):
+                    _tgc2.caption("💡 설정 탭에 검색광고 API 키 넣으면 **검색량순** 정렬. 지금은 관련도순.")
+
+                _sel_tags = []
+                _cur_tags = st.session_state.get('_ph_tags') or []
+                if _cur_tags:
+                    _volmap = (st.session_state.get('_ph_tags_info', {}) or {}).get('volumes', {}) or {}
+                    _tdf = pd.DataFrame([
+                        {"사용": True, "태그": t["text"],
+                         "월검색량": int(_volmap.get(t["text"], 0)), "태그ID": t.get("code")}
+                        for t in _cur_tags
+                    ])
+                    _ed = st.data_editor(
+                        _tdf, key="ph_tag_editor", hide_index=True, use_container_width=True,
+                        num_rows="dynamic",
+                        column_config={
+                            "사용": st.column_config.CheckboxColumn("사용", default=True),
+                            "태그": st.column_config.TextColumn("태그", required=True),
+                            "월검색량": st.column_config.NumberColumn("월검색량", disabled=True),
+                            "태그ID": st.column_config.NumberColumn(
+                                "태그ID", disabled=True,
+                                help="사전 등록 태그 ID(숫자 有 = 검색 반영). 빈 값 = 직접입력 태그."),
+                        },
+                    )
+                    st.caption("체크 해제=제외 · 행 추가=직접입력 태그(ID 없음) · 등록 시 체크된 것만 반영.")
+                    try:
+                        for _r in _ed.to_dict("records"):
+                            _txt = str(_r.get("태그") or "").strip()
+                            if _r.get("사용") and _txt:
+                                _e = {"text": _txt}
+                                _cd = _r.get("태그ID")
+                                if _cd not in (None, "", 0) and not pd.isna(_cd):
+                                    _e["code"] = int(_cd)
+                                _sel_tags.append(_e)
+                    except Exception:
+                        _sel_tags = [{"code": t.get("code"), "text": t["text"]} for t in _cur_tags]
+
                 if st.button("🛍 네이버 등록", type="primary", key="ph_reg1",
                              disabled=not (_prod_imgs and _en.strip() and _ec.strip() and _es > 0)):
                     import tempfile, os as _os3
@@ -313,17 +368,23 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                 "image_url": _cdns[0], "extra_image_urls": _cdns[1:],
                                 "category_id": _ec.strip(),
                                 "seller_code": _pv.get('costco_no', ''),
+                                "seller_tags": _sel_tags,
                                 "detail_html": _build_detail(_en.strip(), _cdns),
                                 "shipping_fee": 0, "origin_code": "03",
                                 "after_service_tel": _gs("naver_as_tel") or "1588-1234",
                                 "manufacturer": _pv.get('brand') or "상품 상세페이지 참조",
                             })
-                            if _re2:
-                                st.error(f"❌ 등록 실패: {_re2}")
-                            else:
+                            if _res and _res.get('origin_product_no'):
                                 st.success(f"✅ 네이버 등록 완료! (origin #{_res.get('origin_product_no')}) "
-                                           f"— {_en.strip()[:20]} / {fmt(int(_es))}원 / 이미지 {len(_cdns)}장")
+                                           f"— {_en.strip()[:20]} / {fmt(int(_es))}원 / 이미지 {len(_cdns)}장"
+                                           + (f" / 태그 {len(_sel_tags)}개" if _sel_tags else ""))
+                                if _re2:   # 태그만 거부되고 등록은 성공한 경우 경고
+                                    st.warning(_re2)
                                 st.session_state.pop('_ph_pv', None)
+                                st.session_state.pop('_ph_tags', None)
+                                st.session_state.pop('_ph_tags_info', None)
+                            else:
+                                st.error(f"❌ 등록 실패: {_re2}")
         st.divider()
 
     # ── 📷 여러 개 한번에 등록 (일괄) — 제품사진들 + 가격사진들 1:1 순서매칭 ──
