@@ -238,6 +238,15 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             _price_img = _uc2.file_uploader("② 가격 사진 (코스트코 가격표)", accept_multiple_files=False, key="ph_price")
             if _prod_imgs:
                 _uc1.image([im for im in _prod_imgs[:9]], width=90)
+                if _uc1.checkbox("🔲 1000×1000 변환 미리보기 (네이버에 올라가는 실제 형태)", key="ph_sq_prev"):
+                    _sq_imgs = []
+                    for _im in _prod_imgs[:9]:
+                        _b = naver_api.resize_square_bytes(_im.getvalue())
+                        if _b:
+                            _sq_imgs.append(_b)
+                    if _sq_imgs:
+                        _uc1.image(_sq_imgs, width=90)
+                        _uc1.caption("↑ 비율 유지 + 흰 여백으로 정사각 변환된 모습 = 네이버 등록 대표/추가 이미지")
             if _price_img:
                 _uc2.image(_price_img, width=150)
             st.caption("제품사진 = 리스팅 이미지(여러 장: 대표+추가) + 상품명·카테고리 / "
@@ -389,6 +398,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                            + (f" / 태그 {len(_sel_tags)}개" if _sel_tags else ""))
                                 if _re2:   # 태그만 거부되고 등록은 성공한 경우 경고
                                     st.warning(_re2)
+                                st.image(_cdns[0], width=220,
+                                         caption="네이버에 등록된 대표이미지 (1000×1000 정사각)")
                                 st.session_state.pop('_ph_pv', None)
                                 st.session_state.pop('_ph_tags', None)
                                 st.session_state.pop('_ph_tags_info', None)

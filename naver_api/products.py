@@ -66,28 +66,50 @@ def search_naver_categories(client_id, client_secret, keyword):
 
 
 
+def _square_canvas(im, size=1000, bg=(255, 255, 255)):
+    """PIL 이미지를 비율 유지 + 흰 여백으로 size×size 정사각 RGB 캔버스로 변환.
+    긴 변을 size에 맞춰 확대/축소 후 남는 부분을 흰색으로 채워 상품이 잘리지 않음.
+    _resize_square(업로드)와 resize_square_bytes(미리보기)의 공용 로직 = 결과 동일."""
+    from PIL import Image
+    im = im.convert("RGB")
+    _w, _h = im.size
+    _scale = float(size) / max(_w, _h)
+    _nw, _nh = max(1, round(_w * _scale)), max(1, round(_h * _scale))
+    im = im.resize((_nw, _nh), Image.LANCZOS)
+    canvas = Image.new("RGB", (size, size), bg)
+    canvas.paste(im, ((size - _nw) // 2, (size - _nh) // 2))
+    return canvas
+
+
 def _resize_square(src_path, size=1000, bg=(255, 255, 255)):
-    """이미지를 비율 유지 + 흰 여백으로 size×size 정사각형 JPEG로 변환.
-    네이버 대표이미지 권장 규격(1000×1000, 정사각). 긴 변을 size에 맞춰
-    확대/축소 후 남는 부분은 흰색으로 채워 상품이 잘리지 않음.
+    """이미지 파일을 1000×1000 정사각 JPEG로 변환 (네이버 업로드용).
     반환: 변환된 임시파일 경로 (실패 시 None → 원본 그대로 업로드)."""
     try:
         from PIL import Image
         import tempfile, os as _os
         with Image.open(src_path) as _im0:
-            im = _im0.convert("RGB")
-            _w, _h = im.size
-            if _w <= 0 or _h <= 0:
+            if _im0.size[0] <= 0 or _im0.size[1] <= 0:
                 return None
-            _scale = float(size) / max(_w, _h)
-            _nw, _nh = max(1, round(_w * _scale)), max(1, round(_h * _scale))
-            im = im.resize((_nw, _nh), Image.LANCZOS)
-            canvas = Image.new("RGB", (size, size), bg)
-            canvas.paste(im, ((size - _nw) // 2, (size - _nh) // 2))
-            _fd, _out = tempfile.mkstemp(suffix=".jpg")
-            _os.close(_fd)
-            canvas.save(_out, "JPEG", quality=90)
-            return _out
+            canvas = _square_canvas(_im0, size, bg)
+        _fd, _out = tempfile.mkstemp(suffix=".jpg")
+        _os.close(_fd)
+        canvas.save(_out, "JPEG", quality=90)
+        return _out
+    except Exception:
+        return None
+
+
+def resize_square_bytes(img_bytes, size=1000, bg=(255, 255, 255)):
+    """미리보기용 — 이미지 바이트를 1000×1000 정사각 JPEG 바이트로 변환.
+    실제 업로드(_resize_square)와 동일 결과. 실패 시 None."""
+    try:
+        from PIL import Image
+        import io
+        with Image.open(io.BytesIO(img_bytes)) as _im0:
+            canvas = _square_canvas(_im0, size, bg)
+        buf = io.BytesIO()
+        canvas.save(buf, "JPEG", quality=90)
+        return buf.getvalue()
     except Exception:
         return None
 

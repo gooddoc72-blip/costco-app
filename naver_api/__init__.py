@@ -28,6 +28,7 @@ from .products import (
     search_naver_categories,
     upload_product_image,
     upload_images_batch,
+    resize_square_bytes,
     register_product,
     search_recommend_tags,
     filter_restricted_tags,
