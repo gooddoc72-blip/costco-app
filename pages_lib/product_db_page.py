@@ -196,6 +196,9 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     if _perr:
                         st.error(f"조회 실패: {_perr}")
                 _cf_prods = st.session_state.get('_cf_prods') or []
+                _cf_flash = st.session_state.pop('_cf_price_flash', None)
+                if _cf_flash:
+                    st.success(_cf_flash)   # rerun 후에도 완료 메시지 유지
                 if _cf_prods:
                     st.caption(f"{len(_cf_prods)}개 — 새 가격 입력 후 '가격변경'을 누르면 카페24 스토어에 즉시 반영됩니다.")
                     for _p in _cf_prods[:30]:
@@ -214,7 +217,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                     _cf_creds, _pno, _new_price, save_tokens=_cf_save)
                             if _ok:
                                 _p['price'] = int(_new_price)   # 목록 캐시 갱신
-                                st.success(f"✅ {str(_p['product_name'])[:20]} → {fmt(int(_new_price))}원 변경 완료")
+                                st.session_state['_cf_price_flash'] = (
+                                    f"✅ {str(_p['product_name'])[:20]} → {fmt(int(_new_price))}원 변경 완료")
                                 st.rerun()
                             else:
                                 _pc3.error("실패"); st.error(f"가격변경 실패: {_uerr}")
