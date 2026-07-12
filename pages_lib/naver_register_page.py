@@ -286,6 +286,10 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         _cr2, _ = naver_api.search_naver_categories(api_id, api_secret, _i1['category'])
                         if _cr2:
                             _cid, _cfull = _cr2[0]['id'], _cr2[0]['full_name']
+                    # 새 상품 분석 시 이전 제품의 편집값·태그 초기화 (위젯 생성 전이라 안전)
+                    for _rk in ('ph_en', 'ph_es', 'ph_ec', 'ph_costco_no', 'ph_desc',
+                                'ph_sq_prev', '_ph_tags', '_ph_tags_info', 'ph_tag_editor'):
+                        st.session_state.pop(_rk, None)
                     st.session_state['_ph_pv'] = {
                         'name': _nm, 'cost': _cost, 'sale': _sale,
                         'cat_id': str(_cid or ''), 'cat_full': _cfull or '',
