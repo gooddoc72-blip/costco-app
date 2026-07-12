@@ -264,20 +264,25 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     # ── 새 키워드 추가 ──────────────────────────────────────
     with st.expander("➕ 새 키워드 추적 추가", expanded=not trackings):
         # 네이버 등록 상품 = 상품번호 있거나 from_naver=1
+        _merged_all = cached_merged(USERNAME) or []
         all_prods = [
-            p for p in cached_merged(USERNAME)
+            p for p in _merged_all
             if (p.get('naver_product_no') and str(p['naver_product_no']).strip())
             or int(p.get('from_naver') or 0) == 1
         ]
+        if not all_prods:   # 네이버번호 없는 상품만 있으면 전체 상품으로 폴백(선택 가능하게)
+            all_prods = _merged_all
         if not all_prods:
-            st.info("네이버에 등록된 상품이 없습니다. 제품 DB 탭에서 네이버 상품을 먼저 가져오세요.")
+            st.info("등록된 상품이 없습니다. 제품 DB 탭에서 상품을 먼저 가져오세요.")
         else:
             _rk_c1, _rk_c2 = st.columns(2)
             # 상품 검색 입력
             _prod_q = _rk_c1.text_input("상품 검색 (네이버 등록 상품)", placeholder="상품명 또는 키워드 입력", key="rk_prod_q")
             search_kw = _rk_c2.text_input("네이버 검색 키워드", placeholder="예: 코스트코 견과류", key="rk_kw")
 
-            # 검색어로 필터링 — 토큰(단어) 기반: 통째 부분일치 안 돼도 단어 겹치면 매칭
+            # 검색어로 필터링 — 있으면 부분/토큰 일치, 없으면 전체 목록.
+            # 매칭이 0건이어도 전체 목록을 보여줘 항상 선택 가능하게 한다.
+            _no_hit = False
             if _prod_q.strip():
                 _q_lower = _prod_q.strip().lower()
                 _q_tokens = [t for t in _q_lower.split() if len(t) >= 2]
@@ -287,26 +292,25 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                             + (p.get('match_keyword') or '')).lower()
                     if _q_lower in _txt:
                         return 1000  # 통째 부분일치 최우선
-                    if not _q_tokens:
-                        return 1 if _q_lower in _txt else 0
                     return sum(1 for t in _q_tokens if t in _txt)
 
-                _need = max(1, len(_q_tokens) // 2)  # 검색어 단어 절반 이상 일치
                 _scored = sorted(
                     ((p, _rk_score(p)) for p in all_prods),
                     key=lambda x: -x[1]
                 )
-                _filtered = [p for p, s in _scored if s >= _need][:30]
+                _hits = [p for p, s in _scored if s > 0][:30]   # 한 단어라도 겹치면 노출
+                _filtered = _hits if _hits else all_prods[:50]
+                _no_hit = not _hits
             else:
-                _filtered = []
+                _filtered = all_prods[:50]
 
             sel_p = None
-            if _prod_q.strip() and not _filtered:
-                _rk_c1.warning("검색 결과 없음")
-            elif _filtered:
-                _f_labels = [f"{p['costco_name']} ({p['match_keyword']})" for p in _filtered]
+            if _filtered:
+                if _no_hit:
+                    _rk_c1.caption("🔍 검색 일치 없음 — 아래 전체 목록에서 선택하세요.")
+                _f_labels = [f"{p['costco_name']} ({p.get('match_keyword', '')})" for p in _filtered]
                 _f_idx = _rk_c1.selectbox(
-                    f"검색 결과 {len(_filtered)}건",
+                    f"상품 선택 ({len(_filtered)}건)",
                     range(len(_filtered)),
                     format_func=lambda i: _f_labels[i],
                     key="rk_prod_sel"
