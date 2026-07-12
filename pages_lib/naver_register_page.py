@@ -150,13 +150,18 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     # ── 공통 상세 이미지(상단·하단) + 상세HTML 빌더 ──
     _top_img = _gs('naver_detail_top_img'); _bottom_img = _gs('naver_detail_bottom_img')
 
-    def _build_detail(name, imgs):
-        """상세HTML: [공통상단] + 상품명(큰폰트) + 제품이미지들 + [공통하단]."""
+    def _build_detail(name, imgs, desc=""):
+        """상세HTML: [공통상단] + 상품명(큰폰트) + [제품설명] + 제품이미지들 + [공통하단]."""
         _p = []
         if _top_img:
             _p.append(f'<img src="{_top_img}" style="max-width:100%;display:block;margin:0 auto">')
         _p.append(f'<div style="font-size:32px;font-weight:800;text-align:center;'
                   f'padding:20px 12px;line-height:1.35">{name}</div>')
+        if desc and str(desc).strip():
+            import html as _htmlmod
+            _safe = _htmlmod.escape(str(desc).strip()).replace('\n', '<br>')
+            _p.append(f'<div style="font-size:17px;line-height:1.75;text-align:center;'
+                      f'padding:4px 16px 22px;color:#333">{_safe}</div>')
         for _u in imgs:
             _p.append(f'<img src="{_u}" style="max-width:100%;display:block;margin:0 auto">')
         if _bottom_img:
@@ -246,7 +251,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                             _sq_imgs.append(_b)
                     if _sq_imgs:
                         _uc1.image(_sq_imgs, width=90)
-                        _uc1.caption("↑ 비율 유지 + 흰 여백으로 정사각 변환된 모습 = 네이버 등록 대표/추가 이미지")
+                        _uc1.caption("↑ 가운데 기준 정사각 크롭된 모습 = 네이버 등록 대표/추가 이미지")
             if _price_img:
                 _uc2.image(_price_img, width=150)
             st.caption("제품사진 = 리스팅 이미지(여러 장: 대표+추가) + 상품명·카테고리 / "
@@ -293,6 +298,9 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 st.markdown(f"**미리보기** — 코스트코가 {fmt(_pv['cost'])}원 → 네이버 판매가 **{fmt(_pv['sale'])}원** "
                             f"(마진 {_ph_margin}%)")
                 _en = st.text_input("상품명", value=_pv['name'], key="ph_en")
+                _desc = st.text_area(
+                    "제품 설명 (상세페이지 상품명 하단에 표시)", value="", key="ph_desc", height=100,
+                    placeholder="예: 코스트코 프리미엄 커피 원액 260mL x 3개입 / 시그니처 캐러멜향 …")
                 _ecols = st.columns(2)
                 _es = _ecols[0].number_input("네이버 판매가", value=int(_pv['sale']), min_value=0, step=100, key="ph_es")
                 _ec = _ecols[1].text_input("카테고리ID (자동판단)", value=_pv['cat_id'],
@@ -387,7 +395,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                 "category_id": _ec.strip(),
                                 "seller_code": _costco_no.strip(),
                                 "seller_tags": _sel_tags,
-                                "detail_html": _build_detail(_en.strip(), _cdns),
+                                "detail_html": _build_detail(_en.strip(), _cdns, _desc),
                                 "shipping_fee": 0, "origin_code": "03",
                                 "after_service_tel": _gs("naver_as_tel") or "1588-1234",
                                 "manufacturer": _pv.get('brand') or "상품 상세페이지 참조",

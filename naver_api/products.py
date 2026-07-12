@@ -67,18 +67,19 @@ def search_naver_categories(client_id, client_secret, keyword):
 
 
 def _square_canvas(im, size=1000, bg=(255, 255, 255)):
-    """PIL 이미지를 비율 유지 + 흰 여백으로 size×size 정사각 RGB 캔버스로 변환.
-    긴 변을 size에 맞춰 확대/축소 후 남는 부분을 흰색으로 채워 상품이 잘리지 않음.
+    """PIL 이미지를 '가운데 기준 정사각 크롭'으로 size×size 로 변환 (흰 여백 없음).
+    짧은 변을 한 변으로 하는 정사각을 이미지 중앙에서 잘라냄:
+      · 세로로 긴 사진 → 가로에 맞추고 위·아래를 균등하게 잘라냄
+      · 가로로 긴 사진 → 세로에 맞추고 좌·우를 균등하게 잘라냄
     _resize_square(업로드)와 resize_square_bytes(미리보기)의 공용 로직 = 결과 동일."""
     from PIL import Image
     im = im.convert("RGB")
     _w, _h = im.size
-    _scale = float(size) / max(_w, _h)
-    _nw, _nh = max(1, round(_w * _scale)), max(1, round(_h * _scale))
-    im = im.resize((_nw, _nh), Image.LANCZOS)
-    canvas = Image.new("RGB", (size, size), bg)
-    canvas.paste(im, ((size - _nw) // 2, (size - _nh) // 2))
-    return canvas
+    _s = min(_w, _h)                       # 정사각 한 변 = 짧은 변
+    _left = (_w - _s) // 2                  # 가운데 정렬
+    _top = (_h - _s) // 2
+    im = im.crop((_left, _top, _left + _s, _top + _s))
+    return im.resize((size, size), Image.LANCZOS)
 
 
 def _resize_square(src_path, size=1000, bg=(255, 255, 255)):
@@ -117,7 +118,7 @@ def resize_square_bytes(img_bytes, size=1000, bg=(255, 255, 255)):
 def upload_product_image(client_id, client_secret, image_source):
     """
     이미지(로컬 파일 경로 또는 URL)를 네이버 CDN에 업로드.
-    업로드 전 1000×1000 정사각형(흰 패딩)으로 자동 리사이징.
+    업로드 전 1000×1000 정사각형(가운데 크롭)으로 자동 변환.
     반환: (naver_cdn_url, error_msg)
     """
     token, err = get_token(client_id, client_secret)
