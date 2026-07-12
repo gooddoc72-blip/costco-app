@@ -66,9 +66,36 @@ def search_naver_categories(client_id, client_secret, keyword):
 
 
 
+def _resize_square(src_path, size=1000, bg=(255, 255, 255)):
+    """이미지를 비율 유지 + 흰 여백으로 size×size 정사각형 JPEG로 변환.
+    네이버 대표이미지 권장 규격(1000×1000, 정사각). 긴 변을 size에 맞춰
+    확대/축소 후 남는 부분은 흰색으로 채워 상품이 잘리지 않음.
+    반환: 변환된 임시파일 경로 (실패 시 None → 원본 그대로 업로드)."""
+    try:
+        from PIL import Image
+        import tempfile, os as _os
+        with Image.open(src_path) as _im0:
+            im = _im0.convert("RGB")
+            _w, _h = im.size
+            if _w <= 0 or _h <= 0:
+                return None
+            _scale = float(size) / max(_w, _h)
+            _nw, _nh = max(1, round(_w * _scale)), max(1, round(_h * _scale))
+            im = im.resize((_nw, _nh), Image.LANCZOS)
+            canvas = Image.new("RGB", (size, size), bg)
+            canvas.paste(im, ((size - _nw) // 2, (size - _nh) // 2))
+            _fd, _out = tempfile.mkstemp(suffix=".jpg")
+            _os.close(_fd)
+            canvas.save(_out, "JPEG", quality=90)
+            return _out
+    except Exception:
+        return None
+
+
 def upload_product_image(client_id, client_secret, image_source):
     """
     이미지(로컬 파일 경로 또는 URL)를 네이버 CDN에 업로드.
+    업로드 전 1000×1000 정사각형(흰 패딩)으로 자동 리사이징.
     반환: (naver_cdn_url, error_msg)
     """
     token, err = get_token(client_id, client_secret)
@@ -77,6 +104,7 @@ def upload_product_image(client_id, client_secret, image_source):
 
     headers = {"Authorization": f"Bearer {token}"}
     tmp_path = None
+    resized_path = None
 
     try:
         if image_source.startswith("http"):
@@ -110,9 +138,13 @@ def upload_product_image(client_id, client_secret, image_source):
         else:
             src_path = image_source
 
+        # 네이버 권장 1000×1000 정사각형으로 리사이징 (실패 시 원본 업로드)
+        resized_path = _resize_square(src_path)
+        upload_path = resized_path or src_path
+
         import os as _os
-        fname = _os.path.basename(src_path)
-        with open(src_path, "rb") as f:
+        fname = _os.path.basename(upload_path)
+        with open(upload_path, "rb") as f:
             resp = requests.post(
                 "https://api.commerce.naver.com/external/v1/product-images/upload",
                 headers=headers,
@@ -129,12 +161,13 @@ def upload_product_image(client_id, client_secret, image_source):
     except Exception as e:
         return None, str(e)
     finally:
-        if tmp_path:
-            try:
-                import os
-                os.remove(tmp_path)
-            except Exception:
-                pass
+        for _p in (tmp_path, resized_path):
+            if _p:
+                try:
+                    import os
+                    os.remove(_p)
+                except Exception:
+                    pass
 
 
 
