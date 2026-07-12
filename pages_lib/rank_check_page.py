@@ -335,7 +335,9 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 if _dup:
                     st.warning(f"⚠️ 이미 등록됨: '{search_kw}' / {_track_name} (id={_dup.get('id')})")
                 else:
-                    naver_pno = sel_p.get('naver_product_no') or ''
+                    # 원상품번호(naver_origin_pno) 우선 — 수정 API가 직접 받는 번호
+                    naver_pno = (sel_p.get('naver_origin_pno') or sel_p.get('naver_channel_pno')
+                                 or sel_p.get('naver_product_no') or '')
                     # 스토어명 저장 (다음부터 자동 입력)
                     if store_nm.strip() and store_nm.strip() != _saved_store:
                         set_setting(USERNAME, 'rank_store_name', store_nm.strip())
@@ -450,6 +452,18 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         _hdr[3].markdown(f"<b style='font-size:15px'>일별 순위 (1~{_days_in_month})</b>", unsafe_allow_html=True)
         _hdr[4].markdown("<b style='font-size:15px'>최신</b>", unsafe_allow_html=True)
         st.markdown("<hr style='margin:4px 0 8px 0;border-color:#ddd'>", unsafe_allow_html=True)
+
+        # 저장된 네이버번호(채널/원 무엇이든) → 원상품번호(naver_origin_pno) 매핑
+        # 기존 추적이 채널번호로 저장돼 있어도 수정 API가 받는 원번호로 변환
+        _origin_by_no = {}
+        for _mp in (cached_merged(USERNAME) or []):
+            _op = str(_mp.get('naver_origin_pno') or '').strip()
+            if not _op:
+                continue
+            for _mk in ('naver_origin_pno', 'naver_channel_pno', 'naver_product_no'):
+                _mv = str(_mp.get(_mk) or '').strip()
+                if _mv:
+                    _origin_by_no[_mv] = _op
 
         for _t in trackings:
             _daily = get_daily_ranks_in_month(USERNAME, _t['id'], _yy, _mm)
@@ -566,7 +580,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     st.rerun()
 
                 # ── 🏪 네이버 스토어 상품명 실제 변경 (별도 버튼 — 로컬 저장과 독립) ──
-                _npno_edit = str(_t.get('naver_product_no', '') or '').strip()
+                _npno_raw = str(_t.get('naver_product_no', '') or '').strip()
+                _npno_edit = _origin_by_no.get(_npno_raw, _npno_raw)   # 채널→원상품번호 변환
                 _has_keys = bool(api_id and api_secret)
                 st.caption("🏪 아래 버튼은 위 '상품 키워드(매칭명)' 값으로 **네이버 스토어의 실제 상품명**을 "
                            "변경합니다. (로컬 저장과 별개 · 라이브 반영 · 검색 노출/순위에 영향 가능)")
