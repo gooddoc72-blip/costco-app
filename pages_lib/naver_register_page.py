@@ -163,7 +163,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             _p.append(f'<div style="font-size:17px;line-height:1.75;text-align:center;'
                       f'padding:4px 16px 22px;color:#333">{_safe}</div>')
         for _u in imgs:
-            _p.append(f'<img src="{_u}" style="max-width:100%;display:block;margin:0 auto">')
+            _p.append(f'<img src="{_u}" style="max-width:100%;display:block;'
+                      f'margin:0 auto 20px;border:1px solid #cccccc">')
         if _bottom_img:
             _p.append(f'<img src="{_bottom_img}" style="max-width:100%;display:block;margin:0 auto">')
         return '<div style="text-align:center">' + ''.join(_p) + '</div>'
