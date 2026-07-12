@@ -258,6 +258,50 @@ def analyze_product_photo(api_key, image_bytes, media_type):
     }, None
 
 
+_FOODLABEL_SYSTEM = (
+    "너는 식품 표시사항(라벨) 판독 전문가다. 제품 뒷면 표시사항/영양성분 사진을 보고 "
+    "JSON으로만 출력한다(설명 금지).\n"
+    "출력 형식:\n"
+    '{"food_type":"식품유형","volume":"내용량","ingredients":"원재료명",'
+    '"storage":"보관방법","origin":"원산지","manufacturer":"제조사","importer":"수입원",'
+    '"calories":"열량","nutrition":"영양성분","expiration":"소비기한"}\n'
+    "규칙:\n"
+    "- food_type: 식품유형 (예: '과자(유탕처리제품)').\n"
+    "- volume: 내용량/총중량 (예: '680.4g').\n"
+    "- ingredients: 원재료명 전체를 사진 그대로 (예: '감자 63.88%, 식물성유지(유채유,옥수수유,대두유,해바라기씨유), 정제소금, 대두 함유').\n"
+    "- storage: 보관방법 (예: '직사광선을 피하고 실온에서 보관').\n"
+    "- origin: 원산지 (예: '미국').\n"
+    "- manufacturer: 제조사 (예: 'FRITO-LAY, INC').\n"
+    "- importer: 수입원/판매원 (예: '(주)코스트코 코리아').\n"
+    "- calories: 총 열량 + 기준 (예: '총 3,837kcal / 100g당 564kcal').\n"
+    "- nutrition: 영양성분을 읽은 그대로 (예: '나트륨 490mg(25%), 탄수화물 54g(17%), 당류 3g(3%), 지방 36g(67%), 포화지방 5g(33%), 트랜스지방 0.5g 미만, 콜레스테롤 0mg(0%), 단백질 6g(11%)').\n"
+    "- expiration: 소비/유통기한 표기 (예: '제품에 별도 표시').\n"
+    "안 보이는 항목은 빈 문자열 ''. 없는 정보를 지어내지 말 것."
+)
+
+
+def analyze_food_label(api_key, image_bytes, media_type):
+    """식품 표시사항 라벨 사진 → {food_type, volume, ingredients, storage, origin,
+    manufacturer, importer, calories, nutrition, expiration}. 반환: (dict, error)."""
+    if not api_key:
+        return None, "Anthropic API 키 미설정 (설정 탭 > 🤖 AI 설정)"
+    _txt, _err = claude_vision(api_key, image_bytes, media_type, _FOODLABEL_SYSTEM,
+                               "이 식품 표시사항 사진을 분석해 JSON으로 출력해줘.", max_tokens=700)
+    if _err or not _txt:
+        return None, _err or "빈 응답"
+    _s = _txt.strip()
+    _i, _j = _s.find("{"), _s.rfind("}")
+    if _i >= 0 and _j > _i:
+        _s = _s[_i:_j + 1]
+    try:
+        _d = json.loads(_s)
+    except Exception:
+        return None, f"JSON 파싱 실패: {_txt[:120]}"
+    _keys = ("food_type", "volume", "ingredients", "storage", "origin",
+             "manufacturer", "importer", "calories", "nutrition", "expiration")
+    return {_k: str(_d.get(_k, "") or "").strip() for _k in _keys}, None
+
+
 _PRICETAG_SYSTEM = (
     "너는 코스트코 매장 가격표(라벨) 판독 전문가다. 사진 속 가격표를 보고 JSON으로만 출력한다.\n"
     '출력(JSON만): {"product_no":"상품번호","price":정수,"product_name":"상품명"}\n'

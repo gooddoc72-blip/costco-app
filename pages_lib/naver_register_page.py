@@ -150,8 +150,40 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     # ── 공통 상세 이미지(상단·하단) + 상세HTML 빌더 ──
     _top_img = _gs('naver_detail_top_img'); _bottom_img = _gs('naver_detail_bottom_img')
 
-    def _build_detail(name, imgs, desc=""):
-        """상세HTML: [공통상단] + 상품명(큰폰트) + [제품설명] + 제품이미지들 + [공통하단]."""
+    def _food_info_html(d):
+        """식품 표시사항 dict → 상세페이지용 '제품 상세정보' 표 HTML. 빈 값 행은 생략."""
+        if not d:
+            return ""
+        import html as _hm
+        _rows = [
+            ("식품유형", d.get("food_type")), ("내용량", d.get("volume")),
+            ("원재료명", d.get("ingredients")), ("보관방법", d.get("storage")),
+            ("원산지", d.get("origin")), ("제조사", d.get("manufacturer")),
+            ("수입원", d.get("importer")), ("소비기한", d.get("expiration")),
+            ("열량", d.get("calories")), ("영양성분", d.get("nutrition")),
+        ]
+        _tr = []
+        for _lbl, _val in _rows:
+            _v = str(_val or "").strip()
+            if not _v:
+                continue
+            _tr.append(
+                '<tr>'
+                '<th style="background:#f5f5f5;border:1px solid #ddd;padding:10px 12px;'
+                'text-align:center;width:28%;font-weight:700;color:#333;white-space:nowrap">'
+                f'{_hm.escape(_lbl)}</th>'
+                '<td style="border:1px solid #ddd;padding:10px 12px;text-align:left;'
+                f'color:#333;line-height:1.6">{_hm.escape(_v)}</td></tr>')
+        if not _tr:
+            return ""
+        return ('<div style="max-width:720px;margin:24px auto 8px;padding:0 12px">'
+                '<div style="font-size:20px;font-weight:800;text-align:center;'
+                'padding:12px 0;color:#222">제품 상세정보</div>'
+                '<table style="width:100%;border-collapse:collapse;font-size:15px">'
+                + ''.join(_tr) + '</table></div>')
+
+    def _build_detail(name, imgs, desc="", food_html=""):
+        """상세HTML: [공통상단] + 상품명 + [제품설명] + 제품이미지들 + [제품정보표] + [공통하단]."""
         _p = []
         if _top_img:
             _p.append(f'<img src="{_top_img}" style="max-width:100%;display:block;margin:0 auto">')
@@ -165,6 +197,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         for _u in imgs:
             _p.append(f'<img src="{_u}" style="max-width:100%;display:block;'
                       f'margin:0 auto 20px;border:1px solid #cccccc">')
+        if food_html:
+            _p.append(food_html)
         if _bottom_img:
             _p.append(f'<img src="{_bottom_img}" style="max-width:100%;display:block;margin:0 auto">')
         return '<div style="text-align:center">' + ''.join(_p) + '</div>'
@@ -242,6 +276,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             _prod_imgs = _uc1.file_uploader("① 제품 사진들 (여러 장 — 첫 장이 대표이미지)",
                                             accept_multiple_files=True, key="ph_prod")
             _price_img = _uc2.file_uploader("② 가격 사진 (코스트코 가격표)", accept_multiple_files=False, key="ph_price")
+            _label_img = st.file_uploader("③ 표시사항(라벨) 사진 — 식품 상세정보(내용량·원재료·보관·영양성분) 자동입력용 (선택)",
+                                          accept_multiple_files=False, key="ph_label")
             if _prod_imgs:
                 _uc1.image([im for im in _prod_imgs[:9]], width=90)
                 if _uc1.checkbox("🔲 1000×1000 변환 미리보기 (네이버에 올라가는 실제 형태)", key="ph_sq_prev"):
@@ -289,7 +325,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                             _cid, _cfull = _cr2[0]['id'], _cr2[0]['full_name']
                     # 새 상품 분석 시 이전 제품의 편집값·태그 초기화 (위젯 생성 전이라 안전)
                     for _rk in ('ph_en', 'ph_es', 'ph_ec', 'ph_costco_no', 'ph_desc',
-                                'ph_sq_prev', '_ph_tags', '_ph_tags_info', 'ph_tag_editor'):
+                                'ph_sq_prev', '_ph_tags', '_ph_tags_info', 'ph_tag_editor', '_ph_food'):
                         st.session_state.pop(_rk, None)
                     st.session_state['_ph_pv'] = {
                         'name': _nm, 'cost': _cost, 'sale': _sale,
@@ -321,6 +357,36 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     "제품 설명 (상세페이지 상품명 하단에 표시)", key="ph_desc", height=120,
                     placeholder="예: 코스트코 프리미엄 커피 원액 260mL x 3개입 / 시그니처 캐러멜향 … "
                                 "(또는 위 🤖 버튼으로 자동 생성)")
+
+                # ── 🍱 식품 표시사항(라벨) 자동입력 → 상세페이지 제품정보 표 ──
+                _fgc1, _fgc2 = st.columns([1, 3])
+                if _fgc1.button("🍱 라벨 분석 → 제품정보", key="ph_food_gen",
+                                use_container_width=True, disabled=_label_img is None):
+                    import ai_service
+                    with st.spinner("표시사항(라벨) 분석 중 — 내용량·원재료·보관·영양성분..."):
+                        _fdd, _fderr = ai_service.analyze_food_label(
+                            _ph_aikey, _label_img.getvalue(), _ph_mt(_label_img))
+                    if _fdd:
+                        st.session_state['_ph_food'] = _fdd
+                        st.rerun()
+                    else:
+                        st.warning(f"라벨 분석 실패: {_fderr}")
+                _fgc2.caption("③ 라벨 사진을 올리고 누르면 제품정보가 상세페이지에 표로 삽입됩니다.")
+                _food = st.session_state.get('_ph_food')
+                if _food and any(_food.values()):
+                    with st.expander("🍱 추출된 제품 정보 (상세페이지 표로 삽입)", expanded=True):
+                        _flabels = [('food_type', '식품유형'), ('volume', '내용량'),
+                                    ('ingredients', '원재료명'), ('storage', '보관방법'),
+                                    ('origin', '원산지'), ('manufacturer', '제조사'),
+                                    ('importer', '수입원'), ('expiration', '소비기한'),
+                                    ('calories', '열량'), ('nutrition', '영양성분')]
+                        for _fk, _flbl in _flabels:
+                            if _food.get(_fk):
+                                st.markdown(f"- **{_flbl}**: {_food[_fk]}")
+                        if st.button("🗑 제품정보 제거", key="ph_food_clear"):
+                            st.session_state.pop('_ph_food', None)
+                            st.rerun()
+
                 _ecols = st.columns(2)
                 _es = _ecols[0].number_input("네이버 판매가", value=int(_pv['sale']), min_value=0, step=100, key="ph_es")
                 _ec = _ecols[1].text_input("카테고리ID (자동판단)", value=_pv['cat_id'],
@@ -415,7 +481,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                 "category_id": _ec.strip(),
                                 "seller_code": _costco_no.strip(),
                                 "seller_tags": _sel_tags,
-                                "detail_html": _build_detail(_en.strip(), _cdns, _desc),
+                                "detail_html": _build_detail(_en.strip(), _cdns, _desc,
+                                                             _food_info_html(_food)),
                                 "shipping_fee": 0, "origin_code": "03",
                                 "after_service_tel": _gs("naver_as_tel") or "1588-1234",
                                 "manufacturer": _pv.get('brand') or "상품 상세페이지 참조",
@@ -431,6 +498,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                 st.session_state.pop('_ph_pv', None)
                                 st.session_state.pop('_ph_tags', None)
                                 st.session_state.pop('_ph_tags_info', None)
+                                st.session_state.pop('_ph_food', None)
                             else:
                                 st.error(f"❌ 등록 실패: {_re2}")
         st.divider()
