@@ -291,6 +291,14 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 if _pv['cat_full']:
                     st.caption(f"📂 {_pv['cat_full']}")
 
+                # ── 코스트코 상품번호 = 판매자 자체코드(sellerManagementCode) — 필수 ──
+                _costco_no = st.text_input(
+                    "코스트코 상품번호 (판매자 자체코드) *", value=_pv.get('costco_no', ''),
+                    key="ph_costco_no",
+                    help="네이버 sellerManagementCode로 등록됩니다. 가격사진에서 자동 판독된 값 — 틀리면 수정하세요.")
+                if not _costco_no.strip():
+                    st.warning("⚠️ 코스트코 상품번호가 비어 있습니다 — 입력해야 등록됩니다.")
+
                 # ── 🏷 AI 연관태그 (생성 → 검토 → 등록) ─────────────────
                 st.markdown("**🏷 연관태그 (검색 노출용 · 최대 10개)**")
                 _adc = (_gs('naver_ad_api_key'), _gs('naver_ad_secret'), _gs('naver_ad_customer_id'))
@@ -346,7 +354,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         _sel_tags = [{"code": t.get("code"), "text": t["text"]} for t in _cur_tags]
 
                 if st.button("🛍 네이버 등록", type="primary", key="ph_reg1",
-                             disabled=not (_prod_imgs and _en.strip() and _ec.strip() and _es > 0)):
+                             disabled=not (_prod_imgs and _en.strip() and _ec.strip()
+                                           and _es > 0 and _costco_no.strip())):
                     import tempfile, os as _os3
                     with st.spinner(f"제품사진 {len(_prod_imgs)}장 업로드 → 네이버 등록 중..."):
                         _cdns = []
@@ -367,7 +376,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                 "name": _en.strip(), "sale_price": int(_es),
                                 "image_url": _cdns[0], "extra_image_urls": _cdns[1:],
                                 "category_id": _ec.strip(),
-                                "seller_code": _pv.get('costco_no', ''),
+                                "seller_code": _costco_no.strip(),
                                 "seller_tags": _sel_tags,
                                 "detail_html": _build_detail(_en.strip(), _cdns),
                                 "shipping_fee": 0, "origin_code": "03",
