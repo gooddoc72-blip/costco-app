@@ -298,9 +298,24 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 st.markdown(f"**미리보기** — 코스트코가 {fmt(_pv['cost'])}원 → 네이버 판매가 **{fmt(_pv['sale'])}원** "
                             f"(마진 {_ph_margin}%)")
                 _en = st.text_input("상품명", value=_pv['name'], key="ph_en")
+                _dgc1, _dgc2 = st.columns([1, 3])
+                if _dgc1.button("🤖 AI 상세설명 생성", key="ph_desc_gen",
+                                use_container_width=True, disabled=not _prod_imgs):
+                    import ai_service
+                    with st.spinner("상품 사진 분석 → 상세설명 작성 중..."):
+                        _dtxt, _derr = ai_service.generate_product_description(
+                            _ph_aikey, _prod_imgs[0].getvalue(), _ph_mt(_prod_imgs[0]),
+                            _en.strip(), _pv.get('cat_full', ''))
+                    if _dtxt:
+                        st.session_state['ph_desc'] = _dtxt.strip()
+                        st.rerun()
+                    else:
+                        st.warning(f"상세설명 생성 실패: {_derr}")
+                _dgc2.caption("사진·상품명 기반 상세설명 자동 작성 → 아래에서 자유롭게 수정")
                 _desc = st.text_area(
-                    "제품 설명 (상세페이지 상품명 하단에 표시)", value="", key="ph_desc", height=100,
-                    placeholder="예: 코스트코 프리미엄 커피 원액 260mL x 3개입 / 시그니처 캐러멜향 …")
+                    "제품 설명 (상세페이지 상품명 하단에 표시)", key="ph_desc", height=120,
+                    placeholder="예: 코스트코 프리미엄 커피 원액 260mL x 3개입 / 시그니처 캐러멜향 … "
+                                "(또는 위 🤖 버튼으로 자동 생성)")
                 _ecols = st.columns(2)
                 _es = _ecols[0].number_input("네이버 판매가", value=int(_pv['sale']), min_value=0, step=100, key="ph_es")
                 _ec = _ecols[1].text_input("카테고리ID (자동판단)", value=_pv['cat_id'],

@@ -170,6 +170,27 @@ def claude_vision(api_key, image_bytes, media_type, system, user_text,
         return None, str(e)
 
 
+_DESC_SYSTEM = (
+    "너는 네이버 스마트스토어 상세페이지 카피라이터다. 상품 사진과 정보를 보고 "
+    "구매욕을 높이는 한국어 상세설명을 작성한다.\n"
+    "규칙:\n"
+    "- 3~5문장, 각 문장 간결하게. 제품 특징·용량/구성·활용법·코스트코 프리미엄 느낌 중심.\n"
+    "- 사진에서 확인되는 사실 위주. 과장·허위·없는 정보 지어내기 금지.\n"
+    "- 식품이면 효능·효과·다이어트·의학적 표현 금지(식품 과대광고 규제).\n"
+    "- 이모지 1~3개 자연스럽게 사용 가능.\n"
+    "- 출력은 설명 본문만 (제목·머리말·따옴표·마크다운 없이 평문)."
+)
+
+
+def generate_product_description(api_key, image_bytes, media_type, name="", category=""):
+    """상품 사진 + 상품명/카테고리로 상세페이지 설명 초안 생성. 반환: (text, error)."""
+    if not api_key:
+        return None, "Anthropic API 키 미설정 (설정 탭 > 🤖 AI 설정)"
+    _u = (f"상품명: {name or '(미상)'}\n카테고리: {category or '(미상)'}\n"
+          "이 상품 사진을 보고 상세페이지에 넣을 상세설명을 작성해줘.")
+    return claude_vision(api_key, image_bytes, media_type, _DESC_SYSTEM, _u, max_tokens=500)
+
+
 _PHOTO_SYSTEM = (
     "너는 네이버 스마트스토어 상품등록 전문가다. 상품 사진(가격표·라벨 포함 가능)을 분석해 "
     "등록용 정보를 JSON으로만 출력한다.\n"
