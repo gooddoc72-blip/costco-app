@@ -987,13 +987,17 @@ def update_product_name(client_id, client_secret, product_no, new_name):
 
     try:
         g = _get(pno)
-        if g.status_code in (403, 404):
+        if g.status_code == 404:
+            # 저장된 번호가 채널상품번호일 수 있음 → 원상품번호로 변환 후 재조회
             new_origin, rerr = resolve_origin_product_no(client_id, client_secret, pno)
             if new_origin and new_origin != pno:
                 pno = new_origin
                 g = _get(pno)
             else:
-                return False, f"원상품번호를 찾지 못했습니다({g.status_code}). {rerr or ''}".strip(), None
+                return False, f"원상품번호를 찾지 못했습니다(404). {rerr or ''}".strip(), None
+        if g.status_code == 403:
+            return False, ("접근 권한 없음(403) — 이 상품은 현재 커머스 API 키의 스토어 소속이 아닙니다. "
+                           "상품이 등록된 스토어의 API 키로 로그인해 수정하세요."), None
         if g.status_code != 200:
             return False, f"상품 조회 실패({g.status_code}: {_format_naver_err(g)})", None
 
@@ -1049,13 +1053,17 @@ def update_product_tags(client_id, client_secret, product_no, tags):
 
     try:
         g = _get(pno)
-        if g.status_code in (403, 404):
+        if g.status_code == 404:
+            # 저장된 번호가 채널상품번호일 수 있음 → 원상품번호로 변환 후 재조회
             new_origin, rerr = resolve_origin_product_no(client_id, client_secret, pno)
             if new_origin and new_origin != pno:
                 pno = new_origin
                 g = _get(pno)
             else:
-                return False, f"원상품번호를 찾지 못했습니다({g.status_code}). {rerr or ''}".strip(), None
+                return False, f"원상품번호를 찾지 못했습니다(404). {rerr or ''}".strip(), None
+        if g.status_code == 403:
+            return False, ("접근 권한 없음(403) — 이 상품은 현재 커머스 API 키의 스토어 소속이 아닙니다. "
+                           "상품이 등록된 스토어의 API 키로 로그인해 수정하세요."), None
         if g.status_code != 200:
             return False, f"상품 조회 실패({g.status_code}: {_format_naver_err(g)})", None
 
