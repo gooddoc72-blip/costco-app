@@ -43,6 +43,7 @@ from .products import (
     resolve_origin_product_no,
     update_product_price,
     update_product_name,
+    update_product_tags,
     _READONLY_KEYS,
     _TAG_FIELDS_TO_STRIP,
 )

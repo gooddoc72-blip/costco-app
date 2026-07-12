@@ -1020,4 +1020,75 @@ def update_product_name(client_id, client_secret, product_no, new_name):
         return False, f"상품명 수정 예외: {e}", None
 
 
+def update_product_tags(client_id, client_secret, product_no, tags):
+    """기존 상품의 연관태그(seoInfo.sellerTags) 교체. tags=[{code,text}] (검증된 태그).
+    update_product_name과 동일한 GET→sanitize→PUT 구조. 반환: (ok, err, used_origin_no)."""
+    _clean = []
+    for _t in (tags or [])[:10]:
+        _txt = str((_t or {}).get('text') or '').strip()
+        if not _txt:
+            continue
+        _e = {'text': _txt}
+        _code = (_t or {}).get('code')
+        if _code not in (None, '', 0):
+            _e['code'] = int(_code)
+        _clean.append(_e)
+
+    token, err = get_token(client_id, client_secret)
+    if not token:
+        return False, err, None
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    pno = str(product_no).strip()
+    if not pno:
+        return False, "상품번호가 비어 있습니다.", None
+
+    def _get(p):
+        return requests.get(
+            f"https://api.commerce.naver.com/external/v2/products/origin-products/{p}",
+            headers=headers, timeout=15)
+
+    try:
+        g = _get(pno)
+        if g.status_code in (403, 404):
+            new_origin, rerr = resolve_origin_product_no(client_id, client_secret, pno)
+            if new_origin and new_origin != pno:
+                pno = new_origin
+                g = _get(pno)
+            else:
+                return False, f"원상품번호를 찾지 못했습니다({g.status_code}). {rerr or ''}".strip(), None
+        if g.status_code != 200:
+            return False, f"상품 조회 실패({g.status_code}: {_format_naver_err(g)})", None
+
+        data = g.json()
+        origin_product = data.get('originProduct') or {}
+        if not origin_product:
+            return False, f"GET 응답에 originProduct 없음: {str(data)[:200]}", None
+
+        origin_product = _sanitize_for_put(dict(origin_product))   # 옛 태그(금칙어 포함 가능) 제거
+        _da = origin_product.setdefault('detailAttribute', {})
+        if isinstance(_da, dict):
+            _seo = _da.get('seoInfo') if isinstance(_da.get('seoInfo'), dict) else {}
+            if _clean:
+                _seo['sellerTags'] = _clean          # 검증된 새 태그 주입
+                _da['seoInfo'] = _seo
+            else:
+                _seo.pop('sellerTags', None)          # 빈 목록이면 태그 제거
+                if _seo:
+                    _da['seoInfo'] = _seo
+
+        put_body = {"originProduct": origin_product}
+        smartstore = data.get('smartstoreChannelProduct')
+        if smartstore:
+            put_body["smartstoreChannelProduct"] = _sanitize_for_put(dict(smartstore))
+
+        put_resp = requests.put(
+            f"https://api.commerce.naver.com/external/v2/products/origin-products/{pno}",
+            headers=headers, json=put_body, timeout=20)
+        if put_resp.status_code == 200:
+            return True, None, pno
+        return False, f"태그 수정 실패({put_resp.status_code}: {_format_naver_err(put_resp)})", None
+    except Exception as e:
+        return False, f"태그 수정 예외: {e}", None
+
+
 # ── 정산 내역 조회 ─────────────────────────────────────────

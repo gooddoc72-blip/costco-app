@@ -603,6 +603,84 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 _napi_msg = st.session_state.pop(f'_rk_napi_done_{_t["id"]}', None)
                 if _napi_msg:
                     st.success(_napi_msg + " · '✖ 닫기'로 패널을 닫으세요.")
+
+                # ── 🏷 연관태그 수정 (제품등록 태그 기능 재사용 · 기존 상품 태그 교체) ──
+                if _npno_edit and _has_keys:
+                    st.markdown("<hr style='margin:6px 0;border:none;border-top:1px dashed #ffd54f'>",
+                                unsafe_allow_html=True)
+                    st.caption("🏷 이 상품의 **네이버 연관태그(검색 노출용)**를 새로 생성/수정합니다. "
+                               "(사전 등록 태그만 검색 반영 · 라이브 반영)")
+                    _aikey_rk = _gs('anthropic_api_key')
+                    _adc_rk = (_gs('naver_ad_api_key'), _gs('naver_ad_secret'), _gs('naver_ad_customer_id'))
+                    _tgc1, _tgc2 = st.columns([2, 4])
+                    if _tgc1.button("🤖 AI 태그 생성", key=f"rk_taggen_{_t['id']}",
+                                    use_container_width=True, disabled=not _aikey_rk):
+                        with st.spinner("AI 후보 → 태그사전 검증 → 제한태그 제거..."):
+                            _tags_rk, _tinfo_rk = naver_api.build_seller_tags(
+                                api_id, api_secret, _aikey_rk,
+                                _e_prod.strip() or _t['product_keyword'], '', _e_kw.strip(),
+                                ad_creds=_adc_rk if all(_adc_rk) else None)
+                        st.session_state[f'_rk_tags_{_t["id"]}'] = _tags_rk
+                        st.session_state[f'_rk_tinfo_{_t["id"]}'] = _tinfo_rk
+                        if not _tags_rk:
+                            st.warning(f"검증된 사전 태그 없음 (후보 {_tinfo_rk.get('candidates', 0)}개)")
+                        st.rerun()
+                    if not _aikey_rk:
+                        _tgc2.caption("⚠️ 설정 탭 > 🤖 AI 설정에 Anthropic 키 필요")
+                    elif not all(_adc_rk):
+                        _tgc2.caption("💡 검색광고 키 넣으면 검색량순 정렬 (지금은 관련도순)")
+
+                    _rk_tags = st.session_state.get(f'_rk_tags_{_t["id"]}')
+                    if _rk_tags:
+                        import pandas as _pdrk
+                        _volmap_rk = (st.session_state.get(f'_rk_tinfo_{_t["id"]}', {})
+                                      or {}).get('volumes', {}) or {}
+                        _tdf_rk = _pdrk.DataFrame([
+                            {"사용": True, "태그": _tg["text"],
+                             "월검색량": int(_volmap_rk.get(_tg["text"], 0)), "태그ID": _tg.get("code")}
+                            for _tg in _rk_tags])
+                        _ed_rk = st.data_editor(
+                            _tdf_rk, key=f"rk_tag_ed_{_t['id']}", hide_index=True,
+                            use_container_width=True, num_rows="dynamic",
+                            column_config={
+                                "사용": st.column_config.CheckboxColumn("사용", default=True),
+                                "태그": st.column_config.TextColumn("태그", required=True),
+                                "월검색량": st.column_config.NumberColumn("월검색량", disabled=True),
+                                "태그ID": st.column_config.NumberColumn(
+                                    "태그ID", disabled=True,
+                                    help="사전 등록 태그 ID(숫자 有 = 검색 반영). 빈 값 = 직접입력 태그."),
+                            })
+                        _sel_rk = []
+                        try:
+                            for _r in _ed_rk.to_dict("records"):
+                                _tx = str(_r.get("태그") or "").strip()
+                                if _r.get("사용") and _tx:
+                                    _e = {"text": _tx}
+                                    _cd = _r.get("태그ID")
+                                    if _cd not in (None, "", 0) and not _pdrk.isna(_cd):
+                                        _e["code"] = int(_cd)
+                                    _sel_rk.append(_e)
+                        except Exception:
+                            _sel_rk = [{"code": _tg.get("code"), "text": _tg["text"]} for _tg in _rk_tags]
+                        st.caption("체크 해제=제외 · 행 추가=직접입력 태그 · 적용 시 체크된 것만 반영.")
+                        _tap1, _tap2 = st.columns([2, 4])
+                        if _tap1.button(f"🏷 태그 적용 ({len(_sel_rk)}개)", key=f"rk_tagapply_{_t['id']}",
+                                        type="primary", use_container_width=True):
+                            with st.spinner("네이버 스토어 태그 변경 중..."):
+                                _okt, _errt, _ut = naver_api.update_product_tags(
+                                    api_id, api_secret, _npno_edit, _sel_rk)
+                            if _okt:
+                                st.session_state[f'_rk_tagdone_{_t["id"]}'] = (
+                                    f"✅ 연관태그 {len(_sel_rk)}개 적용 완료 (#{_ut})")
+                                st.session_state.pop(f'_rk_tags_{_t["id"]}', None)
+                                st.session_state.pop(f'_rk_tinfo_{_t["id"]}', None)
+                                st.rerun()
+                            else:
+                                _tap2.error(f"태그 변경 실패: {_errt}")
+                    _tagdone = st.session_state.pop(f'_rk_tagdone_{_t["id"]}', None)
+                    if _tagdone:
+                        st.success(_tagdone + " · '✖ 닫기'로 패널을 닫으세요.")
+
                 st.markdown("</div>", unsafe_allow_html=True)
 
             st.markdown("<hr style='margin:6px 0;border:none;border-top:1px solid #f0f0f0'>", unsafe_allow_html=True)
