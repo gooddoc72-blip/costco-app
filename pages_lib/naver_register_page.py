@@ -266,6 +266,31 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             set_setting(USERNAME, 'naver_detail_bottom_img', '')
             st.success("공통 이미지 해제됨"); st.rerun()
 
+    # ── 🔑 공용 AI 키 (관리자 전용) — 내 키를 넣으면 모든 사용자가 이 키로 사진등록 메뉴 사용 ──
+    if IS_ADMIN:
+        with st.expander("🔑 공용 AI 키 (관리자 전용 — 모든 사용자 공용)", expanded=not _ph_aikey):
+            _gk_cur = get_global_setting('anthropic_api_key') or ''
+            _gkc1, _gkc2 = st.columns([3, 1])
+            _gk_in = _gkc1.text_input(
+                "Anthropic API 키 (공용)", value=_gk_cur, type="password", key="nr_global_aikey",
+                help="여기에 내 Anthropic 키를 넣으면, 본인 키가 없는 모든 사용자가 이 키로 "
+                     "'사진+가격사진 신상품 등록' 메뉴를 사용합니다. (AI 분석 비용은 이 키로 청구)")
+            _gkc2.metric("공용키 상태", "✅ 설정됨" if _gk_cur else "미설정")
+            st.caption("우선순위: 사용자 본인 키(설정 탭) > 공용 키. 본인 키 있는 사용자는 자기 키를, "
+                       "없는 사용자는 이 공용 키를 사용합니다.")
+            if _gk_in.strip() != _gk_cur:
+                set_global_setting('anthropic_api_key', _gk_in.strip())
+                if _gk_in.strip():
+                    st.success("✅ 공용 AI 키 저장 — 이제 모든 사용자에게 이 메뉴가 열립니다.")
+                else:
+                    st.info("공용 AI 키 해제됨.")
+                st.rerun()
+
+    if not _ph_aikey:
+        st.info("ℹ️ AI 사진 등록 메뉴는 Anthropic 키가 있어야 표시됩니다. "
+                + ("위 🔑 공용 AI 키에 내 키를 넣으면 모든 사용자에게 열립니다."
+                   if IS_ADMIN else "관리자가 공용 키를 설정하면 사용할 수 있습니다."))
+
     if _ph_aikey:
         with st.expander("📷 제품사진(여러 장) + 가격사진으로 신상품 등록 (건별)", expanded=False):
             if not (_ph_oc and _ph_os):
