@@ -123,8 +123,9 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         return (_best.get('id'), _best.get('full_name')) if _best else (None, None)
 
     # ── 📷 제품사진 + 가격사진으로 신상품 등록 (건별) ──
-    #   AI 키: 본인 설정 > 관리자 공용키(전역) 순. 공용키가 있으면 모든 사용자에게 이 메뉴가 열림.
-    _ph_aikey = _gs('anthropic_api_key') or get_global_setting('anthropic_api_key')
+    #   AI 키: 관리자 공용키(전역) 우선(강제 통일). 공용키가 설정되면 본인 키가 있어도 공용키 사용.
+    #   공용키 미설정 시에만 본인 키로 폴백.
+    _ph_aikey = get_global_setting('anthropic_api_key') or _gs('anthropic_api_key')
     _ph_oc = _gs('naver_open_client_id'); _ph_os = _gs('naver_open_client_secret')
 
     def _ph_mt(_f):
@@ -273,11 +274,11 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             _gkc1, _gkc2 = st.columns([3, 1])
             _gk_in = _gkc1.text_input(
                 "Anthropic API 키 (공용)", value=_gk_cur, type="password", key="nr_global_aikey",
-                help="여기에 내 Anthropic 키를 넣으면, 본인 키가 없는 모든 사용자가 이 키로 "
-                     "'사진+가격사진 신상품 등록' 메뉴를 사용합니다. (AI 분석 비용은 이 키로 청구)")
+                help="여기에 내 Anthropic 키를 넣으면, 모든 사용자가 이 키로 '사진+가격사진 신상품 등록' "
+                     "메뉴를 사용합니다. (강제 통일 — 본인 키가 있어도 공용 키 사용 / AI 비용은 이 키로 청구)")
             _gkc2.metric("공용키 상태", "✅ 설정됨" if _gk_cur else "미설정")
-            st.caption("우선순위: 사용자 본인 키(설정 탭) > 공용 키. 본인 키 있는 사용자는 자기 키를, "
-                       "없는 사용자는 이 공용 키를 사용합니다.")
+            st.caption("⚙️ 강제 통일 모드 — 공용 키가 설정되면 **모든 사용자가 본인 키와 상관없이 이 공용 키**를 "
+                       "사용합니다. (공용 키 미설정 시에만 각자 본인 키로 폴백)")
             if _gk_in.strip() != _gk_cur:
                 set_global_setting('anthropic_api_key', _gk_in.strip())
                 if _gk_in.strip():
@@ -893,7 +894,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
 
                 # ── 🤖 AI 자동 카테고리·등록 (상품명 → 쇼핑검색 → AI 카테고리 → 등록) ──
                 _oc = _gs('naver_open_client_id'); _os = _gs('naver_open_client_secret')
-                _ai_key = _gs('anthropic_api_key') or get_global_setting('anthropic_api_key')
+                _ai_key = get_global_setting('anthropic_api_key') or _gs('anthropic_api_key')
                 if not (_oc and _os):
                     st.info("🤖 AI 자동등록은 **설정 탭 > 네이버 Open API**(쇼핑검색) 키가 필요합니다.")
                 else:
