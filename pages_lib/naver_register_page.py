@@ -123,7 +123,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         return (_best.get('id'), _best.get('full_name')) if _best else (None, None)
 
     # ── 📷 제품사진 + 가격사진으로 신상품 등록 (건별) ──
-    _ph_aikey = _gs('anthropic_api_key')
+    #   AI 키: 본인 설정 > 관리자 공용키(전역) 순. 공용키가 있으면 모든 사용자에게 이 메뉴가 열림.
+    _ph_aikey = _gs('anthropic_api_key') or get_global_setting('anthropic_api_key')
     _ph_oc = _gs('naver_open_client_id'); _ph_os = _gs('naver_open_client_secret')
 
     def _ph_mt(_f):
@@ -584,6 +585,243 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 st.caption("💡 짝이 안 맞으면 제품·가격 사진을 같은 순서·개수로 다시 올리세요. 실패건은 위 건별로 재등록.")
         st.divider()
 
+    # ── ✏️ 기존 상품 불러와서 수정 (전체 편집: 상품명·판매가·카테고리·태그·상세·사진) ──
+    with st.expander("✏️ 기존 상품 불러와서 수정 — 등록된 네이버 상품 편집", expanded=False):
+        st.caption("네이버에 이미 등록된 상품을 불러와 상품명·판매가·카테고리·연관태그·상세설명·사진을 수정합니다. "
+                   "본인 커머스 API 키의 스토어 상품만 수정할 수 있습니다.")
+        _edl1, _edl2 = st.columns([4, 1])
+        _ed_q = _edl1.text_input("상품명 검색(부분 일치 — 비우면 전체)", key="ed_q",
+                                 placeholder="예: 커피, 새우", label_visibility="collapsed")
+        if _edl2.button("🔄 목록 불러오기", key="ed_load", use_container_width=True):
+            with st.spinner("네이버 등록 상품 조회 중..."):
+                _elst, _elerr = naver_api.get_product_list(api_id, api_secret, channel_seller_id)
+            if _elerr:
+                st.error(f"조회 실패: {_elerr}")
+                st.session_state['_ed_list'] = []
+            else:
+                st.session_state['_ed_list'] = _elst or []
+                st.success(f"✅ {len(_elst or [])}개 조회됨")
+        _ed_list = st.session_state.get('_ed_list') or []
+        if _ed_list:
+            _edq = (_ed_q or '').strip().lower()
+            _ed_fil = [p for p in _ed_list
+                       if not _edq or _edq in str(p.get('productName', '')).lower()]
+            st.caption(f"검색 결과 {len(_ed_fil)}개 / 전체 {len(_ed_list)}개 (최대 300개 표시)")
+            _ed_opts = ['— 상품 선택 —'] + [
+                f"{p.get('originProductNo') or p.get('channelProductNo')} · "
+                f"{str(p.get('productName', ''))[:44]} · {fmt(int(p.get('salePrice') or 0))}원"
+                for p in _ed_fil[:300]
+            ]
+            _edc1, _edc2 = st.columns([4, 1])
+            _ed_sel = _edc1.selectbox("수정할 상품", _ed_opts, key="ed_sel",
+                                      label_visibility="collapsed")
+            if _edc2.button("📥 불러오기", key="ed_pull", use_container_width=True,
+                            disabled=(_ed_sel == '— 상품 선택 —')):
+                _ed_pno = _ed_sel.split(' · ', 1)[0].strip()
+                with st.spinner("상품 상세 불러오는 중..."):
+                    _ed_full, _ed_ono, _ed_ferr = naver_api.get_origin_product_full(
+                        api_id, api_secret, _ed_pno)
+                if _ed_ferr or not _ed_full:
+                    st.error(f"불러오기 실패: {_ed_ferr}")
+                else:
+                    _op = _ed_full.get('originProduct') or {}
+                    _da = _op.get('detailAttribute') or {}
+                    _imgs = _op.get('images') or {}
+                    _rep = ((_imgs.get('representativeImage') or {}) or {}).get('url') or ''
+                    _extra = [(o or {}).get('url') for o in (_imgs.get('optionalImages') or [])
+                              if (o or {}).get('url')]
+                    _tags_cur = ((_da.get('seoInfo') or {}).get('sellerTags')) or []
+                    _code_cur = ((_da.get('sellerCodeInfo') or {}).get('sellerManagementCode')) or ''
+                    # 위젯 상태 초기화 (이전 편집 잔상 제거)
+                    for _k in ('ed_name', 'ed_sale', 'ed_cat', 'ed_code', 'ed_desc',
+                               'ed_tag_editor', 'ed_newimgs', '_ed_tags',
+                               'ed_cat_kw', 'ed_cat_results', 'ed_cat_sel'):
+                        st.session_state.pop(_k, None)
+                    st.session_state['_ed_cur'] = {
+                        'origin_no': _ed_ono,
+                        'name': _op.get('name', ''),
+                        'sale': int(_op.get('salePrice') or 0),
+                        'cat_id': str(_op.get('leafCategoryId') or ''),
+                        'rep': _rep, 'extra': _extra,
+                        'seller_code': _code_cur,
+                    }
+                    st.session_state['_ed_tags'] = [
+                        {'text': t.get('text'), 'code': t.get('code')}
+                        for t in _tags_cur if isinstance(t, dict) and t.get('text')
+                    ]
+                    st.rerun()
+
+        _ed_cur = st.session_state.get('_ed_cur')
+        if _ed_cur:
+            st.divider()
+            st.markdown(f"**✏️ 수정 중** — 원상품번호 `{_ed_cur['origin_no']}`")
+            _all_imgs = ([_ed_cur['rep']] if _ed_cur['rep'] else []) + _ed_cur['extra']
+            if _all_imgs:
+                st.image(_all_imgs[:6], width=84)
+                st.caption(f"현재 등록 이미지 {len(_all_imgs)}장 — 아래에서 새 사진을 올리면 교체됩니다(안 올리면 유지).")
+
+            _ed_name = st.text_input("상품명", value=_ed_cur['name'], key="ed_name")
+            _edcc = st.columns(2)
+            _ed_sale = _edcc[0].number_input("판매가", value=int(_ed_cur['sale']),
+                                             min_value=0, step=100, key="ed_sale")
+            _ed_code = _edcc[1].text_input("코스트코 상품번호(자체코드)",
+                                           value=_ed_cur.get('seller_code', ''), key="ed_code")
+
+            # 카테고리 — 현재 ID 표시 + 검색으로 변경
+            _ed_cat = st.text_input("카테고리ID", value=_ed_cur['cat_id'], key="ed_cat",
+                                    help="그대로 두면 기존 카테고리 유지. 아래 검색으로 변경 가능.")
+            _edk1, _edk2 = st.columns([4, 1])
+            _ed_ckw = _edk1.text_input("네이버 카테고리 검색", key="ed_cat_kw",
+                                       placeholder="예: 냉동식품", label_visibility="collapsed")
+            if _edk2.button("🔍", key="ed_cat_btn") and _ed_ckw.strip():
+                _edcr, _edce = naver_api.search_naver_categories(api_id, api_secret, _ed_ckw.strip())
+                st.session_state['ed_cat_results'] = _edcr or []
+                if _edce:
+                    st.error(_edce)
+            _edcats = st.session_state.get('ed_cat_results') or []
+            if _edcats:
+                _edcopts = [f"{c['id']} — {c['full_name']}" for c in _edcats]
+                _edcsel = st.selectbox("카테고리 선택 → ID 반영", _edcopts, key="ed_cat_sel")
+                if st.button("✅ 이 카테고리로 변경", key="ed_cat_apply"):
+                    _ed_cur['cat_id'] = _edcsel.split(' — ')[0].strip()
+                    st.session_state['_ed_cur'] = _ed_cur
+                    st.session_state.pop('ed_cat', None)   # 위젯 재초기화 → 새 ID 반영
+                    st.rerun()
+
+            # 새 사진 업로드 (교체용)
+            _ed_newimgs = st.file_uploader(
+                "제품 사진 교체 (여러 장 — 첫 장이 대표. 안 올리면 기존 유지)",
+                accept_multiple_files=True, key="ed_newimgs")
+            if _ed_newimgs:
+                st.image([im for im in _ed_newimgs[:9]], width=84)
+                st.caption("↑ 새 사진으로 교체됩니다. (상세페이지 사진도 함께 갱신)")
+
+            # 제품 설명 (상세 재구성용) — 입력하거나 새 사진 있으면 상세 재생성
+            _ed_desc = st.text_area(
+                "제품 설명 (입력하거나 새 사진을 올리면 상세페이지를 재구성. 둘 다 비우면 기존 상세 유지)",
+                key="ed_desc", height=90,
+                placeholder="예: 코스트코 프리미엄 원두 1kg / 진한 풍미 …")
+            if _ph_aikey and _ed_newimgs:
+                _edg1, _edg2 = st.columns([1, 3])
+                if _edg1.button("🤖 AI 상세설명 생성", key="ed_desc_gen", use_container_width=True):
+                    import ai_service
+                    with st.spinner("사진 분석 → 상세설명 작성 중..."):
+                        _edt, _ederr = ai_service.generate_product_description(
+                            _ph_aikey, _ed_newimgs[0].getvalue(), _ph_mt(_ed_newimgs[0]),
+                            _ed_name.strip(), '')
+                    if _edt:
+                        st.session_state['ed_desc'] = _edt.strip(); st.rerun()
+                    else:
+                        st.warning(f"생성 실패: {_ederr}")
+                _edg2.caption("새로 올린 첫 사진 기반 상세설명 자동 작성")
+
+            # 연관태그 편집 (현재 태그 프리필 + AI 재생성)
+            st.markdown("**🏷 연관태그 (최대 10개)**")
+            if _ph_aikey:
+                if st.button("🤖 AI 태그 10개 재생성", key="ed_tag_gen"):
+                    _adc = (_gs('naver_ad_api_key'), _gs('naver_ad_secret'), _gs('naver_ad_customer_id'))
+                    with st.spinner("AI 후보 → 사전 검증..."):
+                        _edtags, _edtinfo = naver_api.build_seller_tags(
+                            api_id, api_secret, _ph_aikey, _ed_name.strip(),
+                            "", _ed_name.strip(),
+                            ad_creds=_adc if all(_adc) else None)
+                    if _edtags:
+                        st.session_state['_ed_tags'] = [
+                            {'text': t['text'], 'code': t.get('code')} for t in _edtags]
+                        st.session_state.pop('ed_tag_editor', None)
+                        st.rerun()
+                    else:
+                        st.warning(f"검증된 태그 없음 ({(_edtinfo or {}).get('candidates', 0)}개 후보)")
+            _ed_cur_tags = st.session_state.get('_ed_tags') or []
+            _ed_tag_df = pd.DataFrame(
+                [{"사용": True, "태그": t['text'], "태그ID": t.get('code')} for t in _ed_cur_tags]
+                or [{"사용": True, "태그": "", "태그ID": None}])
+            _ed_ted = st.data_editor(
+                _ed_tag_df, key="ed_tag_editor", hide_index=True, use_container_width=True,
+                num_rows="dynamic",
+                column_config={
+                    "사용": st.column_config.CheckboxColumn("사용", default=True),
+                    "태그": st.column_config.TextColumn("태그", required=False),
+                    "태그ID": st.column_config.NumberColumn(
+                        "태그ID", disabled=True,
+                        help="사전 등록 태그 ID(검색 반영). 빈 값 = 직접입력 태그."),
+                })
+            _ed_sel_tags = []
+            try:
+                for _r in _ed_ted.to_dict("records"):
+                    _t = str(_r.get("태그") or "").strip()
+                    if _r.get("사용") and _t:
+                        _e = {"text": _t}
+                        _cd = _r.get("태그ID")
+                        if _cd not in (None, "", 0) and not pd.isna(_cd):
+                            _e["code"] = int(_cd)
+                        _ed_sel_tags.append(_e)
+            except Exception:
+                _ed_sel_tags = [{"text": t['text'], "code": t.get('code')} for t in _ed_cur_tags]
+            st.caption("체크 해제=제외 · 행 추가=직접입력 태그 · 저장 시 체크된 것만 반영. (빈 태그표면 그대로 저장 시 태그 제거)")
+
+            _edb1, _edb2 = st.columns([1, 3])
+            if _edb2.button("✖ 편집 취소", key="ed_cancel"):
+                st.session_state.pop('_ed_cur', None)
+                st.session_state.pop('_ed_tags', None)
+                st.rerun()
+            if _edb1.button("💾 수정 저장", type="primary", key="ed_save",
+                            disabled=not _ed_name.strip()):
+                _updates = {
+                    'name': _ed_name.strip(),
+                    'sale_price': int(_ed_sale),
+                    'seller_tags': _ed_sel_tags,
+                }
+                if _ed_cat.strip():
+                    _updates['category_id'] = _ed_cat.strip()
+                if _ed_code.strip():
+                    _updates['seller_code'] = _ed_code.strip()
+                _new_cdns = []
+                _upl_ok = True
+                if _ed_newimgs:
+                    import tempfile, os as _oed
+                    with st.spinner(f"새 사진 {len(_ed_newimgs)}장 업로드 중..."):
+                        for _im in _ed_newimgs[:10]:
+                            _ex = {'image/png': '.png', 'image/webp': '.webp'}.get(_ph_mt(_im), '.jpg')
+                            _fd, _tp = tempfile.mkstemp(suffix=_ex); _oed.close(_fd)
+                            with open(_tp, 'wb') as _w:
+                                _w.write(_im.getvalue())
+                            _cu, _ue = naver_api.upload_product_image(api_id, api_secret, _tp)
+                            try: _oed.remove(_tp)
+                            except Exception: pass
+                            if _cu:
+                                _new_cdns.append(_cu)
+                    if not _new_cdns:
+                        _upl_ok = False
+                        st.error("새 사진 업로드 실패 — 이미지 교체를 중단했습니다.")
+                if _upl_ok:
+                    if _new_cdns:
+                        _updates['image_url'] = _new_cdns[0]
+                        _updates['extra_image_urls'] = _new_cdns[1:]
+                        _updates['detail_html'] = _build_detail(
+                            _ed_name.strip(), _new_cdns, _ed_desc.strip())
+                    elif _ed_desc.strip():
+                        _keep = ([_ed_cur['rep']] if _ed_cur['rep'] else []) + _ed_cur['extra']
+                        _updates['detail_html'] = _build_detail(
+                            _ed_name.strip(), _keep, _ed_desc.strip())
+                    with st.spinner("네이버 상품 수정 중..."):
+                        _ok, _uerr, _uno = naver_api.update_product_full(
+                            api_id, api_secret, _ed_cur['origin_no'], _updates)
+                    if _ok:
+                        st.success(
+                            f"✅ 수정 완료! (원상품번호 {_uno}) — {_ed_name.strip()[:20]} / "
+                            f"{fmt(int(_ed_sale))}원"
+                            + (f" / 사진 {len(_new_cdns)}장 교체" if _new_cdns else "")
+                            + (f" / 태그 {len(_ed_sel_tags)}개" if _ed_sel_tags else ""))
+                        st.session_state.pop('_ed_cur', None)
+                        st.session_state.pop('_ed_tags', None)
+                        st.session_state.pop('_ed_list', None)
+                        if invalidate_data_cache:
+                            invalidate_data_cache()
+                    else:
+                        st.error(f"❌ 수정 실패: {_uerr}")
+    st.divider()
+
     # ── 🛒→N 카페24 상품을 네이버에 등록 (건별 카테고리 선택 + 마진율 판매가) ──
     _cf_mall = _gs('cafe24_mall_id'); _cf_cid = _gs('cafe24_client_id'); _cf_tok = _gs('cafe24_access_token')
     if _cf_mall and _cf_cid and _cf_tok:
@@ -630,7 +868,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
 
                 # ── 🤖 AI 자동 카테고리·등록 (상품명 → 쇼핑검색 → AI 카테고리 → 등록) ──
                 _oc = _gs('naver_open_client_id'); _os = _gs('naver_open_client_secret')
-                _ai_key = _gs('anthropic_api_key')
+                _ai_key = _gs('anthropic_api_key') or get_global_setting('anthropic_api_key')
                 if not (_oc and _os):
                     st.info("🤖 AI 자동등록은 **설정 탭 > 네이버 Open API**(쇼핑검색) 키가 필요합니다.")
                 else:

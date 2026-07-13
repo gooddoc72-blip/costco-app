@@ -1099,4 +1099,157 @@ def update_product_tags(client_id, client_secret, product_no, tags):
         return False, f"태그 수정 예외: {e}", None
 
 
+def get_origin_product_full(client_id, client_secret, product_no):
+    """기존 상품의 원본 전체(originProduct + smartstoreChannelProduct)를 조회.
+    번호가 channelProductNo면 originProductNo로 변환 후 재조회.
+    편집 화면에서 현재 값(상품명·판매가·카테고리·이미지·태그·자체코드·상세)을 불러오는 용도.
+    반환: (data_dict, used_origin_no, err)  # data_dict = GET 응답 원본(JSON)
+    """
+    token, err = get_token(client_id, client_secret)
+    if not token:
+        return None, None, err
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    pno = str(product_no).strip()
+    if not pno:
+        return None, None, "상품번호가 비어 있습니다."
+
+    def _get(p):
+        return requests.get(
+            f"https://api.commerce.naver.com/external/v2/products/origin-products/{p}",
+            headers=headers, timeout=15)
+
+    try:
+        g = _get(pno)
+        if g.status_code in (403, 404):
+            new_origin, rerr = resolve_origin_product_no(client_id, client_secret, pno)
+            if new_origin and new_origin != pno:
+                pno = new_origin
+                g = _get(pno)
+            elif g.status_code == 403:
+                return None, None, ("접근 권한 없음(403) — 이 상품은 현재 커머스 API 키의 스토어 소속이 "
+                                    "아닙니다. 상품이 등록된 스토어의 API 키로 로그인하세요.")
+            else:
+                return None, None, f"원상품번호를 찾지 못했습니다({g.status_code}). {rerr or ''}".strip()
+        if g.status_code != 200:
+            return None, None, f"상품 조회 실패({g.status_code}: {_format_naver_err(g)})"
+        return g.json(), pno, None
+    except Exception as e:
+        return None, None, f"상품 조회 예외: {e}"
+
+
+def update_product_full(client_id, client_secret, product_no, updates):
+    """기존 상품 종합 수정 — GET origin-products → 필드 교체 → PUT (나머지 원본 보존).
+    updates 지원 키(있는 것만 반영):
+      name, sale_price, category_id, image_url(대표), extra_image_urls(추가 목록),
+      detail_html(상세HTML), seller_tags([{code,text}]), seller_code(자체코드).
+    update_product_name/price/tags 와 동일한 GET→sanitize→PUT 구조.
+    반환: (ok, err, used_origin_no)
+    """
+    token, err = get_token(client_id, client_secret)
+    if not token:
+        return False, err, None
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    pno = str(product_no).strip()
+    if not pno:
+        return False, "상품번호가 비어 있습니다.", None
+    updates = updates or {}
+
+    def _get(p):
+        return requests.get(
+            f"https://api.commerce.naver.com/external/v2/products/origin-products/{p}",
+            headers=headers, timeout=15)
+
+    try:
+        g = _get(pno)
+        if g.status_code in (403, 404):
+            new_origin, rerr = resolve_origin_product_no(client_id, client_secret, pno)
+            if new_origin and new_origin != pno:
+                pno = new_origin
+                g = _get(pno)
+            elif g.status_code == 403:
+                return False, ("접근 권한 없음(403) — 이 상품은 현재 커머스 API 키의 스토어 소속이 아닙니다. "
+                               "상품이 등록된 스토어의 API 키로 로그인해 수정하세요."), None
+            else:
+                return False, f"원상품번호를 찾지 못했습니다({g.status_code}). {rerr or ''}".strip(), None
+        if g.status_code != 200:
+            return False, f"상품 조회 실패({g.status_code}: {_format_naver_err(g)})", None
+
+        data = g.json()
+        origin_product = data.get('originProduct') or {}
+        if not origin_product:
+            return False, f"GET 응답에 originProduct 없음: {str(data)[:200]}", None
+
+        # read-only/태그류 제거 (태그는 아래에서 검증본으로 다시 주입)
+        origin_product = _sanitize_for_put(dict(origin_product))
+
+        # ── 필드 교체 (updates에 있는 것만) ──
+        if updates.get('name'):
+            origin_product['name'] = str(updates['name']).strip()[:100]
+        if 'sale_price' in updates and updates['sale_price'] is not None:
+            origin_product['salePrice'] = int(updates['sale_price'])
+        if updates.get('category_id'):
+            origin_product['leafCategoryId'] = str(updates['category_id']).strip()
+        if updates.get('detail_html'):
+            origin_product['detailContent'] = _sanitize_detail_html(updates['detail_html'])
+
+        # 이미지 교체 — 대표/추가 (제공된 경우에만)
+        if updates.get('image_url') or ('extra_image_urls' in updates):
+            _imgs = origin_product.get('images')
+            if not isinstance(_imgs, dict):
+                _imgs = {}
+            if updates.get('image_url'):
+                _imgs['representativeImage'] = {"url": updates['image_url']}
+            if 'extra_image_urls' in updates:
+                _imgs['optionalImages'] = [{"url": u} for u in (updates.get('extra_image_urls') or []) if u]
+            origin_product['images'] = _imgs
+
+        _da = origin_product.setdefault('detailAttribute', {})
+        if not isinstance(_da, dict):
+            _da = {}
+            origin_product['detailAttribute'] = _da
+
+        # 판매자 자체코드(코스트코 번호)
+        if 'seller_code' in updates:
+            _sc = str(updates.get('seller_code') or '').strip()
+            if _sc:
+                _sci = _da.get('sellerCodeInfo') if isinstance(_da.get('sellerCodeInfo'), dict) else {}
+                _sci['sellerManagementCode'] = _sc[:50]
+                _da['sellerCodeInfo'] = _sci
+
+        # 연관태그(SEO sellerTags) — 검증된 [{code,text}] (sanitize가 지운 뒤 새로 주입)
+        if 'seller_tags' in updates:
+            _clean = []
+            for _t in (updates.get('seller_tags') or [])[:10]:
+                _txt = str((_t or {}).get('text') or '').strip()
+                if not _txt:
+                    continue
+                _e = {'text': _txt}
+                _code = (_t or {}).get('code')
+                if _code not in (None, '', 0):
+                    _e['code'] = int(_code)
+                _clean.append(_e)
+            _seo = _da.get('seoInfo') if isinstance(_da.get('seoInfo'), dict) else {}
+            if _clean:
+                _seo['sellerTags'] = _clean
+                _da['seoInfo'] = _seo
+            else:
+                _seo.pop('sellerTags', None)
+                if _seo:
+                    _da['seoInfo'] = _seo
+
+        put_body = {"originProduct": origin_product}
+        smartstore = data.get('smartstoreChannelProduct')
+        if smartstore:
+            put_body["smartstoreChannelProduct"] = _sanitize_for_put(dict(smartstore))
+
+        put_resp = requests.put(
+            f"https://api.commerce.naver.com/external/v2/products/origin-products/{pno}",
+            headers=headers, json=put_body, timeout=20)
+        if put_resp.status_code == 200:
+            return True, None, pno
+        return False, f"상품 수정 실패({put_resp.status_code}: {_format_naver_err(put_resp)})", None
+    except Exception as e:
+        return False, f"상품 수정 예외: {e}", None
+
+
 # ── 정산 내역 조회 ─────────────────────────────────────────

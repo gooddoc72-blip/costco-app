@@ -44,6 +44,8 @@ from .products import (
     update_product_price,
     update_product_name,
     update_product_tags,
+    get_origin_product_full,
+    update_product_full,
     _READONLY_KEYS,
     _TAG_FIELDS_TO_STRIP,
 )
