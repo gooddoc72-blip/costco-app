@@ -367,6 +367,33 @@ def suggest_naver_category(api_key, product_name, candidate_paths):
     return (_pick if _pick in _uniq else _majority), None
 
 
+_NAME_SYSTEM = (
+    "너는 네이버 스마트스토어 상품명 SEO 전문가다. 주어진 원본(코스트코) 상품명을 "
+    "네이버 검색에 잘 노출되는 판매용 상품명으로 다듬는다.\n"
+    "규칙:\n"
+    "- 브랜드·핵심 제품명·용량/수량/구성은 반드시 유지 (예: 'x 3개입', '1.5kg').\n"
+    "- 100자 이내. 구매자가 실제 검색할 핵심 키워드를 앞쪽에 배치.\n"
+    "- 특수문자·이모지 남발 금지. 원본에 없는 정보 지어내기 금지.\n"
+    "- 식품이면 효능·효과·다이어트·의학적·최상급 표현 금지(과대광고 규제).\n"
+    "- 출력은 상품명 한 줄만 (설명·따옴표·머리말 없이 평문)."
+)
+
+
+def optimize_product_name(api_key, costco_name, category=""):
+    """코스트코 원본 상품명 → 네이버 검색최적화 상품명. 실패 시 원본 반환.
+    반환: (name, err)."""
+    _orig = (costco_name or "").strip()
+    if not api_key or not _orig:
+        return _orig, None
+    _msg = (f"원본 상품명: {_orig}\n카테고리: {category or '(미상)'}\n\n"
+            "네이버 검색 최적화 상품명 한 줄로 출력해줘.")
+    _txt, _err = claude_complete(api_key, _NAME_SYSTEM, _msg, max_tokens=100)
+    if _err or not _txt:
+        return _orig, _err
+    _name = _txt.strip().splitlines()[0].strip().strip('"').strip()
+    return (_name[:100] if _name else _orig), None
+
+
 def generate_settlement_briefing(username: str, api_key: str, date: str = ""):
     """일일 정산 AI 브리핑 생성. 반환: (text, error)."""
     try:

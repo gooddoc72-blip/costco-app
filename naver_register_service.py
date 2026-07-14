@@ -133,6 +133,17 @@ def register_one(username, api_id, api_secret, product, cat_id, opts=None):
     if sale <= 0:
         return None, "판매가 없음"
 
+    # AI 상품명 최적화 (opt-in) — 실패 시 원본 유지
+    _ai = str(opts.get("ai_key") or "")
+    if _ai and opts.get("optimize_name"):
+        try:
+            import ai_service
+            _opt, _ = ai_service.optimize_product_name(_ai, name, opts.get("cat_full", ""))
+            if _opt and _opt.strip():
+                name = _opt.strip()[:100]
+        except Exception:
+            pass
+
     # 대표 이미지 선택: 로컬 파일은 이 머신에 실제 존재할 때만 사용,
     # 아니면 원본 http URL(코스트코 CDN)로 폴백.
     # (local_image가 타 PC의 절대경로(F:\...)면 서버엔 없으므로 image_url 사용)
@@ -189,6 +200,15 @@ def register_one(username, api_id, api_secret, product, cat_id, opts=None):
     _dp.append('</div>')
     detail_html = "\n".join(_dp)
 
+    # AI 연관태그 (opt-in) — 네이버 태그사전 검증된 것만 (최대 10개)
+    seller_tags = []
+    if _ai and opts.get("gen_tags"):
+        try:
+            seller_tags, _ = naver_api.build_seller_tags(
+                api_id, api_secret, _ai, name, opts.get("cat_full", ""), name)
+        except Exception:
+            seller_tags = []
+
     res, e2 = naver_api.register_product(api_id, api_secret, {
         "name":              name,
         "sale_price":        sale,
@@ -200,6 +220,7 @@ def register_one(username, api_id, api_secret, product, cat_id, opts=None):
         "extra_image_urls":  extra_cdn,
         "detail_html":       detail_html,
         "seller_code":       str(product.get("product_no") or "").strip(),
+        "seller_tags":       seller_tags,
     })
     if e2 or not res:
         return None, e2 or "등록 실패"
@@ -228,7 +249,7 @@ def register_one(username, api_id, api_secret, product, cat_id, opts=None):
 # ─── 미등록 상품 일괄 자동 등록 ───────────────────────────────────
 def auto_register(username, api_id, api_secret, *, margin=10, max_count=20,
                   open_creds=None, ai_key="", cat_map=None, as_tel="", stock=100,
-                  log=None):
+                  gen_tags=True, optimize_name=True, log=None):
     """미등록 코스트코 상품을 자동 등록.
     - merged에서 naver_product_no 빈 상품만 대상.
     - 가격/이미지 없는 건은 비용 없이 스킵.
@@ -293,7 +314,10 @@ def auto_register(username, api_id, api_secret, *, margin=10, max_count=20,
 
         origin_no, err = register_one(
             username, api_id, api_secret, p, cat_id,
-            opts={"sale_price": sale, "as_tel": as_tel, "stock": stock})
+            opts={"sale_price": sale, "as_tel": as_tel, "stock": stock,
+                  "ai_key": ai_key if (gen_tags or optimize_name) else "",
+                  "cat_full": cat_full or "",
+                  "gen_tags": gen_tags, "optimize_name": optimize_name})
         if err or not origin_no:
             out["fail"] += 1
             out["results"].append({"상품명": name, "결과": "fail", "내용": str(err)[:80]})
