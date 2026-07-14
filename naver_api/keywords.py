@@ -226,6 +226,60 @@ def keyword_tool(ad_api_key, ad_secret, customer_id, keyword):
 
 
 
+def keyword_optimized_name(ad_api_key, ad_secret, customer_id, seed,
+                           ai_key=None, category="", low=100, high=300):
+    """연관키워드 조회수 기반 상품명 생성.
+    저경쟁(총검색량 low~high, 경쟁도 낮은 순) 1~2개 + 대표어(최고 검색량) 1개를 조합.
+    ai_key 있으면 AI가 자연스러운 상품명으로 조합, 없으면 단순 이어붙임.
+    반환: (name, info).  info = {rep, low[], err}.  키/조회 실패 시 (seed, info).
+    """
+    _seed = str(seed or "").strip()
+    info = {"rep": None, "low": [], "err": None}
+    rows, err = keyword_tool(ad_api_key, ad_secret, customer_id, _seed)
+    if err or not rows:
+        info["err"] = err or "연관키워드 없음"
+        return _seed, info
+    rep = rows[0]                                    # keyword_tool = 총검색량 내림차순 → 대표어
+    band = [r for r in rows if low <= int(r.get("총검색량", 0)) <= high]
+
+    def _comp_rank(r):
+        return {"낮음": 0, "중간": 1, "높음": 2}.get(str(r.get("경쟁도", "")), 1)
+
+    band.sort(key=lambda r: (_comp_rank(r), -int(r.get("총검색량", 0))))
+    lows = band[:2]
+    info["rep"] = rep.get("키워드"); info["low"] = [r.get("키워드") for r in lows]
+
+    kws = []
+    for k in [rep.get("키워드")] + [r.get("키워드") for r in lows]:
+        k = str(k or "").strip()
+        _norm = k.lower().replace(" ", "")
+        if k and _norm not in [x.lower().replace(" ", "") for x in kws]:
+            kws.append(k)
+    if not kws:
+        return _seed, info
+
+    if ai_key:
+        try:
+            import ai_service
+            _sys = ("너는 네이버 스마트스토어 SEO 상품명 작성 전문가다. 주어진 핵심 키워드를 "
+                    "모두 자연스럽게 포함하는 한국어 상품명을 한 줄로 만든다. "
+                    "중복·과장·특수문자·이모지 금지, 최대 40자. 상품명만 출력.")
+            _msg = (f"원본 상품명: {_seed}\n카테고리: {category or '미상'}\n"
+                    f"반드시 포함할 키워드: {', '.join(kws)}\n상품명 한 줄만 출력.")
+            _txt, _e = ai_service.claude_complete(
+                ai_key, _sys, _msg, max_tokens=120,
+                model=getattr(ai_service, "VISION_MODEL", None), thinking={"type": "disabled"})
+            if _e:
+                info["err"] = _e
+            if _txt:
+                _name = " ".join(str(_txt).split()).strip().strip('"').strip()
+                if len(_name) >= 4:
+                    return _name[:100], info
+        except Exception as _ex:
+            info["err"] = str(_ex)
+    return (" ".join(kws))[:100] or _seed, info
+
+
 def naver_shopping_search(open_client_id, open_client_secret, query, display=10):
     """네이버 쇼핑 검색 (카테고리·시세 파악용). 반환: (items, err).
     item = {title, category1~4, lprice(최저가)}

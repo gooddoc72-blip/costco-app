@@ -215,6 +215,11 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             _ag_tas = _ag_ts.get('naver_as_tel') or '1588-1234'
             _ag_oc = settings.get('naver_open_client_id', ''); _ag_os = settings.get('naver_open_client_secret', '')
             _ag_ai = get_global_setting('anthropic_api_key') or settings.get('anthropic_api_key', '')
+            # 검색광고 API (연관키워드 조회수 기반 상품명용) — 관리자 키 글로벌 우선
+            _ad_key = get_global_setting('naver_ad_api_key') or settings.get('naver_ad_api_key', '')
+            _ad_sec = get_global_setting('naver_ad_secret') or settings.get('naver_ad_secret', '')
+            _ad_cust = get_global_setting('naver_ad_customer_id') or settings.get('naver_ad_customer_id', '')
+            _ad_creds = (_ad_key, _ad_sec, _ad_cust) if all((_ad_key, _ad_sec, _ad_cust)) else None
 
             if not (_ag_tid and _ag_tsecret):
                 st.warning(f"⚠️ '{_ag_tuser}'의 네이버 커머스 API 키가 없어 등록할 수 없습니다. "
@@ -222,6 +227,9 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             else:
                 if not (_ag_oc and _ag_os):
                     st.info("💡 카테고리 자동판단에 관리자 네이버 Open API 키가 필요합니다(설정 탭).")
+                _kwmark = "✅ 연관키워드 상품명(저경쟁 100~300+대표어)" if _ad_creds else \
+                    "⚠️ 연관키워드 상품명 OFF — 검색광고 API 키 미설정(설정 탭). 카페24 원본명으로 등록"
+                st.caption(f"등록 시 자동 적용: {_kwmark} · ✅ 태그ID 자동 · ✅ 카페24 속성(제조사/모델/원산지)")
                 _agq1, _agq2 = st.columns([3, 1])
                 _ag_q = _agq1.text_input("카페24 상품명 검색(비우면 최근)", key="ag_q",
                                          label_visibility="collapsed", placeholder="카페24 상품명 일부")
@@ -273,20 +281,40 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                             if not _cid:
                                 _ag_rows.append({'상품': _name[:24], '상태': '❌ 카테고리 판단실패'}); continue
                             _full, _fe = cafe24_api.get_product(_ag_creds, _p['product_no'], save_tokens=_ag_save)
-                            _rep = (_full or {}).get('detail_image') or (_full or {}).get('list_image') or ''
+                            _full = _full or {}
+                            _cf_name = _full.get('product_name') or _name
+                            _rep = _full.get('detail_image') or _full.get('list_image') or ''
                             if not _rep:
                                 _ag_rows.append({'상품': _name[:24], '상태': '❌ 이미지 없음'}); continue
                             _cdn, _ue = naver_api.upload_product_image(_ag_tid, _ag_tsecret, _rep)
                             if not _cdn:
                                 _ag_rows.append({'상품': _name[:24], '상태': '❌ 이미지업로드 실패'}); continue
+                            # ① 상품명: 연관키워드(저경쟁 100~300 + 대표어) 조합 — 검색광고 키 있을 때
+                            _final_name = _cf_name
+                            if _ad_creds:
+                                _kn, _ki = naver_api.keyword_optimized_name(
+                                    _ad_key, _ad_sec, _ad_cust, _cf_name, ai_key=_ag_ai, category=_cfull)
+                                if _kn and len(_kn) >= 4:
+                                    _final_name = _kn
+                            # ② 태그ID(검색 반영되는 사전등록 태그만)
+                            _desc_txt = str(_full.get('description') or '')
+                            _tags, _ = naver_api.build_seller_tags(
+                                _ag_tid, _ag_tsecret, _ag_ai, _final_name, _cfull, _desc_txt, _ad_creds)
+                            # ③ 카페24 속성 그대로(제조사/모델/원산지)
+                            _manuf = str(_full.get('manufacturer_name') or _full.get('brand_name') or '').strip()
+                            _model = str(_full.get('model_name') or '').strip()
+                            _origin = str(_full.get('origin_place_value') or '').strip()
                             _res, _re2 = naver_api.register_product(_ag_tid, _ag_tsecret, {
-                                "name": (_full or {}).get('product_name', _name), "sale_price": _npr,
+                                "name": _final_name, "sale_price": _npr,
                                 "image_url": _cdn, "category_id": _cid,
-                                "detail_html": (_full or {}).get('description') or f"<p>{_name}</p>",
+                                "detail_html": _desc_txt or f"<p>{_final_name}</p>",
                                 "shipping_fee": 0, "origin_code": "03", "after_service_tel": _ag_tas,
+                                "seller_tags": _tags, "manufacturer": _manuf or None,
+                                "model_name": _model or None, "origin_content": _origin or None,
+                                "seller_code": str(_p['product_no']),
                             })
-                            _ag_rows.append({'상품': _name[:24], '카테고리': str(_cfull or '')[:20],
-                                             '판매가': _npr,
+                            _ag_rows.append({'상품': _final_name[:24], '카테고리': str(_cfull or '')[:20],
+                                             '태그': len(_tags or []), '판매가': _npr,
                                              '상태': '✅ 등록' if not _re2 else f'❌ {str(_re2)[:24]}'})
                         _ok = sum(1 for r in _ag_rows if str(r.get('상태', '')).startswith('✅'))
                         st.success(f"🛒 '{_ag_tuser}' 스토어 대행 등록 — 성공 {_ok} / 전체 {len(_ag_rows)}건")

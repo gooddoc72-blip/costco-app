@@ -53,6 +53,7 @@ from .keywords import (
     get_last_match_info,
     check_keyword_rank,
     keyword_tool,
+    keyword_optimized_name,
     naver_shopping_search,
     naver_autocomplete,
     _norm_kw,

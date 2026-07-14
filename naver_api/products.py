@@ -337,13 +337,13 @@ def register_product(client_id, client_secret, product_info):
                 },
                 "originAreaInfo": {
                     "originAreaCode": origin,
-                    "content": "",
+                    "content": str(product_info.get("origin_content") or "")[:50],
                 },
                 "productInfoProvidedNotice": {
                     "productInfoProvidedNoticeType": "ETC",
                     "etc": {
                         "itemName":                  name,
-                        "modelName":                 name,
+                        "modelName":                 (product_info.get("model_name") or name),
                         "manufacturer":              product_info.get("manufacturer") or "상품 상세페이지 참조",
                         "afterServiceDirector":      as_tel,
                         "returnCostReason":          "상품 상세페이지 참조",
