@@ -986,14 +986,19 @@ def run_naver_register_task(username="admin"):
     try:
         _gen_tags = settings.get("auto_register_gen_tags", "1") == "1"
         _ai_name = settings.get("auto_register_ai_name", "1") == "1"
+        _ai_desc = settings.get("auto_register_ai_desc", "1") == "1"
+        _with_spec = settings.get("auto_register_spec", "1") == "1"
         log(f"  AI 태그 {'ON' if (_gen_tags and ai_key) else 'OFF'} · "
-            f"상품명 최적화 {'ON' if (_ai_name and ai_key) else 'OFF'}")
+            f"상품명 {'ON' if (_ai_name and ai_key) else 'OFF'} · "
+            f"상세설명 {'ON' if (_ai_desc and ai_key) else 'OFF'} · "
+            f"한글표시사항 {'ON' if _with_spec else 'OFF'}")
         res = naver_register_service.auto_register(
             username, api_id, api_secret,
             margin=margin, max_count=max_count,
             open_creds=(open_id, open_secret),
             ai_key=ai_key, cat_map=cat_map, as_tel=as_tel,
             gen_tags=_gen_tags, optimize_name=_ai_name,
+            ai_desc=_ai_desc, with_spec=_with_spec,
             log=lambda m: log(m),
         )
     except Exception as e:

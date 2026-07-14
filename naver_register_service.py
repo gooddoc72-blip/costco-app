@@ -165,13 +165,13 @@ def register_one(username, api_id, api_secret, product, cat_id, opts=None):
     if not rep_cdn:
         return None, f"이미지 업로드 실패: {e1}"
 
-    # 추가 이미지 → 네이버 CDN 업로드 + 상세설명(크롤링 저장분) 로드
+    # 추가 이미지 → 네이버 CDN + 크롤링 상세(원본) 로드
     extra_cdn = []
-    _desc_html = ""
+    _raw_detail = ""
     sid = product.get("shared_id")
     if sid:
         xraw, dhtml = get_product_detail(sid)
-        _desc_html = dhtml or ""
+        _raw_detail = dhtml or ""
         if xraw:
             try:
                 xlist = json.loads(xraw)
@@ -180,7 +180,38 @@ def register_one(username, api_id, api_secret, product, cat_id, opts=None):
             if xlist:
                 extra_cdn, _ = naver_api.upload_images_batch(api_id, api_secret, xlist)
 
-    # 상세페이지: [공통상단] + 상품명 + (대표+추가 이미지, 네이버CDN) + 상품설명 + [공통하단]
+    _catf = opts.get("cat_full", "")
+
+    # 상세설명: AI가 코스트코 내용 분석해 새로 작성(opt) — 지저분한 원본HTML 대신 깔끔한 문장
+    _desc_block = ""
+    if _ai and opts.get("ai_desc"):
+        try:
+            import ai_service, html as _h2
+            _d, _ = ai_service.generate_description_from_costco(_ai, name, _raw_detail, _catf)
+            if _d:
+                _desc_block = ('<div style="font-size:17px;line-height:1.9;text-align:center;'
+                               'padding:4px 16px 8px;color:#333">'
+                               + _h2.escape(_d).replace("\n", "<br>") + '</div>')
+        except Exception:
+            _desc_block = ""
+
+    # 한글표시사항: 코스트코 스펙 → '제품 상세정보' 표 + 제조자
+    _spec_table = ""
+    _manufacturer = ""
+    if opts.get("with_spec"):
+        try:
+            import costco_crawler as _cc
+            _spec = _cc.fetch_costco_spec(str(product.get("product_no") or "").strip())
+        except Exception:
+            _spec = {}
+        if _spec:
+            _spec_table = _cc.build_spec_table_html(_spec)
+            for _k in ("제조자/수입자", "제조원/수입원", "제조원", "수입원", "제조사"):
+                if _spec.get(_k):
+                    _manufacturer = str(_spec[_k]).strip()
+                    break
+
+    # 상세페이지: [공통상단] + 상품명 + (2줄 여백) + 상품설명 + 이미지들 + 표시사항표 + [공통하단]
     _top = str(get_setting(username, "naver_detail_top_img") or "").strip()
     _bot = str(get_setting(username, "naver_detail_bottom_img") or "").strip()
     _all_cdn = [rep_cdn] + [u for u in extra_cdn if u]
@@ -188,15 +219,18 @@ def register_one(username, api_id, api_secret, product, cat_id, opts=None):
     _dp = ['<div style="text-align:center">']
     if _top:
         _dp.append('<img src="%s" style="max-width:100%%;display:block;margin:0 auto">' % _top)
-    _dp.append('<div style="font-size:30px;font-weight:800;padding:20px 12px;'
+    _dp.append('<div style="font-size:30px;font-weight:800;padding:20px 12px 0;'
                'line-height:1.4">%s</div>' % _nm)
+    _dp.append('<div style="height:44px"></div>')   # 상품명 아래 2줄 여백
+    if _desc_block:
+        _dp.append(_desc_block)
     for _u in _all_cdn:
         _dp.append('<img src="%s" style="max-width:100%%;display:block;'
-                   'margin:0 auto 14px;border:1px solid #cccccc">' % _u)
-    if _desc_html:
-        _dp.append(_desc_html)
+                   'margin:16px auto 0;border:1px solid #cccccc">' % _u)
+    if _spec_table:
+        _dp.append(_spec_table)
     if _bot:
-        _dp.append('<img src="%s" style="max-width:100%%;display:block;margin:0 auto">' % _bot)
+        _dp.append('<img src="%s" style="max-width:100%%;display:block;margin:24px auto 0">' % _bot)
     _dp.append('</div>')
     detail_html = "\n".join(_dp)
 
@@ -221,6 +255,7 @@ def register_one(username, api_id, api_secret, product, cat_id, opts=None):
         "detail_html":       detail_html,
         "seller_code":       str(product.get("product_no") or "").strip(),
         "seller_tags":       seller_tags,
+        "manufacturer":      _manufacturer,
     })
     if e2 or not res:
         return None, e2 or "등록 실패"
@@ -249,7 +284,8 @@ def register_one(username, api_id, api_secret, product, cat_id, opts=None):
 # ─── 미등록 상품 일괄 자동 등록 ───────────────────────────────────
 def auto_register(username, api_id, api_secret, *, margin=10, max_count=20,
                   open_creds=None, ai_key="", cat_map=None, as_tel="", stock=100,
-                  gen_tags=True, optimize_name=True, log=None):
+                  gen_tags=True, optimize_name=True, ai_desc=True, with_spec=True,
+                  log=None):
     """미등록 코스트코 상품을 자동 등록.
     - merged에서 naver_product_no 빈 상품만 대상.
     - 가격/이미지 없는 건은 비용 없이 스킵.
@@ -315,9 +351,10 @@ def auto_register(username, api_id, api_secret, *, margin=10, max_count=20,
         origin_no, err = register_one(
             username, api_id, api_secret, p, cat_id,
             opts={"sale_price": sale, "as_tel": as_tel, "stock": stock,
-                  "ai_key": ai_key if (gen_tags or optimize_name) else "",
+                  "ai_key": ai_key if (gen_tags or optimize_name or ai_desc) else "",
                   "cat_full": cat_full or "",
-                  "gen_tags": gen_tags, "optimize_name": optimize_name})
+                  "gen_tags": gen_tags, "optimize_name": optimize_name,
+                  "ai_desc": ai_desc, "with_spec": with_spec})
         if err or not origin_no:
             out["fail"] += 1
             out["results"].append({"상품명": name, "결과": "fail", "내용": str(err)[:80]})

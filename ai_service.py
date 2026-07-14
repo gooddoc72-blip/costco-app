@@ -368,14 +368,17 @@ def suggest_naver_category(api_key, product_name, candidate_paths):
 
 
 _NAME_SYSTEM = (
-    "너는 네이버 스마트스토어 상품명 SEO 전문가다. 주어진 원본(코스트코) 상품명을 "
-    "네이버 검색에 잘 노출되는 판매용 상품명으로 다듬는다.\n"
+    "너는 네이버 스마트스토어 상품명 SEO 전문가다. 코스트코에서 판매하는 상품의 원본명을 "
+    "네이버 검색에 잘 걸리는 판매용 상품명으로 '재구성'한다. 단순히 띄어쓰기만 고치지 말고 "
+    "구매자가 검색할 키워드를 반영해 적극적으로 최적화한다.\n"
+    "구조: [브랜드] [핵심 제품명] [용량/수량/구성] [구매자가 실제 검색할 일반 키워드 1~3개]\n"
     "규칙:\n"
-    "- 브랜드·핵심 제품명·용량/수량/구성은 반드시 유지 (예: 'x 3개입', '1.5kg').\n"
-    "- 100자 이내. 구매자가 실제 검색할 핵심 키워드를 앞쪽에 배치.\n"
-    "- 특수문자·이모지 남발 금지. 원본에 없는 정보 지어내기 금지.\n"
-    "- 식품이면 효능·효과·다이어트·의학적·최상급 표현 금지(과대광고 규제).\n"
-    "- 출력은 상품명 한 줄만 (설명·따옴표·머리말 없이 평문)."
+    "- 브랜드·용량/수량/구성은 반드시 유지. 영문 브랜드는 그대로.\n"
+    "- 구매자가 검색할 일반 키워드(제품 유형·용도)를 1~3개 자연스럽게 추가. "
+    "맥락상 도움되면 맨 앞에 '코스트코'를 넣어도 된다.\n"
+    "- 100자 이내. 같은 단어 반복 금지. 특수문자·이모지·홍보문구(최고/정품/강추/무료 등) 금지.\n"
+    "- 식품은 효능·효과·다이어트·의학적·최상급 표현 금지(과대광고).\n"
+    "- 없는 사실 지어내기 금지. 출력은 상품명 한 줄만 (설명·따옴표·머리말 없이)."
 )
 
 
@@ -386,12 +389,42 @@ def optimize_product_name(api_key, costco_name, category=""):
     if not api_key or not _orig:
         return _orig, None
     _msg = (f"원본 상품명: {_orig}\n카테고리: {category or '(미상)'}\n\n"
-            "네이버 검색 최적화 상품명 한 줄로 출력해줘.")
-    _txt, _err = claude_complete(api_key, _NAME_SYSTEM, _msg, max_tokens=100)
+            "위 상품의 네이버 검색 최적화 상품명을 한 줄로 출력해줘.")
+    # 상품명은 품질 중요 → 비전모델(Sonnet)로 생성
+    _txt, _err = claude_complete(api_key, _NAME_SYSTEM, _msg, max_tokens=120, model=VISION_MODEL)
     if _err or not _txt:
         return _orig, _err
     _name = _txt.strip().splitlines()[0].strip().strip('"').strip()
     return (_name[:100] if _name else _orig), None
+
+
+_DESC_TEXT_SYSTEM = (
+    "너는 네이버 스마트스토어 상세페이지 카피라이터다. 코스트코 상품의 이름과 원본 설명(정리 안 됨)을 "
+    "보고, 구매욕을 높이는 깔끔한 한국어 상세설명을 새로 작성한다.\n"
+    "규칙:\n"
+    "- 3~6문장. 각 문장은 간결하게, **한 문장마다 줄바꿈**(한 줄에 한 문장).\n"
+    "- 제품 특징·용량/구성·활용법·코스트코 프리미엄 느낌 위주. 원본에 있는 사실만 사용.\n"
+    "- 원본 설명이 부실하면 상품명에서 유추 가능한 일반적 사실만 간단히. 지어내기·과장 금지.\n"
+    "- 식품은 효능·효과·다이어트·의학적 표현 금지(식품 과대광고 규제).\n"
+    "- 이모지 0~2개까지 허용. 목록기호(•)·표·머리말·따옴표·마크다운 금지. 본문만 평문으로 출력."
+)
+
+
+def generate_description_from_costco(api_key, name, costco_text, category=""):
+    """코스트코 상품명+원본설명(텍스트) → AI가 새로 작성한 깔끔한 상세설명(문장별 줄바꿈).
+    실패 시 (None, err). 원본이 지저분한 HTML이어도 태그 제거 후 사용."""
+    if not api_key or not (name or costco_text):
+        return None, "입력 없음"
+    import re as _re2
+    _txt_in = _re2.sub(r"<[^>]+>", " ", str(costco_text or ""))
+    _txt_in = _re2.sub(r"\s+", " ", _txt_in).strip()[:1500]
+    _msg = (f"상품명: {name}\n카테고리: {category or '(미상)'}\n"
+            f"원본 설명(정리 안 됨): {_txt_in or '(없음)'}\n\n"
+            "위를 바탕으로 상세페이지용 상세설명을 문장마다 줄바꿈해서 새로 작성해줘.")
+    _t, _e = claude_complete(api_key, _DESC_TEXT_SYSTEM, _msg, max_tokens=500, model=VISION_MODEL)
+    if _t:
+        return _desc_to_lines(_t), None
+    return None, _e
 
 
 def generate_settlement_briefing(username: str, api_key: str, date: str = ""):

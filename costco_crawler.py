@@ -903,6 +903,62 @@ def build_detail_html(image_urls: list, description: str = "", features: list = 
     return '\n'.join(parts)
 
 
+def fetch_costco_spec(product_no: str) -> dict:
+    """코스트코 상세 API(classifications)에서 한글표시사항 스펙을 dict로 추출.
+    urllib 직접 호출(브라우저 불필요). 반환: {필드명: 값}. 실패 시 {}.
+    예: {'제조자/수입자':'영인정공','제조국 또는 원산지':'대한민국','A/S ...':'... 032-...'}"""
+    pno = str(product_no or "").strip()
+    if not pno:
+        return {}
+    import urllib.request
+    url = f"{COSTCO_BASE}/rest/v2/korea/products/{pno}?fields=FULL&lang=ko&curr=KRW"
+    try:
+        req = urllib.request.Request(url, headers={
+            "Accept": "application/json",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+        })
+        with urllib.request.urlopen(req, timeout=12) as resp:
+            if getattr(resp, "status", 200) != 200:
+                return {}
+            data = json.loads(resp.read().decode("utf-8", errors="replace"))
+    except Exception:
+        return {}
+    spec = {}
+    for c in (data.get("classifications") or []):
+        for f in (c.get("features") or []):
+            nm = str(f.get("name") or "").strip()
+            vals = [str((x or {}).get("value", "")).strip() for x in (f.get("featureValues") or [])]
+            vals = [v for v in vals if v]
+            if nm and vals:
+                spec[nm] = ", ".join(vals)
+    return spec
+
+
+def build_spec_table_html(spec: dict) -> str:
+    """한글표시사항 스펙 dict → 상세페이지용 '제품 상세정보' 표 HTML. 빈 값 생략."""
+    if not spec:
+        return ""
+    import html as _h
+    rows = []
+    for k, v in spec.items():
+        v = str(v or "").strip()
+        if not v:
+            continue
+        rows.append(
+            '<tr><th style="background:#f5f5f5;border:1px solid #ddd;padding:10px 12px;'
+            'text-align:center;width:32%;font-weight:700;color:#333;white-space:nowrap">'
+            + _h.escape(str(k)) + '</th>'
+            '<td style="border:1px solid #ddd;padding:10px 12px;text-align:left;'
+            'color:#333;line-height:1.6">' + _h.escape(v) + '</td></tr>')
+    if not rows:
+        return ""
+    return ('<div style="max-width:720px;margin:28px auto 8px;padding:0 12px">'
+            '<div style="font-size:20px;font-weight:800;text-align:center;'
+            'padding:12px 0;color:#222">제품 상세정보</div>'
+            '<table style="width:100%;border-collapse:collapse;font-size:15px">'
+            + "".join(rows) + "</table></div>")
+
+
 def save_product_detail(product_no: str, extra_images: list, detail_html: str) -> bool:
     """shared_products에 extra_images / detail_html 업데이트"""
     if not os.path.exists(AUTH_DB):
