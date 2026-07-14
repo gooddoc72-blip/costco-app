@@ -343,11 +343,15 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         _match_memo = {}  # 같은 상품명 중복 매칭 방지 (메모이제이션)
 
         # 매칭 결과 캐시 — 페이지 이동 시 108행 재계산 방지
-        # 무효화 조건: 날짜/df크기/영수증/오버라이드 변경
+        # 무효화 조건: 날짜/df크기/영수증/키워드오버라이드/단가오버라이드 변경
+        #   ※ cost_overrides를 키에 포함해야 단가만 수정해도 캐시가 무효화되어
+        #     옛 공유단가가 재사용되지 않음(수익계산 원복/스테일 방지)
         _mc_key = (
             calc_date_str, len(df), len(receipt_items),
             tuple(str(r.get('상품번호', '')) for r in receipt_items[:5]),
             tuple(sorted(st.session_state.get('kw_overrides', {}).items())),
+            tuple(sorted((str(_k), int(_v or 0))
+                         for _k, _v in st.session_state.get('cost_overrides', {}).items())),
         )
         _mc_state = '_pcalc_match_cache'
         _cached = st.session_state.get(_mc_state)
