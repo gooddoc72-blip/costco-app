@@ -10,6 +10,7 @@
 - register_one       : 단일 상품 등록 (이미지 업로드 + 상세 + register_product)
 - auto_register      : 미등록 상품 일괄 자동 등록 (카테고리 미해결은 스킵 → 장바구니 회수)
 """
+import os
 import json
 import sqlite3
 
@@ -130,7 +131,19 @@ def register_one(username, api_id, api_secret, product, cat_id, opts=None):
     if sale <= 0:
         return None, "판매가 없음"
 
-    rep = product.get("local_image") or product.get("image_url") or ""
+    # 대표 이미지 선택: 로컬 파일은 이 머신에 실제 존재할 때만 사용,
+    # 아니면 원본 http URL(코스트코 CDN)로 폴백.
+    # (local_image가 타 PC의 절대경로(F:\...)면 서버엔 없으므로 image_url 사용)
+    _li = str(product.get("local_image") or "").strip()
+    _iu = str(product.get("image_url") or "").strip()
+    if _li.startswith("http"):
+        rep = _li
+    elif _li and os.path.exists(_li):
+        rep = _li
+    elif _iu:
+        rep = _iu
+    else:
+        rep = _li
     if not rep:
         return None, "대표이미지 없음"
 
