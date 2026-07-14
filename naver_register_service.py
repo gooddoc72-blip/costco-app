@@ -19,6 +19,8 @@ from db import (
     get_all_products_merged,
     get_product_detail,
     upsert_user_private,
+    get_setting,
+    set_setting,
     AUTH_DB,
 )
 
@@ -217,8 +219,21 @@ def auto_register(username, api_id, api_secret, *, margin=10, max_count=20,
     cat_map = cat_map or {}
 
     merged = get_all_products_merged(username)
-    unreg = [p for p in merged if not str(p.get("naver_product_no") or "").strip()]
-    log(f"미등록 후보 {len(unreg)}개 (전체 {len(merged)}개)")
+
+    # 지난 실행에서 400(권한·인증 등 구조적 거부)으로 실패한 상품은 스킵 목록에 기록되어
+    # 매번 같은 항목에 막히지 않도록 제외한다. (권한·인증 없는 카테고리는 재시도해도 실패)
+    try:
+        _skip = set(json.loads(get_setting(username, "auto_register_skip") or "[]"))
+    except Exception:
+        _skip = set()
+
+    def _skey(pp):
+        return str(pp.get("product_no") or pp.get("match_keyword") or "").strip()
+
+    unreg = [p for p in merged
+             if not str(p.get("naver_product_no") or "").strip()
+             and _skey(p) not in _skip]
+    log(f"미등록 후보 {len(unreg)}개 (전체 {len(merged)}개, 스킵 {len(_skip)}개 제외)")
 
     out = {
         "ok": 0, "fail": 0,
@@ -226,6 +241,7 @@ def auto_register(username, api_id, api_secret, *, margin=10, max_count=20,
         "processed": 0, "results": [],
     }
     processed = 0
+    _skip_dirty = False
 
     for p in unreg:
         name = (p.get("costco_name") or "")[:40]
@@ -262,6 +278,13 @@ def auto_register(username, api_id, api_secret, *, margin=10, max_count=20,
             out["fail"] += 1
             out["results"].append({"상품명": name, "결과": "fail", "내용": str(err)[:80]})
             log(f"  ❌ {name}: {str(err)[:80]}")
+            # 구조적 거부(400: 권한·인증·유효성)는 재시도해도 실패 → 스킵 목록 등록
+            _es = str(err or "")
+            if any(t in _es for t in ("400", "권한", "인증", "유효하지")):
+                _k = _skey(p)
+                if _k:
+                    _skip.add(_k)
+                    _skip_dirty = True
         else:
             out["ok"] += 1
             out["results"].append({
@@ -270,5 +293,14 @@ def auto_register(username, api_id, api_secret, *, margin=10, max_count=20,
             })
             log(f"  ✅ {name} → #{origin_no} / {sale}원 / {cat_full or cat_id} ({source})")
 
+    if _skip_dirty:
+        try:
+            set_setting(username, "auto_register_skip",
+                        json.dumps(sorted(_skip), ensure_ascii=False))
+            log(f"스킵 목록 갱신: {len(_skip)}개 (다음 실행부터 제외)")
+        except Exception:
+            pass
+
     out["processed"] = processed
+    out["skip_total"] = len(_skip)
     return out
