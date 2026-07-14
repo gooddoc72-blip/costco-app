@@ -394,8 +394,11 @@ def optimize_product_name(api_key, costco_name, category=""):
     _txt, _err = claude_complete(api_key, _NAME_SYSTEM, _msg, max_tokens=120, model=VISION_MODEL)
     if _err or not _txt:
         return _orig, _err
-    _name = _txt.strip().splitlines()[0].strip().strip('"').strip()
-    return (_name[:100] if _name else _orig), None
+    # 줄바꿈을 공백으로 합침 (상품명은 한 줄) + 따옴표 제거. 너무 짧으면 원본 유지.
+    _name = " ".join(str(_txt).split()).strip().strip('"').strip()
+    if len(_name) < 4:
+        return _orig, None
+    return _name[:100], None
 
 
 _DESC_TEXT_SYSTEM = (
