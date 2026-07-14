@@ -681,9 +681,12 @@ def get_all_products_merged(username):
     return merged
 
 
-def _contribute_shared_from_user(product_no, costco_name, keyword, price, split_qty=1, username=''):
+def _contribute_shared_from_user(product_no, costco_name, keyword, price, split_qty=1,
+                                 username='', manual=False):
     """방법 A(크라우드 누적): 사용자가 코스트코번호+구입가를 직접 저장하면 공유DB에 기여.
-    공유DB에 그 코스트코번호가 아직 없거나 가격이 비어있을 때만 채움(기존 공유값은 보호)."""
+    - manual=False(자동 크롤링/영수증): 공유값이 비어있을 때만 채움(기존 공유값 보호).
+    - manual=True(사용자 직접 수정): 공유값을 덮어씀. 매칭이 공유단가를 우선하므로,
+      덮어쓰지 않으면 저장한 단가가 매칭 때 공유 옛값으로 원복됨(원복 버그 해결)."""
     if not product_no or int(price or 0) <= 0:
         return False
     conn = sqlite3.connect(AUTH_DB)
@@ -691,8 +694,8 @@ def _contribute_shared_from_user(product_no, costco_name, keyword, price, split_
     row = conn.execute("SELECT id, unit_price FROM shared_products WHERE product_no=?",
                        (str(product_no),)).fetchone()
     conn.close()
-    if row and int(row['unit_price'] or 0) > 0:
-        return False  # 이미 공유DB에 가격 있음 → 덮어쓰지 않음(다른 판매자 값 보호)
+    if (not manual) and row and int(row['unit_price'] or 0) > 0:
+        return False  # 자동 기여는 기존 공유값 보호(다른 판매자 값 유지)
     _upsert_shared_internal(costco_name or keyword, keyword or costco_name,
                             store_price=int(price), product_no=str(product_no),
                             split_qty=split_qty, updated_by=f'user:{username}'[:40])
@@ -789,6 +792,6 @@ def upsert_product(username, costco_name, keyword, price, product_no='', split_q
     if manual and product_no and int(price or 0) > 0:
         try:
             _contribute_shared_from_user(str(product_no), costco_name, keyword,
-                                         int(price), split_qty, username)
+                                         int(price), split_qty, username, manual=True)
         except Exception:
             pass
