@@ -174,6 +174,124 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         else:
             st.warning("아이디와 비밀번호를 입력해주세요.")
 
+    # ── 🛒 카페24 → 사용자 스토어 대행 등록 ──────────────────────────
+    st.divider()
+    st.subheader("🛒 카페24 → 사용자 스토어 대행 등록")
+    st.caption("대상 사용자를 고르고, 공용 카페24 카탈로그에서 상품을 불러와 그 사용자의 네이버 스토어에 대행 등록합니다.")
+
+    _ag_cf = {_k: (get_global_setting('cafe24_' + _k) or '') for _k in
+              ('mall_id', 'client_id', 'client_secret', 'access_token', 'refresh_token', 'token_expires_at')}
+    if not (_ag_cf['mall_id'] and _ag_cf['client_id'] and _ag_cf['access_token']):
+        st.info("공용 카페24 자격증명이 없습니다. 설정 탭에서 카페24를 먼저 연결하세요(관리자 계정).")
+    elif not HAS_NAVER_API:
+        st.error("naver_api 없음 — 관리자에게 문의하세요.")
+    else:
+        import cafe24_api, ai_service
+        _ag_creds = {'mall_id': _ag_cf['mall_id'], 'client_id': _ag_cf['client_id'],
+                     'client_secret': _ag_cf['client_secret'], 'access_token': _ag_cf['access_token'],
+                     'refresh_token': _ag_cf['refresh_token'], 'expires_at': _ag_cf['token_expires_at']}
+
+        def _ag_save(t):
+            for _k, _v in (('cafe24_access_token', t.get('access_token', '')),
+                           ('cafe24_refresh_token', t.get('refresh_token', '')),
+                           ('cafe24_token_expires_at', t.get('expires_at', ''))):
+                set_global_setting(_k, _v)
+
+        _ag_users = [u for u in get_all_users()
+                     if (not u.get('is_admin')) and u.get('status', 'active') == 'active']
+        if not _ag_users:
+            st.info("등록 대상이 될 일반 사용자가 없습니다.")
+        else:
+            _agc1, _agc2 = st.columns([2, 1])
+            _ag_pick = _agc1.selectbox(
+                "🎯 등록 대상 사용자",
+                [f"{u['username']} · {u.get('display_name', '')}" for u in _ag_users], key="ag_target")
+            _ag_margin = _agc2.number_input("마진율 %", min_value=0, max_value=300, step=5,
+                                            value=int(get_global_setting('cafe24_naver_margin') or 10),
+                                            key="ag_margin")
+            _ag_tuser = _ag_pick.split(' · ')[0].strip()
+            _ag_ts = get_all_settings(_ag_tuser) or {}
+            _ag_tid = _ag_ts.get('api_client_id', ''); _ag_tsecret = _ag_ts.get('api_client_secret', '')
+            _ag_tas = _ag_ts.get('naver_as_tel') or '1588-1234'
+            _ag_oc = settings.get('naver_open_client_id', ''); _ag_os = settings.get('naver_open_client_secret', '')
+            _ag_ai = get_global_setting('anthropic_api_key') or settings.get('anthropic_api_key', '')
+
+            if not (_ag_tid and _ag_tsecret):
+                st.warning(f"⚠️ '{_ag_tuser}'의 네이버 커머스 API 키가 없어 등록할 수 없습니다. "
+                           "그 사용자 설정 탭에 네이버 키를 먼저 입력하세요.")
+            else:
+                if not (_ag_oc and _ag_os):
+                    st.info("💡 카테고리 자동판단에 관리자 네이버 Open API 키가 필요합니다(설정 탭).")
+                _agq1, _agq2 = st.columns([3, 1])
+                _ag_q = _agq1.text_input("카페24 상품명 검색(비우면 최근)", key="ag_q",
+                                         label_visibility="collapsed", placeholder="카페24 상품명 일부")
+                if _agq2.button("🔎 카페24 조회", key="ag_search", use_container_width=True):
+                    set_global_setting('cafe24_naver_margin', str(int(_ag_margin)))
+                    with st.spinner("카페24 상품 조회 중..."):
+                        _prods, _perr = cafe24_api.search_products(_ag_creds, _ag_q, save_tokens=_ag_save)
+                    st.session_state['_ag_prods'] = [] if _perr else (_prods or [])
+                    if _perr:
+                        st.error(f"조회 실패: {_perr}")
+                _ag_list = st.session_state.get('_ag_prods') or []
+                if _ag_list:
+                    st.caption(f"{len(_ag_list)}개 조회 — 체크 후 아래 버튼으로 '{_ag_tuser}' 스토어에 등록")
+                    _ag_sel = []
+                    for _p in _ag_list[:30]:
+                        _pno = _p['product_no']; _pr = int(_p.get('price') or 0)
+                        _npr = int(round(_pr * (1 + _ag_margin / 100.0) / 0.945 / 10) * 10)
+                        if st.checkbox(
+                                f"{str(_p.get('product_name', ''))[:42]} · 카페24 {fmt(_pr)}원 → 네이버 {fmt(_npr)}원",
+                                key=f"ag_ck_{_pno}"):
+                            _ag_sel.append((_p, _npr))
+                    if st.button(f"🚀 선택 {len(_ag_sel)}개 → '{_ag_tuser}' 스토어 등록", type="primary",
+                                 key="ag_reg", disabled=not (_ag_sel and _ag_oc and _ag_os)):
+                        _ag_rows = []; _agprog = st.progress(0.0)
+                        for _i, (_p, _npr) in enumerate(_ag_sel):
+                            _agprog.progress((_i + 1) / len(_ag_sel))
+                            _name = str(_p.get('product_name', ''))
+                            _items, _ = naver_api.naver_shopping_search(_ag_oc, _ag_os, _name)
+                            _paths = [">".join([x for x in (it.get('category1'), it.get('category2'),
+                                                            it.get('category3'), it.get('category4')) if x])
+                                      for it in (_items or [])]
+                            _paths = [p for p in _paths if p]
+                            _cid = None; _cfull = ''
+                            if _paths:
+                                _ch, _ = ai_service.suggest_naver_category(_ag_ai, _name, _paths)
+                                _chosen = _ch or _paths[0]
+                                _cr, _ = naver_api.search_naver_categories(
+                                    _ag_tid, _ag_tsecret, str(_chosen).split('>')[-1].strip())
+                                if _cr:
+                                    _pt = set(str(_chosen).replace('>', ' ').split())
+                                    _best, _bs = None, -1
+                                    for _c in _cr:
+                                        _ct = set(str(_c.get('full_name', '')).replace('>', ' ').split())
+                                        _sc = len(_pt & _ct)
+                                        if _sc > _bs:
+                                            _bs, _best = _sc, _c
+                                    if _best:
+                                        _cid, _cfull = _best.get('id'), _best.get('full_name')
+                            if not _cid:
+                                _ag_rows.append({'상품': _name[:24], '상태': '❌ 카테고리 판단실패'}); continue
+                            _full, _fe = cafe24_api.get_product(_ag_creds, _p['product_no'], save_tokens=_ag_save)
+                            _rep = (_full or {}).get('detail_image') or (_full or {}).get('list_image') or ''
+                            if not _rep:
+                                _ag_rows.append({'상품': _name[:24], '상태': '❌ 이미지 없음'}); continue
+                            _cdn, _ue = naver_api.upload_product_image(_ag_tid, _ag_tsecret, _rep)
+                            if not _cdn:
+                                _ag_rows.append({'상품': _name[:24], '상태': '❌ 이미지업로드 실패'}); continue
+                            _res, _re2 = naver_api.register_product(_ag_tid, _ag_tsecret, {
+                                "name": (_full or {}).get('product_name', _name), "sale_price": _npr,
+                                "image_url": _cdn, "category_id": _cid,
+                                "detail_html": (_full or {}).get('description') or f"<p>{_name}</p>",
+                                "shipping_fee": 0, "origin_code": "03", "after_service_tel": _ag_tas,
+                            })
+                            _ag_rows.append({'상품': _name[:24], '카테고리': str(_cfull or '')[:20],
+                                             '판매가': _npr,
+                                             '상태': '✅ 등록' if not _re2 else f'❌ {str(_re2)[:24]}'})
+                        _ok = sum(1 for r in _ag_rows if str(r.get('상태', '')).startswith('✅'))
+                        st.success(f"🛒 '{_ag_tuser}' 스토어 대행 등록 — 성공 {_ok} / 전체 {len(_ag_rows)}건")
+                        st.dataframe(pd.DataFrame(_ag_rows), use_container_width=True, hide_index=True)
+
     # ── 공유 제품 DB 관리 ──────────────────────────────────────────
     st.divider()
     st.subheader("🏪 공유 제품 DB 관리 (모든 판매자 공용)")
