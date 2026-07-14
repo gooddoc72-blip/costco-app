@@ -14,11 +14,21 @@ VISION_MODEL = "claude-sonnet-5"               # 사진 판독(가격표 등)은
 
 
 def claude_complete(api_key: str, system: str, user_msg: str,
-                    max_tokens: int = 1200, model: str = DEFAULT_MODEL):
-    """Claude 메시지 1회 호출. 반환: (text, error)."""
+                    max_tokens: int = 1200, model: str = DEFAULT_MODEL,
+                    thinking: dict = None):
+    """Claude 메시지 1회 호출. 반환: (text, error).
+    thinking: {"type":"disabled"} 등 전달 시 요청에 포함 (단순작업은 사고 끄면 잘림 방지)."""
     if not api_key:
         return None, "Anthropic API 키 미설정 (설정 탭 > 🤖 AI 설정)"
     try:
+        _body = {
+            "model": model,
+            "max_tokens": max_tokens,
+            "system": system,
+            "messages": [{"role": "user", "content": user_msg}],
+        }
+        if thinking is not None:
+            _body["thinking"] = thinking
         r = requests.post(
             ANTHROPIC_URL,
             headers={
@@ -26,12 +36,7 @@ def claude_complete(api_key: str, system: str, user_msg: str,
                 "anthropic-version": "2023-06-01",
                 "content-type": "application/json",
             },
-            json={
-                "model": model,
-                "max_tokens": max_tokens,
-                "system": system,
-                "messages": [{"role": "user", "content": user_msg}],
-            },
+            json=_body,
             timeout=60,
         )
         if r.status_code != 200:
@@ -390,8 +395,9 @@ def optimize_product_name(api_key, costco_name, category=""):
         return _orig, None
     _msg = (f"원본 상품명: {_orig}\n카테고리: {category or '(미상)'}\n\n"
             "위 상품의 네이버 검색 최적화 상품명을 한 줄로 출력해줘.")
-    # 상품명은 품질 중요 → 비전모델(Sonnet)로 생성
-    _txt, _err = claude_complete(api_key, _NAME_SYSTEM, _msg, max_tokens=120, model=VISION_MODEL)
+    # 상품명은 품질 중요 → Sonnet, 단 사고(thinking) 끔(잘림/비용 방지)
+    _txt, _err = claude_complete(api_key, _NAME_SYSTEM, _msg, max_tokens=200,
+                                 model=VISION_MODEL, thinking={"type": "disabled"})
     if _err or not _txt:
         return _orig, _err
     # 줄바꿈을 공백으로 합침 (상품명은 한 줄) + 따옴표 제거. 너무 짧으면 원본 유지.
@@ -424,7 +430,8 @@ def generate_description_from_costco(api_key, name, costco_text, category=""):
     _msg = (f"상품명: {name}\n카테고리: {category or '(미상)'}\n"
             f"원본 설명(정리 안 됨): {_txt_in or '(없음)'}\n\n"
             "위를 바탕으로 상세페이지용 상세설명을 문장마다 줄바꿈해서 새로 작성해줘.")
-    _t, _e = claude_complete(api_key, _DESC_TEXT_SYSTEM, _msg, max_tokens=500, model=VISION_MODEL)
+    _t, _e = claude_complete(api_key, _DESC_TEXT_SYSTEM, _msg, max_tokens=700,
+                             model=VISION_MODEL, thinking={"type": "disabled"})
     if _t:
         return _desc_to_lines(_t), None
     return None, _e
