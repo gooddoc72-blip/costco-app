@@ -717,13 +717,31 @@ def run_fetch_orders_task(username="admin"):
     else:
         log("  ⏭ 쿠팡 API 키 미설정 — 건너뜀")
 
-    # 정산 매칭 자동 (주문 유무와 무관) — 최근 정산건 수집·역추적 매칭·실정산 반영
+    # 정산 매칭 자동 (주문 유무와 무관) — 최근 정산건 수집·역추적 매칭·실정산 반영 (네이버)
     try:
         _sd, _sm, _su = auto_settlement_match(username, api_id, api_secret, days=10)
         if _sm or _su:
             log(f"💳 정산매칭 자동: {_sd}일 처리 / 매칭 {_sm}건 / 실정산 수익반영 {_su}건")
     except Exception as _se:
         log(f"⚠️ 정산매칭 자동 실패(계속): {_se}")
+
+    # 쿠팡 정산 자동 수집 (revenue-history, 최근 40일) → coupang_settlements 저장
+    #   (기존엔 정산 페이지 수동 버튼에서만 수집됐음 — 자동 파이프라인에 편입)
+    if cpg_access and cpg_secret and cpg_vendor:
+        try:
+            import coupang_api as _cpapi
+            from db import save_coupang_settlements as _save_cps
+            _cp_from = (datetime.now() - timedelta(days=40)).strftime("%Y-%m-%d")
+            _cp_to = datetime.now().strftime("%Y-%m-%d")
+            _crev, _cerr = _cpapi.get_revenue_history(cpg_access, cpg_secret, cpg_vendor,
+                                                      _cp_from, _cp_to)
+            if _crev:
+                _cn = _save_cps(username, _crev)
+                log(f"💳 쿠팡 정산 자동수집: {_cn}건 ({_cp_from}~{_cp_to})")
+            elif _cerr:
+                log(f"⚠️ 쿠팡 정산 수집 오류(계속): {_cerr}")
+        except Exception as _cse:
+            log(f"⚠️ 쿠팡 정산 수집 실패(계속): {_cse}")
 
     # 🤖 AI 정산 브리핑 자동 발송 (설정: anthropic_api_key + ai_briefing_auto='1')
     try:

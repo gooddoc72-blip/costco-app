@@ -560,13 +560,35 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         except Exception:
             _cp_map = {}
         if _cp_map:
+            # orderId별 df 행 그룹핑 — 다품목 주문에 '주문 전체 정산액'을 각 아이템 행에
+            # 통째 대입하면 2배 계상되므로, 주문 정산액을 아이템 행들에 비율 배분(합계 보존).
+            _cp_rows = {}
             for _cidx in df.index:
                 _ono = str(_cidx)
                 if '-' in _ono:
-                    _cv = _cp_map.get(_ono.split('-')[0])
-                    if _cv and int(_cv.get('settlement') or 0) > 0:
-                        df.loc[_cidx, '정산예정금액'] = int(_cv['settlement'])
-                        df.loc[_cidx, '_실정산확정'] = True
+                    _cp_rows.setdefault(_ono.split('-')[0], []).append(_cidx)
+            for _oid, _idxs in _cp_rows.items():
+                _cv = _cp_map.get(_oid)
+                if not (_cv and int(_cv.get('settlement') or 0) > 0):
+                    continue
+                _total = int(_cv['settlement'])
+                if len(_idxs) == 1:
+                    df.loc[_idxs[0], '정산예정금액'] = _total
+                    df.loc[_idxs[0], '_실정산확정'] = True
+                    continue
+                # 여러 아이템 → 각 행 정산예정금액(추정) 비율로 배분 (2배계상 방지)
+                _bases = [max(0, int(df.loc[i, '정산예정금액'] or 0)) for i in _idxs]
+                _bsum = sum(_bases)
+                _alloc = 0
+                for _j, i in enumerate(_idxs):
+                    if _j == len(_idxs) - 1:
+                        _val = _total - _alloc            # 마지막 행에 나머지(합계 보정)
+                    elif _bsum > 0:
+                        _val = int(round(_total * _bases[_j] / _bsum)); _alloc += _val
+                    else:
+                        _val = int(round(_total / len(_idxs))); _alloc += _val
+                    df.loc[i, '정산예정금액'] = int(_val)
+                    df.loc[i, '_실정산확정'] = True
 
         # 🚚 고객배송비는 수수료 차감 없이 전액 정산 (수수료 5.5%는 판매가에만 적용 → 정산예정금액에 이미 반영)
         _ship_settle_factor = 1.0
