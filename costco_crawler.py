@@ -469,9 +469,11 @@ def _parse_occ_products(api_data: dict) -> list[dict]:
         if not name or not price:
             continue
         images = item.get("images", [])
-        # 모든 이미지 URL 수집 (중복 제거) — 첫 번째=대표, 나머지=추가/상세
-        all_imgs = []
-        seen_u = set()
+        # 코스트코는 같은 사진을 여러 포맷(thumbnail/product/results/carousel...)으로 준다.
+        # imageType+galleryIndex 별로 '최고해상도' 포맷 1장만 선택 → 흐릿한 썸네일 방지.
+        # 포맷 우선순위(작을수록 큰 이미지): product/zoom < carousel < results < thumbnail.
+        _FMT = {"zoom": 0, "superzoom": 0, "product": 1, "carousel": 2, "results": 3, "thumbnail": 4}
+        best = {}
         for img in (images or []):
             if not isinstance(img, dict):
                 continue
@@ -479,11 +481,16 @@ def _parse_occ_products(api_data: dict) -> list[dict]:
             if not raw:
                 continue
             u = (COSTCO_BASE + raw) if raw.startswith("/") else raw
-            if u and u not in seen_u:
-                seen_u.add(u)
-                all_imgs.append(u)
-        image_url = all_imgs[0] if all_imgs else ""
-        extra_imgs = all_imgs[1:]
+            fmt = str(img.get("format", "")).lower()
+            score = _FMT.get(fmt.replace("-webp", ""), 5) + (0.5 if "webp" in fmt else 0.0)
+            key = (img.get("imageType", "PRIMARY"), img.get("galleryIndex", 0))
+            if key not in best or score < best[key][0]:
+                best[key] = (score, u)
+        primary = [v[1] for k, v in sorted(best.items()) if k[0] == "PRIMARY"]
+        gallery = [v[1] for k, v in sorted(best.items()) if k[0] == "GALLERY"]
+        _ordered = primary + gallery
+        image_url = _ordered[0] if _ordered else ""
+        extra_imgs = [u for u in _ordered[1:] if u and u != image_url]
         product_no = str(item.get("code") or "")
         # 상세설명(설명·요약) → 상세HTML(설명만; 이미지는 등록 시 네이버 CDN 업로드해 사용)
         _desc = (item.get("description") or "").strip()
