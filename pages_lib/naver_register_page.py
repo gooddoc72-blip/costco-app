@@ -873,18 +873,34 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     st.divider()
 
     # ── 🛒→N 카페24 상품을 네이버에 등록 (건별 카테고리 선택 + 마진율 판매가) ──
-    _cf_mall = _gs('cafe24_mall_id'); _cf_cid = _gs('cafe24_client_id'); _cf_tok = _gs('cafe24_access_token')
-    if _cf_mall and _cf_cid and _cf_tok:
+    #   카페24 카탈로그는 공용(관리자 스토어) — 자격증명은 global에 공유하고,
+    #   각 사용자는 자기 네이버 스토어에 등록. 표시: 관리자는 항상,
+    #   일반 사용자는 관리자가 오픈(cafe24_register_open='1')한 경우만.
+    def _cf_cred(_k):
+        return get_global_setting('cafe24_' + _k) or _gs('cafe24_' + _k)
+    # 관리자가 본인 카페24 자격증명 보유 + 공용 미설정이면 1회 공용으로 승격
+    if IS_ADMIN and _gs('cafe24_mall_id') and not get_global_setting('cafe24_mall_id'):
+        for _mk in ('mall_id', 'client_id', 'client_secret', 'access_token',
+                    'refresh_token', 'token_expires_at'):
+            _mv = _gs('cafe24_' + _mk)
+            if _mv:
+                set_global_setting('cafe24_' + _mk, _mv)
+    _cf_mall = _cf_cred('mall_id'); _cf_cid = _cf_cred('client_id'); _cf_tok = _cf_cred('access_token')
+    _cf_open = IS_ADMIN or (_gs('cafe24_register_open') == '1')
+    if _cf_open and _cf_mall and _cf_cid and _cf_tok:
         import cafe24_api
         with st.expander("🛒→N 카페24 상품을 네이버에 등록", expanded=False):
             _cf_creds = {'mall_id': _cf_mall, 'client_id': _cf_cid,
-                         'client_secret': _gs('cafe24_client_secret'),
-                         'access_token': _cf_tok, 'refresh_token': _gs('cafe24_refresh_token'),
-                         'expires_at': _gs('cafe24_token_expires_at')}
+                         'client_secret': _cf_cred('client_secret'),
+                         'access_token': _cf_tok, 'refresh_token': _cf_cred('refresh_token'),
+                         'expires_at': _cf_cred('token_expires_at')}
             def _cf_save(t):
-                set_setting(USERNAME, 'cafe24_access_token', t.get('access_token', ''))
-                set_setting(USERNAME, 'cafe24_refresh_token', t.get('refresh_token', ''))
-                set_setting(USERNAME, 'cafe24_token_expires_at', t.get('expires_at', ''))
+                # 공용 카페24 토큰 갱신 → global(공유 사용자 전원 반영) + 본인에도 저장
+                for _sk, _sv in (('cafe24_access_token', t.get('access_token', '')),
+                                 ('cafe24_refresh_token', t.get('refresh_token', '')),
+                                 ('cafe24_token_expires_at', t.get('expires_at', ''))):
+                    set_global_setting(_sk, _sv)
+                    set_setting(USERNAME, _sk, _sv)
             _cf_dmode = st.radio("상세페이지 형식", ['a', 'c'], horizontal=True, key="cf_dmode",
                                  format_func=lambda x: "a) 카페24 상세 그대로 + 공통이미지"
                                  if x == 'a' else "c) 이미지형(카페24 이미지 추출 → 네이버에서 편집 쉬움)")

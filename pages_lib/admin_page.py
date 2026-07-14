@@ -143,6 +143,19 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         change_password(u['username'], reset_pw)
                         st.success(f"✅ '{u['username']}' 비밀번호 변경 완료!")
 
+                # ── 🛒 카페24→네이버 등록 기능 오픈/숨김 (관리자 카탈로그 공용) ──
+                st.markdown("<hr style='margin:6px 0'>", unsafe_allow_html=True)
+                _cfo_cur = get_setting(u['username'], 'cafe24_register_open') == '1'
+                _cfo_new = st.checkbox(
+                    "🛒 카페24→네이버 등록 기능 오픈",
+                    value=_cfo_cur, key=f"cf24open_{u['username']}",
+                    help="켜면 이 사용자가 '네이버 등록' 탭에서 관리자 카페24 카탈로그를 "
+                         "자기 스마트스토어에 등록할 수 있습니다. (카페24 자격증명은 공용)")
+                if _cfo_new != _cfo_cur:
+                    set_setting(u['username'], 'cafe24_register_open', '1' if _cfo_new else '0')
+                    st.success("✅ 오픈됨" if _cfo_new else "🙈 숨김 처리됨")
+                    st.rerun()
+
     st.divider()
     st.subheader("➕ 사용자 직접 추가")
     c1, c2, c3 = st.columns(3)
