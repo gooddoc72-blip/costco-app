@@ -731,8 +731,9 @@ def run_fetch_orders_task(username="admin"):
         try:
             import coupang_api as _cpapi
             from db import save_coupang_settlements as _save_cps
-            _cp_from = (datetime.now() - timedelta(days=40)).strftime("%Y-%m-%d")
-            _cp_to = datetime.now().strftime("%Y-%m-%d")
+            # 쿠팡 API 규정: 종료일은 '어제'까지만 허용(오늘/미래 불가) → 400 방지
+            _cp_to = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+            _cp_from = (datetime.now() - timedelta(days=41)).strftime("%Y-%m-%d")
             _crev, _cerr = _cpapi.get_revenue_history(cpg_access, cpg_secret, cpg_vendor,
                                                       _cp_from, _cp_to)
             if _crev:
