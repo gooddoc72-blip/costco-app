@@ -46,6 +46,7 @@ def _auth_header(access_key: str, secret_key: str,
             f"signed-date={dt_str}, signature={sig}"
         ),
         "Content-Type": "application/json;charset=UTF-8",
+        "X-MARKET": "KR",   # 일부 계정은 필수(없으면 400 BAD_REQUEST) — 한국 마켓 고정
     }
 
 
