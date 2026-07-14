@@ -924,11 +924,101 @@ def run_naver_products_task(username="admin"):
         return False
 
 
+# ── Task 7: 코스트코 수집상품 → 네이버 자동 등록 ──
+def run_naver_register_task(username="admin"):
+    """크롤링해 shared_products에 쌓인 미등록 상품을 네이버 스마트스토어에 자동 등록.
+    - AI로 카테고리 자동판단(쇼핑검색→suggest), 미해결 건은 등록 안 하고 남겨 UI 장바구니로 회수.
+    - 라이브 등록이므로 auto_register_enabled='1' 인 사용자만 실행(안전 opt-in).
+    설정 키: auto_register_enabled / auto_register_margin / auto_register_max."""
+    log("=" * 50)
+    log(f"[Task 7] 네이버 자동 등록 시작 (사용자: {username})")
+
+    settings = get_user_settings(username)
+    if not settings:
+        log(f"❌ '{username}' 사용자 DB 없음")
+        return False
+
+    # ── 안전 게이트: 켜져 있어야만 라이브 등록 진행 ──
+    if settings.get("auto_register_enabled", "") != "1":
+        log("⏭ auto_register_enabled 미설정 — 자동 등록 건너뜀 (자동화 탭에서 활성화 필요)")
+        return True
+
+    api_id = settings.get("api_client_id", "")
+    api_secret = settings.get("api_client_secret", "")
+    if not api_id or not api_secret:
+        log("❌ 네이버 커머스 API 키 미설정 → 건너뜀")
+        return False
+
+    try:
+        margin = float(settings.get("auto_register_margin") or 10)
+    except Exception:
+        margin = 10.0
+    try:
+        max_count = int(settings.get("auto_register_max") or 20)
+    except Exception:
+        max_count = 20
+
+    open_id = settings.get("naver_open_client_id", "")
+    open_secret = settings.get("naver_open_client_secret", "")
+    if not (open_id and open_secret):
+        log("⚠️ 네이버 Open API(쇼핑검색) 키 미설정 — AI 카테고리 자동판단 불가. "
+            "카테고리 매핑/상품 저장값 있는 건만 등록되고 나머지는 장바구니로 남습니다.")
+    # AI 키: 관리자 공용키 우선, 없으면 본인 키
+    ai_key = get_global_setting("anthropic_api_key") or settings.get("anthropic_api_key", "")
+    as_tel = settings.get("naver_as_tel", "") or "1588-1234"
+
+    # 코스트코 카테고리 → 네이버 기본 카테고리 매핑
+    cat_map = {}
+    try:
+        cat_map = json.loads(settings.get("naver_cat_mappings") or "{}")
+    except Exception:
+        cat_map = {}
+
+    try:
+        import naver_register_service
+    except ImportError:
+        log("❌ naver_register_service.py를 찾을 수 없습니다.")
+        return False
+
+    log(f"  마진 {margin:g}% · 회당 최대 {max_count}건 · "
+        f"AI키 {'있음' if ai_key else '없음'} · 쇼핑검색 {'가능' if (open_id and open_secret) else '불가'}")
+
+    try:
+        res = naver_register_service.auto_register(
+            username, api_id, api_secret,
+            margin=margin, max_count=max_count,
+            open_creds=(open_id, open_secret),
+            ai_key=ai_key, cat_map=cat_map, as_tel=as_tel,
+            log=lambda m: log(m),
+        )
+    except Exception as e:
+        import traceback
+        log(f"❌ 자동 등록 중 오류: {e}")
+        log(traceback.format_exc())
+        send_notification(settings, f"❌ 네이버 자동 등록 오류\n{e}", username)
+        return False
+
+    today = datetime.now().strftime("%m/%d")
+    summary = (
+        f"🛍 네이버 자동 등록 완료 ({today})\n"
+        f"✅ 등록 {res['ok']}건 / ❌ 실패 {res['fail']}건\n"
+        f"⏭ 스킵 — 카테고리미해결 {res['skipped_no_category']} · "
+        f"가격없음 {res['skipped_no_price']} · 이미지없음 {res['skipped_no_image']}"
+    )
+    if res["skipped_no_category"]:
+        summary += "\n※ 카테고리 미해결 건은 앱 '네이버 등록' 탭 장바구니에서 수동 확인하세요."
+    log(summary)
+    send_notification(settings, summary, username)
+    log("[Task 7] 완료")
+    return True
+
+
 # ── 진입점 ────────────────────────────────────────
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="코스트코핫딜 자동화 실행")
     parser.add_argument("--task",
-                        choices=["shopping", "shipping", "crawl", "rank", "orders", "products", "all"],
+                        choices=["shopping", "shipping", "crawl", "rank", "orders",
+                                 "products", "register", "all"],
                         default="all",
                         help="실행할 작업 (기본: all)")
     parser.add_argument("--user",
@@ -950,8 +1040,12 @@ if __name__ == "__main__":
         run_fetch_orders_task(args.user)
     elif args.task == "products":
         run_naver_products_task(args.user)
+    elif args.task == "register":
+        run_naver_register_task(args.user)
     else:
         run_fetch_orders_task(args.user)
         run_shopping_task(args.user)
         run_shipping_task(args.user)
         run_rank_check_task(args.user)
+        # 네이버 자동 등록은 opt-in(auto_register_enabled='1')일 때만 run_naver_register_task 내부에서 진행
+        run_naver_register_task(args.user)

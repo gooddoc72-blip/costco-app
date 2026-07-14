@@ -60,6 +60,11 @@ except ImportError:
     HAS_NAVER_API = False
     naver_api = None
 
+try:
+    import naver_register_service
+except ImportError:
+    naver_register_service = None
+
 # app.py 라우터에서 주입되는 cached wrapper들
 cached_shared_products = None
 cached_user_products = None
@@ -99,10 +104,29 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     _nr_reg   = [p for p in _nr_all if p.get("naver_product_no")]
 
     # ── 통계 ────────────────────────────────────────────────────────
-    _st1, _st2, _st3 = st.columns(3)
+    _CART_MAX = 30
+    _st1, _st2, _st3, _st4 = st.columns(4)
     _st1.metric("전체",    f"{len(_nr_all)}개")
     _st2.metric("등록완료", f"{len(_nr_reg)}개")
     _st3.metric("미등록",   f"{len(_nr_unreg)}개")
+    _nr4_cart = st.session_state.get("nr4_cart", [])
+    _st4.metric("장바구니", f"{len(_nr4_cart)}/{_CART_MAX}개",
+                delta="준비됨" if _nr4_cart else None)
+
+    # 장바구니가 있으면 상단에 일괄 등록 버튼 노출
+    if _nr4_cart:
+        _cart_c1, _cart_c2, _cart_c3 = st.columns([3, 1, 1])
+        _cart_c1.info(
+            f"🛒 장바구니 {len(_nr4_cart)}개 준비됨 — "
+            f"네이버 카테고리 {len({item['cat_name'].split(' > ')[-1] for item in _nr4_cart})}개에 분산"
+        )
+        if _cart_c2.button("🚀 일괄 등록", key="nr4_cart_reg", type="primary",
+                           use_container_width=True):
+            st.session_state["nr4_do_register"] = True
+            st.rerun()
+        if _cart_c3.button("🗑 비우기", key="nr4_cart_clear", use_container_width=True):
+            st.session_state.pop("nr4_cart", None)
+            st.rerun()
     st.divider()
 
     # ── 카테고리 경로(A>B>C>D) → 네이버 리프카테고리ID 공용 변환 ──
@@ -1105,6 +1129,68 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                             st.session_state.pop("nreg2_kw", None); st.rerun()
         st.divider()
 
+    # ── 장바구니 일괄 등록 실행 (공용 서비스 register_one 호출) ──────
+    if st.session_state.pop("nr4_do_register", False):
+        _cart_items = st.session_state.get("nr4_cart", [])
+        if _cart_items and naver_register_service is None:
+            st.error("naver_register_service.py 없음 — 관리자에게 문의하세요.")
+        elif _cart_items:
+            _do_margin = int(_gs("cafe24_naver_margin") or 10)
+            _do_as = _gs("naver_as_tel") or "1588-1234"
+            _do_prog = st.progress(0)
+            _do_txt = st.empty()
+            _do_res = []
+            for _di, _ditem in enumerate(_cart_items):
+                _dp = _ditem["product"]
+                _dcat = _ditem["cat_id"]
+                _dp_name = _dp["costco_name"]
+                _dcat_name = _ditem["cat_name"].split(" > ")[-1]
+                _do_txt.text(f"등록 중 ({_di+1}/{len(_cart_items)}): {_dp_name[:30]}")
+                # 판매가: 명시적 sale_price 우선, 없으면 마진 적용가(원가 등록 방지)
+                _dp_price = int(_dp.get("sale_price") or 0) or \
+                    naver_register_service.compute_sale_price(_dp, _do_margin)
+                if not (_dp.get("local_image") or _dp.get("image_url")):
+                    _do_res.append({"상품명": _dp_name, "카테고리": _dcat_name,
+                                    "결과": "❌", "내용": "이미지 없음"})
+                    _do_prog.progress((_di+1)/len(_cart_items)); continue
+                if not _dp_price:
+                    _do_res.append({"상품명": _dp_name, "카테고리": _dcat_name,
+                                    "결과": "❌", "내용": "가격 없음"})
+                    _do_prog.progress((_di+1)/len(_cart_items)); continue
+                _origin, _rerr = naver_register_service.register_one(
+                    USERNAME, api_id, api_secret, _dp, _dcat,
+                    opts={"sale_price": _dp_price, "as_tel": _do_as, "stock": 10})
+                if _rerr or not _origin:
+                    _do_res.append({"상품명": _dp_name, "카테고리": _dcat_name,
+                                    "결과": "❌", "내용": str(_rerr)[:80]})
+                else:
+                    _do_res.append({"상품명": _dp_name, "카테고리": _dcat_name,
+                                    "결과": "✅", "내용": f"상품번호 {_origin}"})
+                _do_prog.progress((_di+1)/len(_cart_items))
+            _do_txt.empty()
+            # 성공한 항목만 장바구니에서 제거
+            _ok_names_do = {r["상품명"] for r in _do_res if r["결과"] == "✅"}
+            st.session_state["nr4_cart"] = [
+                i for i in _cart_items if i["product"]["costco_name"] not in _ok_names_do
+            ]
+            st.session_state["nr4_reg_results"] = _do_res
+            if invalidate_data_cache:
+                invalidate_data_cache()
+            st.rerun()
+
+    # 등록 결과 표시
+    if st.session_state.get("nr4_reg_results"):
+        _r4r_top = st.session_state["nr4_reg_results"]
+        _r4_ok_top = sum(1 for r in _r4r_top if r["결과"] == "✅")
+        if _r4_ok_top == len(_r4r_top):
+            st.success(f"✅ {_r4_ok_top}개 모두 등록 완료!")
+        else:
+            st.warning(f"성공 {_r4_ok_top}개 / 실패 {len(_r4r_top)-_r4_ok_top}개")
+        st.dataframe(pd.DataFrame(_r4r_top), use_container_width=True, hide_index=True)
+        if st.button("결과 닫기", key="nr4_top_res_clr"):
+            st.session_state.pop("nr4_reg_results", None); st.rerun()
+        st.divider()
+
     if not _nr_unreg:
         st.success("🎉 모든 상품이 등록 완료되었습니다!")
     else:
@@ -1146,6 +1232,28 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
 
         st.caption(f"후보 상품: {len(_cc_pool)}개")
         st.divider()
+
+        # ── 장바구니 뷰어 ──────────────────────────────────────────────
+        _nr4_cart_v = st.session_state.get("nr4_cart", [])
+        if _nr4_cart_v:
+            with st.expander(f"🛒 장바구니 {len(_nr4_cart_v)}/{_CART_MAX}개", expanded=False):
+                _cart_by_cat = {}
+                for _ci_item in _nr4_cart_v:
+                    _ckey = _ci_item["cat_name"].split(" > ")[-1]
+                    _cart_by_cat.setdefault(_ckey, []).append(_ci_item)
+                for _ccat_name, _citems in _cart_by_cat.items():
+                    st.markdown(f"**{_ccat_name}** ({len(_citems)}개)")
+                    for _ci_item in _citems:
+                        _cic1, _cic2 = st.columns([5, 1])
+                        _cic1.caption(f"  • {_ci_item['product']['costco_name']}")
+                        if _cic2.button("✖", key=f"cart_rm_{_ci_item['product']['match_keyword']}",
+                                        use_container_width=True):
+                            st.session_state["nr4_cart"] = [
+                                i for i in _nr4_cart_v
+                                if i["product"]["match_keyword"] != _ci_item["product"]["match_keyword"]
+                            ]
+                            st.rerun()
+            st.divider()
 
         # ── STEP 2: 네이버 카테고리 선택 ─────────────────────────────
         st.markdown("#### STEP 2 — 네이버 카테고리 선택")

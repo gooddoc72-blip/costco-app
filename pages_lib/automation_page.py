@@ -620,6 +620,83 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
 
     st.divider()
 
+    # ── Task 7: 코스트코 수집상품 → 네이버 자동 등록 ──
+    st.subheader("🛍 Task 7 — 코스트코 수집상품 네이버 자동 등록")
+    st.caption("크롤링한 코스트코 상품 중 미등록 상품을 매일 자동으로 스마트스토어에 등록합니다. "
+               "AI가 카테고리를 자동 판단하고, 판단하지 못한 건은 '네이버 등록' 탭 장바구니로 남겨 수동 확인합니다. "
+               "⚠️ 실제 스토어에 상품이 올라가므로 마진율·회당 최대 수를 확인하고 사용하세요.")
+
+    TASK7_NAME = f"CostcoAutoRegister_{USERNAME}"
+    t7_ok, t7_out = _query_task(TASK7_NAME)
+    if t7_ok:
+        st.success("✅ Task 7 (네이버 자동 등록) 등록됨")
+        st.code(t7_out[:300], language=None)
+
+    task7_en = _gs('auto_register_enabled') == '1'
+    task7_time_str = _gs('auto_register_time') or '07:00'
+    t7h, t7m = [int(x) for x in task7_time_str.split(':')]
+
+    _t7_c1, _t7_c2, _t7_c3, _t7_c4 = st.columns([1, 2, 1, 1])
+    new_t7_en     = _t7_c1.checkbox("활성화", value=task7_en, key="t7_en")
+    new_t7_time   = _t7_c2.time_input("실행 시간", value=dtime(t7h, t7m), key="t7_time")
+    new_t7_margin = _t7_c3.number_input(
+        "마진율 %", min_value=0, max_value=300, step=5,
+        value=int(_gs('auto_register_margin') or _gs('cafe24_naver_margin') or 10),
+        key="t7_margin")
+    new_t7_max    = _t7_c4.number_input(
+        "회당 최대", min_value=1, max_value=100, step=1,
+        value=int(_gs('auto_register_max') or 20), key="t7_max")
+    st.caption("판매가 = 코스트코가 ×(1+마진%) ÷0.945(수수료 5.5%). "
+               "회당 최대 = 1회 실행당 등록 상한(AI 호출·등록 폭주 방지). 등록된 상품은 다음 실행 시 자동 제외됩니다.")
+
+    _need7 = []
+    if not bool(_gs('api_client_id')):
+        _need7.append("네이버 커머스 API")
+    if not (bool(_gs('naver_open_client_id')) and bool(_gs('naver_open_client_secret'))):
+        _need7.append("네이버 Open API(쇼핑검색·AI카테고리)")
+    if _need7:
+        st.warning("⚠️ " + " / ".join(_need7) + " 키를 설정 탭에서 입력해야 자동 카테고리 판단이 됩니다. "
+                   "(없으면 카테고리 매핑/저장값 있는 건만 등록되고 나머지는 장바구니로 남습니다.)")
+
+    _s7c1, _s7c2, _s7c3 = st.columns(3)
+    if _s7c1.button("💾 Task 7 저장 & 등록", key="save_t7", type="primary", use_container_width=True):
+        t7_str = new_t7_time.strftime("%H:%M")
+        set_setting(USERNAME, 'auto_register_enabled', '1' if new_t7_en else '0')
+        set_setting(USERNAME, 'auto_register_time', t7_str)
+        set_setting(USERNAME, 'auto_register_margin', str(int(new_t7_margin)))
+        set_setting(USERNAME, 'auto_register_max', str(int(new_t7_max)))
+        if new_t7_en:
+            _cmd7 = f'"{PYTHON_PATH}" "{SCRIPT_PATH}" --task register --user {USERNAME}'
+            ok, out = _schtasks_run(["/create", "/tn", TASK7_NAME, "/tr", _cmd7,
+                                     "/sc", "daily", "/st", t7_str, "/f"])
+            if ok:
+                st.success(f"✅ Task 7 등록 완료 — 매일 {t7_str} 네이버 자동 등록")
+            else:
+                st.error(f"❌ 등록 실패 (관리자 권한 필요)\n{out}")
+        else:
+            _schtasks_run(["/delete", "/tn", TASK7_NAME, "/f"])
+            st.info("Task 7 비활성화 — 스케줄 삭제됨")
+        st.rerun()
+
+    if _s7c2.button("🗑 Task 7 삭제", key="del_t7", use_container_width=True):
+        ok, out = _schtasks_run(["/delete", "/tn", TASK7_NAME, "/f"])
+        set_setting(USERNAME, 'auto_register_enabled', '0')
+        st.success("삭제됨") if ok else st.error(f"삭제 실패: {out}")
+        st.rerun()
+
+    if _s7c3.button("▶ 지금 테스트 실행", key="run_t7", use_container_width=True):
+        st.caption("※ '활성화' 저장 후 실행해야 실제 등록됩니다 (미활성 시 로그에 '건너뜀' 표시).")
+        with st.spinner("네이버 자동 등록 실행 중... (상품 수·AI 호출에 따라 수 분 소요될 수 있음)"):
+            r = subprocess.run(
+                [PYTHON_PATH, SCRIPT_PATH, "--task", "register", "--user", USERNAME],
+                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=1800
+            )
+        output = (r.stdout + r.stderr).strip()
+        st.success("✅ 실행 완료") if r.returncode == 0 else st.error("❌ 오류 발생")
+        st.code(output, language=None)
+
+    st.divider()
+
     # ── 실행 로그 ──
     st.subheader("📄 자동화 실행 로그")
     # 관리자는 전체 로그, 일반 사용자는 본인 로그만 조회 (타 사용자 로그 노출 방지)
