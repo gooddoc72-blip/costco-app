@@ -154,13 +154,13 @@ def register_one(username, api_id, api_secret, product, cat_id, opts=None):
     if not rep_cdn:
         return None, f"이미지 업로드 실패: {e1}"
 
-    # 추가 이미지 + 상세HTML (크롤링 저장분)
+    # 추가 이미지 → 네이버 CDN 업로드 + 상세설명(크롤링 저장분) 로드
     extra_cdn = []
-    detail_html = ""
+    _desc_html = ""
     sid = product.get("shared_id")
     if sid:
         xraw, dhtml = get_product_detail(sid)
-        detail_html = dhtml or ""
+        _desc_html = dhtml or ""
         if xraw:
             try:
                 xlist = json.loads(xraw)
@@ -168,6 +168,26 @@ def register_one(username, api_id, api_secret, product, cat_id, opts=None):
                 xlist = []
             if xlist:
                 extra_cdn, _ = naver_api.upload_images_batch(api_id, api_secret, xlist)
+
+    # 상세페이지: [공통상단] + 상품명 + (대표+추가 이미지, 네이버CDN) + 상품설명 + [공통하단]
+    _top = str(get_setting(username, "naver_detail_top_img") or "").strip()
+    _bot = str(get_setting(username, "naver_detail_bottom_img") or "").strip()
+    _all_cdn = [rep_cdn] + [u for u in extra_cdn if u]
+    _nm = name.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    _dp = ['<div style="text-align:center">']
+    if _top:
+        _dp.append('<img src="%s" style="max-width:100%%;display:block;margin:0 auto">' % _top)
+    _dp.append('<div style="font-size:30px;font-weight:800;padding:20px 12px;'
+               'line-height:1.4">%s</div>' % _nm)
+    for _u in _all_cdn:
+        _dp.append('<img src="%s" style="max-width:100%%;display:block;'
+                   'margin:0 auto 14px;border:1px solid #cccccc">' % _u)
+    if _desc_html:
+        _dp.append(_desc_html)
+    if _bot:
+        _dp.append('<img src="%s" style="max-width:100%%;display:block;margin:0 auto">' % _bot)
+    _dp.append('</div>')
+    detail_html = "\n".join(_dp)
 
     res, e2 = naver_api.register_product(api_id, api_secret, {
         "name":              name,

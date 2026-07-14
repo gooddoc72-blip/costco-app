@@ -469,20 +469,31 @@ def _parse_occ_products(api_data: dict) -> list[dict]:
         if not name or not price:
             continue
         images = item.get("images", [])
-        image_url = ""
+        # 모든 이미지 URL 수집 (중복 제거) — 첫 번째=대표, 나머지=추가/상세
+        all_imgs = []
+        seen_u = set()
         for img in (images or []):
-            if isinstance(img, dict):
-                if img.get("imageType") == "PRIMARY":
-                    raw = img.get("url", "")
-                    image_url = (COSTCO_BASE + raw) if raw.startswith("/") else raw
-                    break
-        if not image_url and images:
-            raw = images[0].get("url", "") if isinstance(images[0], dict) else ""
-            image_url = (COSTCO_BASE + raw) if raw.startswith("/") else raw
+            if not isinstance(img, dict):
+                continue
+            raw = img.get("url", "")
+            if not raw:
+                continue
+            u = (COSTCO_BASE + raw) if raw.startswith("/") else raw
+            if u and u not in seen_u:
+                seen_u.add(u)
+                all_imgs.append(u)
+        image_url = all_imgs[0] if all_imgs else ""
+        extra_imgs = all_imgs[1:]
         product_no = str(item.get("code") or "")
+        # 상세설명(설명·요약) → 상세HTML(설명만; 이미지는 등록 시 네이버 CDN 업로드해 사용)
+        _desc = (item.get("description") or "").strip()
+        _summ = (item.get("summary") or "").strip()
+        _feats = [_summ] if _summ else []
+        _detail = build_detail_html([], _desc, _feats) if (_desc or _feats) else ""
         results.append({
             "name": name, "price": price,
             "image_url": image_url, "product_no": product_no,
+            "extra_images": extra_imgs, "detail_html": _detail,
         })
     return results
 
@@ -780,6 +791,8 @@ def save_to_shared_products(
             "ALTER TABLE shared_products ADD COLUMN image_url TEXT DEFAULT ''",
             "ALTER TABLE shared_products ADD COLUMN local_image TEXT DEFAULT ''",
             "ALTER TABLE shared_products ADD COLUMN category TEXT DEFAULT ''",
+            "ALTER TABLE shared_products ADD COLUMN extra_images TEXT DEFAULT ''",
+            "ALTER TABLE shared_products ADD COLUMN detail_html TEXT DEFAULT ''",
         ]:
             try:
                 conn.execute(col_sql)
@@ -834,6 +847,19 @@ def save_to_shared_products(
                      p["price"], now)
                 )
                 saved += 1
+
+            # 상세(설명·추가이미지) 함께 저장 — 검색 API가 제공한 경우 (같은 conn UPDATE)
+            _px = p.get("extra_images")
+            _pd = p.get("detail_html")
+            if product_no and (_px or _pd):
+                try:
+                    conn.execute(
+                        "UPDATE shared_products SET extra_images=?, detail_html=? "
+                        "WHERE product_no=?",
+                        (json.dumps(_px or [], ensure_ascii=False), _pd or "", product_no),
+                    )
+                except Exception:
+                    pass
 
         conn.commit()
     finally:
