@@ -218,6 +218,19 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     st.caption("카페24 전 상품에 코스트코 번호 매칭(자체상품코드) → 매입가 동기화 → 품절/판매종료 반영. "
                "상시 자동 반영은 스케줄 태스크(--task cafe24sync)로 설정하세요.")
 
+    # ── ⏱ 자동 동기화 스케줄 (품절·매입가 상시 반영) ──
+    with st.expander("⏱ 자동 동기화 스케줄 — 품절/판매종료·매입가 상시 반영", expanded=False):
+        _sc_en = st.checkbox("자동 동기화 활성화", key="sc_en",
+                             value=(get_global_setting('cafe24sync_enabled') == '1'))
+        _sc_iv = st.number_input("실행 간격(시간)", min_value=1, max_value=24, step=1,
+                                 value=int(get_global_setting('cafe24sync_interval_hours') or 3), key="sc_iv")
+        st.caption(f"마지막 실행: {get_global_setting('cafe24sync_last_run') or '없음'} · "
+                   "서버 크론이 매시간 확인하여 설정한 간격마다 자동 실행합니다.")
+        if st.button("💾 스케줄 저장", key="sc_save"):
+            set_global_setting('cafe24sync_enabled', '1' if _sc_en else '0')
+            set_global_setting('cafe24sync_interval_hours', str(int(_sc_iv)))
+            st.success(f"저장됨 — {'활성' if _sc_en else '비활성'} · {int(_sc_iv)}시간 간격")
+
     _sy_cf = {_k: (get_global_setting('cafe24_' + _k) or '') for _k in
               ('mall_id', 'client_id', 'client_secret', 'access_token', 'refresh_token', 'token_expires_at')}
     if not (_sy_cf['mall_id'] and _sy_cf['client_id'] and _sy_cf['access_token']):

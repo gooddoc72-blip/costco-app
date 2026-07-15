@@ -1052,6 +1052,26 @@ def run_cafe24_sync_task(username="admin"):
     log(f"[Task 8] 카페24↔코스트코 동기화 시작 (사용자: {username})")
     settings = get_user_settings(username) or {}
 
+    # ── 스케줄 게이트: 활성화 + 설정 간격 경과 확인(크론은 매시간 실행) ──
+    if get_global_setting('cafe24sync_enabled') != '1':
+        log("⏭ cafe24sync 비활성 — 건너뜀 (카페24 메뉴에서 활성화 필요)")
+        return True
+    try:
+        _interval_h = float(get_global_setting('cafe24sync_interval_hours') or 3)
+    except Exception:
+        _interval_h = 3.0
+    _last = get_global_setting('cafe24sync_last_run') or ''
+    if _last:
+        try:
+            _lt = datetime.strptime(_last, "%Y-%m-%d %H:%M:%S")
+            _elapsed_h = (datetime.now() - _lt).total_seconds() / 3600.0
+            if _elapsed_h < _interval_h - 0.05:
+                log(f"⏭ 간격 미도달({_elapsed_h:.1f}h < {_interval_h}h) — 건너뜀")
+                return True
+        except Exception:
+            pass
+    set_global_setting('cafe24sync_last_run', datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
     _cf = {k: (get_global_setting('cafe24_' + k) or '') for k in
            ('mall_id', 'client_id', 'client_secret', 'access_token', 'refresh_token', 'token_expires_at')}
     if not (_cf['mall_id'] and _cf['client_id'] and _cf['access_token']):
