@@ -240,12 +240,18 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                             _model = str(_full.get('model_name') or '').strip()
                             _origin = (str(_ai_photo.get('origin') or '').strip()
                                        or str(_full.get('origin_place_value') or '').strip())
-                            # ⑥ 상세페이지: 이미지 등록 옵션(카페24 상세이미지 → 네이버 CDN <img> 스택)
-                            _detail_html = _desc_txt or f"<p>{_final_name}</p>"
+                            # ⑥ 상세페이지: 상단에 상품명 + (이미지 등록 옵션) 카페24 상세이미지 스택
+                            import html as _html
+                            _name_block = (
+                                '<div style="text-align:center;font-size:22px;font-weight:800;'
+                                'padding:18px 12px;color:#222;line-height:1.45">'
+                                + _html.escape(str(_final_name)) + '</div>')
+                            _body_html = _desc_txt or ''
                             if _ag_img_detail:
                                 _img_html = _build_image_detail(_full, _ag_tid, _ag_tsecret)
                                 if _img_html:
-                                    _detail_html = _img_html
+                                    _body_html = _img_html
+                            _detail_html = _name_block + (_body_html or f"<p>{_html.escape(str(_final_name))}</p>")
                             _res, _re2 = naver_api.register_product(_ag_tid, _ag_tsecret, {
                                 "name": _final_name, "sale_price": _npr,
                                 "image_url": _cdn, "category_id": _cid,
