@@ -128,9 +128,16 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         st.error(f"조회 실패: {_perr}")
                 _ag_list = st.session_state.get('_ag_prods') or []
                 if _ag_list:
+                    _ag_show = _ag_list[:30]
                     st.caption(f"{len(_ag_list)}개 조회 — 체크 후 아래 버튼으로 '{_ag_tuser}' 스토어에 등록")
+                    # 전체 선택 토글 — 변화 감지 시 개별 체크박스 일괄 설정(위젯 생성 전에 세팅)
+                    _ag_all = st.checkbox(f"✅ 전체 선택 ({len(_ag_show)}개)", key="ag_all_toggle")
+                    if _ag_all != st.session_state.get('_ag_all_prev'):
+                        for _p in _ag_show:
+                            st.session_state[f"ag_ck_{_p['product_no']}"] = _ag_all
+                        st.session_state['_ag_all_prev'] = _ag_all
                     _ag_sel = []
-                    for _p in _ag_list[:30]:
+                    for _p in _ag_show:
                         _pno = _p['product_no']; _pr = int(_p.get('price') or 0)
                         _npr = int(round(_pr * (1 + _ag_margin / 100.0) / 0.945 / 10) * 10)
                         if st.checkbox(
