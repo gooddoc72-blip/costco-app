@@ -934,6 +934,44 @@ def fetch_costco_spec(product_no: str) -> dict:
     return spec
 
 
+def fetch_costco_status(product_no: str) -> dict:
+    """코스트코 상세 API로 상품 상태·가격 조회 (브라우저 불필요).
+    반환: {exists, available, price, reason}.
+      exists=False → 판매종료(삭제/404). available=False → 품절.
+      네트워크 오류 등 불확실 시 exists=None → 호출측에서 건너뜀(오탐 방지)."""
+    pno = str(product_no or "").strip()
+    if not pno:
+        return {"exists": None, "available": None, "price": 0, "reason": "번호없음"}
+    import urllib.request, urllib.error
+    url = f"{COSTCO_BASE}/rest/v2/korea/products/{pno}?fields=FULL&lang=ko&curr=KRW"
+    try:
+        req = urllib.request.Request(url, headers={
+            "Accept": "application/json",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+        })
+        with urllib.request.urlopen(req, timeout=12) as resp:
+            if getattr(resp, "status", 200) != 200:
+                return {"exists": None, "available": None, "price": 0, "reason": "조회실패"}
+            data = json.loads(resp.read().decode("utf-8", errors="replace"))
+    except urllib.error.HTTPError as e:
+        if getattr(e, "code", 0) in (404, 410):
+            return {"exists": False, "available": False, "price": 0, "reason": "판매종료"}
+        return {"exists": None, "available": None, "price": 0, "reason": f"HTTP{getattr(e, 'code', '')}"}
+    except Exception:
+        return {"exists": None, "available": None, "price": 0, "reason": "조회오류"}
+    if not data or not data.get("code"):
+        return {"exists": False, "available": False, "price": 0, "reason": "판매종료"}
+    price_obj = data.get("price", {})
+    price = (int(price_obj.get("value", 0) or 0) if isinstance(price_obj, dict)
+             else _clean_price(str(price_obj)))
+    stock = data.get("stock", {}) or {}
+    status = str(stock.get("stockLevelStatus", "")).lower()
+    purchasable = data.get("purchasable")
+    if status in ("outofstock", "out_of_stock") or purchasable is False:
+        return {"exists": True, "available": False, "price": price, "reason": "품절"}
+    return {"exists": True, "available": True, "price": price, "reason": "판매중"}
+
+
 def build_spec_table_html(spec: dict) -> str:
     """한글표시사항 스펙 dict → 상세페이지용 '제품 상세정보' 표 HTML. 빈 값 생략."""
     if not spec:

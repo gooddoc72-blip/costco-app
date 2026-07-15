@@ -264,9 +264,67 @@ def update_product_price(creds, product_no, new_price, save_tokens=None):
     return True, None
 
 
+def update_custom_product_code(creds, product_no, code, save_tokens=None):
+    """카페24 상품 '자체상품코드'(custom_product_code) 수정. 반환: (ok, err).
+    PUT /api/v2/admin/products/{product_no}  body {shop_no, request:{custom_product_code}}
+    코스트코 상품번호 매칭 저장용."""
+    _pno = str(product_no).strip()
+    if not _pno:
+        return False, "상품번호가 비어 있습니다."
+    _code = str(code or "").strip()
+    data, err = _admin_request(
+        creds, "PUT", f"/api/v2/admin/products/{_pno}", save_tokens,
+        json_body={"shop_no": 1, "request": {"custom_product_code": _code}})
+    if err:
+        return False, err
+    return True, None
+
+
+def update_supply_price(creds, product_no, supply_price, save_tokens=None):
+    """카페24 상품 '공급가(매입가, supply_price)' 수정. 반환: (ok, err).
+    PUT /api/v2/admin/products/{product_no}  body {shop_no, request:{supply_price}}
+    코스트코 원가를 카페24 매입가에 동기화하는 용도."""
+    _pno = str(product_no).strip()
+    if not _pno:
+        return False, "상품번호가 비어 있습니다."
+    try:
+        _sp = int(float(supply_price))
+    except Exception:
+        return False, "매입가가 올바르지 않습니다."
+    if _sp <= 0:
+        return False, "매입가가 0 이하입니다."
+    data, err = _admin_request(
+        creds, "PUT", f"/api/v2/admin/products/{_pno}", save_tokens,
+        json_body={"shop_no": 1, "request": {"supply_price": str(_sp)}})
+    if err:
+        return False, err
+    return True, None
+
+
+def update_selling_status(creds, product_no, selling=None, display=None, save_tokens=None):
+    """카페24 상품 판매여부(selling)/진열여부(display) 수정. 반환: (ok, err).
+    코스트코 품절·판매종료 시 판매중지 처리용. selling/display=True/False(None이면 미변경)."""
+    _pno = str(product_no).strip()
+    if not _pno:
+        return False, "상품번호가 비어 있습니다."
+    _req = {}
+    if selling is not None:
+        _req["selling"] = "T" if selling else "F"
+    if display is not None:
+        _req["display"] = "T" if display else "F"
+    if not _req:
+        return False, "변경할 항목이 없습니다."
+    data, err = _admin_request(
+        creds, "PUT", f"/api/v2/admin/products/{_pno}", save_tokens,
+        json_body={"shop_no": 1, "request": _req})
+    if err:
+        return False, err
+    return True, None
+
+
 def get_all_products(creds, save_tokens=None, max_total=3000):
     """카페24 전체 상품 페이지네이션 조회. 반환: (products, err).
-    각 항목: {product_no, product_name, price, selling}. max_total로 상한."""
+    각 항목: {product_no, product_name, price, selling, custom_product_code, supply_price}. max_total로 상한."""
     out = []
     offset = 0
     while offset < max_total:
@@ -282,11 +340,17 @@ def get_all_products(creds, save_tokens=None, max_total=3000):
                 _pr = int(float(p.get("price", 0) or 0))
             except Exception:
                 _pr = 0
+            try:
+                _sp = int(float(p.get("supply_price", 0) or 0))
+            except Exception:
+                _sp = 0
             out.append({
                 "product_no": p.get("product_no"),
                 "product_name": p.get("product_name", ""),
                 "price": _pr,
                 "selling": p.get("selling", ""),
+                "custom_product_code": p.get("custom_product_code", "") or "",
+                "supply_price": _sp,
             })
         if len(_ps) < 100:
             break

@@ -27,6 +27,7 @@ import naver_api
 from utils import fmt, extract_pack_qty
 from db import (
     get_global_setting,
+    set_global_setting,
     get_all_settings,
     get_all_products as _db_get_all_products,
     set_setting,
@@ -1042,12 +1043,81 @@ def run_naver_register_task(username="admin"):
     return True
 
 
+def run_cafe24_sync_task(username="admin"):
+    """카페24 자체상품코드(코스트코번호)로 매칭된 상품을 코스트코 상태와 동기화.
+    - 코스트코 현재가 → 카페24 매입가(supply_price)
+    - 코스트코 품절/판매종료 → 카페24 판매중지(selling=F)
+    상시 자동 반영용(스케줄 등록). 공용 카페24 자격증명 사용."""
+    log("=" * 50)
+    log(f"[Task 8] 카페24↔코스트코 동기화 시작 (사용자: {username})")
+    settings = get_user_settings(username) or {}
+
+    _cf = {k: (get_global_setting('cafe24_' + k) or '') for k in
+           ('mall_id', 'client_id', 'client_secret', 'access_token', 'refresh_token', 'token_expires_at')}
+    if not (_cf['mall_id'] and _cf['client_id'] and _cf['access_token']):
+        log("❌ 공용 카페24 자격증명 없음 → 건너뜀")
+        return False
+    try:
+        import cafe24_api
+        import costco_crawler
+    except Exception as e:
+        log(f"❌ 모듈 로드 실패: {e}")
+        return False
+    creds = {'mall_id': _cf['mall_id'], 'client_id': _cf['client_id'],
+             'client_secret': _cf['client_secret'], 'access_token': _cf['access_token'],
+             'refresh_token': _cf['refresh_token'], 'expires_at': _cf['token_expires_at']}
+
+    def _save(t):
+        for k, v in (('cafe24_access_token', t.get('access_token', '')),
+                     ('cafe24_refresh_token', t.get('refresh_token', '')),
+                     ('cafe24_token_expires_at', t.get('expires_at', ''))):
+            set_global_setting(k, v)
+
+    prods, err = cafe24_api.get_all_products(creds, save_tokens=_save, max_total=3000)
+    if err:
+        log(f"❌ 카페24 조회 실패: {err}")
+        return False
+    matched = [p for p in (prods or []) if str(p.get('custom_product_code') or '').strip()]
+    log(f"전체 {len(prods or [])}개 · 코스트코 매칭 {len(matched)}개 동기화")
+
+    n_price = n_stop = n_err = 0
+    for p in matched:
+        no = str(p.get('custom_product_code') or '').strip()
+        c24no = p.get('product_no')
+        cs = costco_crawler.fetch_costco_status(no)
+        if cs.get('exists') is None:
+            continue  # 조회 불확실 → 건너뜀(오탐 방지)
+        if cs.get('exists') is False or cs.get('available') is False:
+            ok, _e = cafe24_api.update_selling_status(creds, c24no, selling=False, save_tokens=_save)
+            if ok:
+                n_stop += 1
+                log(f"⛔ 판매중지: {str(p.get('product_name'))[:24]} ({cs.get('reason')})")
+            else:
+                n_err += 1
+            continue
+        # 판매중 → 매입가 동기화(값이 다를 때만)
+        _price = int(cs.get('price') or 0)
+        if _price > 0 and _price != int(p.get('supply_price') or 0):
+            ok, _e = cafe24_api.update_supply_price(creds, c24no, _price, save_tokens=_save)
+            if ok:
+                n_price += 1
+            else:
+                n_err += 1
+
+    summary = (f"🛒 카페24 동기화 완료\n매칭 {len(matched)}건\n"
+               f"매입가 갱신 {n_price} · 판매중지 {n_stop} · 실패 {n_err}")
+    log(summary)
+    send_notification(settings, summary, username)
+    log("[Task 8] 완료")
+    return True
+
+
 # ── 진입점 ────────────────────────────────────────
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="코스트코핫딜 자동화 실행")
     parser.add_argument("--task",
                         choices=["shopping", "shipping", "crawl", "rank", "orders",
-                                 "products", "register", "all"],
+                                 "products", "register", "cafe24sync", "all"],
                         default="all",
                         help="실행할 작업 (기본: all)")
     parser.add_argument("--user",
@@ -1071,6 +1141,8 @@ if __name__ == "__main__":
         run_naver_products_task(args.user)
     elif args.task == "register":
         run_naver_register_task(args.user)
+    elif args.task == "cafe24sync":
+        run_cafe24_sync_task(args.user)
     else:
         run_fetch_orders_task(args.user)
         run_shopping_task(args.user)
