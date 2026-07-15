@@ -17,6 +17,23 @@ except ImportError:
     naver_api = None
 
 
+def _fetch_image_bytes(url, timeout=15):
+    """이미지 URL → (bytes, media_type). 실패 시 (None, None)."""
+    import requests as _rq
+    try:
+        r = _rq.get(url, timeout=timeout)
+        if r.status_code != 200 or not r.content:
+            return None, None
+        ct = (r.headers.get('Content-Type') or '').split(';')[0].strip().lower()
+        if ct not in ('image/jpeg', 'image/png', 'image/webp', 'image/gif'):
+            _u = str(url).lower()
+            ct = ('image/png' if '.png' in _u else
+                  'image/webp' if '.webp' in _u else 'image/jpeg')
+        return r.content, ct
+    except Exception:
+        return None, None
+
+
 def _cafe24_detail_images(full):
     """카페24 상품 상세 HTML/이미지에서 상세페이지 이미지 URL 목록 추출(순서 유지·절대경로).
     설명(description) 안의 <img>들 + 대표 상세이미지."""
@@ -116,6 +133,11 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 _ag_img_detail = st.checkbox(
                     "🖼 상세페이지를 이미지로 등록 (HTML 대신 카페24 상세이미지를 네이버 CDN 업로드)",
                     value=True, key="ag_imgdetail")
+                _ag_photo_ai = st.checkbox(
+                    "📷 AI 제품사진 분석으로 상품명·속성 생성 (제품사진 등록 방식)",
+                    value=bool(_ag_ai), key="ag_photoai", disabled=not _ag_ai,
+                    help="대표 제품이미지를 Claude 비전으로 분석해 상품명·원산지·브랜드를 뽑고, "
+                         "그 상품명으로 카테고리 판단·연관키워드 최적화까지 진행합니다.")
                 _agq1, _agq2 = st.columns([3, 1])
                 _ag_q = _agq1.text_input("카페24 상품명 검색(비우면 최근)", key="ag_q",
                                          label_visibility="collapsed", placeholder="카페24 상품명 일부")
@@ -150,14 +172,34 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         for _i, (_p, _npr) in enumerate(_ag_sel):
                             _agprog.progress((_i + 1) / len(_ag_sel))
                             _name = str(_p.get('product_name', ''))
-                            _items, _ = naver_api.naver_shopping_search(_ag_oc, _ag_os, _name)
+                            # 0) 카페24 상세 조회 + 대표 이미지
+                            _full, _fe = cafe24_api.get_product(_ag_creds, _p['product_no'], save_tokens=_ag_save)
+                            _full = _full or {}
+                            _cf_name = _full.get('product_name') or _name
+                            _rep = _full.get('detail_image') or _full.get('list_image') or ''
+                            if not _rep:
+                                _ag_rows.append({'상품': _name[:24], '상태': '❌ 이미지 없음'}); continue
+                            _cdn, _ue = naver_api.upload_product_image(_ag_tid, _ag_tsecret, _rep)
+                            if not _cdn:
+                                _ag_rows.append({'상품': _name[:24], '상태': '❌ 이미지업로드 실패'}); continue
+                            # ① AI 제품사진 분석(비전) → 상품명·원산지·브랜드
+                            _ai_photo = {}
+                            if _ag_photo_ai and _ag_ai:
+                                _imgb, _mt = _fetch_image_bytes(_rep)
+                                if _imgb:
+                                    _apr, _ape = ai_service.analyze_product_photo(_ag_ai, _imgb, _mt)
+                                    if _apr:
+                                        _ai_photo = _apr
+                            _base_name = str(_ai_photo.get('name') or '').strip() or _cf_name
+                            # ② 카테고리 자동판단 — 분석 상품명 기준(폴백: 카페24명, 그다음 AI category 키워드)
+                            _items, _ = naver_api.naver_shopping_search(_ag_oc, _ag_os, _base_name)
                             _paths = [">".join([x for x in (it.get('category1'), it.get('category2'),
                                                             it.get('category3'), it.get('category4')) if x])
                                       for it in (_items or [])]
                             _paths = [p for p in _paths if p]
                             _cid = None; _cfull = ''
                             if _paths:
-                                _ch, _ = ai_service.suggest_naver_category(_ag_ai, _name, _paths)
+                                _ch, _ = ai_service.suggest_naver_category(_ag_ai, _base_name, _paths)
                                 _chosen = _ch or _paths[0]
                                 _cr, _ = naver_api.search_naver_categories(
                                     _ag_tid, _ag_tsecret, str(_chosen).split('>')[-1].strip())
@@ -171,33 +213,34 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                             _bs, _best = _sc, _c
                                     if _best:
                                         _cid, _cfull = _best.get('id'), _best.get('full_name')
+                            if not _cid and _ai_photo.get('category'):
+                                _cr2, _ = naver_api.search_naver_categories(
+                                    _ag_tid, _ag_tsecret, str(_ai_photo['category']).strip())
+                                if _cr2:
+                                    _cid, _cfull = _cr2[0].get('id'), _cr2[0].get('full_name')
                             if not _cid:
-                                _ag_rows.append({'상품': _name[:24], '상태': '❌ 카테고리 판단실패'}); continue
-                            _full, _fe = cafe24_api.get_product(_ag_creds, _p['product_no'], save_tokens=_ag_save)
-                            _full = _full or {}
-                            _cf_name = _full.get('product_name') or _name
-                            _rep = _full.get('detail_image') or _full.get('list_image') or ''
-                            if not _rep:
-                                _ag_rows.append({'상품': _name[:24], '상태': '❌ 이미지 없음'}); continue
-                            _cdn, _ue = naver_api.upload_product_image(_ag_tid, _ag_tsecret, _rep)
-                            if not _cdn:
-                                _ag_rows.append({'상품': _name[:24], '상태': '❌ 이미지업로드 실패'}); continue
-                            # ① 상품명: 연관키워드(저경쟁 100~300 + 대표어) 조합 — 검색광고 키 있을 때
-                            _final_name = _cf_name
+                                _ag_rows.append({'상품': _base_name[:24], '상태': '❌ 카테고리 판단실패'}); continue
+                            # ③ 최종 상품명: 연관키워드(저경쟁 100~300+대표어) 최적화 — 분석 상품명을 seed로
+                            _final_name = _base_name
                             if _ad_creds:
                                 _kn, _ki = naver_api.keyword_optimized_name(
-                                    _ad_key, _ad_sec, _ad_cust, _cf_name, ai_key=_ag_ai, category=_cfull)
+                                    _ad_key, _ad_sec, _ad_cust, _base_name, ai_key=_ag_ai, category=_cfull)
                                 if _kn and len(_kn) >= 4:
                                     _final_name = _kn
-                            # ② 태그ID(검색 반영되는 사전등록 태그만)
+                            # 안전장치: 상품명 절대 비우지 않음
+                            if not str(_final_name or '').strip():
+                                _final_name = _cf_name or _name or _base_name
+                            # ④ 태그ID(검색 반영되는 사전등록 태그만)
                             _desc_txt = str(_full.get('description') or '')
                             _tags, _ = naver_api.build_seller_tags(
                                 _ag_tid, _ag_tsecret, _ag_ai, _final_name, _cfull, _desc_txt, _ad_creds)
-                            # ③ 카페24 속성 그대로(제조사/모델/원산지)
-                            _manuf = str(_full.get('manufacturer_name') or _full.get('brand_name') or '').strip()
+                            # ⑤ 속성: AI 분석값 우선, 없으면 카페24 값
+                            _manuf = (str(_ai_photo.get('brand') or '').strip()
+                                      or str(_full.get('manufacturer_name') or _full.get('brand_name') or '').strip())
                             _model = str(_full.get('model_name') or '').strip()
-                            _origin = str(_full.get('origin_place_value') or '').strip()
-                            # ④ 상세페이지: 이미지 등록 옵션(카페24 상세이미지 → 네이버 CDN <img> 스택)
+                            _origin = (str(_ai_photo.get('origin') or '').strip()
+                                       or str(_full.get('origin_place_value') or '').strip())
+                            # ⑥ 상세페이지: 이미지 등록 옵션(카페24 상세이미지 → 네이버 CDN <img> 스택)
                             _detail_html = _desc_txt or f"<p>{_final_name}</p>"
                             if _ag_img_detail:
                                 _img_html = _build_image_detail(_full, _ag_tid, _ag_tsecret)
