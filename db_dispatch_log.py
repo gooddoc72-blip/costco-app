@@ -2,10 +2,104 @@
 
 송장번호 등록 → 네이버/쿠팡 일괄발송처리 API 호출 후 성공한 주문 리스트를 저장.
 다음날 정산매칭에서 이 데이터의 expected_settlement 합계와 daily 정산 합계를 비교.
+
+재고 차감도 여기에 걸려 있다 — 발송 = 실제 판매 확정 시점.
 """
 from datetime import datetime
 
 from db_core import get_user_db
+
+
+def _pack_factor(conn, product_no: str, product_name: str) -> int:
+    """1주문이 소비하는 개수. services.resolve_pack_factor와 동일 해석.
+
+    상품명의 "x N개"는 상품마다 뜻이 달라(내용물 설명 vs 진짜 묶음) 상품명만으로는
+    판정할 수 없다 → products.pack_multiplier 지정값을 우선한다.
+    """
+    from services import resolve_pack_factor
+    prod = None
+    try:
+        r = conn.execute(
+            "SELECT COALESCE(pack_multiplier,0) AS pack_multiplier FROM products "
+            "WHERE product_no=? ORDER BY updated_at DESC LIMIT 1",
+            (str(product_no or ''),)).fetchone()
+        if r:
+            prod = {'pack_multiplier': int(r['pack_multiplier'] or 0)}
+    except Exception:
+        prod = None
+    return resolve_pack_factor(prod, product_name)
+
+
+def _resolve_order_items(conn, order_nos: list) -> dict:
+    """order_no → {product_no, qty, product_name}.
+
+    dispatch_log에는 상품번호도 수량도 없다(product_name 자유 텍스트뿐).
+    order_history를 JOIN해야 상품을 특정할 수 있다.
+    """
+    out = {}
+    order_nos = [str(o).strip() for o in (order_nos or []) if str(o).strip()]
+    if not order_nos:
+        return out
+    CHUNK = 900   # SQLite 변수 한도 회피
+    for i in range(0, len(order_nos), CHUNK):
+        chunk = order_nos[i:i + CHUNK]
+        ph = ",".join("?" * len(chunk))
+        try:
+            rows = conn.execute(
+                f"""SELECT order_no, COALESCE(product_no,'') AS product_no,
+                           COALESCE(qty,1) AS qty, COALESCE(product_name,'') AS product_name
+                    FROM order_history WHERE order_no IN ({ph})""", chunk).fetchall()
+        except Exception:
+            return out   # order_history 미존재 — 재고 차감 생략
+        for r in rows:
+            out[str(r['order_no'])] = dict(r)
+    return out
+
+
+def _consume_inventory(conn, username: str, orders: list, dispatched_at: str,
+                       platform: str) -> dict:
+    """발송된 주문만큼 재고를 차감. 재고 관리 대상이 아니면 조용히 넘어간다.
+
+    차감 수량 = 주문수량 × sell_factor (소분 단위).
+    재고 실패가 발송 기록을 막으면 안 되므로 전체를 예외로 감싼다.
+    """
+    res = {'consumed': 0, 'shortage': 0, 'cross': 0}
+    try:
+        from db_inventory import consume_for_sale
+    except Exception:
+        return res
+
+    order_nos = [str(o.get('order_no') or o.get('상품주문번호') or '').strip()
+                 for o in orders]
+    items = _resolve_order_items(conn, order_nos)
+    if not items:
+        return res
+
+    for o in orders:
+        ono = str(o.get('order_no') or o.get('상품주문번호') or '').strip()
+        if not ono:
+            continue
+        it = items.get(ono)
+        if not it:
+            continue
+        pno = str(it.get('product_no') or '').strip()
+        if not pno:
+            continue   # 코스트코 번호 없는 주문 — 재고 매칭 불가
+        try:
+            qty = max(1, int(it.get('qty') or 1))
+        except (TypeError, ValueError):
+            qty = 1
+        units = qty * _pack_factor(conn, pno,
+                                   it.get('product_name') or o.get('product_name') or '')
+        try:
+            r = consume_for_sale(username, pno, units, ono,
+                                 dispatched_at=dispatched_at, platform=platform)
+            res['consumed'] += int(r.get('consumed') or 0)
+            res['shortage'] += int(r.get('shortage') or 0)
+            res['cross'] += sum(1 for m in (r.get('moves') or []) if m.get('is_cross'))
+        except Exception:
+            continue
+    return res
 
 
 def _ensure_table(conn):
@@ -38,6 +132,8 @@ def log_dispatch_success(username: str, orders: list, dispatched_at: str,
     orders: [{'order_no'|'상품주문번호', 'recipient'|'수취인명',
               'product_name'|'상품명', 'expected_settlement'|'정산예정금액',
               'tracking_no', 'courier'}, ...]
+
+    재고 차감도 함께 수행한다 (order_no 기준 멱등 — 재실행해도 중복 차감 없음).
     """
     if not orders:
         return 0
@@ -65,6 +161,11 @@ def log_dispatch_success(username: str, orders: list, dispatched_at: str,
              now))
         saved += 1
     conn.commit()
+    # 재고 차감 — 발송 확정 = 판매 확정. 실패해도 발송 기록은 유지한다.
+    try:
+        _consume_inventory(conn, username, orders, dispatched_at, platform)
+    except Exception:
+        pass
     conn.close()
     return saved
 

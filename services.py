@@ -67,6 +67,38 @@ def _index_products(products: list) -> dict:
     return out
 
 
+# ── 묶음배수 해석 (단일 진실공급원) ────────────────────────
+_PACK_RE = re.compile(r'x\s*(\d+)\s*개', re.IGNORECASE)
+
+
+def pack_factor_from_name(product_name: str) -> int:
+    """상품명 "x N개" → 배수. 2~50만 인정(그 밖은 1). 기존 로직 그대로."""
+    m = _PACK_RE.search(str(product_name or ''))
+    v = int(m.group(1)) if m else 1
+    return v if 1 < v <= 50 else 1
+
+
+def resolve_pack_factor(product: dict, product_name: str) -> int:
+    """1주문이 소비하는 개수(소분 단위 기준).
+
+    상품명의 "x N개"는 상품마다 뜻이 다르다:
+      · 신라면 120g x 30개 → 30개들이 1박스 (내용물 설명) → 곱하면 안 됨
+      · 그릭요거트 907g x 2개 → 소분 2개를 함께 판매      → 2배
+    상품명만으로는 구분이 불가능해서 products.pack_multiplier로 명시한다.
+
+      0 = 미지정 → 상품명에서 추출 (기존 동작 유지 — 수치 변화 없음)
+      1 = 내용물 설명 → 1 (곱하지 않음)
+      N = N개 묶음    → N
+    """
+    try:
+        pm = int((product or {}).get('pack_multiplier', 0) or 0)
+    except (TypeError, ValueError):
+        pm = 0
+    if pm >= 1:
+        return min(pm, 50)
+    return pack_factor_from_name(product_name)
+
+
 # ── 비용 계산 (단일 공식) ──────────────────────────────────
 def calc_cost(product: dict, qty: int, pack_qty: int = 1) -> int:
     """제품 dict + 수량 → 매입가.
@@ -78,15 +110,46 @@ def calc_cost(product: dict, qty: int, pack_qty: int = 1) -> int:
     return (unit_price // split_qty) * qty * pack_qty
 
 
+def get_cross_surcharge_map(username, df):
+    """타인 재고로 나간 주문의 웃돈(구입가+500) 조회 — {주문번호: 웃돈합계}.
+
+    재고 관리 대상이 아니거나 자기 재고로 나갔으면 비어 있다.
+    """
+    if df is None or df.empty:
+        return {}
+    col = None
+    for c in ('상품주문번호', 'order_no', '주문번호'):
+        if c in df.columns:
+            col = c
+            break
+    if not col:
+        return {}
+    try:
+        from db_inventory import get_surcharge_map
+        onos = [str(x).strip() for x in df[col].tolist() if str(x).strip()]
+        return get_surcharge_map(username, onos) or {}
+    except Exception:
+        return {}
+
+
 def compute_costs_for_df(username, df, _user_prods=None, _shared_prods=None):
     """주문 DataFrame에 '구입가격' 컬럼을 일관된 공식으로 채워서 반환.
     이미 '구입가격' 컬럼이 있으면 0인 행만 채움 (수동 수정 보존).
     네이버/쿠팡/엑셀 모든 경로에서 동일한 매칭+계산 로직을 사용하도록 단일화.
+
+    타인 재고로 나간 건은 구입가격에 웃돈(+500/개)이 더해진다.
     """
     if df is None or df.empty:
         return df
     user_prods = _user_prods if _user_prods is not None else get_all_products(username)
     shared_prods = _shared_prods if _shared_prods is not None else get_shared_products()
+    _sur_map = get_cross_surcharge_map(username, df)
+    _ono_col = None
+    if _sur_map:
+        for c in ('상품주문번호', 'order_no', '주문번호'):
+            if c in df.columns:
+                _ono_col = c
+                break
 
     has_cost = '구입가격' in df.columns
     has_pno = '상품번호' in df.columns
@@ -106,14 +169,16 @@ def compute_costs_for_df(username, df, _user_prods=None, _shared_prods=None):
             qty = max(1, int(r.get('수량', 1) or 1))
         except (TypeError, ValueError):
             pass
-        # sell_factor: 상품명 "x N개" 표기 시 1주문 = N개 (profit_calc_page와 동일 로직)
-        _sell_m = re.search(r'x\s*(\d+)\s*개', name, re.IGNORECASE)
-        _sell_val = int(_sell_m.group(1)) if _sell_m else 1
-        _sell_factor = _sell_val if 1 < _sell_val <= 50 else 1
         p = match_product_to_db(username, name, product_no=pno or None,
                                 _user_prods=user_prods, _shared_prods=shared_prods)
+        # 묶음배수 — 제품에 지정돼 있으면 그 값, 없으면 상품명에서 추출 (resolve_pack_factor)
+        _sell_factor = resolve_pack_factor(p, name)
         # 기존 구입가격이 있으면 그대로 사용 (sqtys는 항상 append — 길이 불일치 방지)
-        costs.append(_existing_int if _existing_int > 0 else (calc_cost(p, qty * _sell_factor) if p else 0))
+        _c = _existing_int if _existing_int > 0 else (calc_cost(p, qty * _sell_factor) if p else 0)
+        # 타인 재고로 나간 건 — 실제 원가는 구입가+500/개. 안 더하면 수익이 부풀려짐.
+        if _sur_map and _ono_col and _existing_int <= 0:
+            _c += int(_sur_map.get(str(r.get(_ono_col, '') or '').strip(), 0) or 0)
+        costs.append(_c)
         sqtys.append(max(1, int((p or {}).get('split_qty', 1) or 1)))
     df = df.copy()
     df['구입가격'] = costs

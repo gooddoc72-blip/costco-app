@@ -80,6 +80,61 @@ def _set_cache_helpers(shared_fn, user_fn, merged_fn, invalidate_fn, **kwargs):
     invalidate_data_cache = invalidate_fn
 
 
+def _render_pack_multiplier(USERNAME: str):
+    """묶음배수 분류 — 상품명 "x N개"가 상품마다 뜻이 달라 명시 지정이 필요한 상품 목록."""
+    from db import get_pack_ambiguous_products, set_pack_multiplier
+    try:
+        rows = get_pack_ambiguous_products(USERNAME, only_unset=True)
+    except Exception:
+        return
+    risky = [r for r in rows if r.get('risky')]
+    if not rows:
+        return
+
+    _title = f"🔢 묶음 상품 분류 필요 — {len(rows)}건"
+    if risky:
+        _title += f"  ⚠️ 구입가격이 부풀 수 있는 상품 {len(risky)}건"
+    with st.expander(_title, expanded=False):
+        st.caption(
+            '상품명의 **"x N개"** 는 상품마다 뜻이 다릅니다. '
+            '`신라면 120g x 30개`는 **30개들이 한 박스**(내용물 설명)라 곱하면 안 되고, '
+            '`그릭요거트 x 2개`는 **2개를 함께 파는 것**이라 곱해야 합니다. '
+            '상품명만으로는 구분할 수 없어 직접 지정해 주셔야 합니다.')
+        if risky:
+            st.warning(
+                f"⚠️ 아래 **{len(risky)}건**은 소분수가 1인데 상품명의 숫자만큼 구입가격이 곱해지고 있습니다. "
+                "내용물 설명이라면 **'내용물 설명'**을 골라 주세요. (소분수가 2 이상인 상품은 "
+                "계산이 상쇄되어 지금도 정상입니다)")
+        st.caption("지정 전까지는 **현재 계산 그대로** 유지됩니다 — 값이 바뀌지 않습니다.")
+
+        for r in rows:
+            name = r['store_product_name'] or r['costco_name'] or ''
+            with st.container(border=True):
+                c1, c2, c3 = st.columns([3.4, 1.5, 1])
+                c1.markdown(("⚠️ " if r['risky'] else "") + f"**{name[:60]}**")
+                _now_cost = (int(r['unit_price'] or 0) //
+                             max(1, int(r['split_qty'] or 1))) * int(r['applied'])
+                c1.caption(
+                    f"매입가 {fmt(int(r['unit_price'] or 0))}원 · 소분 {r['split_qty']} · "
+                    f"현재 배수 **×{r['applied']}** → 1주문 구입가격 **{fmt(_now_cost)}원**"
+                    + (f"  (상품명은 x{r['name_factor']}, 50 초과라 1로 처리 중)"
+                       if r['name_factor'] > 50 else ""))
+                pick = c2.radio(
+                    "이 상품명의 뜻은?",
+                    ["내용물 설명 (곱하지 않음)", f"{r['name_factor']}개 묶음 (곱함)"],
+                    key=f"pk_{r['id']}", label_visibility="collapsed",
+                    index=0 if r['risky'] else 1)
+                if c3.button("저장", key=f"pkb_{r['id']}", use_container_width=True,
+                             type="primary"):
+                    val = 1 if pick.startswith("내용물") else max(2, int(r['name_factor']))
+                    set_pack_multiplier(USERNAME, r['id'], val)
+                    if callable(invalidate_data_cache):
+                        invalidate_data_cache()
+                    st.session_state.pop('_pcalc_match_cache', None)  # 수익계산 캐시 무효화
+                    st.success(f"저장 — 배수 ×{val}")
+                    st.rerun()
+
+
 def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     """📦 제품 DB 탭 렌더링."""
     def _gs(k, default=""):
@@ -91,6 +146,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
 
     st.header("📦 제품 가격 DB 관리")
     st.caption("🔗 공유 필드(매입가·상품명)는 읽기전용 — 영수증 업로드 또는 관리자 탭에서 수정 | ✏️ 판매가·배송비는 개인별 수정 가능")
+
+    _render_pack_multiplier(USERNAME)
 
     # ── 🧹 이전 스토어 상품 정리 (현재 API 키 스토어에 없는 네이버 상품 삭제) ──
     with st.expander("🧹 이전 스토어 상품 정리 — 현재 스토어에 없는 네이버 상품 삭제", expanded=False):

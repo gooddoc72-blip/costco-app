@@ -35,6 +35,8 @@ from db import (
     get_user_db,
     get_user_info,
     submit_shopping_list,
+    log_dispatch_success,
+    get_return_due_lots,
 )
 from services import match_product_to_db, calc_cost
 
@@ -623,6 +625,31 @@ def run_shipping_task(username="admin"):
     for d in result.get("fail_details", []):
         log(f"  실패: {d}")
 
+    # ── dispatch_log 기록 (+ 재고 차감) ──
+    # 이 태스크는 원래 발송처리만 하고 dispatch_log를 남기지 않았다. 그래서 자동 발송분은
+    # 정산매칭 기준 데이터에서 누락됐고, 재고도 차감되지 않았다. 실제 성공한 주문만 기록한다.
+    try:
+        _track_map = {str(s["productOrderId"]): str(s.get("trackingNumber") or "")
+                      for s in ship_data}
+        _ok_ids = {str(x) for x in (result.get("success_order_ids") or [])}
+        if not _ok_ids and fail == 0:
+            _ok_ids = set(_track_map)      # 구버전 응답 폴백 — 전건 성공일 때만
+        _rows = []
+        for o in orders:
+            _ono = str(o.get("상품주문번호") or "").strip()
+            if not _ono or _ono not in _ok_ids:
+                continue
+            _row = dict(o)                 # 한글 키 그대로 — log_dispatch_success가 둘 다 읽음
+            _row["tracking_no"] = _track_map.get(_ono, "")
+            _row["courier"] = courier_display
+            _rows.append(_row)
+        if _rows:
+            _n = log_dispatch_success(username, _rows,
+                                      now.strftime("%Y-%m-%d"), platform="naver")
+            log(f"📝 발송이력 저장 {_n}건 (재고 차감 포함)")
+    except Exception as _de:
+        log(f"⚠️  발송이력/재고 차감 실패: {_de}")
+
     msg_lines = [
         f"✅ 자동 발송처리 완료",
         f"📅 {now.strftime('%m/%d %H:%M')}",
@@ -1132,12 +1159,84 @@ def run_cafe24_sync_task(username="admin"):
     return True
 
 
+# ── Task 9: 재고 반품 대상 알림 ───────────────────
+RETURN_DAYS = 30
+
+
+def run_inventory_return_task(username="admin"):
+    """입고 후 30일이 지나도 남은 재고를 찾아 알린다.
+
+    코스트코 반품 API는 없다 → 목록만 알리고 실제 반품은 사람이 한다.
+    재고 상태를 자동으로 바꾸지 않는다(판매 차감 대상에서 빠지면 안 되므로).
+
+    관리자에게는 전체를, 각 보유자에게는 본인 것만 보낸다.
+    """
+    now = datetime.now()
+    log("=" * 50)
+    log(f"[Task 9] 재고 반품 대상 알림 시작 (사용자: {username})")
+
+    try:
+        due = get_return_due_lots(days=RETURN_DAYS)
+    except Exception as e:
+        log(f"❌ 재고 조회 실패: {e}")
+        return False
+    if not due:
+        log(f"ℹ️  {RETURN_DAYS}일 경과 재고 없음 → 종료")
+        return True
+
+    user_info = get_user_info(username) or {}
+    is_admin = bool(user_info.get('is_admin'))
+
+    def _fmt_lines(rows):
+        out = []
+        for r in rows[:20]:
+            tied = int(r['unit_cost'] or 0) * int(r['qty_left'] or 0)
+            out.append(f"• {r['product_name'] or r['product_no']}"
+                       f"\n  {r['qty_left']}개 남음 · {r['age_days']}일 경과 · {tied:,}원")
+        if len(rows) > 20:
+            out.append(f"…외 {len(rows) - 20}건")
+        return out
+
+    sent = 0
+    # 보유자별 개인 알림
+    owners = sorted({str(r['owner']) for r in due})
+    for ow in owners:
+        rows = [r for r in due if str(r['owner']) == ow]
+        st_ = get_user_settings(ow)
+        if not st_:
+            continue
+        msg = [f"↩️ 반품 권장 재고 {len(rows)}건",
+               f"📅 {now.strftime('%m/%d')} · 입고 {RETURN_DAYS}일 경과"] + _fmt_lines(rows)
+        msg.append("\n코스트코 반품 기한을 확인하세요.")
+        try:
+            send_notification(st_, "\n".join(msg), ow)
+            sent += 1
+        except Exception as e:
+            log(f"⚠️  {ow} 알림 실패: {e}")
+
+    # 관리자에게 전체 요약
+    if is_admin:
+        tied_all = sum(int(r['unit_cost'] or 0) * int(r['qty_left'] or 0) for r in due)
+        adm = get_user_settings(username)
+        if adm:
+            msg = [f"↩️ [전체] 반품 권장 {len(due)}건 · 보유자 {len(owners)}명",
+                   f"💰 묶인 금액 {tied_all:,}원", ""] + _fmt_lines(due)
+            try:
+                send_notification(adm, "\n".join(msg), username)
+            except Exception as e:
+                log(f"⚠️  관리자 알림 실패: {e}")
+
+    log(f"✅ 반품 대상 {len(due)}건 · 보유자 {sent}명에게 알림 발송")
+    log("[Task 9] 완료")
+    return True
+
+
 # ── 진입점 ────────────────────────────────────────
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="코스트코핫딜 자동화 실행")
     parser.add_argument("--task",
                         choices=["shopping", "shipping", "crawl", "rank", "orders",
-                                 "products", "register", "cafe24sync", "all"],
+                                 "products", "register", "cafe24sync", "invreturn", "all"],
                         default="all",
                         help="실행할 작업 (기본: all)")
     parser.add_argument("--user",
@@ -1163,6 +1262,8 @@ if __name__ == "__main__":
         run_naver_register_task(args.user)
     elif args.task == "cafe24sync":
         run_cafe24_sync_task(args.user)
+    elif args.task == "invreturn":
+        run_inventory_return_task(args.user)
     else:
         run_fetch_orders_task(args.user)
         run_shopping_task(args.user)

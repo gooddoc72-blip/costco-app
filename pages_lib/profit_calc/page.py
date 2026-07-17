@@ -40,6 +40,7 @@ from db import (
     AUTH_DB,
 )
 from services import (
+    resolve_pack_factor,
     match_product_to_db, match_shared_product,
     update_product_info_from_orders, update_product_shipping_fees, update_product_sale_price,
     detect_price_changes, build_price_alert_msg,
@@ -352,6 +353,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             tuple(sorted(st.session_state.get('kw_overrides', {}).items())),
             tuple(sorted((str(_k), int(_v or 0))
                          for _k, _v in st.session_state.get('cost_overrides', {}).items())),
+            # 묶음배수를 제품 DB에서 바꾸면 구입가격이 달라짐 → 캐시 무효화 필요
+            sum(int(_p.get('pack_multiplier', 0) or 0) for _p in (_preload_user or [])),
         )
         _mc_state = '_pcalc_match_cache'
         _cached = st.session_state.get(_mc_state)
@@ -366,14 +369,26 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             costs, match_sources, matched_names, matched_pnos, matched_sqtys = [], [], [], [], []
             _skip_match_loop = False
 
+        # 타인 재고 웃돈(+500/개) — 루프 앞에서 1회 조회.
+        # 루프 안에서는 saved_cost에서 웃돈을 '빼고'(아래), 루프 뒤에서 일괄로 '더한다'.
+        # 저장된 구입가격에는 이미 웃돈이 포함돼 있어, 그대로 두면 이중 가산된다.
+        try:
+            from db_inventory import get_surcharge_map as _get_sur
+            _sur_map = _get_sur(USERNAME, [str(_x) for _x in df.index]) or {}
+        except Exception:
+            _sur_map = {}
+
         for idx, r in (iter([]) if _skip_match_loop else df.iterrows()):
             product, qty = r['상품명'], r['수량']
             saved_cost = int(r.get('구입가격', 0) or 0)
+            # 저장값 폴백이 웃돈 포함가라 → 원가로 환원 (루프 뒤에서 다시 더해짐)
+            _row_sur = int(_sur_map.get(str(idx), 0) or 0)
+            if _row_sur and saved_cost > _row_sur:
+                saved_cost -= _row_sur
             _row_key = f"{r['수취인명']}_{r['상품명']}_{idx}_{calc_date_str}"
             p_no = str(r.get('product_no', '') or '') if 'product_no' in r.index else ''
-            _sell_m = _re.search(r'x\s*(\d+)\s*개', product, _re.IGNORECASE)
-            _sell_val = int(_sell_m.group(1)) if _sell_m else 1
-            _sell_factor = _sell_val if 1 < _sell_val <= 50 else 1
+            # 매칭 전 기본값(상품명 기준). 제품이 매칭되면 각 분기에서 지정값으로 재계산된다.
+            _sell_factor = resolve_pack_factor(None, product)
 
             # ── 매칭 우선순위 정립 ──
             p = None
@@ -384,6 +399,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                         _user_prods=_preload_user, _shared_prods=_preload_shared)
                 if p:
                     sq = max(1, int(p.get('split_qty', 1) or 1))
+                    _sell_factor = resolve_pack_factor(p, product)  # 제품 지정값 우선
                     _aq = qty * _sell_factor
                     costs.append((p['unit_price'] // sq) * _aq)
                 elif saved_cost > 0:
@@ -414,6 +430,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 if p and p.get('product_no'):
                     _pno1 = str(p.get('product_no', '')).strip()
                     sq = max(1, int(p.get('split_qty', 1) or 1))
+                    _sell_factor = resolve_pack_factor(p, product)  # 제품 지정값 우선
                     _aq = qty * _sell_factor
                     # 영수증에 같은 상품번호 있으면 영수증 가격 우선 (현재 실제 매입가)
                     if _rcpt_by_pno and _pno1 and _pno1 in _rcpt_by_pno:
@@ -448,6 +465,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         _m2 = _re.search(r'x\s*(\d+)\s*개', item['상품명'], _re.IGNORECASE)
                         if _m2: _rsq = max(1, int(_m2.group(1)))
                     
+                    _sell_factor = resolve_pack_factor(p, product)  # 제품 지정값 우선
                     _aq = qty * _sell_factor
                     costs.append((item['단가'] // _rsq) * _aq)
                     match_sources.append("영수증")
@@ -471,6 +489,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 # ── 3차: 키워드 토큰 매칭 (상품번호 미등록 DB 항목) ──
                 elif p:
                     sq = max(1, int(p.get('split_qty', 1) or 1))
+                    _sell_factor = resolve_pack_factor(p, product)  # 제품 지정값 우선
                     _aq = qty * _sell_factor
                     costs.append((p['unit_price'] // sq) * _aq)
                     match_sources.append("DB-키워드")
@@ -503,6 +522,18 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 'key': _mc_key, 'costs': costs, 'sources': match_sources,
                 'names': matched_names, 'pnos': matched_pnos, 'sqtys': matched_sqtys,
             }
+
+        # ── 타인 재고 웃돈(+500/개) 반영 ──
+        # 다른 판매자 재고로 나간 건은 실제 원가가 구입가+500 → 안 더하면 수익이 부풀려진다.
+        # ⚠️ 캐시 저장 '뒤'에서, 리스트를 새로 만들어(rebind) 적용한다.
+        #    캐시에 든 리스트를 제자리 수정하면 재진입 때마다 웃돈이 중복 가산됨.
+        if _sur_map:
+            costs = [int(_c) + int(_sur_map.get(str(_ix), 0) or 0)
+                     for _c, _ix in zip(costs, df.index)]
+            df['구입가격'] = costs
+            _sur_rows = [str(_ix) for _ix in df.index if _sur_map.get(str(_ix))]
+            for _ix in _sur_rows:
+                df.loc[_ix, '매칭출처'] = str(df.loc[_ix, '매칭출처']) + '+타인재고'
 
         if 'cost_overrides' not in st.session_state:
             st.session_state['cost_overrides'] = {}

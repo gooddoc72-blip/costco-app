@@ -402,6 +402,12 @@ def _ensure_products_columns(conn):
         "ALTER TABLE products ADD COLUMN price_updated_at TEXT DEFAULT ''",
         # 옵션번호: 같은 네이버 상품번호라도 옵션별 매입가가 다를 때 옵션조합 고유번호(optionCode)로 구분
         "ALTER TABLE products ADD COLUMN naver_option_code TEXT DEFAULT ''",
+        # 묶음배수: 상품명의 "x N개"가 상품마다 뜻이 달라(내용물 설명 vs 진짜 묶음) 명시 지정이 필요.
+        #   0 = 미지정 → 상품명에서 추출 (기존 동작 유지)
+        #   1 = 내용물 설명 → 곱하지 않음 (예: 신라면 120g x 30개 = 30개들이 1박스)
+        #   N = 코스트코 물건 N개를 묶어 보냄 → N배
+        # services.resolve_pack_factor()가 유일한 해석 지점.
+        "ALTER TABLE products ADD COLUMN pack_multiplier INTEGER DEFAULT 0",
     ]:
         try:
             conn.execute(col_sql)
@@ -512,6 +518,52 @@ def bulk_update_category(username: str, id_category_map: dict):
     conn.commit()
     conn.close()
     return updated
+
+
+def set_pack_multiplier(username, product_id, value):
+    """묶음배수 지정. 0=미지정(상품명에서 추출), 1=내용물 설명, N=N개 묶음."""
+    conn = get_user_db(username)
+    _ensure_products_columns(conn)
+    conn.execute("UPDATE products SET pack_multiplier=?, updated_at=? WHERE id=?",
+                 (max(0, min(50, int(value or 0))),
+                  datetime.now().strftime("%Y-%m-%d %H:%M"), int(product_id)))
+    conn.commit()
+    conn.close()
+    return True
+
+
+def get_pack_ambiguous_products(username, only_unset=True):
+    """상품명에 "x N개"가 있는데 묶음배수가 미지정인 상품 — 분류가 필요한 목록.
+
+    소분수가 2 이상이면 (단가//소분수) x 배수가 서로 상쇄되어 지금도 값이 맞는다.
+    실제로 위험한 건 소분수가 1인데 "x N개"가 붙은 상품이다.
+    """
+    import re as _re
+    conn = get_user_db(username)
+    _ensure_products_columns(conn)
+    sql = ("SELECT id, product_no, store_product_name, costco_name, unit_price, "
+           "split_qty, sale_price, COALESCE(pack_multiplier,0) AS pack_multiplier "
+           "FROM products WHERE (store_product_name LIKE '%x %개%' "
+           "OR costco_name LIKE '%x %개%')")
+    if only_unset:
+        sql += " AND COALESCE(pack_multiplier,0)=0"
+    sql += " ORDER BY unit_price DESC"
+    rows = [dict(r) for r in conn.execute(sql).fetchall()]
+    conn.close()
+    out = []
+    for r in rows:
+        name = r['store_product_name'] or r['costco_name'] or ''
+        m = _re.search(r'x\s*(\d+)\s*개', name, _re.IGNORECASE)
+        if not m:
+            continue
+        n = int(m.group(1))
+        r['name_factor'] = n                       # 상품명이 말하는 숫자
+        r['applied'] = n if 1 < n <= 50 else 1     # 현재 실제로 적용 중인 배수(클램프 포함)
+        sq = max(1, int(r['split_qty'] or 1))
+        # 소분수 > 1 이면 //sq 로 상쇄 → 현재도 정상. 소분수 1 + 배수 적용 = 위험.
+        r['risky'] = (sq == 1 and r['applied'] > 1)
+        out.append(r)
+    return out
 
 
 def upsert_user_private(username, match_keyword, costco_name,

@@ -92,7 +92,7 @@ from pages_lib import (
     home_page, order_upload_page, tracking_page, receipt_page,
     profit_calc_page, settings_page, accounting_page,
     product_db_page, admin_page, naver_register_page,
-    guide_page, settlement_page, cafe24_page,
+    guide_page, settlement_page, cafe24_page, inventory_page,
 )
 
 # 페이지 모듈에 캐시 헬퍼 주입 (페이지 모듈이 동일한 캐시 인스턴스 공유)
@@ -372,6 +372,10 @@ def run_naver_register():
     naver_register_page.render(USERNAME, IS_ADMIN, settings)
 
 
+def run_inventory():
+    inventory_page.render(USERNAME, IS_ADMIN, settings)
+
+
 def run_cafe24():
     cafe24_page.render(USERNAME, IS_ADMIN, settings)
 
@@ -398,6 +402,7 @@ _pages = {
     ],
     "상품 관리": [
         st.Page(run_product_db,     title="제품 DB",     icon=":material/inventory_2:"),
+        st.Page(run_inventory,      title="재고 관리",   icon=":material/warehouse:"),
         st.Page(run_naver_register, title="네이버 등록", icon=":material/storefront:"),
         st.Page(run_rank_check,     title="순위 체크",   icon=":material/trending_up:"),
     ],
@@ -411,7 +416,8 @@ _pages = {
 
 if IS_ADMIN:
     # 카페24 메뉴 — 네이버 등록 바로 아래(상품 관리 그룹), 관리자 전용
-    _pages["상품 관리"].insert(2, st.Page(run_cafe24, title="카페24", icon=":material/sync_alt:"))
+    # ※ 재고 관리가 1번으로 들어와 네이버 등록이 2번 → 그 아래는 3번
+    _pages["상품 관리"].insert(3, st.Page(run_cafe24, title="카페24", icon=":material/sync_alt:"))
     _pages["관리자"] = [st.Page(run_admin, title="관리자", icon=":material/admin_panel_settings:")]
 
 # 페이지 이동 시 sid 보존 — st.navigation()이 URL 경로를 바꿔도 query param 유지

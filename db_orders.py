@@ -113,7 +113,7 @@ def recalc_daily_orders_for_products(username, product_nos):
     cnt = 0
     for pno in pnos:
         p_row = conn.execute(
-            "SELECT unit_price, split_qty FROM products "
+            "SELECT unit_price, split_qty, COALESCE(pack_multiplier,0) FROM products "
             "WHERE product_no=? AND unit_price>0 ORDER BY updated_at DESC LIMIT 1",
             (pno,)
         ).fetchone()
@@ -125,21 +125,34 @@ def recalc_daily_orders_for_products(username, product_nos):
             continue
 
         # services.calc_cost와 동일 공식 사용 (지연 import: 순환 참조 회피)
-        from services import calc_cost as _calc_cost
-        _product = {'unit_price': unit_price, 'split_qty': split_qty}
+        from services import calc_cost as _calc_cost, resolve_pack_factor as _rpf
+        _product = {'unit_price': unit_price, 'split_qty': split_qty,
+                    'pack_multiplier': int(p_row[2] or 0)}
 
         do_rows = conn.execute(
-            "SELECT id, qty, settlement, shipping_fee, delivery_cost, box_cost "
+            "SELECT id, qty, settlement, shipping_fee, delivery_cost, box_cost, "
+            "COALESCE(order_no,''), COALESCE(product_name,'') "
             "FROM daily_orders WHERE product_no=?",
             (pno,)
         ).fetchall()
+        # 타인 재고로 나간 건의 웃돈(+500/개) — 다른 경로와 구입가격이 어긋나지 않도록 동일 적용
+        _sur_map = {}
+        try:
+            from db_inventory import get_surcharge_map as _get_sur
+            _sur_map = _get_sur(username, [str(r[6] or '') for r in do_rows]) or {}
+        except Exception:
+            _sur_map = {}
         for r in do_rows:
             qty        = int(r[1] or 1)
             settlement = int(r[2] or 0)
             ship_fee   = int(r[3] or 0)
             d_cost     = int(r[4] or shipping_cost)
             b_cost     = int(r[5] or box_cost)
-            new_cost   = _calc_cost(_product, qty)
+            # 묶음배수 — 수익계산 화면/주문저장과 같은 해석을 쓴다.
+            # (이 함수만 배수를 빼먹고 있어 다른 경로와 구입가격이 어긋났음)
+            new_cost   = _calc_cost(_product, qty * _rpf(_product, r[7]))
+            if new_cost > 0:
+                new_cost += int(_sur_map.get(str(r[6] or ''), 0) or 0)
             new_profit = ((settlement + round(ship_fee * _factor)) - (new_cost + d_cost + b_cost)
                           if new_cost > 0 else 0)
             conn.execute(

@@ -10,6 +10,7 @@ DB 레이어 — 하위 호환 re-export
   db_orders.py   — 주문 / 발송 이력
   db_stats.py    — 통계 / 영수증 / 가격 이력
   db_ranks.py    — 키워드 순위 추적
+  db_inventory.py— 대량구매 추천건 / 재고 원장 / 판매 차감
 """
 
 from db_core import (
@@ -49,6 +50,7 @@ from db_products import (
     upsert_user_private,
     get_all_products_merged,
     upsert_product,
+    set_pack_multiplier, get_pack_ambiguous_products,
 )
 
 from db_orders import (
@@ -147,6 +149,24 @@ from db_dispatch_log import (
     get_dispatched_orders_with_details,
     get_dispatch_dates,
     get_dispatch_counts,
+)
+
+from db_notices import (
+    LEVELS as NOTICE_LEVELS,
+    create_notice, update_notice, get_notices,
+    set_notice_active, delete_notice,
+)
+
+from db_inventory import (
+    DEFAULT_CROSS_SURCHARGE, get_cross_surcharge,
+    create_bulk_deal, get_bulk_deals, get_bulk_deal,
+    set_deal_status, delete_bulk_deal,
+    request_bulk_purchase, get_bulk_requests, decide_bulk_request,
+    get_deal_request_summary,
+    receive_deal_lots, add_lot, get_inventory_lots, get_stock_summary,
+    consume_for_sale, revert_sale, get_surcharge_map, get_moves,
+    get_cross_settlement_summary, mark_cross_settled,
+    get_return_due_lots, set_lot_status,
 )
 
 from db_profit_calc import (
