@@ -44,6 +44,9 @@ def render(USERNAME: str, IS_ADMIN: bool = False):
     lmk = kpi['last_month']
     cumul = get_cumulative_sales(USERNAME)  # 어제까지 누적
 
+    # ── 📢 공지사항 · 🏷 할인제품 (최상단 좌우 배치) ──
+    _render_top_boards(USERNAME, IS_ADMIN)
+
     # ── 환영 히어로 ──
     _weekday_kr = ['월', '화', '수', '목', '금', '토', '일'][today.weekday()]
     hero_section(
@@ -59,10 +62,6 @@ def render(USERNAME: str, IS_ADMIN: bool = False):
         {"label": "📈 순위 체크",     "tab": "📈 순위 체크"},
         {"label": "🤖 자동화",        "tab": "🤖 자동화"},
     ])
-
-    # ── 📢 공지사항 · 할인제품 대량구매 ──
-    _render_notice_board()
-    _render_notices(USERNAME, IS_ADMIN)
 
     st.markdown("<div style='margin-top:18px'></div>", unsafe_allow_html=True)
 
@@ -354,28 +353,60 @@ def render(USERNAME: str, IS_ADMIN: bool = False):
     chart_card_close()
 
 
-def _render_notice_board():
+def _render_top_boards(USERNAME: str, IS_ADMIN: bool = False):
+    """로그인 직후 최상단 — 왼쪽 공지사항 / 오른쪽 할인제품 구매.
+
+    둘 다 비어 있으면 아무것도 그리지 않는다(빈 상자로 홈을 차지하지 않도록).
+    하나만 있어도 좌우 배치는 유지 — 매번 레이아웃이 바뀌면 눈이 피로하다.
+    """
+    try:
+        notices = get_notices(active_only=True, limit=10)
+    except Exception:
+        notices = []
+    try:
+        deals = get_bulk_deals(status='OPEN', limit=20)
+    except Exception:
+        deals = []
+    if not notices and not deals:
+        return
+
+    left, right = st.columns(2, gap="medium")
+    with left:
+        _render_notice_board(notices)
+    with right:
+        _render_notices(USERNAME, IS_ADMIN, deals)
+    st.markdown("<div style='margin-top:6px'></div>", unsafe_allow_html=True)
+
+
+def _board_title(icon: str, text: str, count: int, sub: str = ""):
+    st.markdown(
+        f'<div style="margin:0 0 8px 0">'
+        f'<div style="font-size:17px;font-weight:700;color:{COLORS["text"]}">'
+        f'{icon} {text} <span style="color:{COLORS["primary"]};font-size:13px">{count}건</span></div>'
+        + (f'<div style="color:{COLORS["muted"]};font-size:12px;margin-top:2px">{sub}</div>'
+           if sub else '')
+        + '</div>', unsafe_allow_html=True)
+
+
+def _render_notice_board(rows=None):
     """📢 공지사항 — 관리자가 올린 일반 알림. 고정(📌) 먼저, 종료일 지난 건 자동 제외.
 
     긴급/주의는 펼친 채로, 안내는 접어서 보여준다 — 홈 상단을 글로 덮지 않도록.
     """
-    try:
-        rows = get_notices(active_only=True, limit=10)
-    except Exception:
-        return
+    if rows is None:
+        try:
+            rows = get_notices(active_only=True, limit=10)
+        except Exception:
+            rows = []
+    _board_title("📢", "공지사항", len(rows))
     if not rows:
+        st.caption("등록된 공지가 없습니다.")
         return
 
     _urgent = [n for n in rows if n['level'] in ('urgent', 'warning') or n['pinned']]
-    st.markdown(
-        f'<div style="margin:18px 0 8px 0">'
-        f'<div style="font-size:18px;font-weight:700;color:{COLORS["text"]}">'
-        f'📢 공지사항 <span style="color:{COLORS["primary"]};font-size:14px">'
-        f'{len(rows)}건</span></div></div>', unsafe_allow_html=True)
-
     _BG = {'urgent': COLORS["primary_l"], 'warning': "#FFF6E5", 'info': COLORS["bg_soft"]}
     _BD = {'urgent': COLORS["primary"], 'warning': COLORS["warning"], 'info': COLORS["border"]}
-    for n in rows:
+    for n in rows[:4]:   # 반쪽 폭 — 4건까지만
         icon, _ = NOTICE_LEVELS.get(n['level'], ('ℹ️', '안내'))
         _pin = ' 📌' if n['pinned'] else ''
         _head = f'{icon} {n["title"]}{_pin}'
@@ -394,21 +425,21 @@ def _render_notice_board():
             with st.expander(_head, expanded=False):
                 st.markdown(_body.replace("\n", "  \n"))
                 st.caption(n['created_at'][:16])
+    if len(rows) > 4:
+        st.caption(f"외 {len(rows) - 4}건")
 
 
-def _render_notices(USERNAME: str, IS_ADMIN: bool = False):
-    """📢 진행 중인 할인제품 대량구매 추천 — 홈 상단 공지 + 그 자리에서 구매 요청.
+def _render_notices(USERNAME: str, IS_ADMIN: bool = False, deals=None):
+    """🏷 진행 중인 할인제품 대량구매 — 홈 상단에서 바로 구매 요청.
 
-    진행 중인 건이 없으면 아무것도 그리지 않는다(빈 카드로 홈을 차지하지 않도록).
-    재고 기능이 아직 없는 환경에서도 홈이 깨지면 안 되므로 전체를 예외로 감싼다.
+    반쪽 폭에 들어가므로 카드는 세로로 쌓는다 (상품/가격 → 상태 → 수량+버튼).
+    재고 기능이 없는 환경에서도 홈이 깨지면 안 되므로 조회를 예외로 감싼다.
     """
-    try:
-        deals = get_bulk_deals(status='OPEN', limit=20)
-    except Exception:
-        return
-    if not deals:
-        return
-
+    if deals is None:
+        try:
+            deals = get_bulk_deals(status='OPEN', limit=20)
+        except Exception:
+            deals = []
     try:
         mine = {r['deal_id']: r for r in get_bulk_requests(username=USERNAME)}
     except Exception:
@@ -417,22 +448,18 @@ def _render_notices(USERNAME: str, IS_ADMIN: bool = False):
     _n = len(deals)
     _pending = sum(1 for d in deals
                    if (mine.get(d['id']) or {}).get('status') == 'PENDING')
-    _sub = "관리자가 추천한 세일 상품입니다. 수량을 넣고 요청하면 승인 후 확정됩니다."
+    _sub = "수량을 넣고 요청하면 관리자 승인 후 확정됩니다."
     if IS_ADMIN:
-        _sub = ("사용자에게 노출 중인 추천건입니다. 관리자도 여기서 직접 요청할 수 있고, "
-                "승인·입고는 재고 관리에서 합니다.")
+        _sub = "승인·입고는 재고 관리에서 합니다."
     if _pending:
         _sub = f"{_sub}  ·  내 승인 대기 {_pending}건"
 
-    st.markdown(
-        f'<div style="margin:18px 0 10px 0">'
-        f'<div style="font-size:18px;font-weight:700;color:{COLORS["text"]}">'
-        f'📢 할인제품 대량구매 공지 '
-        f'<span style="color:{COLORS["primary"]};font-size:14px">{_n}건</span></div>'
-        f'<div style="color:{COLORS["muted"]};font-size:13px;margin-top:2px">{_sub}</div>'
-        f'</div>', unsafe_allow_html=True)
+    _board_title("🏷", "할인제품 구매", _n, _sub if _n else "")
+    if not deals:
+        st.caption("진행 중인 할인제품이 없습니다.")
+        return
 
-    _SHOW = 3   # 홈은 대시보드 — 3건까지만, 나머지는 재고 관리로
+    _SHOW = 2   # 반쪽 폭 — 2건까지만, 나머지는 재고 관리로
     for d in deals[:_SHOW]:
         try:
             s = get_deal_request_summary(d['id'])
@@ -442,8 +469,6 @@ def _render_notices(USERNAME: str, IS_ADMIN: bool = False):
         got = mine.get(d['id'])
 
         with st.container(border=True):
-            c1, c2, c3 = st.columns([3.2, 1.3, 1.5])
-
             _price = int(d['sale_price'] or 0)
             _normal = int(d['normal_price'] or 0)
             _disc = ""
@@ -453,9 +478,9 @@ def _render_notices(USERNAME: str, IS_ADMIN: bool = False):
                          f'font-size:12px;margin-left:6px">{fmt(_normal)}원</span>'
                          f'<span style="color:{COLORS["primary"]};font-weight:700;'
                          f'font-size:12px;margin-left:6px">{_rate}% ↓</span>')
-            c1.markdown(
-                f'<div style="font-weight:700;font-size:15px;color:{COLORS["text"]}">'
-                f'{d["product_name"]}</div>'
+            st.markdown(
+                f'<div style="font-weight:700;font-size:14px;color:{COLORS["text"]};'
+                f'line-height:1.35">{d["product_name"]}</div>'
                 f'<div style="margin-top:3px"><span style="color:{COLORS["primary"]};'
                 f'font-weight:800;font-size:17px">{fmt(_price)}원</span>'
                 f'<span style="color:{COLORS["muted"]};font-size:12px"> / 1팩</span>{_disc}</div>',
@@ -471,35 +496,33 @@ def _render_notices(USERNAME: str, IS_ADMIN: bool = False):
                 # 관리자는 전체 집계도 같이 봐야 승인 여부를 판단할 수 있다
                 _meta.append(f"요청 {s['req_total']}팩 · {s['n']}명")
                 _meta.append(f"승인 {s['approved_total']}팩")
+            elif not got:
+                _meta.append(f"요청 {s['req_total']}팩 · {s['n']}명")
             if _meta:
-                c1.markdown(
+                st.markdown(
                     f'<div style="color:{COLORS["muted"]};font-size:12px;margin-top:2px">'
                     f'{" · ".join(_meta)}</div>', unsafe_allow_html=True)
             if d.get('memo'):
-                c1.markdown(
+                st.markdown(
                     f'<div style="color:{COLORS["info"]};font-size:12px;margin-top:4px">'
                     f'💬 {d["memo"]}</div>', unsafe_allow_html=True)
 
-            # 상태 배지
-            if got and got['status'] == 'APPROVED':
-                c2.success(f"✅ 승인 {got['approved_qty']}팩")
-            elif got and got['status'] == 'PENDING':
-                c2.warning(f"⏳ 요청 {got['req_qty']}팩")
-            elif got and got['status'] == 'REJECTED':
-                c2.error("거절됨")
-            else:
-                c2.caption(f"요청 {s['req_total']}팩 · {s['n']}명")
-
             # 승인된 건은 홈에서 수정 불가 — 관리자 확정 후이므로
             if got and got['status'] == 'APPROVED':
-                c3.caption("확정된 요청입니다")
+                st.success(f"✅ 승인 {got['approved_qty']}팩 — 확정된 요청입니다")
                 continue
-            with c3.form(f"home_req_{d['id']}"):
-                q = st.number_input("수량(팩)", min_value=0, step=1,
-                                    value=int(got['req_qty']) if got else 0,
-                                    key=f"home_rq_{d['id']}", label_visibility="collapsed")
-                if st.form_submit_button("🛒 구매 요청", use_container_width=True,
-                                         type="primary"):
+            if got and got['status'] == 'PENDING':
+                st.warning(f"⏳ 요청 {got['req_qty']}팩 — 승인 대기 중 (수량 변경 가능)")
+            elif got and got['status'] == 'REJECTED':
+                st.error("거절된 요청입니다")
+
+            with st.form(f"home_req_{d['id']}"):
+                fc1, fc2 = st.columns([1, 1.5])
+                q = fc1.number_input("수량(팩)", min_value=0, step=1,
+                                     value=int(got['req_qty']) if got else 0,
+                                     key=f"home_rq_{d['id']}", label_visibility="collapsed")
+                if fc2.form_submit_button("🛒 구매 요청", use_container_width=True,
+                                          type="primary"):
                     if int(q) <= 0:
                         st.warning("수량을 입력하세요.")
                     else:

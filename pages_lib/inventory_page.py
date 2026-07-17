@@ -70,17 +70,24 @@ def _admin_notices(USERNAME):
                              format_func=lambda k: f"{NOTICE_LEVELS[k][0]} {NOTICE_LEVELS[k][1]}")
         pinned = c3.checkbox("상단 고정", value=False)
         body = st.text_area("내용", placeholder="줄바꿈 그대로 표시됩니다.", height=90)
-        c4, _ = st.columns([1, 3])
-        ends = c4.date_input("표시 종료일 (선택)", value=None,
-                             help="이 날짜가 지나면 홈에서 자동으로 사라집니다. 비우면 계속 표시")
+        c4, c5, _ = st.columns([1, 1.3, 1.7])
+        ends = c4.date_input("표시 종료일", value=None,
+                             help="이 날짜가 지나면 홈에서 자동으로 사라집니다.")
+        # 체크박스를 날짜 입력과 같은 높이로 내림 (라벨 높이만큼 여백)
+        c5.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+        no_end = c5.checkbox("종료일 없음 (계속 표시)", value=True,
+                             help="체크하면 날짜를 골라도 무시하고 계속 표시합니다.")
         if st.form_submit_button("📢 공지 등록", type="primary", use_container_width=True):
             if not title.strip():
                 st.error("제목을 입력하세요.")
+            elif not no_end and not ends:
+                st.error("표시 종료일을 고르거나 **종료일 없음**을 체크하세요.")
             else:
                 create_notice(title, body, level=level, pinned=pinned,
-                              ends_at=ends.strftime("%Y-%m-%d") if ends else '',
+                              ends_at='' if no_end else ends.strftime("%Y-%m-%d"),
                               created_by=USERNAME)
-                st.success("등록 완료 — 사용자 홈에 노출됩니다.")
+                st.success("등록 완료 — 사용자 홈에 노출됩니다."
+                           + ("" if no_end else f" ({ends.strftime('%Y-%m-%d')}까지)"))
                 st.rerun()
 
     st.divider()
