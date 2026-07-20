@@ -450,6 +450,77 @@ def _make_response_handler(api_products: list):
     return handle_response
 
 
+# ─── 이미지 포맷 우선순위 (작을수록 큰 이미지) ───────────────────
+# 코스트코 실측: superZoom/zoom=1200px, product=740, results/carousel=350,
+# thumbnail/cartIcon=160. 목록 API(products/search)는 thumbnail/results만 주고,
+# 1200px superZoom은 상세 API(products/{code})에만 있다 → 흐릿함의 근본 원인.
+_IMG_FMT = {"superzoom": 0, "zoom": 0, "product": 1,
+            "carousel": 2, "results": 3, "thumbnail": 4, "carticon": 5}
+
+
+def _pick_best_images(images: list) -> tuple[str, list]:
+    """images 배열 → (대표 URL, 나머지 URL 리스트). 포맷별 최고해상도 1장씩만.
+
+    같은 사진(imageType+galleryIndex)의 여러 포맷 중 가장 큰 것을 고른다.
+    webp는 동해상도라 살짝 후순위(+0.5)로 두어 jpg를 기본 선호.
+    """
+    best = {}
+    for img in (images or []):
+        if not isinstance(img, dict):
+            continue
+        raw = img.get("url", "")
+        if not raw:
+            continue
+        u = (COSTCO_BASE + raw) if raw.startswith("/") else raw
+        fmt = str(img.get("format", "")).lower()
+        score = _IMG_FMT.get(fmt.replace("-webp", ""), 9) + (0.5 if "webp" in fmt else 0.0)
+        key = (img.get("imageType", "PRIMARY"), img.get("galleryIndex", 0))
+        if key not in best or score < best[key][0]:
+            best[key] = (score, u)
+    primary = [v[1] for k, v in sorted(best.items()) if k[0] == "PRIMARY"]
+    gallery = [v[1] for k, v in sorted(best.items()) if k[0] == "GALLERY"]
+    ordered = primary + gallery
+    if not ordered:
+        return "", []
+    return ordered[0], [u for u in ordered[1:] if u and u != ordered[0]]
+
+
+def fetch_hires_images(product_no: str) -> tuple[str, list]:
+    """상세 API(products/{code})에서 superZoom(1200px) 대표+갤러리 이미지 조회.
+
+    목록 API에는 큰 이미지가 없어, 흐릿하면 이걸로 보완한다.
+    urllib 직접 호출(브라우저 불필요). 실패 시 ("", []).
+    """
+    pno = str(product_no or "").strip()
+    if not pno:
+        return "", []
+    import urllib.request
+    url = f"{COSTCO_BASE}/rest/v2/korea/products/{pno}?fields=FULL&lang=ko&curr=KRW"
+    try:
+        req = urllib.request.Request(url, headers={
+            "Accept": "application/json",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+            "Referer": COSTCO_BASE + "/",
+        })
+        with urllib.request.urlopen(req, timeout=12) as resp:
+            if getattr(resp, "status", 200) != 200:
+                return "", []
+            data = json.loads(resp.read().decode("utf-8", errors="replace"))
+    except Exception:
+        return "", []
+    return _pick_best_images(data.get("images") or [])
+
+
+def _is_lowres_thumb(url: str) -> bool:
+    """목록 API가 준 저해상도 썸네일 URL인지(=상세 API로 보완이 필요한지) 판단.
+
+    코스트코 URL 자체엔 크기 표시가 없어, 파일 크기가 아니라 '큰 포맷을 못 골랐다'는
+    사실로 판단한다. _pick_best_images가 thumbnail(4)/results(3)밖에 못 골랐으면
+    큰 이미지가 목록에 안 온 것 → 보완 대상. (호출측에서 원본 images로 판정)
+    """
+    return not url
+
+
 # ─── OCC API 상품 파싱 ───────────────────────────────────────────
 def _parse_occ_products(api_data: dict) -> list[dict]:
     """SAP OCC REST API v2 응답에서 상품 목록 추출"""
@@ -469,29 +540,20 @@ def _parse_occ_products(api_data: dict) -> list[dict]:
         if not name or not price:
             continue
         images = item.get("images", [])
-        # 코스트코는 같은 사진을 여러 포맷(thumbnail/product/results/carousel...)으로 준다.
-        # imageType+galleryIndex 별로 '최고해상도' 포맷 1장만 선택 → 흐릿한 썸네일 방지.
-        # 포맷 우선순위(작을수록 큰 이미지): product/zoom < carousel < results < thumbnail.
-        _FMT = {"zoom": 0, "superzoom": 0, "product": 1, "carousel": 2, "results": 3, "thumbnail": 4}
-        best = {}
-        for img in (images or []):
-            if not isinstance(img, dict):
-                continue
-            raw = img.get("url", "")
-            if not raw:
-                continue
-            u = (COSTCO_BASE + raw) if raw.startswith("/") else raw
-            fmt = str(img.get("format", "")).lower()
-            score = _FMT.get(fmt.replace("-webp", ""), 5) + (0.5 if "webp" in fmt else 0.0)
-            key = (img.get("imageType", "PRIMARY"), img.get("galleryIndex", 0))
-            if key not in best or score < best[key][0]:
-                best[key] = (score, u)
-        primary = [v[1] for k, v in sorted(best.items()) if k[0] == "PRIMARY"]
-        gallery = [v[1] for k, v in sorted(best.items()) if k[0] == "GALLERY"]
-        _ordered = primary + gallery
-        image_url = _ordered[0] if _ordered else ""
-        extra_imgs = [u for u in _ordered[1:] if u and u != image_url]
         product_no = str(item.get("code") or "")
+        # 목록 API 이미지 중 최고해상도 선택
+        image_url, extra_imgs = _pick_best_images(images)
+        # 목록 API엔 큰 포맷(superZoom 1200px)이 오지 않는다 → 큰 게 없으면 상세 API로 보완.
+        # 판정: superZoom/zoom(1200px)이 없으면 보완 대상. product(740px)도 네이버
+        # 1000×1000 등록엔 살짝 늘어나므로 superZoom을 받는 게 낫다.
+        _fmts = {str(i.get("format", "")).lower().replace("-webp", "")
+                 for i in images if isinstance(i, dict)}
+        _has_big = bool(_fmts & {"superzoom", "zoom"})
+        if product_no and not _has_big:
+            _hi_main, _hi_extra = fetch_hires_images(product_no)
+            if _hi_main:
+                image_url = _hi_main
+                extra_imgs = _hi_extra
         # 상세설명(설명·요약) → 상세HTML(설명만; 이미지는 등록 시 네이버 CDN 업로드해 사용)
         _desc = (item.get("description") or "").strip()
         _summ = (item.get("summary") or "").strip()
@@ -759,8 +821,16 @@ def download_product_image(product_no: str, image_url: str) -> str:
         ext = ".jpg"
     local_path = os.path.join(images_dir, f"{product_no}{ext}")
 
+    # 이미 있고 '충분히 큰' 파일이면 재다운로드 안 함.
+    # 과거 160px 썸네일로 캐시된 것(약 4KB)은 다시 받아 고해상도로 교체한다.
+    # (superZoom 1200px = 보통 50KB 이상, 160px 썸네일 = 5KB 미만)
+    _LOWRES_BYTES = 15_000
     if os.path.exists(local_path):
-        return local_path
+        try:
+            if os.path.getsize(local_path) >= _LOWRES_BYTES:
+                return local_path
+        except OSError:
+            return local_path   # 크기 확인 불가 시 기존 파일 유지
 
     try:
         import urllib.request
@@ -773,11 +843,20 @@ def download_product_image(product_no: str, image_url: str) -> str:
         )
         with urllib.request.urlopen(req, timeout=15) as resp:
             data = resp.read()
+        # 새로 받은 게 기존보다 작거나 비었으면 덮어쓰지 않음(품질 하락 방지)
+        if not data:
+            return local_path if os.path.exists(local_path) else ""
+        if os.path.exists(local_path):
+            try:
+                if len(data) < os.path.getsize(local_path):
+                    return local_path
+            except OSError:
+                pass
         with open(local_path, "wb") as f:
             f.write(data)
         return local_path
     except Exception:
-        return ""
+        return local_path if os.path.exists(local_path) else ""
 
 
 # ─── DB 저장 ─────────────────────────────────────────────────────
