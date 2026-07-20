@@ -226,6 +226,111 @@ def keyword_tool(ad_api_key, ad_secret, customer_id, keyword):
 
 
 
+def _comp_rank(r):
+    """경쟁도 → 정렬용 숫자 (낮을수록 앞). 알 수 없으면 중간."""
+    return {"낮음": 0, "중간": 1, "높음": 2}.get(str(r.get("경쟁도", "")), 1)
+
+
+def order_seo_keywords(rows, front_max=200, n_front=2):
+    """검색량 rows → 상품명용 키워드 배치 (순수 함수, API 불필요 = 단위테스트 가능).
+
+    롱테일 전략: 저검색(총검색량 ≤ front_max) 키워드를 '앞단'에 둔다.
+    신규 상품은 대표어로 상위노출이 어려우니, 경쟁 낮은 저검색 키워드를 앞에 배치해
+    롱테일 검색 1페이지를 노린다. 대표어(최고검색량)는 뒤에 보조로 붙인다.
+
+    각 row에 band 라벨을 달아 반환:
+      'front' = 저검색(≤front_max) 후보  ·  'rep' = 대표어  ·  'mid' = 그 외
+    반환: {'front': [kw...], 'rep': kw|None, 'ordered_kw': [앞단..., 대표어],
+           'candidates': [{키워드,총검색량,경쟁도,band}...]}
+    """
+    rows = [r for r in (rows or []) if str(r.get("키워드", "")).strip()]
+    if not rows:
+        return {"front": [], "rep": None, "ordered_kw": [], "candidates": []}
+    by_vol = sorted(rows, key=lambda r: int(r.get("총검색량", 0) or 0), reverse=True)
+    rep = by_vol[0]                                   # 대표어 = 최고검색량
+    rep_kw = str(rep.get("키워드", "")).strip()
+
+    # 저검색 후보: 1 ≤ 총검색량 ≤ front_max, 경쟁 낮은 순 → 같은 경쟁이면 검색량 높은 순
+    front_pool = [r for r in by_vol
+                  if 1 <= int(r.get("총검색량", 0) or 0) <= front_max
+                  and str(r.get("키워드", "")).strip() != rep_kw]
+    front_pool.sort(key=lambda r: (_comp_rank(r), -int(r.get("총검색량", 0) or 0)))
+    front = [str(r.get("키워드", "")).strip() for r in front_pool[:max(0, n_front)]]
+
+    ordered = []
+    for k in front + [rep_kw]:
+        n = k.lower().replace(" ", "")
+        if k and n not in [x.lower().replace(" ", "") for x in ordered]:
+            ordered.append(k)
+
+    front_set = {r["키워드"] for r in front_pool[:max(0, n_front)]}
+    candidates = []
+    for r in by_vol:
+        kw = str(r.get("키워드", "")).strip()
+        band = "rep" if kw == rep_kw else ("front" if kw in front_set else "mid")
+        candidates.append({"키워드": kw, "총검색량": int(r.get("총검색량", 0) or 0),
+                           "경쟁도": r.get("경쟁도", ""), "band": band})
+    return {"front": front, "rep": rep_kw, "ordered_kw": ordered, "candidates": candidates}
+
+
+def keyword_seo_name(ad_api_key, ad_secret, customer_id, seed, ai_key=None,
+                     category="", front_max=200, n_front=2, manual_kw=None):
+    """검색량 분석 기반 SEO 상품명 + 후보 키워드. (메인 네이버 등록용)
+
+    저검색(≤front_max) 키워드를 상품명 '앞단'에 배치한다.
+    manual_kw가 주어지면(사용자 수동선택) 그 순서 그대로 앞단에 쓴다.
+    ai_key 있으면 AI가 자연스러운 상품명으로 조합(앞단 순서 유지), 없으면 이어붙임.
+
+    반환: (result, err)
+      result = {'name', 'front'[], 'rep', 'candidates'[{키워드,총검색량,경쟁도,band}]}
+    """
+    _seed = str(seed or "").strip()
+    rows, err = keyword_tool(ad_api_key, ad_secret, customer_id, _seed)
+    if err or not rows:
+        return {"name": _seed, "front": [], "rep": None, "candidates": []}, (err or "연관키워드 없음")
+
+    plan = order_seo_keywords(rows, front_max=front_max, n_front=n_front)
+    # 수동 선택이 있으면 그 키워드를 앞단으로 (순서 보존)
+    if manual_kw:
+        front = [str(k).strip() for k in manual_kw if str(k).strip()]
+        ordered = []
+        for k in front + ([plan["rep"]] if plan["rep"] else []):
+            n = k.lower().replace(" ", "")
+            if k and n not in [x.lower().replace(" ", "") for x in ordered]:
+                ordered.append(k)
+    else:
+        front, ordered = plan["front"], plan["ordered_kw"]
+
+    result = {"name": _seed, "front": front, "rep": plan["rep"],
+              "candidates": plan["candidates"]}
+    if not ordered:
+        return result, None
+
+    if ai_key:
+        try:
+            import ai_service
+            _sys = ("너는 네이버 스마트스토어 SEO 상품명 작성 전문가다. 주어진 키워드를 "
+                    "'제시된 순서대로' 자연스럽게 포함하는 한국어 상품명을 한 줄로 만든다. "
+                    "특히 앞쪽 키워드가 상품명 앞부분에 오도록 배치한다. "
+                    "중복·과장·특수문자·이모지 금지, 최대 40자. 상품명만 출력.")
+            _msg = (f"원본 상품명: {_seed}\n카테고리: {category or '미상'}\n"
+                    f"앞단부터 순서대로 포함할 키워드: {', '.join(ordered)}\n"
+                    f"상품명 한 줄만 출력.")
+            _txt, _e = ai_service.claude_complete(
+                ai_key, _sys, _msg, max_tokens=120,
+                model=getattr(ai_service, "VISION_MODEL", None), thinking={"type": "disabled"})
+            if _txt:
+                _name = " ".join(str(_txt).split()).strip().strip('"').strip()
+                if len(_name) >= 4:
+                    result["name"] = _name[:100]
+                    return result, None
+        except Exception as _ex:
+            err = str(_ex)
+    # AI 실패/미사용 → 앞단 키워드 + 원본명 이어붙임
+    result["name"] = (" ".join(ordered) + " " + _seed).strip()[:100]
+    return result, err
+
+
 def keyword_optimized_name(ad_api_key, ad_secret, customer_id, seed,
                            ai_key=None, category="", low=100, high=300):
     """연관키워드 조회수 기반 상품명 생성.

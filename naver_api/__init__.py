@@ -54,6 +54,8 @@ from .keywords import (
     check_keyword_rank,
     keyword_tool,
     keyword_optimized_name,
+    keyword_seo_name,
+    order_seo_keywords,
     naver_shopping_search,
     naver_autocomplete,
     _norm_kw,

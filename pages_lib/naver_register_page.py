@@ -376,7 +376,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                             _cid, _cfull = _cr2[0]['id'], _cr2[0]['full_name']
                     # 새 상품 분석 시 이전 제품의 편집값·태그 초기화 (위젯 생성 전이라 안전)
                     for _rk in ('ph_en', 'ph_es', 'ph_ec', 'ph_costco_no', 'ph_desc',
-                                'ph_sq_prev', '_ph_tags', '_ph_tags_info', 'ph_tag_editor', '_ph_food'):
+                                'ph_sq_prev', '_ph_tags', '_ph_tags_info', 'ph_tag_editor',
+                                '_ph_food', '_ph_seo', '_ph_en_pending'):
                         st.session_state.pop(_rk, None)
                     st.session_state['_ph_pv'] = {
                         'name': _nm, 'cost': _cost, 'sale': _sale,
@@ -387,9 +388,68 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
 
             _pv = st.session_state.get('_ph_pv')
             if _pv:
+                # SEO 재생성/적용으로 정해진 상품명을 위젯 생성 '전에' 주입 (Streamlit 규칙)
+                if '_ph_en_pending' in st.session_state:
+                    st.session_state['ph_en'] = st.session_state.pop('_ph_en_pending')
                 st.markdown(f"**미리보기** — 코스트코가 {fmt(_pv['cost'])}원 → 네이버 판매가 **{fmt(_pv['sale'])}원** "
                             f"(마진 {_ph_margin}%)")
                 _en = st.text_input("상품명", value=_pv['name'], key="ph_en")
+
+                # ── 🔑 상품명 SEO 키워드 — 검색량 분석해 저검색(≤N) 키워드를 앞단 배치 ──
+                with st.expander("🔑 상품명 SEO 키워드 (검색량 분석 → 저검색 키워드 앞단 배치)",
+                                 expanded=False):
+                    _adk = _gs('naver_ad_api_key'); _ads = _gs('naver_ad_secret')
+                    _adc = _gs('naver_ad_customer_id')
+                    if not (_adk and _ads and _adc):
+                        st.info("검색광고 API 키가 필요합니다 (설정 탭 > 📊 네이버 검색광고 API).")
+                    else:
+                        _sc1, _sc2 = st.columns([1.4, 1])
+                        _fmax = _sc2.number_input("앞단 기준 검색량 이하", value=200, step=50,
+                                                  min_value=50, key="ph_seo_fmax")
+                        if _sc1.button("🔍 키워드 분석", key="ph_seo_go",
+                                       use_container_width=True):
+                            import naver_api as _na
+                            with st.spinner("연관키워드 검색량 조회 중..."):
+                                _seed = str(st.session_state.get('ph_en') or _pv['name']).strip()
+                                _res, _serr = _na.keyword_seo_name(
+                                    _adk, _ads, _adc, _seed, ai_key=_ph_aikey,
+                                    category=_pv.get('cat_full', ''), front_max=int(_fmax))
+                            if _serr and not (_res or {}).get('candidates'):
+                                st.warning(f"키워드 조회 실패: {_serr}")
+                            else:
+                                st.session_state['_ph_seo'] = _res
+                                st.rerun()
+
+                        _seo = st.session_state.get('_ph_seo')
+                        if _seo:
+                            if _seo.get('name'):
+                                _pc1, _pc2 = st.columns([3, 1])
+                                _pc1.markdown(f"**AI 제안 상품명**\n\n{_seo['name']}")
+                                if _pc2.button("이 상품명 적용", key="ph_seo_apply",
+                                               use_container_width=True):
+                                    st.session_state['_ph_en_pending'] = _seo['name']
+                                    st.rerun()
+                            st.caption("체크한 키워드를 앞단부터 넣어 상품명을 다시 만듭니다.  "
+                                       "⬆️ = 저검색 앞단추천 · 🎯 = 대표어(최고검색)")
+                            _picked = []
+                            for _ci, _c in enumerate((_seo.get('candidates') or [])[:15]):
+                                _tg = {'front': '⬆️', 'rep': '🎯', 'mid': '　'}.get(_c['band'], '　')
+                                if st.checkbox(
+                                        f"{_tg} {_c['키워드']}  "
+                                        f"(검색 {_c['총검색량']:,} · 경쟁 {_c['경쟁도'] or '-'})",
+                                        value=(_c['band'] == 'front'), key=f"ph_seo_kw_{_ci}"):
+                                    _picked.append(_c['키워드'])
+                            if st.button("✅ 선택 키워드로 상품명 재생성", key="ph_seo_regen",
+                                         use_container_width=True, disabled=not _picked):
+                                import naver_api as _na
+                                with st.spinner("상품명 재생성 중..."):
+                                    _seed2 = str(st.session_state.get('ph_en') or _pv['name']).strip()
+                                    _res2, _ = _na.keyword_seo_name(
+                                        _adk, _ads, _adc, _seed2, ai_key=_ph_aikey,
+                                        category=_pv.get('cat_full', ''), manual_kw=_picked)
+                                st.session_state['_ph_en_pending'] = _res2['name']
+                                st.session_state['_ph_seo'] = {**_seo, 'name': _res2['name']}
+                                st.rerun()
                 _dgc1, _dgc2 = st.columns([1, 3])
                 if _dgc1.button("🤖 AI 상세설명 생성", key="ph_desc_gen",
                                 use_container_width=True, disabled=not _prod_imgs):
