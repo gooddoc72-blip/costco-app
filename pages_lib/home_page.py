@@ -537,6 +537,38 @@ def _render_notices(USERNAME: str, IS_ADMIN: bool = False, deals=None):
         st.caption(f"외 {_n - _SHOW}건 — 좌측 **상품 관리 > 재고 관리**에서 전체 보기")
 
 
+# 택배 발송이 안 되는 날 = 그날 주문은 다음 영업일 발송 → 그날 수익은 허수라 제외.
+# ⚠️ 2026 대한민국 공휴일 (대체공휴일 포함). 연말마다 갱신 필요.
+#    (토·일은 아래 weekday 검사로 자동 제외되므로, 여기엔 평일 공휴일만 있어도 됨)
+_KR_HOLIDAYS = {
+    "2026-01-01",                                    # 신정(목)
+    "2026-02-16", "2026-02-17", "2026-02-18",        # 설날 연휴(월·화·수)
+    "2026-03-02",                                    # 대체공휴일(삼일절, 3/1 일)
+    "2026-05-05",                                    # 어린이날(화)
+    "2026-05-25",                                    # 대체공휴일(부처님오신날, 5/24 일)
+    "2026-09-24", "2026-09-25",                      # 추석 연휴(목·금) — 9/26 토는 주말
+    "2026-10-05",                                    # 대체공휴일(개천절, 10/3 토)
+    "2026-10-09",                                    # 한글날(금)
+    "2026-12-25",                                    # 성탄절(금)
+    # 토·일과 겹치는 공휴일(현충일 6/6·광복절 8/15·개천절 10/3·삼일절 3/1·부처님 5/24)은
+    # weekday 검사로 이미 제외됨 — 중복 등록 불필요.
+}
+
+
+def _is_no_ship_day(d):
+    """택배 미발송일(토·일·공휴일)이면 True. d: date 또는 'YYYY-MM-DD'."""
+    if hasattr(d, "weekday"):
+        wd = d.weekday()
+        ds = d.strftime("%Y-%m-%d")
+    else:
+        ds = str(d)
+        try:
+            wd = datetime.strptime(ds[:10], "%Y-%m-%d").weekday()
+        except Exception:
+            return False
+    return wd >= 5 or ds in _KR_HOLIDAYS   # 5=토, 6=일
+
+
 def _render_calendar(USERNAME: str, today: datetime, IS_ADMIN: bool = False):
     """📅 월별 달력 — 각 날짜에 주문건 · 발송건 · 수익 · 정산 표시.
     IS_ADMIN이면 날짜별 사용자 수·코스트코 구매금액 합계를 셀에 추가하고,
@@ -631,9 +663,10 @@ def _render_calendar(USERNAME: str, today: datetime, IS_ADMIN: bool = False):
             daycol = "#E74C3C" if i == 0 else "#3477eb" if i == 6 else "#333"
             bg = "#f0fbf6" if ds == _today_str else "white"
             inner = f'<div style="font-weight:700;font-size:17px;color:{daycol}">{d.day}</div>'
+            _no_ship = _is_no_ship_day(d)   # 토·일·공휴일 = 다음날 발송 → 그날 수익은 허수
             if ocnt > 0:
                 inner += f'<div style="font-size:14px;color:#555">🧾 주문 {ocnt}</div>'
-            if s:
+            if s and not _no_ship:
                 pf = int(s.get('total_profit') or 0)
                 pfcol = "#1D9E75" if pf >= 0 else "#E74C3C"
                 inner += f'<div style="font-size:14px;color:{pfcol};font-weight:600">💰 {pf:,}</div>'
@@ -657,7 +690,9 @@ def _render_calendar(USERNAME: str, today: datetime, IS_ADMIN: bool = False):
     )
 
     m_cnt = sum(order_map.values())
-    m_pf = sum(int(s.get('total_profit') or 0) for s in stats)
+    # 수익 합계 = 발송 가능한 날(평일 공휴일 제외)만 — 주말/공휴일 주문은 다음날 발송이라 제외
+    m_pf = sum(int(s.get('total_profit') or 0) for s in stats
+               if not _is_no_ship_day(s.get('order_date', '')))
     m_disp = sum(disp_map.values())
     m_dep = sum(dep_map.values()) if dep_map else 0
     st.caption(f"📆 {sel_month} 합계 — 주문 {m_cnt}건 · 발송 {m_disp}건 · "
