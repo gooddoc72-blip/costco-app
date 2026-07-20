@@ -129,7 +129,7 @@ def _clear_qparams():
     st.query_params.clear()
 
 
-# ── 카페24 OAuth 콜백 (redirect_uri=https://cocobiz.shop/?code=..&state=sid) ──
+# ── 카페24 OAuth 콜백 (redirect_uri=https://cocobiz.shop/app/?code=..&state=sid) ──
 #   state에 로그인 sid를 실어 보냈으므로 이를 이용해 사용자 복원 후 토큰 저장.
 _cf_code = _get_qparam('code')
 _cf_state = _get_qparam('state')

@@ -148,6 +148,7 @@
   .topnav a { text-decoration: none; transition: color .15s; }
   .topnav a:hover { color: var(--red); }
   @media (max-width: 820px) { .topnav { display: none; } }
+  .top-auth { display: flex; gap: 8px; align-items: center; }
 
   .btn {
     display: inline-flex; align-items: center; justify-content: center; gap: 7px;
@@ -460,7 +461,10 @@
       <a href="#screens">화면</a>
       <a href="#ai">AI</a>
     </nav>
-    <a class="btn btn-primary" href="https://cocobiz.shop">시작하기</a>
+    <div class="top-auth">
+      <a class="btn btn-ghost" href="/app">로그인</a>
+      <a class="btn btn-primary" href="/app">회원가입</a>
+    </div>
   </div>
 </header>
 
@@ -479,7 +483,7 @@
           남았는지 계산합니다. 결과는 카카오톡으로 옵니다.
         </p>
         <div class="hero-cta rise" style="animation-delay:.26s">
-          <a class="btn btn-primary btn-lg" href="https://cocobiz.shop">cocobiz.shop 접속</a>
+          <a class="btn btn-primary btn-lg" href="/app">cocobiz.shop 접속</a>
           <a class="btn btn-ghost btn-lg" href="#flow">흐름 보기</a>
         </div>
         <p class="hero-note rise" style="animation-delay:.32s">
@@ -1294,7 +1298,7 @@
         <h2>내일 아침 9시,<br>장보기 목록이 카톡으로 옵니다</h2>
         <p>키를 연결하고 자동화를 켜두면 그다음부터는 결과만 확인하면 됩니다.</p>
         <div class="cta-row">
-          <a class="btn btn-primary btn-lg" href="https://cocobiz.shop">cocobiz.shop 시작하기</a>
+          <a class="btn btn-primary btn-lg" href="/app">cocobiz.shop 시작하기</a>
           <a class="btn btn-ghost btn-lg" href="#clock">하루 일과표 다시 보기</a>
         </div>
       </div>
