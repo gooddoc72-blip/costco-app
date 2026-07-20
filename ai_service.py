@@ -143,12 +143,43 @@ _BRIEF_SYSTEM = (
 )
 
 
+def _shrink_for_ai(image_bytes, media_type, max_edge=1092):
+    """AI 판독용 이미지 축소 — 긴 변을 max_edge로 제한(비율 유지, 크롭 없음).
+
+    폰 원본(3000~4000px)을 그대로 보내면 이미지 토큰이 4~5배 → 등록 1건 80원.
+    긴 변만 줄이면 글씨는 읽히면서 비용이 크게 준다.
+    ⚠️ 정사각 크롭(resize_square_bytes)은 세로로 긴 식품라벨의 위·아래를 잘라
+       원재료·영양성분이 사라지므로 AI 판독엔 절대 쓰지 않는다.
+    반환: (bytes, media_type). PIL 없거나 실패·이미 작으면 원본 그대로.
+    """
+    try:
+        from PIL import Image
+        import io as _io
+        with Image.open(_io.BytesIO(image_bytes)) as im:
+            w, h = im.size
+            if max(w, h) <= max_edge:
+                return image_bytes, media_type   # 이미 충분히 작음
+            im = im.convert("RGB")
+            scale = max_edge / float(max(w, h))
+            im = im.resize((max(1, round(w * scale)), max(1, round(h * scale))),
+                           Image.LANCZOS)
+            buf = _io.BytesIO()
+            im.save(buf, "JPEG", quality=88)
+            return buf.getvalue(), "image/jpeg"
+    except Exception:
+        return image_bytes, media_type   # 실패 시 원본 유지 (절대 안 깨지게)
+
+
 def claude_vision(api_key, image_bytes, media_type, system, user_text,
-                  max_tokens=600, model=None):
-    """이미지 1장 + 텍스트 → Claude 멀티모달 응답. 반환: (text, error)."""
+                  max_tokens=600, model=None, max_edge=1092):
+    """이미지 1장 + 텍스트 → Claude 멀티모달 응답. 반환: (text, error).
+
+    max_edge: 판독 전 긴 변 상한(px). 식품라벨 등 깨알글씨는 크게(1568) 넘겨준다.
+    """
     if not api_key:
         return None, "Anthropic API 키 미설정"
     try:
+        image_bytes, media_type = _shrink_for_ai(image_bytes, media_type, max_edge)
         _b64 = base64.standard_b64encode(image_bytes).decode("ascii")
         r = requests.post(
             ANTHROPIC_URL,
@@ -290,8 +321,10 @@ def analyze_food_label(api_key, image_bytes, media_type):
     manufacturer, importer, calories, nutrition, expiration}. 반환: (dict, error)."""
     if not api_key:
         return None, "Anthropic API 키 미설정 (설정 탭 > 🤖 AI 설정)"
+    # 식품 표시사항은 원재료·영양성분이 깨알글씨 → 축소 상한을 크게(1568) 잡아 가독성 보존
     _txt, _err = claude_vision(api_key, image_bytes, media_type, _FOODLABEL_SYSTEM,
-                               "이 식품 표시사항 사진을 분석해 JSON으로 출력해줘.", max_tokens=700)
+                               "이 식품 표시사항 사진을 분석해 JSON으로 출력해줘.",
+                               max_tokens=700, max_edge=1568)
     if _err or not _txt:
         return None, _err or "빈 응답"
     _s = _txt.strip()
