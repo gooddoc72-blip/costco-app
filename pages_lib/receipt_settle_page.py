@@ -46,12 +46,16 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     )
     if files:
         parsed, fails = [], []
-        for f in files:
-            items, err = parse_costco_receipt_pdf(f)
-            if items:
-                parsed.extend(items)
-            else:
-                fails.append((f.name, err))
+        with st.spinner("영수증 인식 중..."):
+            for f in files:
+                try:
+                    items, err = parse_costco_receipt_pdf(f)
+                except Exception as e:
+                    items, err = None, f"파싱 예외: {e}"
+                if items:
+                    parsed.extend(items)
+                else:
+                    fails.append((f.name, err or "인식된 상품 항목이 없습니다"))
         # 상품번호 기준 dedup (최신 영수증 우선)
         merged = {}
         for p in parsed:
@@ -61,14 +65,22 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 merged[k] = p
         deduped = list(merged.values())
         st.session_state['rs_receipt_items'] = deduped
-        if fails:
-            for fn, em in fails:
-                with st.expander(f"⚠️ 인식 실패: {fn}", expanded=False):
-                    st.warning(em)
+        if parsed:
+            st.success(f"✅ {len(files) - len(fails)}개 파일 · {len(deduped)}종 상품 인식")
+        # 실패 사유를 화면에 크게 노출 (접힌 expander에 숨기지 않음)
+        for fn, em in fails:
+            st.error(f"⚠️ 인식 실패: **{fn}** — {em}")
+        if not parsed and fails:
+            st.warning(
+                "영수증에서 상품을 못 읽었습니다. 원인은 보통 ① 스캔/사진 기반 PDF(텍스트 없음) "
+                "② 코스트코 표준 영수증 형식이 아님 ③ 암호화 PDF 입니다. "
+                "위 실패 사유를 확인해 주세요."
+            )
 
     receipt_items = st.session_state.get('rs_receipt_items') or []
     if not receipt_items:
-        st.info("영수증 PDF를 업로드하면 여기에 인식 결과가 표시됩니다.")
+        if not files:
+            st.info("영수증 PDF를 업로드하면 여기에 인식 결과가 표시됩니다.")
         _render_history(_disp_map())
         return
 
