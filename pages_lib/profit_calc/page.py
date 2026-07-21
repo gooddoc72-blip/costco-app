@@ -355,6 +355,10 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                          for _k, _v in st.session_state.get('cost_overrides', {}).items())),
             # 묶음배수를 제품 DB에서 바꾸면 구입가격이 달라짐 → 캐시 무효화 필요
             sum(int(_p.get('pack_multiplier', 0) or 0) for _p in (_preload_user or [])),
+            # ⭐ 단가 변경 감지: 영수증 공유가 저장·제품 단가 수정 시 캐시 무효화(이전 가격 재사용 방지)
+            #    (기존엔 단가가 키에 없어, 가격을 바꿔도 옛 계산결과가 그대로 재사용됐음 — '이전 가격' 버그)
+            sum(int(_p.get('unit_price', 0) or 0) for _p in (_preload_user or [])),
+            sum(int(_p.get('unit_price', 0) or 0) for _p in (_preload_shared or [])),
         )
         _mc_state = '_pcalc_match_cache'
         _cached = st.session_state.get(_mc_state)
