@@ -39,12 +39,13 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         "각 주문 구입가에 **영수증 실단가**를 반영합니다. 사용자별 구매금액 정산표도 만들어집니다."
     )
 
-    # ── 1) 영수증 업로드 ──
+    # ── 1) 영수증 업로드 (선택) — 자동 인식 시도 후 표에 채움 ──
     files = st.file_uploader(
         "코스트코 영수증 PDF (여러 개 가능)", type=['pdf'],
         key="rs_pdf", accept_multiple_files=True
     )
-    if files:
+    _fkey = tuple(sorted(f.name for f in files)) if files else ()
+    if files and st.session_state.get('_rs_fkey') != _fkey:
         parsed, fails = [], []
         with st.spinner("영수증 인식 중..."):
             for f in files:
@@ -56,41 +57,55 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     parsed.extend(items)
                 else:
                     fails.append((f.name, err or "인식된 상품 항목이 없습니다"))
-        # 상품번호 기준 dedup (최신 영수증 우선)
         merged = {}
         for p in parsed:
             k = _n(p.get('상품번호')) or _n(p.get('상품명'))
             ex = merged.get(k)
             if ex is None or (p.get('receipt_date', '') or '') >= (ex.get('receipt_date', '') or ''):
                 merged[k] = p
-        deduped = list(merged.values())
-        st.session_state['rs_receipt_items'] = deduped
-        if parsed:
-            st.success(f"✅ {len(files) - len(fails)}개 파일 · {len(deduped)}종 상품 인식")
-        # 실패 사유를 화면에 크게 노출 (접힌 expander에 숨기지 않음)
-        for fn, em in fails:
-            st.error(f"⚠️ 인식 실패: **{fn}** — {em}")
-        if not parsed and fails:
-            st.warning(
-                "영수증에서 상품을 못 읽었습니다. 원인은 보통 ① 스캔/사진 기반 PDF(텍스트 없음) "
-                "② 코스트코 표준 영수증 형식이 아님 ③ 암호화 PDF 입니다. "
-                "위 실패 사유를 확인해 주세요."
-            )
+        st.session_state['rs_receipt_items'] = list(merged.values())
+        st.session_state['_rs_fkey'] = _fkey
+        st.session_state['_rs_fails'] = fails
+        st.session_state.pop('rs_alloc', None)   # 새 업로드 → 이전 미리보기 초기화
 
-    receipt_items = st.session_state.get('rs_receipt_items') or []
+    for fn, em in st.session_state.get('_rs_fails', []):
+        st.warning(f"⚠️ 자동 인식 실패: **{fn}** — {em}. 아래 표에 **직접 입력**해서 정산할 수 있습니다.")
+
+    # ── 2) 영수증 품목 (자동 인식 + 직접 추가/수정) ──
+    st.subheader("🧾 영수증 품목")
+    st.caption("자동 인식되면 표에 채워집니다. 인식이 안 되거나 빠진 게 있으면 **코스트코 상품번호·상품명·단가를 직접 입력**하세요. (행 추가 가능)")
+    _seed = st.session_state.get('rs_receipt_items') or []
+    _rd_by_cno = {_n(p.get('상품번호')): (p.get('receipt_date', '') or '')
+                  for p in _seed if _n(p.get('상품번호'))}
+    _seed_rows = [{'상품번호': _n(p.get('상품번호')), '상품명': _n(p.get('상품명')),
+                   '수량': int(p.get('수량') or 1), '단가': int(float(p.get('단가') or 0))}
+                  for p in _seed] or [{'상품번호': '', '상품명': '', '수량': 1, '단가': 0}]
+    edited = st.data_editor(
+        pd.DataFrame(_seed_rows), num_rows='dynamic', use_container_width=True,
+        key=f"rs_item_editor_{abs(hash(_fkey)) % 100000}",
+        column_config={
+            '상품번호': st.column_config.TextColumn('코스트코 상품번호'),
+            '상품명': st.column_config.TextColumn('상품명'),
+            '수량': st.column_config.NumberColumn('수량', min_value=1, step=1),
+            '단가': st.column_config.NumberColumn('실단가(원)', min_value=0, step=100),
+        },
+    )
+    receipt_items = []
+    for r in edited.to_dict('records'):
+        cno = _n(r.get('상품번호'))
+        try:
+            up = int(float(r.get('단가') or 0))
+        except (TypeError, ValueError):
+            up = 0
+        if cno and up > 0:
+            receipt_items.append({'상품번호': cno, '상품명': _n(r.get('상품명')),
+                                  '수량': int(r.get('수량') or 1), '단가': up,
+                                  'receipt_date': _rd_by_cno.get(cno, '')})
     if not receipt_items:
-        if not files:
-            st.info("영수증 PDF를 업로드하면 여기에 인식 결과가 표시됩니다.")
+        st.info("정산하려면 표에 **코스트코 상품번호 + 실단가(>0)** 가 있는 항목이 최소 1개 필요합니다.")
         _render_history(_disp_map())
         return
-
-    st.success(f"✅ 영수증 {len(receipt_items)}종 상품 인식")
-    st.dataframe(
-        pd.DataFrame([{'상품번호': _n(p.get('상품번호')), '상품명': _n(p.get('상품명')),
-                       '수량': p.get('수량'), '단가': p.get('단가'),
-                       '영수증일': p.get('receipt_date', '')} for p in receipt_items]),
-        use_container_width=True, hide_index=True
-    )
+    st.caption(f"✅ 정산 대상 품목 {len(receipt_items)}종")
 
     # ── 2) 배치 대상 기간 ──
     rdates = sorted({p.get('receipt_date', '') for p in receipt_items if p.get('receipt_date')})
