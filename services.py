@@ -319,7 +319,20 @@ def match_product_to_db(username, store_product_name, product_no=None,
                         _user_prods=None, _shared_prods=None):
     """제품 매칭: shared_products 우선, 없으면 사용자 DB 폴백.
     _user_prods/_shared_prods: 배치 처리 시 미리 로드된 리스트 (N+1 방지용).
+
+    ⭐ 0순위(소분): 개별DB에서 코스트코번호를 비우고 네이버번호+자체단가로 등록한
+       '소분판매' 상품은, 네이버 상품번호로 매칭하고 그 자체 단가를 쓴다.
+       (공유DB 이름매칭이 소분 가격을 가로채지 못하도록 최우선 처리)
     """
+    if product_no:
+        _uprods0 = _user_prods if _user_prods is not None else get_all_products(username)
+        _uidx0 = _index_products(_uprods0)
+        _nv0 = (_uidx0.get('by_naver_channel', {}).get(str(product_no))
+                or _uidx0.get('by_naver_pno', {}).get(str(product_no)))
+        if (_nv0 and not str(_nv0.get('product_no', '') or '').strip()
+                and int(_nv0.get('unit_price') or 0) > 0):
+            return dict(_nv0)
+
     sp = match_shared_product(store_product_name, product_no=product_no,
                                _shared_prods=_shared_prods)
     if sp:

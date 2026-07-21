@@ -431,12 +431,18 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                             _user_prods=_preload_user, _shared_prods=_preload_shared)
                     p = _match_memo[product]
 
-                if p and p.get('product_no'):
+                # 소분(네이버키): 코스트코번호 없이 네이버 상품번호로 매칭된 경우도
+                #   확정(번호)매칭으로 처리 → 네이버 레코드에 등록된 자체 단가 사용.
+                _matched_by_naver = bool(p) and bool(p_no) and (
+                    str(p.get('naver_channel_pno', '') or '') == str(p_no)
+                    or str(p.get('naver_origin_pno', '') or '') == str(p_no)
+                )
+                if p and (p.get('product_no') or _matched_by_naver):
                     _pno1 = str(p.get('product_no', '')).strip()
                     sq = max(1, int(p.get('split_qty', 1) or 1))
                     _sell_factor = resolve_pack_factor(p, product)  # 제품 지정값 우선
                     _aq = qty * _sell_factor
-                    # 영수증에 같은 상품번호 있으면 영수증 가격 우선 (현재 실제 매입가)
+                    # 영수증에 같은 코스트코 상품번호 있으면 영수증 가격 우선 (현재 실제 매입가)
                     if _rcpt_by_pno and _pno1 and _pno1 in _rcpt_by_pno:
                         _ri1 = _rcpt_by_pno[_pno1]
                         # ⚠️ 최신 영수증 단가 우선 (saved_cost는 fallback)
@@ -454,8 +460,9 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         _computed = (p['unit_price'] // sq) * _aq
                         costs.append(_computed if _computed > 0 else saved_cost)
                         match_sources.append("DB-번호")
-                        matched_names.append(p['costco_name'])
-                        matched_pnos.append(_pno1)
+                        # 소분(코스트코번호 없음)은 네이버 상품명·번호로 표시
+                        matched_names.append(p.get('costco_name') or p.get('store_product_name') or product)
+                        matched_pnos.append(_pno1 or str(p_no))
                     matched_sqtys.append(sq)
 
                 # 3. 영수증 매칭 (현재 업로드된 영수증에서 상품번호/이름으로 찾기)
