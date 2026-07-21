@@ -640,10 +640,20 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         _ship_settle_factor = 1.0
         df['실정산배송비'] = df['배송비 합계'].fillna(0).round().astype(int)
 
-        # 행별 발송비/박스비: 위젯에서 수정된 값 반영 (기본값 = 전역 설정)
+        # 관리자 포장 배정(order_packaging) → 박스원가 기본값. 발송 시 선택한 박스/아이스 포장비.
+        _onos_pkg = (df['order_no'].astype(str).values
+                     if 'order_no' in df.columns else df.index.astype(str).values)
+        try:
+            from db_packaging import get_packaging_cost_map
+            _pkg_map = get_packaging_cost_map(USERNAME, list(_onos_pkg))
+        except Exception:
+            _pkg_map = {}
+        # 행별 발송비/박스비: 위젯 수정값 우선 → 없으면 (박스: 포장배정) → 전역 설정
         df['택배원가'] = [int(st.session_state.get(f"ship_{str(_ids_arr[i])}", shipping_cost))
                         for i in range(len(df))]
-        df['박스원가']  = [int(st.session_state.get(f"box_{str(_ids_arr[i])}", box_cost))
+        df['박스원가']  = [int(st.session_state.get(
+                            f"box_{str(_ids_arr[i])}",
+                            _pkg_map.get(str(_onos_pkg[i]), box_cost)))
                         for i in range(len(df))]
 
         # 수입 계산: 행별 발송비/박스비 적용
