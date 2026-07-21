@@ -679,10 +679,12 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         _cnt_oos    = sum(1 for p in products if (p.get('status') or 'SALE').upper() in ('OUTOFSTOCK', 'SOLD_OUT', 'SOLDOUT'))
         _cnt_susp   = sum(1 for p in products if (p.get('status') or 'SALE').upper() in ('SUSPENSION', 'STOP', 'PAUSE', 'CLOSE', 'PROHIBITION'))
         _cnt_total  = len(products)
+        _cnt_sobun  = sum(1 for p in products if int(p.get('split_qty') or 1) > 1)
         _filter_opts = [
             f"전체 ({_cnt_total})",
             f"🌐 코스트코 온라인 ({_cnt_online})",
             f"🛍 네이버 등록 상품 ({_cnt_naver})",
+            f"🔵 소분판매 ({_cnt_sobun})",
             f"🟠 품절 ({_cnt_oos})",
             f"🚫 판매중지 ({_cnt_susp})",
         ]
@@ -700,6 +702,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         # 라벨에서 카운트 부분 제거하여 핵심 키워드로 분기
         _is_filter_online = "코스트코 온라인" in _db_filter
         _is_filter_naver  = "네이버 등록" in _db_filter
+        _is_filter_sobun  = "소분판매" in _db_filter
         _is_filter_oos    = "품절" in _db_filter
         _is_filter_susp   = "판매중지" in _db_filter
         if _is_filter_online:
@@ -709,6 +712,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         if int(p.get('from_naver') or 0) == 1
                         or (p.get('naver_product_no') and str(p.get('naver_product_no', '')).strip())
                         or (p.get('naver_origin_pno') and str(p.get('naver_origin_pno', '')).strip())]
+        elif _is_filter_sobun:
+            products = [p for p in products if int(p.get('split_qty') or 1) > 1]
         elif _is_filter_oos:
             products = [p for p in products if (p.get('status') or 'SALE').upper() in ('OUTOFSTOCK', 'SOLD_OUT', 'SOLDOUT')]
         elif _is_filter_susp:
