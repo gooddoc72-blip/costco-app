@@ -1,6 +1,6 @@
 """🧾 영수증 정산 (관리자) — 코스트코 영수증을 각 사용자 주문에 자동배치하고
 각 주문 구입가에 실단가를 반영 + 사용자별 정산표 생성."""
-from datetime import date, timedelta
+from datetime import date
 
 import streamlit as st
 import pandas as pd
@@ -107,26 +107,15 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         return
     st.caption(f"✅ 정산 대상 품목 {len(receipt_items)}종")
 
-    # ── 2) 배치 대상 기간 ──
-    rdates = sorted({p.get('receipt_date', '') for p in receipt_items if p.get('receipt_date')})
-    if rdates:
-        try:
-            _dmin = date.fromisoformat(rdates[0])
-            _dmax = date.fromisoformat(rdates[-1])
-        except ValueError:
-            _dmin = _dmax = date.today()
-    else:
-        _dmax = date.today()
-        _dmin = _dmax - timedelta(days=14)
+    # ── 2) 당일 배치 ── (당일 주문건만 매칭 — 매일 그날 주문에 대해 정산)
     st.divider()
-    st.subheader("📅 배치 대상 주문 기간")
-    st.caption("이 기간에 결제된(주문일 기준) 모든 사용자 주문 중 영수증 상품번호와 일치하는 건에 배치합니다.")
-    c1, c2 = st.columns(2)
-    d_from = c1.date_input("시작일", value=_dmin - timedelta(days=3), key="rs_from")
-    d_to = c2.date_input("종료일", value=_dmax + timedelta(days=3), key="rs_to")
+    st.subheader("📅 당일 주문 배치")
+    d_day = st.date_input("정산 날짜 (당일 주문 기준)", value=date.today(), key="rs_day")
+    st.caption(f"**{d_day}** 에 결제된(주문일 기준) 모든 판매자 주문 중, 위 영수증 상품번호와 일치하는 건에 배치합니다.")
+    d_from = d_to = d_day
 
-    if st.button("🔎 자동배치 미리보기", type="primary", key="rs_preview_btn"):
-        with st.spinner("모든 사용자 주문을 조회해 배치 중..."):
+    if st.button("🔎 당일 자동배치 미리보기", type="primary", key="rs_preview_btn"):
+        with st.spinner("당일 주문을 조회해 배치 중..."):
             alloc = allocate_receipt_to_orders(
                 receipt_items, str(d_from), str(d_to)
             )
@@ -181,10 +170,9 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         if st.button("✅ 정산 적용 (구입가 반영 + 정산표 저장)", type="primary", key="rs_apply_btn"):
             with st.spinner("적용 중..."):
                 n = apply_receipt_settlement(rows)
-                label = ", ".join(rdates) if rdates else f"{d_from}~{d_to}"
                 bid = save_settlement_batch(
-                    label=label, date_from=str(d_from), date_to=str(d_to),
-                    receipt_dates=",".join(rdates), rows=rows, created_by=USERNAME,
+                    label=f"당일 {d_day}", date_from=str(d_from), date_to=str(d_to),
+                    receipt_dates=str(d_day), rows=rows, created_by=USERNAME,
                 )
             try:
                 if invalidate_data_cache:
