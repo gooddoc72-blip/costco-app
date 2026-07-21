@@ -130,3 +130,74 @@ def delete_settlement_batch(batch_id):
     conn.execute("DELETE FROM receipt_settle_batches WHERE id=?", (batch_id,))
     conn.commit()
     conn.close()
+
+
+def _recompute_batches(conn, batch_ids):
+    """배치별 order_count/total_amount 재집계. 항목 0개면 배치도 삭제."""
+    for bid in set(batch_ids):
+        row = conn.execute(
+            "SELECT COUNT(*) c, COALESCE(SUM(amount),0) s "
+            "FROM receipt_settle_items WHERE batch_id=?", (bid,)
+        ).fetchone()
+        cnt, amt = int(row[0]), int(row[1])
+        if cnt == 0:
+            conn.execute("DELETE FROM receipt_settle_batches WHERE id=?", (bid,))
+        else:
+            conn.execute(
+                "UPDATE receipt_settle_batches SET order_count=?, total_amount=? WHERE id=?",
+                (cnt, amt, bid)
+            )
+
+
+def remove_settlement_items(username, order_nos):
+    """특정 사용자의 주문번호들을 모든 정산 배치에서 제거하고 배치 합계 재집계.
+    주문 삭제 시 호출 → 구매 정산 내역 정합성 유지. Returns: 제거된 항목 수."""
+    onos = [str(o).strip() for o in (order_nos or []) if str(o).strip()]
+    if not onos:
+        return 0
+    conn = _conn()
+    _ensure(conn)
+    ph = ",".join("?" * len(onos))
+    affected = [r[0] for r in conn.execute(
+        f"SELECT DISTINCT batch_id FROM receipt_settle_items "
+        f"WHERE username=? AND order_no IN ({ph})", [username, *onos]
+    ).fetchall()]
+    if not affected:
+        conn.close()
+        return 0
+    removed = conn.execute(
+        f"DELETE FROM receipt_settle_items WHERE username=? AND order_no IN ({ph})",
+        [username, *onos]
+    ).rowcount
+    _recompute_batches(conn, affected)
+    conn.commit()
+    conn.close()
+    return removed
+
+
+def iter_all_settlement_item_orders():
+    """모든 정산 항목의 (id, username, order_no, batch_id) — orphan 청소용."""
+    conn = _conn()
+    _ensure(conn)
+    rows = conn.execute(
+        "SELECT id, username, order_no, batch_id FROM receipt_settle_items"
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def delete_settlement_items_by_id(item_ids, batch_ids):
+    """항목 id로 직접 삭제 후 관련 배치 재집계. Returns: 삭제 수."""
+    ids = [int(i) for i in (item_ids or [])]
+    if not ids:
+        return 0
+    conn = _conn()
+    _ensure(conn)
+    ph = ",".join("?" * len(ids))
+    removed = conn.execute(
+        f"DELETE FROM receipt_settle_items WHERE id IN ({ph})", ids
+    ).rowcount
+    _recompute_batches(conn, batch_ids or [])
+    conn.commit()
+    conn.close()
+    return removed

@@ -6,7 +6,9 @@ import streamlit as st
 import pandas as pd
 
 from services import parse_costco_receipt_pdf
-from receipt_settle import allocate_receipt_to_orders, apply_receipt_settlement
+from receipt_settle import (
+    allocate_receipt_to_orders, apply_receipt_settlement, cleanup_orphan_settlements,
+)
 from db_receipt_settle import (
     save_settlement_batch, list_settlement_batches, get_settlement_items,
     get_user_settlement_summary, delete_settlement_batch,
@@ -172,7 +174,16 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
 
 def _render_history(dmap):
     st.divider()
-    st.subheader("📚 정산 이력")
+    _h1, _h2 = st.columns([3, 1.3])
+    _h1.subheader("📚 정산 이력")
+    if _h2.button("🧹 삭제된 주문 정리", key="rs_cleanup_btn",
+                  help="사용자가 삭제한(더 이상 존재하지 않는) 주문을 구매 정산 내역에서 일괄 제거합니다."):
+        res = cleanup_orphan_settlements()
+        if res.get('removed'):
+            st.success(f"✅ 삭제된 주문 {res['removed']}건을 구매 정산 내역에서 정리했습니다. "
+                       f"(검사 {res['checked']}건)")
+        else:
+            st.info(f"정리할 항목이 없습니다. (검사 {res.get('checked', 0)}건 — 모두 유효)")
     batches = list_settlement_batches(limit=30)
     if not batches:
         st.caption("아직 저장된 정산 배치가 없습니다.")

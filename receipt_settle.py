@@ -125,6 +125,38 @@ def allocate_receipt_to_orders(receipt_items, date_from, date_to, users=None):
     return {'rows': rows, 'unmatched_receipt': unmatched, 'user_summary': user_summary}
 
 
+def cleanup_orphan_settlements():
+    """정산 항목 중 '해당 사용자 order_history에 더 이상 없는 주문'(삭제됨)을 제거.
+    이미 생긴 orphan 일괄 정리용. Returns: {'checked': n, 'removed': n, 'batches': set}."""
+    from db_receipt_settle import iter_all_settlement_item_orders, delete_settlement_items_by_id
+    items = iter_all_settlement_item_orders()
+    if not items:
+        return {'checked': 0, 'removed': 0}
+    # 사용자별 존재하는 order_no 집합
+    by_user = {}
+    for it in items:
+        by_user.setdefault(_norm(it['username']), set()).add(_norm(it['order_no']))
+    existing = {}
+    for uname, onos in by_user.items():
+        try:
+            conn = get_user_db(uname)
+            rows = conn.execute(
+                "SELECT order_no FROM order_history").fetchall()
+            conn.close()
+            existing[uname] = {_norm(r[0]) for r in rows}
+        except Exception:
+            existing[uname] = set()
+    orphan_ids, orphan_batches = [], set()
+    for it in items:
+        uname = _norm(it['username'])
+        ono = _norm(it['order_no'])
+        if ono and ono not in existing.get(uname, set()):
+            orphan_ids.append(int(it['id']))
+            orphan_batches.add(it['batch_id'])
+    removed = delete_settlement_items_by_id(orphan_ids, list(orphan_batches)) if orphan_ids else 0
+    return {'checked': len(items), 'removed': removed, 'batches': orphan_batches}
+
+
 def apply_receipt_settlement(rows):
     """배치행 amount를 각 사용자 order_history.cost_price(+ profit_settlements)에 반영.
     Returns: 갱신된 주문 수."""
