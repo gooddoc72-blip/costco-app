@@ -4,7 +4,7 @@ from datetime import date
 import streamlit as st
 import pandas as pd
 
-from db import get_all_users, get_user_db
+from db import get_all_users, get_user_db, get_all_settings, set_setting
 from db_packaging import (
     KIND_LABEL, list_packaging_prices, upsert_packaging_price, delete_packaging_price,
     get_order_packaging, set_order_packaging, clear_order_packaging,
@@ -26,13 +26,16 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         st.error("관리자 전용 기능입니다.")
         return
     st.header("📮 포장 · 청구")
-    t1, t2, t3 = st.tabs(["📦 포장 단가", "📮 주문 포장 배정", "🧾 일일 청구서"])
+    t1, t2, t3, t4 = st.tabs(
+        ["📦 포장 단가", "📮 주문 포장 배정", "🧾 일일 청구서", "👥 사용자 택배·포장비"])
     with t1:
         _tab_prices(USERNAME)
     with t2:
         _tab_assign(USERNAME)
     with t3:
         _tab_billing(USERNAME)
+    with t4:
+        _tab_user_fees(USERNAME)
 
 
 # ── 탭1: 포장 단가 설정 ──
@@ -139,6 +142,41 @@ def _tab_assign(USERNAME):
                                     icebox_qty=int(_ibx), icepack_qty=int(_ipk), updated_by=USERNAME)
             else:
                 clear_order_packaging(seller, ono)
+
+
+# ── 탭4: 사용자 택배비·포장비 (관리자 지정) ──
+def _tab_user_fees(USERNAME):
+    st.subheader("👥 사용자 택배비·포장비 (관리자 지정)")
+    st.caption("각 판매자의 기본 택배비·포장비(박스비)를 관리자가 지정합니다. "
+               "지정한 값이 그 판매자 수익계산의 기본 택배원가·박스원가로 반영됩니다. "
+               "(주문별 포장 배정이 있으면 박스원가는 그 값이 우선)")
+    dmap = _disp_map()
+    h0, h1, h2, h3 = st.columns([2, 1.3, 1.3, 0.8])
+    h0.caption("판매자")
+    h1.caption("택배비(원)")
+    h2.caption("포장비(원)")
+    h3.caption("저장")
+    for u in _sellers():
+        s = get_all_settings(u) or {}
+        try:
+            cur_ship = int(s.get('shipping_cost') or 1800)
+        except (TypeError, ValueError):
+            cur_ship = 1800
+        try:
+            cur_box = int(s.get('box_cost') or 300)
+        except (TypeError, ValueError):
+            cur_box = 300
+        c0, c1, c2, c3 = st.columns([2, 1.3, 1.3, 0.8])
+        c0.markdown(f"**{dmap.get(u, u)}**  ·  `{u}`")
+        ship = c1.number_input("택배비", min_value=0, step=100, value=cur_ship,
+                               key=f"fee_ship_{u}", label_visibility="collapsed")
+        box = c2.number_input("포장비", min_value=0, step=100, value=cur_box,
+                              key=f"fee_box_{u}", label_visibility="collapsed")
+        if c3.button("💾", key=f"fee_save_{u}", help="이 판매자 택배·포장비 저장"):
+            set_setting(u, 'shipping_cost', int(ship))
+            set_setting(u, 'box_cost', int(box))
+            st.success(f"✅ {dmap.get(u, u)} 저장 — 택배 {fmt(int(ship))} · 포장 {fmt(int(box))}")
+            st.rerun()
 
 
 # ── 탭3: 일일 판매자 청구서 ──
