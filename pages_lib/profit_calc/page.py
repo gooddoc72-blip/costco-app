@@ -22,7 +22,7 @@ from db import (
     create_session, get_session_user, delete_session,
     get_shared_products, upsert_shared_product, delete_shared_product, upsert_shared_store_price,
     get_user_db, init_user_db, get_setting, set_setting, get_all_settings, get_all_products,
-    upsert_user_private, get_all_products_merged, upsert_product,
+    upsert_user_private, get_all_products_merged, upsert_product, link_costco_to_naver,
     set_naver_origin_pno,
     get_product_detail,
     save_daily_orders, get_daily_orders, save_order_history, search_order_history,
@@ -493,6 +493,16 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                                product_no=_rcpt_pno,
                                                split_qty=int(p.get('split_qty') or 1))
                                 st.session_state['_auto_linked_pnos'].add(_link_key)
+                            except Exception:
+                                pass
+                    # ⭐ 주문 네이버번호로 매칭된 제품레코드에도 코스트코번호 채움 (비어있을 때만)
+                    #    → 다음부터 영수증 정산이 코스트코번호로 정확히 배치됨
+                    if _rcpt_pno and p_no:
+                        _lk2 = f"nv::{p_no}::{_rcpt_pno}"
+                        if _lk2 not in st.session_state['_auto_linked_pnos']:
+                            try:
+                                link_costco_to_naver(USERNAME, p_no, _rcpt_pno)
+                                st.session_state['_auto_linked_pnos'].add(_lk2)
                             except Exception:
                                 pass
                     matched_sqtys.append(_rsq)

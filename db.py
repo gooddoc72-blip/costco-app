@@ -50,6 +50,7 @@ from db_products import (
     upsert_user_private,
     get_all_products_merged,
     upsert_product,
+    link_costco_to_naver,
     set_pack_multiplier, get_pack_ambiguous_products,
 )
 

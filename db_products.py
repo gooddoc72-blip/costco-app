@@ -754,6 +754,34 @@ def _contribute_shared_from_user(product_no, costco_name, keyword, price, split_
     return True
 
 
+def link_costco_to_naver(username, naver_no, costco_no):
+    """영수증 매칭 시, 주문의 네이버번호(channel 또는 origin)로 제품 레코드를 찾아
+    코스트코 상품번호를 채운다. (코스트코번호가 비어 있는 레코드만 — 기존값 보호)
+    → 다음부터 영수증 정산이 코스트코번호로 정확히 배치됨.
+
+    Returns: 갱신된 행 수.
+    """
+    naver_no = str(naver_no or '').strip()
+    costco_no = str(costco_no or '').strip()
+    if not naver_no or not costco_no:
+        return 0
+    conn = get_user_db(username)
+    _ensure_products_columns(conn)
+    try:
+        cur = conn.execute(
+            "UPDATE products SET product_no=? "
+            "WHERE (naver_channel_pno=? OR naver_origin_pno=?) "
+            "AND (product_no IS NULL OR product_no='')",
+            (costco_no, naver_no, naver_no))
+        n = cur.rowcount
+        conn.commit()
+    except Exception:
+        n = 0
+    finally:
+        conn.close()
+    return n
+
+
 def upsert_product(username, costco_name, keyword, price, product_no='', split_qty=1,
                    shipping_fee=None, naver_origin_pno='', auto_split_costco_no=False,
                    manual=False):
