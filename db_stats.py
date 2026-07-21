@@ -62,6 +62,19 @@ def get_product_ranking(username, year_month=None):
     return [dict(r) for r in rows]
 
 
+# 택배 미발송일(공휴일) — 달력(_KR_HOLIDAYS)과 동일. 토·일은 strftime로 제외되므로 평일 공휴일만.
+_NO_SHIP_HOLIDAYS = (
+    "2026-01-01", "2026-02-16", "2026-02-17", "2026-02-18", "2026-03-02",
+    "2026-05-05", "2026-05-25", "2026-09-24", "2026-09-25", "2026-10-05",
+    "2026-10-09", "2026-12-25",
+)
+# 토(6)·일(0) + 평일 공휴일 제외 SQL 조각 (KPI를 달력 월합계와 일치시킴)
+_NO_SHIP_SQL = (
+    "AND CAST(strftime('%w', settlement_date) AS INTEGER) NOT IN (0,6) "
+    "AND settlement_date NOT IN (" + ",".join("'%s'" % d for d in _NO_SHIP_HOLIDAYS) + ") "
+)
+
+
 def get_dashboard_kpi(username):
     today = datetime.today()
     w_start, w_end = get_week_range()
@@ -75,8 +88,12 @@ def get_dashboard_kpi(username):
     conn = get_user_db(username)
     factor = _ship_settle_factor(conn)
     def q(s, e):
+        # 수익은 달력과 동일하게 토·일·공휴일(택배 미발송일) 제외하고 합산
         r = conn.execute(f"""SELECT COUNT(*) as cnt, COALESCE(SUM(qty),0) as qty,
-            COALESCE(SUM(order_amount),0) as sales, COALESCE(SUM({_PS_PROFIT_EXPR}),0) as profit
+            COALESCE(SUM(order_amount),0) as sales,
+            COALESCE(SUM(CASE WHEN CAST(strftime('%w', settlement_date) AS INTEGER) NOT IN (0,6)
+                     AND settlement_date NOT IN ({",".join("'%s'" % d for d in _NO_SHIP_HOLIDAYS)})
+                     THEN ({_PS_PROFIT_EXPR}) ELSE 0 END),0) as profit
             FROM profit_settlements WHERE settlement_date BETWEEN ? AND ?""", (factor, s, e)).fetchone()
         return dict(r) if r else {'cnt': 0, 'qty': 0, 'sales': 0, 'profit': 0}
     kpi = {
