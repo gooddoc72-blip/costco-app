@@ -384,154 +384,58 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         except Exception:
             _sur_map = {}
 
-        for idx, r in (iter([]) if _skip_match_loop else df.iterrows()):
-            product, qty = r['상품명'], r['수량']
-            saved_cost = int(r.get('구입가격', 0) or 0)
-            # 저장값 폴백이 웃돈 포함가라 → 원가로 환원 (루프 뒤에서 다시 더해짐)
-            _row_sur = int(_sur_map.get(str(idx), 0) or 0)
-            if _row_sur and saved_cost > _row_sur:
-                saved_cost -= _row_sur
-            _row_key = f"{r['수취인명']}_{r['상품명']}_{idx}_{calc_date_str}"
-            p_no = str(r.get('product_no', '') or '') if 'product_no' in r.index else ''
-            # 매칭 전 기본값(상품명 기준). 제품이 매칭되면 각 분기에서 지정값으로 재계산된다.
-            _sell_factor = resolve_pack_factor(None, product)
+        # ⚓ 매칭·원가 계산을 순수 함수 compute_rows()로 위임.
+        #   (기존 인라인 루프를 그대로 추출 — 패리티 테스트로 결과 불변 증명됨)
+        #   자동링크(코스트코번호 저장 등) side-effect는 반환만 받아 세션당 1회 반영.
+        if not _skip_match_loop:
+            from pages_lib.profit_calc.compute import compute_rows, apply_auto_links
+            _has_pno_col = 'product_no' in df.columns
+            _has_cost_col = '구입가격' in df.columns
+            _rows_in = []
+            for _cix, _cr in df.iterrows():
+                _rows_in.append({
+                    'idx': _cix,
+                    '수취인명': _cr['수취인명'],
+                    '상품명': _cr['상품명'],
+                    'product_no': (str(_cr.get('product_no', '') or '') if _has_pno_col else ''),
+                    '수량': _cr['수량'],
+                    '구입가격': (_cr.get('구입가격', 0) if _has_cost_col else 0),
+                })
+            _cmemo = {}
 
-            # ── 매칭 우선순위 정립 ──
-            p = None
-            # 1. 수동 키워드/수동 금액 오버라이드 (최우선)
-            if _row_key in st.session_state['kw_overrides']:
-                _manual_kw = st.session_state['kw_overrides'][_row_key]
-                p = match_product_to_db(USERNAME, _manual_kw, product_no='',
-                                        _user_prods=_preload_user, _shared_prods=_preload_shared)
-                if p:
-                    sq = max(1, int(p.get('split_qty', 1) or 1))
-                    _sell_factor = resolve_pack_factor(p, product)  # 제품 지정값 우선
-                    _aq = qty * _sell_factor
-                    costs.append((p['unit_price'] // sq) * _aq)
-                elif saved_cost > 0:
-                    costs.append(saved_cost)
-                else:
-                    costs.append(0)
-                match_sources.append("수동입력")
-                matched_names.append(_manual_kw)
-                _picked_pno = (st.session_state.get('receipt_pick', {}) or {}).get(_row_key, '')
-                matched_pnos.append(_picked_pno or (p.get('product_no', '') if p else ''))
-                matched_sqtys.append(max(1, int((p or {}).get('split_qty', 1) or 1)))
+            def _cmatch(_nm, _pno):
+                if _pno:
+                    return match_product_to_db(USERNAME, _nm, product_no=_pno,
+                                               _user_prods=_preload_user, _shared_prods=_preload_shared)
+                if _nm not in _cmemo:
+                    _cmemo[_nm] = match_product_to_db(USERNAME, _nm, product_no='',
+                                                      _user_prods=_preload_user, _shared_prods=_preload_shared)
+                return _cmemo[_nm]
 
-            # 2. 상품번호 매칭 (주문서의 p_no 또는 DB에 저장된 p_no)
-            else:
-                # 주문서의 p_no로 DB 조회
-                if p_no:
-                    p = match_product_to_db(USERNAME, product, product_no=p_no,
-                                            _user_prods=_preload_user, _shared_prods=_preload_shared)
-                
-                # DB 키워드 매칭 시 pno가 있는 항목 (이미 검증된 상품)
-                if not p:
-                    if product not in _match_memo:
-                        _match_memo[product] = match_product_to_db(
-                            USERNAME, product, product_no='',
-                            _user_prods=_preload_user, _shared_prods=_preload_shared)
-                    p = _match_memo[product]
-
-                # 소분(네이버키): 코스트코번호 없이 네이버 상품번호로 매칭된 경우도
-                #   확정(번호)매칭으로 처리 → 네이버 레코드에 등록된 자체 단가 사용.
-                _matched_by_naver = bool(p) and bool(p_no) and (
-                    str(p.get('naver_channel_pno', '') or '') == str(p_no)
-                    or str(p.get('naver_origin_pno', '') or '') == str(p_no)
-                )
-                if p and (p.get('product_no') or _matched_by_naver):
-                    _pno1 = str(p.get('product_no', '')).strip()
-                    sq = max(1, int(p.get('split_qty', 1) or 1))
-                    _sell_factor = resolve_pack_factor(p, product)  # 제품 지정값 우선
-                    _aq = qty * _sell_factor
-                    # 영수증에 같은 코스트코 상품번호 있으면 영수증 가격 우선 (현재 실제 매입가)
-                    if _rcpt_by_pno and _pno1 and _pno1 in _rcpt_by_pno:
-                        _ri1 = _rcpt_by_pno[_pno1]
-                        # ⚠️ 최신 영수증 단가 우선 (saved_cost는 fallback)
-                        # 사용자가 단가 수정 후 저장 → DB에 반영 → 다음 render 시 새 값 사용
-                        # 영수증 단가는 "묶음(x N개)" 통가격 → split_qty 미설정(1)이면
-                        # sell_factor로 나눠 이중계산 방지 (예: 17990(2팩) → //2 후 ×2 = 17990)
-                        _eff_sq = sq if sq > 1 else _sell_factor
-                        _computed = (_ri1['단가'] // _eff_sq) * _aq
-                        costs.append(_computed if _computed > 0 else saved_cost)
-                        match_sources.append("영수증")
-                        matched_names.append(_ri1['상품명'])
-                        matched_pnos.append(_pno1)
-                    else:
-                        # ⚠️ 최신 DB unit_price 우선 (사용자 저장값 반영)
-                        _computed = (p['unit_price'] // sq) * _aq
-                        costs.append(_computed if _computed > 0 else saved_cost)
-                        match_sources.append("DB-번호")
-                        # 소분(코스트코번호 없음)은 네이버 상품명·번호로 표시
-                        matched_names.append(p.get('costco_name') or p.get('store_product_name') or product)
-                        matched_pnos.append(_pno1 or str(p_no))
-                    matched_sqtys.append(sq)
-
-                # 3. 영수증 매칭 (현재 업로드된 영수증에서 상품번호/이름으로 찾기)
-                elif product in receipt_matches:
-                    item = receipt_matches[product]
-                    _rcpt_pno = str(item.get('상품번호', '') or '')
-                    # 영수증 가격을 실시간 반영 (saved_cost가 0이거나 영수증이 새로 업로드된 경우)
-                    # p 재활용하여 split_qty 확인
-                    _rsq = max(1, int((p or {}).get('split_qty', 1) or 1))
-                    if _rsq == 1: # 영수증 이름에서 수량 파싱 시도 (예: x2)
-                        _m2 = _re.search(r'x\s*(\d+)\s*개', item['상품명'], _re.IGNORECASE)
-                        if _m2: _rsq = max(1, int(_m2.group(1)))
-                    
-                    _sell_factor = resolve_pack_factor(p, product)  # 제품 지정값 우선
-                    _aq = qty * _sell_factor
-                    costs.append((item['단가'] // _rsq) * _aq)
-                    match_sources.append("영수증")
-                    matched_names.append(item['상품명'])
-                    matched_pnos.append(_rcpt_pno)
-                    
-                    # 영수증 상품번호를 DB에 자동 링크 (세션당 1회만 — render마다 쓰기 방지)
-                    if _rcpt_pno and p and p.get('match_keyword'):
-                        _link_key = f"{_rcpt_pno}::{p['match_keyword']}"
-                        if _link_key not in st.session_state['_auto_linked_pnos']:
-                            try:
-                                upsert_product(USERNAME, p.get('costco_name') or p['match_keyword'],
-                                               p['match_keyword'], int(p.get('unit_price') or 0),
-                                               product_no=_rcpt_pno,
-                                               split_qty=int(p.get('split_qty') or 1))
-                                st.session_state['_auto_linked_pnos'].add(_link_key)
-                            except Exception:
-                                pass
-                    # ⭐ 주문 네이버번호로 매칭된 제품레코드에도 코스트코번호 채움 (비어있을 때만)
-                    #    → 다음부터 영수증 정산이 코스트코번호로 정확히 배치됨
-                    if _rcpt_pno and p_no:
-                        _lk2 = f"nv::{p_no}::{_rcpt_pno}"
-                        if _lk2 not in st.session_state['_auto_linked_pnos']:
-                            try:
-                                link_costco_to_naver(USERNAME, p_no, _rcpt_pno)
-                                st.session_state['_auto_linked_pnos'].add(_lk2)
-                            except Exception:
-                                pass
-                    matched_sqtys.append(_rsq)
-
-                # ── 3차: 키워드 토큰 매칭 (상품번호 미등록 DB 항목) ──
-                elif p:
-                    sq = max(1, int(p.get('split_qty', 1) or 1))
-                    _sell_factor = resolve_pack_factor(p, product)  # 제품 지정값 우선
-                    _aq = qty * _sell_factor
-                    costs.append((p['unit_price'] // sq) * _aq)
-                    match_sources.append("DB-키워드")
-                    matched_names.append(p['costco_name'])
-                    matched_pnos.append('')
-                    matched_sqtys.append(sq)
-
-                else:
-                    if saved_cost > 0:
-                        costs.append(saved_cost)
-                        match_sources.append("DB-키워드")
-                        matched_names.append(product)
-                        matched_pnos.append('')
-                    else:
-                        costs.append(0)
-                        match_sources.append("미매칭")
-                        matched_names.append("")
-                        matched_pnos.append('')
-                    matched_sqtys.append(1)
+            _cres, _clinks = compute_rows(
+                _rows_in, match_fn=_cmatch,
+                receipt_by_pno=_rcpt_by_pno, receipt_matches=receipt_matches,
+                kw_overrides=st.session_state.get('kw_overrides', {}),
+                receipt_pick=st.session_state.get('receipt_pick', {}),
+                surcharge_map=_sur_map, calc_date_str=calc_date_str)
+            costs = [r['cost'] for r in _cres]
+            match_sources = [r['source'] for r in _cres]
+            matched_names = [r['matched_name'] for r in _cres]
+            matched_pnos = [r['matched_pno'] for r in _cres]
+            matched_sqtys = [r['sqty'] for r in _cres]
+            # 자동링크: 세션당 1회만 DB 반영 (기존과 동일 — 반복 렌더 시 중복 쓰기 방지)
+            _new_links = []
+            for _lk in _clinks:
+                _lkid = (_lk.get('type'), _lk.get('product_no') or _lk.get('costco_no'),
+                         _lk.get('keyword') or _lk.get('naver_no'))
+                if _lkid not in st.session_state['_auto_linked_pnos']:
+                    st.session_state['_auto_linked_pnos'].add(_lkid)
+                    _new_links.append(_lk)
+            if _new_links:
+                try:
+                    apply_auto_links(USERNAME, _new_links)
+                except Exception:
+                    pass
 
         df['구입가격'] = costs
         df['매칭출처'] = match_sources
