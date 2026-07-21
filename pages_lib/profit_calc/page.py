@@ -178,6 +178,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         st.session_state['kw_overrides'] = {}
         st.session_state['cost_overrides'] = {}
         st.session_state['receipt_pick'] = {}
+        st.session_state['_ship_edits'] = {}   # 날짜 바뀌면 행별 발송비/박스비 편집버퍼도 초기화
+        st.session_state['_box_edits'] = {}
         # 2) 위젯 state 키 일괄 삭제 (k_X, c_X, _buf_k_X, _buf_c_X, sel_p_X, rq_X)
         _keys_to_remove = [
             k for k in list(st.session_state.keys())
@@ -658,12 +660,21 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             _pkg_map = get_packaging_cost_map(USERNAME, list(_onos_pkg))
         except Exception:
             _pkg_map = {}
-        # 행별 발송비/박스비: 위젯 수정값 우선 → 없으면 (박스: 포장배정) → 전역 설정
-        df['택배원가'] = [int(st.session_state.get(f"ship_{str(_ids_arr[i])}", shipping_cost))
+        # 행별 발송비/박스비 우선순위:
+        #   위젯값(현재 페이지) → 영구편집버퍼(_ship_edits/_box_edits, 페이지 넘겨도 유지)
+        #   → (박스: 포장배정) → 전역 설정
+        # ⚠️ 위젯 세션키(ship_/box_)는 그 위젯이 화면에 없으면(다른 페이지) Streamlit이 값을
+        #    날려서, 페이지 이동 후 복귀 시 기본값(500)으로 리셋되던 버그 → 영구버퍼로 방어.
+        _ship_edits = st.session_state.setdefault('_ship_edits', {})
+        _box_edits  = st.session_state.setdefault('_box_edits', {})
+        df['택배원가'] = [int(st.session_state.get(
+                            f"ship_{str(_ids_arr[i])}",
+                            _ship_edits.get(str(_ids_arr[i]), shipping_cost)))
                         for i in range(len(df))]
         df['박스원가']  = [int(st.session_state.get(
                             f"box_{str(_ids_arr[i])}",
-                            _pkg_map.get(str(_onos_pkg[i]), box_cost)))
+                            _box_edits.get(str(_ids_arr[i]),
+                                           _pkg_map.get(str(_onos_pkg[i]), box_cost))))
                         for i in range(len(df))]
 
         # 수입 계산: 행별 발송비/박스비 적용
@@ -892,14 +903,17 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
 
             # 행별 택배원가 (발송비)
             _cur_ship_row = int(r.get('택배원가', shipping_cost))
-            c_ship.number_input("", value=_cur_ship_row, min_value=0, step=100,
+            _ship_v = c_ship.number_input("", value=_cur_ship_row, min_value=0, step=100,
                                 label_visibility="collapsed", key=f"ship_{sk}",
                                 help=f"이 주문의 택배 발송비 (기본: {fmt(shipping_cost)}원)")
             # 행별 박스원가
             _cur_box_row = int(r.get('박스원가', box_cost))
-            c_box.number_input("", value=_cur_box_row, min_value=0, step=100,
+            _box_v = c_box.number_input("", value=_cur_box_row, min_value=0, step=100,
                                label_visibility="collapsed", key=f"box_{sk}",
                                help=f"이 주문의 박스비 (기본: {fmt(box_cost)}원)")
+            # 편집값을 영구버퍼에 저장 → 페이지 넘겼다 와도 유지(위젯키가 사라져도 복원)
+            st.session_state.setdefault('_ship_edits', {})[sk] = int(_ship_v)
+            st.session_state.setdefault('_box_edits', {})[sk] = int(_box_v)
 
             # 🧾 영수증 picker — 잘못된 매칭/미매칭을 영수증 항목으로 직접 매칭
             if 'receipt_pick' not in st.session_state:
