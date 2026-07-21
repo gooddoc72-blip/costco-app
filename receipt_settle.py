@@ -10,8 +10,8 @@
 비용 공식은 수익계산과 동일:
   구입가 = (영수증단가 // split_qty) * 수량 * 묶음배수(pack)
 """
-from db import get_user_db, get_all_users, get_all_products
-from services import resolve_pack_factor
+from db import get_user_db, get_all_users, get_all_products, get_shared_products
+from services import resolve_pack_factor, match_product_to_db
 
 
 def _norm(s):
@@ -73,9 +73,10 @@ def allocate_receipt_to_orders(receipt_items, date_from, date_to, users=None):
     if users is None:
         users = [u['username'] for u in get_all_users()]
 
+    shared = get_shared_products()      # 공유DB 1회 로드 (N+1 방지)
     rows, matched_costco = [], set()
     for uname in users:
-        nmap = _naver_to_product_map(uname)
+        uprods = get_all_products(uname)
         try:
             conn = get_user_db(uname)
             ords = conn.execute(
@@ -88,14 +89,17 @@ def allocate_receipt_to_orders(receipt_items, date_from, date_to, users=None):
             ords = []
         for o in ords:
             onv = _norm(o['product_no'])
-            prod = nmap.get(onv)
-            costco_no = ''
-            if prod and _norm(prod.get('product_no')):
-                costco_no = _norm(prod.get('product_no'))
-            elif onv in price_by_costco:
-                costco_no = onv
-            if not costco_no or costco_no not in price_by_costco:
-                continue
+            nm = _norm(o['product_name'])
+            # ⭐ 수익계산과 동일한 매칭엔진 사용 (공유DB·네이버번호·이름 폴백 포함) → 매칭률 대폭 개선
+            prod = match_product_to_db(uname, nm, product_no=onv,
+                                       _user_prods=uprods, _shared_prods=shared)
+            costco_no = _norm((prod or {}).get('product_no'))
+            if costco_no not in price_by_costco:
+                # 제품에 코스트코번호 없거나 영수증에 없음 → 주문 product_no 자체가 코스트코번호일 수도
+                if onv in price_by_costco:
+                    costco_no = onv
+                else:
+                    continue
             up = price_by_costco[costco_no]
             qty = int(o['qty'] or 1)
             rows.append({
@@ -104,7 +108,7 @@ def allocate_receipt_to_orders(receipt_items, date_from, date_to, users=None):
                 'order_date': _norm(o['order_date']),
                 'costco_no': costco_no,
                 'naver_no': onv,
-                'product_name': _norm(o['product_name']),
+                'product_name': nm,
                 'qty': qty,
                 'unit_price': up,
                 'amount': _order_cost(up, qty, prod),
