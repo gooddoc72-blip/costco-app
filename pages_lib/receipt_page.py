@@ -160,6 +160,37 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict, embedded: bool = False
                 for p in deduped
             ]
 
+            # 🌐 관리자 업로드 → 영수증 가격을 공유DB에 자동 저장 (모든 사용자 수익계산에 반영).
+            #    코스트코 상품번호 있는 항목만. 소분(번호 없음)은 각자 DB로 매칭되므로 제외.
+            if IS_ADMIN:
+                _rc_sig = "|".join(f"{p.get('상품번호','')}:{p.get('단가',0)}" for p in deduped)
+                if st.session_state.get('_rcpt_shared_saved_sig') != _rc_sig:
+                    _saved_n = 0
+                    for p in deduped:
+                        _pno = str(p.get('상품번호', '') or '').strip()
+                        try:
+                            _pr = int(float(p.get('단가') or 0))
+                        except (TypeError, ValueError):
+                            _pr = 0
+                        if _pno and _pr > 0:
+                            try:
+                                upsert_shared_store_price(
+                                    costco_name=p['상품명'], keyword=p['상품명'],
+                                    price=_pr, product_no=_pno, updated_by=USERNAME,
+                                    receipt_date=p.get('receipt_date', ''))
+                                _saved_n += 1
+                            except Exception:
+                                pass
+                    st.session_state['_rcpt_shared_saved_sig'] = _rc_sig
+                    if _saved_n:
+                        st.session_state['_shared_cache_dirty'] = True
+                        try:
+                            invalidate_data_cache()
+                        except Exception:
+                            pass
+                        st.success(f"🌐 관리자 업로드 → {_saved_n}종 공유DB 자동 저장 "
+                                   "(모든 사용자 수익계산에 반영됩니다)")
+
             # 인식된 영수증 날짜 표시
             _dates = sorted({p.get('receipt_date', '') for p in deduped if p.get('receipt_date')})
             if _dates:
