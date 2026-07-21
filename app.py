@@ -93,6 +93,7 @@ from pages_lib import (
     profit_calc_page, settings_page, accounting_page,
     product_db_page, admin_page, naver_register_page,
     guide_page, settlement_page, cafe24_page, inventory_page,
+    receipt_settle_page,
 )
 
 # 페이지 모듈에 캐시 헬퍼 주입 (페이지 모듈이 동일한 캐시 인스턴스 공유)
@@ -390,6 +391,11 @@ def run_admin():
     admin_page.render(USERNAME, IS_ADMIN, settings)
 
 
+def run_receipt_settle():
+    _inject_cache_helpers(receipt_settle_page)
+    receipt_settle_page.render(USERNAME, IS_ADMIN, settings)
+
+
 # 페이지 정의 (섹션 그룹)
 _pages = {
     "운영": [
@@ -418,7 +424,10 @@ if IS_ADMIN:
     # 카페24 메뉴 — 네이버 등록 바로 아래(상품 관리 그룹), 관리자 전용
     # ※ 재고 관리가 1번으로 들어와 네이버 등록이 2번 → 그 아래는 3번
     _pages["상품 관리"].insert(3, st.Page(run_cafe24, title="카페24", icon=":material/sync_alt:"))
-    _pages["관리자"] = [st.Page(run_admin, title="관리자", icon=":material/admin_panel_settings:")]
+    _pages["관리자"] = [
+        st.Page(run_admin, title="관리자", icon=":material/admin_panel_settings:"),
+        st.Page(run_receipt_settle, title="영수증 정산", icon=":material/receipt:"),
+    ]
 
 # 페이지 이동 시 sid 보존 — st.navigation()이 URL 경로를 바꿔도 query param 유지
 _persist_sid = st.session_state.get('_sid')
