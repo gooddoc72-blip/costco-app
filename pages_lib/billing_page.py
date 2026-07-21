@@ -9,6 +9,7 @@ from db_packaging import (
     KIND_LABEL, list_packaging_prices, upsert_packaging_price, delete_packaging_price,
     get_order_packaging, set_order_packaging, clear_order_packaging,
 )
+from db_receipt_settle import save_daily_billing, get_daily_billing, list_billing_dates
 from utils import fmt
 
 
@@ -179,6 +180,18 @@ def _tab_billing(USERNAME):
     _tot = sum(s['amount'] for s in summary.values())
     st.markdown(f"### 총 청구액: **{fmt(_tot)}원**  ·  판매자 {len(summary)}명  ·  주문 {len(all_rows)}건")
 
+    # 저장 + 저장 상태
+    _saved = {r['username']: r for r in get_daily_billing(str(d))}
+    _sc1, _sc2 = st.columns([1.4, 3])
+    if _sc1.button("💾 이 날짜 청구서 저장", type="primary", key="bill_save"):
+        save_daily_billing(str(d), [
+            {'username': u, 'order_count': s['count'], 'amount': s['amount']}
+            for u, s in summary.items()], created_by=USERNAME)
+        st.success(f"✅ {d} 청구서 저장 완료 (판매자 {len(summary)}명)")
+        st.rerun()
+    if _saved:
+        _sc2.caption(f"💾 저장됨: {_saved[list(_saved)[0]]['created_at']} · 판매자 {len(_saved)}명")
+
     # 판매자별 상세 + 인쇄/엑셀
     for u, s in sorted(summary.items(), key=lambda kv: -kv[1]['amount']):
         urows = [r for r in all_rows if r['username'] == u]
@@ -201,3 +214,19 @@ def _tab_billing(USERNAME):
                                    key=f"bill_dl_{u}")
             except Exception:
                 pass
+
+    # ── 저장된 청구서 조회 ──
+    st.divider()
+    st.subheader("📚 저장된 청구서 조회")
+    saved_dates = list_billing_dates(limit=60)
+    if not saved_dates:
+        st.caption("저장된 청구서가 없습니다. 위에서 '이 날짜 청구서 저장'을 눌러 보관하세요.")
+        return
+    for b in saved_dates:
+        with st.expander(f"📅 {b['bill_date']} — 총 {fmt(b['total'])}원 · 판매자 {b['sellers']}명 · 저장 {b['at']}",
+                         expanded=False):
+            det = get_daily_billing(b['bill_date'])
+            st.dataframe(pd.DataFrame([
+                {'판매자': dmap.get(x['username'], x['username']),
+                 '주문수': x['order_count'], '청구액': fmt(x['amount'])} for x in det
+            ]), use_container_width=True, hide_index=True)

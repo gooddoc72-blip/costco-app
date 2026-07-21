@@ -132,6 +132,60 @@ def delete_settlement_batch(batch_id):
     conn.close()
 
 
+def _ensure_billing(conn):
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS daily_billing (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            bill_date   TEXT,
+            username    TEXT,
+            order_count INTEGER DEFAULT 0,
+            amount      INTEGER DEFAULT 0,
+            created_by  TEXT,
+            created_at  TEXT,
+            UNIQUE(bill_date, username)
+        )
+    """)
+    conn.commit()
+
+
+def save_daily_billing(bill_date, rows, created_by):
+    """일일 판매자 청구서 저장 (덮어쓰기). rows: [{username, order_count, amount}]."""
+    conn = _conn()
+    _ensure_billing(conn)
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    # 같은 날짜 기존 저장분 제거 후 재저장
+    conn.execute("DELETE FROM daily_billing WHERE bill_date=?", (str(bill_date),))
+    for r in rows:
+        conn.execute(
+            "INSERT INTO daily_billing (bill_date,username,order_count,amount,created_by,created_at) "
+            "VALUES (?,?,?,?,?,?)",
+            (str(bill_date), r.get('username', ''), int(r.get('order_count', 0) or 0),
+             int(r.get('amount', 0) or 0), created_by, now))
+    conn.commit()
+    conn.close()
+
+
+def get_daily_billing(bill_date):
+    conn = _conn()
+    _ensure_billing(conn)
+    rows = conn.execute(
+        "SELECT * FROM daily_billing WHERE bill_date=? ORDER BY amount DESC",
+        (str(bill_date),)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def list_billing_dates(limit=60):
+    conn = _conn()
+    _ensure_billing(conn)
+    rows = conn.execute(
+        "SELECT bill_date, COUNT(*) sellers, SUM(amount) total, MAX(created_at) at "
+        "FROM daily_billing GROUP BY bill_date ORDER BY bill_date DESC LIMIT ?",
+        (limit,)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
 def _recompute_batches(conn, batch_ids):
     """배치별 order_count/total_amount 재집계. 항목 0개면 배치도 삭제."""
     for bid in set(batch_ids):
