@@ -112,4 +112,12 @@ def load_settlement_df(USERNAME, calc_date_str, _cached_daily_orders=None):
                 _src_label = f"📋 옛 데이터 ({len(df)}건) — daily_orders fallback"
             else:
                 df = None
+    # ⚓ 단일 안정키(_sk): 항상 '문자열'로 통일.
+    #   정수 id 컬럼은 iterrows()에서 실수(143→143.0)로 승격돼 위젯키/계산키가 어긋난다.
+    #   → 여기서 문자열 컬럼으로 고정해 전 구간이 동일한 키를 쓰게 한다. (삭제·박스·택배·체크박스 키 일치)
+    if df is not None and '_sk' not in df.columns:
+        if 'id' in df.columns:
+            df['_sk'] = df['id'].astype('Int64').astype(str)
+        else:
+            df['_sk'] = df.index.astype(str)
     return df, _src_label

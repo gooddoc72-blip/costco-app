@@ -15,7 +15,7 @@ def save_settlements(df, USERNAME, calc_date_str, shipping_cost, box_cost, _chec
     _ps_save_rows = []
     _cost_ov_s = st.session_state.get('cost_overrides', {}) or {}
     _kw_ov_s   = st.session_state.get('kw_overrides', {}) or {}
-    _ids_save  = df['id'].values if 'id' in df.columns else df.index.values
+    _ids_save  = df['_sk'].values if '_sk' in df.columns else (df['id'].values if 'id' in df.columns else df.index.values)
     import re as _re_ps
     for _si, (_sidx, _sr) in enumerate(df.iterrows()):
         _ssk  = str(_ids_save[_si])
@@ -80,7 +80,7 @@ def save_price_db(df, USERNAME, calc_date_str, shipping_cost, box_cost, _preload
     save_daily_orders(USERNAME, calc_date_str, df, shipping_cost, box_cost)
     # 수익계산 결과도 함께 저장 (profit_settlements)
     _ps_rc_rows = []
-    _ids_rc = df['id'].values if 'id' in df.columns else df.index.values
+    _ids_rc = df['_sk'].values if '_sk' in df.columns else (df['id'].values if 'id' in df.columns else df.index.values)
     _kw_ov_rc = st.session_state.get('kw_overrides', {}) or {}
     _co_rc = st.session_state.get('cost_overrides', {}) or {}
     import re as _re_rc
@@ -172,7 +172,7 @@ def save_all(df, USERNAME, calc_date_str, shipping_cost, box_cost, _preload_user
     save_daily_orders(USERNAME, calc_date_str, df, shipping_cost, box_cost)
     # 수익계산 결과 profit_settlements에도 저장
     _ps_all_rows = []
-    _ids_all = df['id'].values if 'id' in df.columns else df.index.values
+    _ids_all = df['_sk'].values if '_sk' in df.columns else (df['id'].values if 'id' in df.columns else df.index.values)
     _kw_ov_all = st.session_state.get('kw_overrides', {}) or {}
     _co_all = st.session_state.get('cost_overrides', {}) or {}
     import re as _re_all

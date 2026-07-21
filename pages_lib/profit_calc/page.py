@@ -230,7 +230,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         # ── 정산 저장 데이터 복원 (세션 첫 진입 시 profit_settlements → session_state) ──
         _restore_flag = f"_do_restored_{calc_date_str}"
         if not st.session_state.get(_restore_flag):
-            _ids_restore = df['id'].values if 'id' in df.columns else df.index.values
+            _ids_restore = df['_sk'].values
             if 'cost_overrides' not in st.session_state:
                 st.session_state['cost_overrides'] = {}
             if 'kw_overrides' not in st.session_state:
@@ -545,7 +545,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
 
         # 영수증 picker 버퍼 조기 적용: session_state['c_<sk>'], session_state['k_<sk>']에 반영
         # ⚓ stable_key(DB id) 기반 — DataFrame 위치 변경에도 안정적으로 매핑
-        _ids_for_buf = df['id'].values if 'id' in df.columns else df.index.values
+        _ids_for_buf = df['_sk'].values
         for _bsk in (str(_i) for _i in _ids_for_buf):
             _bc_early = st.session_state.pop(f'_buf_c_{_bsk}', None)
             if _bc_early is not None:
@@ -558,7 +558,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         _recipients = df['수취인명'].values
         _products = df['상품명'].values
         # ⚓ 안정 키: DB row id 우선 (DataFrame 위치 변경에도 안정)
-        _ids_arr = df['id'].values if 'id' in df.columns else df.index.values
+        _ids_arr = df['_sk'].values
         for i, idx in enumerate(df.index):
             sk = str(_ids_arr[i])  # stable key
             key = f"{_recipients[i]}_{_products[i]}_{sk}_{calc_date_str}"
@@ -664,7 +664,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
 
         # 전체 선택 — 체크박스 대신 버튼 사용 (Streamlit 위젯 sync 이슈 회피)
         # ⚓ stable_key 기반 (DB id 우선)
-        _ids_for_sel = df['id'].values if 'id' in df.columns else df.index.values
+        _ids_for_sel = df['_sk'].values
         _sk_list = [str(_v) for _v in _ids_for_sel]
         _checked_rows = [_sk for _sk in _sk_list if st.session_state.get(f"sel_p_{_sk}", False)]
         _hdr_sel_key = f'_hdr_sel_{calc_date_str}'
@@ -777,7 +777,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         # (위젯이 인스턴스화된 후 session_state 수정 불가 → 위젯 생성 직전에 적용)
         # ⚓ stable_key 기반
         for _bri, _brow in _page_df.iterrows():
-            _bsk = str(_brow.get('id', _bri))
+            _bsk = str(_brow['_sk'])
             _bk = st.session_state.pop(f'_buf_k_{_bsk}', None)
             if _bk is not None:
                 st.session_state[f'k_{_bsk}'] = _bk
@@ -786,7 +786,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 st.session_state[f'c_{_bsk}'] = _bc
 
         for idx, r in _page_df.iterrows():
-            sk = str(r.get('id', idx))  # ⚓ stable_key (DB row id 우선)
+            sk = str(r['_sk'])  # ⚓ stable_key (loader에서 문자열 고정 — iterrows 실수승격 방지)
             key = f"{r['수취인명']}_{r['상품명']}_{sk}_{calc_date_str}"
             _src = r['매칭출처']
             _ss  = _SRC_STYLE.get(_src, {'bg': '#ffffff', 'badge': ''})
@@ -965,16 +965,27 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     unsafe_allow_html=True
                 )
 
-        # ── 선택 삭제 처리 (취소건 등 — 주문이력/정산저장에서 제거) ──
+        # ── 선택 삭제 처리 (취소건 등 — 모든 소스에서 제거) ──
         if _bulk_del and _checked_rows:
             try:
+                # ⚠️ 체크된 stable_key는 소스에 따라 order_no 또는 DB id(order_history SELECT *,
+                #    daily_orders PK)일 수 있다. 반드시 현재 df에서 실제 order_no로 변환한 뒤 삭제.
+                _ids_del = df['_sk'].astype(str).values
+                _ono_del = (df['order_no'].astype(str).values
+                            if 'order_no' in df.columns else df.index.astype(str).values)
+                _sk2ono = {str(_ids_del[_mi]): str(_ono_del[_mi]) for _mi in range(len(_ids_del))}
+                _del_onos = [_sk2ono.get(str(_ck), str(_ck)) for _ck in _checked_rows]
+                _del_onos = [_o for _o in _del_onos if _o and _o != 'nan']
                 _conn_del = get_user_db(USERNAME)
-                _ph_del = ",".join("?" * len(_checked_rows))
-                # 정산표 행 key = order_no (order_history/profit_settlements 인덱스) 기준 삭제
-                _conn_del.execute(f"DELETE FROM order_history WHERE order_no IN ({_ph_del})", _checked_rows)
-                _conn_del.execute(f"DELETE FROM profit_settlements WHERE order_no IN ({_ph_del})", _checked_rows)
-                # daily_orders에서도 제거 → 자동 수익저장이 취소건을 되살리지 않도록 (영구 삭제)
-                _conn_del.execute(f"DELETE FROM daily_orders WHERE order_no IN ({_ph_del})", _checked_rows)
+                _ph_del = ",".join("?" * len(_del_onos))
+                # 발송기록(주 소스)·주문이력·정산저장·일별주문 모두 order_no 기준 영구 삭제
+                # → dispatch_log 미삭제 시 발송건은 재로딩되어 되살아남 (핵심 버그)
+                for _tbl_del in ("dispatch_log", "order_history", "profit_settlements", "daily_orders"):
+                    try:
+                        _conn_del.execute(
+                            f"DELETE FROM {_tbl_del} WHERE order_no IN ({_ph_del})", _del_onos)
+                    except Exception:
+                        pass
                 _conn_del.commit()
                 _conn_del.close()
                 # 캐시·복원플래그·선택 초기화 → 즉시 반영
