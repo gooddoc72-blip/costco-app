@@ -77,13 +77,13 @@ def allocate_receipt_to_orders(receipt_items, date_from, date_to, users=None):
     _ritems = [{'costco': c, 'name': name_by_costco.get(c, ''), 'price': price_by_costco[c]}
                for c in price_by_costco]
 
-    rows, matched_costco = [], set()
+    rows, matched_costco, unmatched_orders = [], set(), []
     for uname in users:
         nmap = _naver_to_product_map(uname)     # 네이버번호 → 사용자 제품레코드(정확한 코스트코번호)
         try:
             conn = get_user_db(uname)
             ords = conn.execute(
-                "SELECT order_no, order_date, product_no, product_name, qty, cost_price "
+                "SELECT order_no, order_date, recipient, product_no, product_name, qty, cost_price "
                 "FROM order_history WHERE order_date BETWEEN ? AND ?",
                 (date_from, date_to)
             ).fetchall()
@@ -110,6 +110,14 @@ def allocate_receipt_to_orders(receipt_items, date_from, date_to, users=None):
                     costco_no = _best['costco']
                     via = 'name'
             if costco_no not in price_by_costco:
+                # 미매칭 주문 — 수동/AI 매칭 후보로 반환
+                unmatched_orders.append({
+                    'username': uname, 'order_no': _norm(o['order_no']),
+                    'order_date': _norm(o['order_date']), 'recipient': _norm(o['recipient']),
+                    'naver_no': onv, 'product_name': nm, 'qty': int(o['qty'] or 1),
+                    'prev_cost': int(o['cost_price'] or 0),
+                    'split_qty': int((prod or {}).get('split_qty', 1) or 1),
+                })
                 continue
             up = price_by_costco[costco_no]
             qty = int(o['qty'] or 1)
@@ -132,13 +140,77 @@ def allocate_receipt_to_orders(receipt_items, date_from, date_to, users=None):
         {'상품번호': c, '상품명': name_by_costco.get(c, ''), '단가': price_by_costco[c]}
         for c in price_by_costco if c not in matched_costco
     ]
+    return {'rows': rows, 'unmatched_receipt': unmatched,
+            'unmatched_orders': unmatched_orders,
+            'user_summary': _summarize(rows)}
+
+
+def _summarize(rows):
     user_summary = {}
     for r in rows:
         s = user_summary.setdefault(r['username'], {'amount': 0, 'qty': 0, 'count': 0})
         s['amount'] += r['amount']
         s['qty'] += r['qty']
         s['count'] += 1
-    return {'rows': rows, 'unmatched_receipt': unmatched, 'user_summary': user_summary}
+    return user_summary
+
+
+def build_manual_rows(pairs):
+    """수동/AI 매칭 결과 → 배치행. pairs: [{order(dict), costco_no, unit_price, costco_name}].
+    order dict은 unmatched_orders 항목."""
+    out = []
+    for pr in pairs:
+        o = pr['order']
+        up = int(pr.get('unit_price', 0) or 0)
+        qty = int(o.get('qty', 1) or 1)
+        split = max(1, int(o.get('split_qty', 1) or 1))
+        out.append({
+            'username': o['username'], 'order_no': o['order_no'],
+            'order_date': o.get('order_date', ''), 'costco_no': str(pr.get('costco_no', '')),
+            'naver_no': o.get('naver_no', ''), 'product_name': o.get('product_name', ''),
+            'qty': qty, 'unit_price': up, 'amount': (up // split) * qty,
+            'prev_cost': int(o.get('prev_cost', 0) or 0), 'via': pr.get('via', 'manual'),
+        })
+    return out
+
+
+def ai_match_receipt_orders(unmatched_receipt, unmatched_orders, ai_key):
+    """AI(Claude)로 미매칭 영수증 품목 ↔ 미매칭 주문을 상품명 의미 기준으로 매칭.
+    Returns: [{order_index, costco_no}] (매칭된 것만). 실패 시 []."""
+    if not (unmatched_receipt and unmatched_orders and ai_key):
+        return []
+    import json
+    r_lines = "\n".join(f"R{i}: [{it['상품번호']}] {it['상품명']} ({it['단가']}원)"
+                        for i, it in enumerate(unmatched_receipt))
+    o_lines = "\n".join(f"O{i}: {o['product_name']} (수량 {o['qty']})"
+                        for i, o in enumerate(unmatched_orders))
+    system = ("너는 코스트코 영수증 품목과 네이버 주문을 같은 상품끼리 매칭하는 도우미다. "
+              "브랜드/용량/상품종류가 같으면 매칭하고, 애매하면 매칭하지 않는다. JSON만 출력한다.")
+    user_msg = (
+        f"[영수증]\n{r_lines}\n\n[주문]\n{o_lines}\n\n"
+        "같은 상품끼리 매칭해서 JSON 배열로만 출력: "
+        "[{\"o\": 주문번호(int), \"r\": 영수증번호(int)}]. 매칭 없으면 []."
+    )
+    try:
+        from ai_service import claude_complete
+        txt, err = claude_complete(ai_key, system, user_msg, max_tokens=1024,
+                                   thinking={"type": "disabled"})
+        if not txt:
+            return []
+        s = txt[txt.find('['): txt.rfind(']') + 1]
+        pairs = json.loads(s)
+    except Exception:
+        return []
+    out = []
+    for p in pairs:
+        try:
+            oi, ri = int(p['o']), int(p['r'])
+            if 0 <= oi < len(unmatched_orders) and 0 <= ri < len(unmatched_receipt):
+                out.append({'order_index': oi, 'costco_no': str(unmatched_receipt[ri]['상품번호']),
+                            'unit_price': int(unmatched_receipt[ri]['단가'])})
+        except Exception:
+            continue
+    return out
 
 
 def cleanup_orphan_settlements():

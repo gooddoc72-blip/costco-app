@@ -8,6 +8,7 @@ import pandas as pd
 from services import parse_costco_receipt_pdf
 from receipt_settle import (
     allocate_receipt_to_orders, apply_receipt_settlement, cleanup_orphan_settlements,
+    build_manual_rows, ai_match_receipt_orders, _summarize,
 )
 from db_receipt_settle import (
     save_settlement_batch, list_settlement_batches, get_settlement_items,
@@ -158,10 +159,13 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
 
     if unmatched:
         with st.expander(f"⚠️ 주문을 못 찾은 영수증 품목 {len(unmatched)}건", expanded=False):
-            st.caption("해당 상품의 주문이 기간 내 없거나, 제품 DB에 코스트코↔네이버 번호 매핑이 없어 배치 못 함.")
+            st.caption("해당 상품의 주문이 당일 없거나, 제품 DB에 코스트코↔네이버 번호 매핑이 없어 배치 못 함.")
             st.dataframe(pd.DataFrame([{'상품번호': u['상품번호'], '상품명': u['상품명'],
                                         '단가': fmt(u['단가'])} for u in unmatched]),
                          use_container_width=True, hide_index=True)
+
+    # ── 3.5) 미매칭 수동/AI 매칭 ──
+    _render_match_section(alloc, dmap, settings, USERNAME)
 
     # ── 4) 적용 ──
     if rows:
@@ -185,6 +189,62 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             st.rerun()
 
     _render_history(dmap)
+
+
+def _merge_matches(alloc, new_rows, matched_order_indices):
+    alloc['rows'].extend(new_rows)
+    idxset = set(matched_order_indices)
+    alloc['unmatched_orders'] = [o for i, o in enumerate(alloc.get('unmatched_orders', []))
+                                 if i not in idxset]
+    matched_costco = {str(r['costco_no']) for r in alloc['rows']}
+    alloc['unmatched_receipt'] = [u for u in alloc.get('unmatched_receipt', [])
+                                  if str(u['상품번호']) not in matched_costco]
+    alloc['user_summary'] = _summarize(alloc['rows'])
+    st.session_state['rs_alloc'] = alloc
+
+
+def _render_match_section(alloc, dmap, settings, USERNAME):
+    u_ords = alloc.get('unmatched_orders') or []
+    u_rcpt = alloc.get('unmatched_receipt') or []
+    if not u_ords or not u_rcpt:
+        return
+    st.divider()
+    st.subheader(f"🔗 미매칭 매칭 — 주문 {len(u_ords)}건 · 영수증 {len(u_rcpt)}종")
+    st.caption("자동으로 못 붙은 주문을 영수증 품목과 AI 또는 수동으로 연결합니다.")
+
+    ai_key = (settings.get('anthropic_api_key') if settings else '') or ''
+    if st.button("🤖 AI 자동매칭", key="rs_ai_match", disabled=not ai_key,
+                 help=None if ai_key else "설정 탭에서 Anthropic API 키를 먼저 등록하세요."):
+        with st.spinner("AI가 상품명을 비교해 매칭 중..."):
+            pairs = ai_match_receipt_orders(u_rcpt, u_ords, ai_key)
+        if pairs:
+            new = build_manual_rows([
+                {'order': u_ords[p['order_index']], 'costco_no': p['costco_no'],
+                 'unit_price': p['unit_price'], 'via': 'ai'} for p in pairs])
+            _merge_matches(alloc, new, [p['order_index'] for p in pairs])
+            st.success(f"🤖 AI가 {len(new)}건 매칭했습니다.")
+            st.rerun()
+        else:
+            st.info("AI가 자신 있게 매칭할 항목을 못 찾았습니다. 아래 수동 매칭을 이용하세요.")
+
+    with st.expander("✋ 수동 매칭", expanded=False):
+        _ri_opts = {i: f"[{it['상품번호']}] {it['상품명']} ({fmt(it['단가'])}원)"
+                    for i, it in enumerate(u_rcpt)}
+        ri = st.selectbox("영수증 품목", options=list(_ri_opts),
+                          format_func=lambda i: _ri_opts[i], key="rs_mm_ri")
+        _oi_opts = {i: f"{dmap.get(o['username'], o['username'])} · {o['recipient']} · "
+                       f"{o['product_name'][:24]} ×{o['qty']}"
+                    for i, o in enumerate(u_ords)}
+        ois = st.multiselect("이 품목에 해당하는 주문 선택", options=list(_oi_opts),
+                             format_func=lambda i: _oi_opts[i], key="rs_mm_ois")
+        if st.button("➕ 매칭 추가", key="rs_mm_add", disabled=not ois):
+            it = u_rcpt[ri]
+            new = build_manual_rows([
+                {'order': u_ords[i], 'costco_no': it['상품번호'],
+                 'unit_price': it['단가'], 'via': 'manual'} for i in ois])
+            _merge_matches(alloc, new, list(ois))
+            st.success(f"✋ {len(new)}건 매칭 추가")
+            st.rerun()
 
 
 def _render_history(dmap):
