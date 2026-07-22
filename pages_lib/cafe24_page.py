@@ -100,20 +100,38 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                            ('cafe24_token_expires_at', t.get('expires_at', ''))):
                 set_global_setting(_k, _v)
 
-        _ag_users = [u for u in get_all_users()
-                     if (not u.get('is_admin')) and u.get('status', 'active') == 'active']
-        if not _ag_users:
+        # 대상 후보 — 빈/손상 계정(username 공백) 제외. 각 사용자 커머스 API 보유 여부를
+        # 미리 확인해 라벨에 표시하고 '키 있는 사용자'를 위로 정렬(기본 선택이 등록 가능 계정).
+        _ag_all = [u for u in get_all_users()
+                   if (not u.get('is_admin')) and u.get('status', 'active') == 'active'
+                   and str(u.get('username') or '').strip()]
+        _ag_meta = []
+        for u in _ag_all:
+            _us = get_all_settings(u['username']) or {}
+            _has = bool(str(_us.get('api_client_id') or '').strip()
+                        and str(_us.get('api_client_secret') or '').strip())
+            _ag_meta.append((u['username'], u.get('display_name', '') or '', _has, _us))
+        _ag_meta.sort(key=lambda t: (not t[2], t[0]))  # 키 보유자 먼저, 그다음 이름순
+        if not _ag_meta:
             st.info("등록 대상이 될 일반 사용자가 없습니다.")
         else:
+            _ag_labelmap = {}  # 표시라벨 → (username, settings)
+            _ag_opts = []
+            for _un, _dn, _has, _us in _ag_meta:
+                _lbl = (f"{'✅' if _has else '⚠️'} {_un} · {_dn}"
+                        + ('' if _has else ' — 커머스API 없음'))
+                _ag_labelmap[_lbl] = (_un, _us)
+                _ag_opts.append(_lbl)
+            _n_ready = sum(1 for t in _ag_meta if t[2])
             _agc1, _agc2 = st.columns([2, 1])
             _ag_pick = _agc1.selectbox(
-                "🎯 등록 대상 사용자",
-                [f"{u['username']} · {u.get('display_name', '')}" for u in _ag_users], key="ag_target")
+                f"🎯 등록 대상 사용자 (커머스API 보유 {_n_ready}/{len(_ag_meta)}명)",
+                _ag_opts, key="ag_target",
+                help="✅ = 네이버 커머스 API 등록됨(대행등록 가능). ⚠️ = 키 없음(그 사용자 설정 탭에서 입력 필요).")
             _ag_margin = _agc2.number_input("마진율 %", min_value=0, max_value=300, step=5,
                                             value=int(get_global_setting('cafe24_naver_margin') or 10),
                                             key="ag_margin")
-            _ag_tuser = _ag_pick.split(' · ')[0].strip()
-            _ag_ts = get_all_settings(_ag_tuser) or {}
+            _ag_tuser, _ag_ts = _ag_labelmap[_ag_pick]
             _ag_tid = _ag_ts.get('api_client_id', ''); _ag_tsecret = _ag_ts.get('api_client_secret', '')
             _ag_tas = _ag_ts.get('naver_as_tel') or '1588-1234'
             _ag_oc = settings.get('naver_open_client_id', ''); _ag_os = settings.get('naver_open_client_secret', '')
