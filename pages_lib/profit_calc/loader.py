@@ -2,6 +2,10 @@
 profit_settlements → dispatch_log → order_history → daily_orders 순으로 df 구성.
 profit_settlements 소스면 저장값(ship/box/cost/kw)을 session_state로 복원한다.
 profit_calc/page.py 에서 분리 (동작 불변).
+
+구조:
+  build_settlement_df() — 세션 비의존 순수 DB→df (Streamlit/FastAPI 공용).
+  load_settlement_df()  — build + profit_settlements 소스일 때 session_state 복원.
 """
 import pandas as pd
 import streamlit as st
@@ -12,12 +16,17 @@ from db import (
 )
 
 
-def load_settlement_df(USERNAME, calc_date_str, _cached_daily_orders=None):
-    """(df, src_label) 반환. df 없으면 (None, label|None)."""
+def build_settlement_df(USERNAME, calc_date_str, _cached_daily_orders=None):
+    """(df, src_label, source_kind) 반환 — 세션 비의존(순수 DB→df).
+
+    source_kind: 'ps' | 'dispatch' | 'history' | 'daily' | None.
+    df 없으면 (None, label|None, None).
+    """
     # ⭐ 신규 데이터 소스: dispatch_log (일괄발송 성공건) + order_history JOIN
     # → "이 날짜에 발송된 주문" = "이 날짜의 수익계산 대상" 으로 일치 보장
     # → 결제일 필터/저장 액션 불필요, daily_orders 의존 제거
     _src_label = None
+    _source_kind = None
     _dispatched_rows = get_dispatched_orders_with_details(USERNAME, calc_date_str)
 
     rename_map = {
@@ -53,6 +62,63 @@ def load_settlement_df(USERNAME, calc_date_str, _cached_daily_orders=None):
             df.index = df['order_no'].astype(str)
             df.index.name = None
         _src_label = f"✅ 정산완료 ({len(df)}건) — profit_settlements"
+        _source_kind = 'ps'
+
+    elif _dispatched_rows:
+        df = pd.DataFrame(_dispatched_rows)
+        df = df.rename(columns=rename_map)
+        # order_no를 stable_key 로 사용 (dispatch_log UNIQUE)
+        if 'order_no' in df.columns:
+            df.index = df['order_no'].astype(str)
+            df.index.name = None
+        _src_label = f"🚀 발송 기준 ({len(df)}건) — dispatch_log"
+        _source_kind = 'dispatch'
+    else:
+        # Fallback 1: order_history (결제일 기준) — 각 주문이 자기 날짜에 정확히 있어
+        # '그 날짜 주문건'만 정확히 로드 (daily_orders 누적 오염 회피)
+        _hist_rows = search_order_history(USERNAME, date_from=calc_date_str, date_to=calc_date_str)
+        if _hist_rows:
+            df = pd.DataFrame(_hist_rows)
+            df = df.rename(columns=rename_map)
+            if '제주/도서 추가배송비' not in df.columns:
+                df['제주/도서 추가배송비'] = 0
+            if 'order_no' in df.columns:
+                df.index = df['order_no'].astype(str)
+                df.index.name = None
+            _src_label = f"📋 주문이력 ({len(df)}건) — order_history (결제일 기준)"
+            _source_kind = 'history'
+        else:
+            # Fallback 2: 옛 daily_orders 데이터 (order_history 없을 때만)
+            _get_daily = _cached_daily_orders if _cached_daily_orders else get_daily_orders
+            saved_rows = _get_daily(USERNAME, calc_date_str)
+            if saved_rows:
+                df = pd.DataFrame(saved_rows)
+                df = df.rename(columns=rename_map)
+                if 'id' in df.columns:
+                    df.index = df['id'].astype(str)
+                    df.index.name = None
+                _src_label = f"📋 옛 데이터 ({len(df)}건) — daily_orders fallback"
+                _source_kind = 'daily'
+            else:
+                df = None
+    # ⚓ 단일 안정키(_sk): 항상 '문자열'로 통일.
+    #   정수 id 컬럼은 iterrows()에서 실수(143→143.0)로 승격돼 위젯키/계산키가 어긋난다.
+    #   → 여기서 문자열 컬럼으로 고정해 전 구간이 동일한 키를 쓰게 한다. (삭제·박스·택배·체크박스 키 일치)
+    if df is not None and '_sk' not in df.columns:
+        if 'id' in df.columns:
+            df['_sk'] = df['id'].astype('Int64').astype(str)
+        else:
+            df['_sk'] = df.index.astype(str)
+    return df, _src_label, _source_kind
+
+
+def load_settlement_df(USERNAME, calc_date_str, _cached_daily_orders=None):
+    """(df, src_label) 반환. df 없으면 (None, label|None).
+    profit_settlements 소스면 저장값(ship/box/cost/kw)을 session_state로 복원."""
+    df, _src_label, _source_kind = build_settlement_df(
+        USERNAME, calc_date_str, _cached_daily_orders)
+
+    if _source_kind == 'ps' and df is not None:
         # session_state에 저장값 복합키로 직접 주입 (kw/cost/ship/box 모두)
         _restore_flag_ps = f"_do_restored_{calc_date_str}"
         if not st.session_state.get(_restore_flag_ps):
@@ -78,46 +144,4 @@ def load_settlement_df(USERNAME, calc_date_str, _cached_daily_orders=None):
                     st.session_state['kw_overrides'][_pkey] = _pkw
             st.session_state[_restore_flag_ps] = True
 
-    elif _dispatched_rows:
-        df = pd.DataFrame(_dispatched_rows)
-        df = df.rename(columns=rename_map)
-        # order_no를 stable_key 로 사용 (dispatch_log UNIQUE)
-        if 'order_no' in df.columns:
-            df.index = df['order_no'].astype(str)
-            df.index.name = None
-        _src_label = f"🚀 발송 기준 ({len(df)}건) — dispatch_log"
-    else:
-        # Fallback 1: order_history (결제일 기준) — 각 주문이 자기 날짜에 정확히 있어
-        # '그 날짜 주문건'만 정확히 로드 (daily_orders 누적 오염 회피)
-        _hist_rows = search_order_history(USERNAME, date_from=calc_date_str, date_to=calc_date_str)
-        if _hist_rows:
-            df = pd.DataFrame(_hist_rows)
-            df = df.rename(columns=rename_map)
-            if '제주/도서 추가배송비' not in df.columns:
-                df['제주/도서 추가배송비'] = 0
-            if 'order_no' in df.columns:
-                df.index = df['order_no'].astype(str)
-                df.index.name = None
-            _src_label = f"📋 주문이력 ({len(df)}건) — order_history (결제일 기준)"
-        else:
-            # Fallback 2: 옛 daily_orders 데이터 (order_history 없을 때만)
-            _get_daily = _cached_daily_orders if _cached_daily_orders else get_daily_orders
-            saved_rows = _get_daily(USERNAME, calc_date_str)
-            if saved_rows:
-                df = pd.DataFrame(saved_rows)
-                df = df.rename(columns=rename_map)
-                if 'id' in df.columns:
-                    df.index = df['id'].astype(str)
-                    df.index.name = None
-                _src_label = f"📋 옛 데이터 ({len(df)}건) — daily_orders fallback"
-            else:
-                df = None
-    # ⚓ 단일 안정키(_sk): 항상 '문자열'로 통일.
-    #   정수 id 컬럼은 iterrows()에서 실수(143→143.0)로 승격돼 위젯키/계산키가 어긋난다.
-    #   → 여기서 문자열 컬럼으로 고정해 전 구간이 동일한 키를 쓰게 한다. (삭제·박스·택배·체크박스 키 일치)
-    if df is not None and '_sk' not in df.columns:
-        if 'id' in df.columns:
-            df['_sk'] = df['id'].astype('Int64').astype(str)
-        else:
-            df['_sk'] = df.index.astype(str)
     return df, _src_label

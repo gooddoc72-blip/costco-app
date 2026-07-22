@@ -1,0 +1,28 @@
+[Unit]
+Description=코스트코 수익계산 FastAPI (Phase2)
+After=network.target
+
+[Service]
+Type=simple
+User=costco
+Group=costco
+WorkingDirectory=/opt/costco-app
+EnvironmentFile=/opt/costco-app/.env
+# Streamlit(8501)과 별도 포트. nginx가 /api/* 만 이쪽으로 라우팅(Phase4).
+ExecStart=/opt/costco-app/venv/bin/uvicorn api.main:app \
+    --host 127.0.0.1 \
+    --port 8600 \
+    --workers 2
+
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=costco-api
+
+# 보안 강화
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
