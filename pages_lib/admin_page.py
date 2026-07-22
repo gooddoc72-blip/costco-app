@@ -156,6 +156,18 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     st.success("✅ 오픈됨" if _cfo_new else "🙈 숨김 처리됨")
                     st.rerun()
 
+                # ── 🛒 카페24 전용 메뉴(대행등록·코스트코 매칭·동기화) 오픈/숨김 ──
+                _cmo_cur = get_setting(u['username'], 'cafe24_menu_open') == '1'
+                _cmo_new = st.checkbox(
+                    "🛒 카페24 메뉴(대행등록·동기화) 오픈",
+                    value=_cmo_cur, key=f"cf24menu_{u['username']}",
+                    help="켜면 이 사용자에게 좌측 '상품 관리 › 카페24' 전용 메뉴가 보입니다 "
+                         "(카페24 카탈로그 대행등록 + 코스트코 매칭·동기화). 끄면 즉시 숨김.")
+                if _cmo_new != _cmo_cur:
+                    set_setting(u['username'], 'cafe24_menu_open', '1' if _cmo_new else '0')
+                    st.success("✅ 카페24 메뉴 오픈됨" if _cmo_new else "🙈 카페24 메뉴 숨김 처리됨")
+                    st.rerun()
+
     st.divider()
     st.subheader("➕ 사용자 직접 추가")
     c1, c2, c3 = st.columns(3)

@@ -40,7 +40,7 @@ div[data-testid="stHorizontalBlock"] {
 from db import (
     init_auth_db, check_login, get_global_setting, register_user, ensure_local_user,
     get_user_info, create_session, get_session_user, delete_session,
-    init_user_db, get_all_settings, get_shared_products, get_all_products,
+    init_user_db, get_all_settings, get_setting, get_shared_products, get_all_products,
     get_all_products_merged, get_saved_dates, get_daily_orders,
     set_setting,
 )
@@ -428,10 +428,12 @@ _pages = {
     ],
 }
 
-if IS_ADMIN:
-    # 카페24 메뉴 — 네이버 등록 바로 아래(상품 관리 그룹), 관리자 전용
-    # ※ 재고 관리가 1번으로 들어와 네이버 등록이 2번 → 그 아래는 3번
+# 카페24 메뉴 — 네이버 등록 아래(상품 관리 그룹). 관리자 또는 관리자가 오픈한 사용자에게 노출.
+#   (관리자 페이지에서 사용자별 cafe24_menu_open 체크로 오픈/숨김)
+if IS_ADMIN or get_setting(USERNAME, 'cafe24_menu_open') == '1':
     _pages["상품 관리"].insert(3, st.Page(run_cafe24, title="카페24", icon=":material/sync_alt:"))
+
+if IS_ADMIN:
     _pages["관리자"] = [
         st.Page(run_admin, title="관리자", icon=":material/admin_panel_settings:"),
         st.Page(run_receipt_settle, title="영수증 정산", icon=":material/receipt:"),

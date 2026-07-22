@@ -71,8 +71,11 @@ def _build_image_detail(full, tid, tsecret, limit=20):
 
 def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     st.title("🛒 카페24")
-    if not IS_ADMIN:
-        st.warning("관리자 전용 메뉴입니다.")
+    # 관리자 또는 관리자가 이 사용자에게 '카페24 메뉴'를 오픈한 경우만.
+    #   (관리자 페이지 › 사용자 목록에서 cafe24_menu_open 체크로 오픈/숨김)
+    from db import get_setting
+    if not (IS_ADMIN or get_setting(USERNAME, 'cafe24_menu_open') == '1'):
+        st.warning("접근 권한이 없는 메뉴입니다. 관리자에게 문의하세요.")
         return
 
     # ── 🛒 카페24 → 사용자 스토어 대행 등록 ──────────────────────────
