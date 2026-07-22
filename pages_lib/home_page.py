@@ -112,10 +112,14 @@ def render(USERNAME: str, IS_ADMIN: bool = False):
             f'{d_html}</div>'
         )
 
+    # 이번 달 입금정산 합계 (일별 정산금액 합) — 달력과 세션 캐시 공유(같은 달이면 API 1회)
+    _dep_total = get_month_deposit_total(USERNAME, today)
+
     _kpi_cards_html = (
         '<div style="display:flex;flex-wrap:wrap;gap:12px;margin-bottom:0">'
         + _kpi_html("이번 주 수익",   f"{fmt(wk['profit'])}원", _w_delta,  _wp >= 0,  "📅", COLORS["primary"])
         + _kpi_html("이번 달 수익",   f"{fmt(mk['profit'])}원", _m_delta,  _mp >= 0,  "📆", COLORS["success"])
+        + _kpi_html("이번 달 입금정산", f"{fmt(_dep_total)}원",   None,      True,      "📋", COLORS["success"])
         + _kpi_html("주간 주문건수",  f"{wk['cnt']}건",         _wc_delta, True,      "📦", COLORS["info"])
         + _kpi_html("월간 주문건수",  f"{mk['cnt']}건",         _mc_delta, True,      "📦", COLORS["warning"])
         + '</div>'
@@ -569,6 +573,43 @@ def _is_no_ship_day(d):
     return wd >= 5 or ds in _KR_HOLIDAYS   # 5=토, 6=일
 
 
+def _fetch_deposit_map(USERNAME: str, year_month: str, d_from: str, d_to: str) -> dict:
+    """그 달 일별 입금정산 맵 {date: 입금액}. 네이버 /daily 정산 + 쿠팡(저장분 70/30).
+    세션 캐시(월+스토어키)로 재호출 방지 — 상단 KPI 카드와 달력이 같은 캐시를 공유해
+    같은 달이면 API를 한 번만 부른다. 실패 시 {}."""
+    from db import get_all_settings, get_coupang_deposit_map
+    _s = get_all_settings(USERNAME)
+    _cid_tag = (_s.get('api_client_id') or 'none')[:10]
+    _dep_key = f"_home_deposit_{year_month}_{_cid_tag}"
+    dep_map = st.session_state.get(_dep_key)
+    if dep_map is not None:
+        return dep_map
+    dep_map = {}
+    try:
+        import naver_api
+        if _s.get('api_client_id') and _s.get('api_client_secret'):
+            dep_map, _derr = naver_api.get_daily_settlements_range(
+                _s['api_client_id'], _s['api_client_secret'], d_from, d_to)
+        try:
+            _cp_dep = get_coupang_deposit_map(USERNAME, d_from, d_to)
+            for _dd, _amt in _cp_dep.items():
+                dep_map[_dd] = int(dep_map.get(_dd, 0)) + int(_amt)
+        except Exception:
+            pass
+        st.session_state[_dep_key] = dep_map
+    except Exception:
+        dep_map = {}
+    return dep_map
+
+
+def get_month_deposit_total(USERNAME: str, today: datetime) -> int:
+    """이번 달(현재월) 입금정산 합계 — 상단 KPI 카드용. 달력과 세션 캐시 공유."""
+    _ym = today.strftime("%Y-%m")
+    _last = _calendar.monthrange(today.year, today.month)[1]
+    dep_map = _fetch_deposit_map(USERNAME, _ym, f"{_ym}-01", f"{_ym}-{_last:02d}")
+    return int(sum(dep_map.values())) if dep_map else 0
+
+
 def _render_calendar(USERNAME: str, today: datetime, IS_ADMIN: bool = False):
     """📅 월별 달력 — 각 날짜에 주문건 · 발송건 · 수익 · 정산 표시.
     IS_ADMIN이면 날짜별 사용자 수·코스트코 구매금액 합계를 셀에 추가하고,
@@ -612,29 +653,8 @@ def _render_calendar(USERNAME: str, today: datetime, IS_ADMIN: bool = False):
             adm_day_map = {}
 
     # 📋 정산금 = 그날 실제 입금된 정산금(정산일/입금일 기준) — 네이버 /daily + 쿠팡(주정산 70/30 분배)
-    from db import get_all_settings, get_coupang_deposit_map
-    _s = get_all_settings(USERNAME)
-    # 캐시 키에 API client_id 포함 → 키(스토어) 변경 시 옛 정산 캐시 자동 무효화
-    _cid_tag = (_s.get('api_client_id') or 'none')[:10]
-    _dep_key = f"_home_deposit_{sel_month}_{_cid_tag}"
-    dep_map = st.session_state.get(_dep_key)
-    if dep_map is None:
-        dep_map = {}
-        try:
-            import naver_api
-            if _s.get('api_client_id') and _s.get('api_client_secret'):
-                dep_map, _derr = naver_api.get_daily_settlements_range(
-                    _s['api_client_id'], _s['api_client_secret'], _d_from, _d_to)
-            # 쿠팡 입금 합산 (저장된 coupang_settlements 기준, 1차 70%/2차 30%)
-            try:
-                _cp_dep = get_coupang_deposit_map(USERNAME, _d_from, _d_to)
-                for _dd, _amt in _cp_dep.items():
-                    dep_map[_dd] = int(dep_map.get(_dd, 0)) + int(_amt)
-            except Exception:
-                pass
-            st.session_state[_dep_key] = dep_map
-        except Exception:
-            dep_map = {}
+    #    상단 KPI '이번 달 입금정산' 카드와 동일 헬퍼·세션 캐시 사용(같은 달이면 API 1회).
+    dep_map = _fetch_deposit_map(USERNAME, sel_month, _d_from, _d_to)
 
     week_hdr = ['일', '월', '화', '수', '목', '금', '토']
     hdr = ''.join(
