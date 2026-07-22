@@ -9,11 +9,72 @@
 저장(auth.db):
   purchase_settle_snapshot — 청구 스냅샷(사용자·날짜·상품별 예상단가/금액). 확정 비교의 기준선.
 """
+import calendar
 import json
 import sqlite3
 from datetime import datetime
 
 from db_core import AUTH_DB, get_user_db
+
+
+# ── 월말 택배·포장 (그달 1일~말일 누적) ──────────────────────
+def is_last_day_of_month(date_str):
+    y, m, d = int(date_str[:4]), int(date_str[5:7]), int(date_str[8:10])
+    return d == calendar.monthrange(y, m)[1]
+
+
+def compute_month_fees(username, year_month):
+    """그달 택배·포장 누적. 정책: 실제 배정 포장비(order_packaging) + 발송건수×택배비.
+    Returns {ship_count, ship_fee, ship_total, pkg_total, fees_total, year_month}."""
+    from db import get_all_settings, get_dispatch_counts
+    from db_packaging import get_packaging_cost_map
+    y, m = int(year_month[:4]), int(year_month[5:7])
+    last = calendar.monthrange(y, m)[1]
+    d_from, d_to = f"{year_month}-01", f"{year_month}-{last:02d}"
+
+    # 택배: 발송건수 × 사용자 택배비
+    disp = get_dispatch_counts(username, d_from, d_to) or {}
+    ship_count = sum(int(v or 0) for v in disp.values())
+    s = get_all_settings(username) or {}
+    try:
+        ship_fee = int(s.get('shipping_cost') or 1800)
+    except (TypeError, ValueError):
+        ship_fee = 1800
+    ship_total = ship_count * ship_fee
+
+    # 포장: 그달 주문들의 실제 배정 포장비(order_packaging.total_cost) 합
+    conn = get_user_db(username)
+    onos = set()
+    try:
+        for r in conn.execute(
+                "SELECT DISTINCT order_no FROM order_history WHERE order_date BETWEEN ? AND ?",
+                (d_from, d_to)):
+            if r[0]:
+                onos.add(str(r[0]))
+    except Exception:
+        pass
+    try:
+        for r in conn.execute(
+                "SELECT DISTINCT order_no FROM dispatch_log WHERE substr(dispatched_at,1,7)=?",
+                (year_month,)):
+            if r[0]:
+                onos.add(str(r[0]))
+    except Exception:
+        pass
+    conn.close()
+    pkg_map = get_packaging_cost_map(username, list(onos)) if onos else {}
+    pkg_total = sum(int(v or 0) for v in pkg_map.values())
+
+    return {'ship_count': ship_count, 'ship_fee': ship_fee, 'ship_total': ship_total,
+            'pkg_total': pkg_total, 'fees_total': ship_total + pkg_total,
+            'year_month': year_month}
+
+
+def month_fees_if_last_day(username, date_str):
+    """말일이면 그달 누적 택배·포장 fees dict, 아니면 None."""
+    if not is_last_day_of_month(date_str):
+        return None
+    return compute_month_fees(username, date_str[:7])
 
 
 # ── 구매가 계산 (예상/확정 공통) ──────────────────────────────

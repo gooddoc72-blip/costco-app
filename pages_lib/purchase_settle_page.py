@@ -12,6 +12,7 @@ import pandas as pd
 from db import get_all_users
 from db_purchase_settle import (
     compute_daily_purchase, save_estimate, finalize, get_snapshot, diff_against_snapshot,
+    month_fees_if_last_day, is_last_day_of_month,
 )
 from utils import fmt
 
@@ -37,6 +38,11 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     d = st.date_input("정산 날짜 (주문일 기준)", value=date.today())
     ds = str(d)
 
+    _is_last = is_last_day_of_month(ds)
+    if _is_last:
+        st.info(f"📦 **말일 정산** — 이 날짜 청구액에는 그달(1일~말일) **택배·포장 누적**이 포함됩니다 "
+                "(실배정 포장비 + 발송건수×택배비).")
+
     per_user = {}
     for u in _sellers():
         items, total = compute_daily_purchase(u, ds)
@@ -44,8 +50,10 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             continue
         snap = get_snapshot(ds, u)
         dd = diff_against_snapshot(ds, u) if snap else None
+        fees = month_fees_if_last_day(u, ds) if _is_last else None
         per_user[u] = {'items': items, 'total': total, 'snap': snap, 'diff': dd,
-                       'matched': sum(1 for it in items if it['amount'] > 0)}
+                       'matched': sum(1 for it in items if it['amount'] > 0),
+                       'fees': fees, 'charge': total + (fees['fees_total'] if fees else 0)}
 
     if not per_user:
         st.info(f"{ds} 주문이 없습니다.")
@@ -61,17 +69,26 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             chg = f"{v['diff']['total_diff']:+,}원"
         elif snap:
             chg = '동일'
-        rows.append({
+        row = {
             '사용자': dmap.get(u, u),
             '주문수': len(v['items']),
             '구매가 있음': v['matched'],
-            '현재 구매금액': fmt(v['total']),
-            '상태': status,
-            '변경(예상대비)': chg,
-        })
+            '구매금액': fmt(v['total']),
+        }
+        if _is_last:
+            row['그달 택배·포장'] = fmt(v['fees']['fees_total']) if v['fees'] else '-'
+            row['청구액(구매+월비용)'] = fmt(v['charge'])
+        row['상태'] = status
+        row['변경(예상대비)'] = chg
+        rows.append(row)
     st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
     _tot = sum(v['total'] for v in per_user.values())
-    st.markdown(f"### 총 구매금액: **{fmt(_tot)}원**  ·  사용자 {len(per_user)}명")
+    _charge = sum(v['charge'] for v in per_user.values())
+    if _is_last:
+        st.markdown(f"### 총 청구액: **{fmt(_charge)}원** "
+                    f"(구매 {fmt(_tot)} + 월 택배·포장 {fmt(_charge - _tot)})  ·  사용자 {len(per_user)}명")
+    else:
+        st.markdown(f"### 총 구매금액: **{fmt(_tot)}원**  ·  사용자 {len(per_user)}명")
 
     c1, c2, _ = st.columns([1.4, 1.6, 3])
     if c1.button("💾 예상 저장 (기준선)", type="primary", key="ps_save_est",
@@ -98,7 +115,12 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         if v['diff'] and v['diff']['total_diff'] != 0:
             _s = v['diff']['total_diff']
             badge = f"  ·  {'🔺' if _s > 0 else '🔻'}변경 {_s:+,}원"
-        with st.expander(f"🧾 {dmap.get(u, u)} — {fmt(v['total'])}원 ({len(v['items'])}건){badge}"):
+        _head_amt = fmt(v['charge']) if _is_last else fmt(v['total'])
+        with st.expander(f"🧾 {dmap.get(u, u)} — {_head_amt}원 ({len(v['items'])}건){badge}"):
+            if _is_last and v['fees']:
+                f = v['fees']
+                st.caption(f"📦 말일: 구매가 {fmt(v['total'])} + 택배 {f['ship_count']}건×{fmt(f['ship_fee'])}"
+                           f"={fmt(f['ship_total'])} + 포장 실배정 {fmt(f['pkg_total'])} = 청구 {fmt(v['charge'])}")
             _df = pd.DataFrame([{
                 '수취인': it['recipient'], '상품명': it['product_name'], '수량': it['qty'],
                 '구매단가': fmt(it['unit_price']), '구매금액': fmt(it['amount']),

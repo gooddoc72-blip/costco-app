@@ -8,7 +8,9 @@ from datetime import date
 import streamlit as st
 import pandas as pd
 
-from db_purchase_settle import compute_daily_purchase, get_snapshot, get_user_badge
+from db_purchase_settle import (
+    compute_daily_purchase, get_snapshot, get_user_badge, month_fees_if_last_day,
+)
 from utils import fmt
 
 
@@ -29,13 +31,25 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         st.info(f"{ds} 구매내역이 없습니다.")
         return
 
-    # 표시 금액: 확정되면 확정액, 아니면 현재(예상) 계산액
-    display_total = int(snap['final_total']) if is_final else cur_total
+    # 구매가: 확정되면 확정액, 아니면 현재(예상) 계산액
+    goods_total = int(snap['final_total']) if is_final else cur_total
     status_txt = "✅ 확정 (영수증 반영)" if is_final else ("🕐 예상 (영수증 반영 전)" if snap else "🕐 예상")
 
+    # 월말(말일)이면 그달 1일~말일 택배·포장 누적 추가
+    fees = month_fees_if_last_day(USERNAME, ds)
+    charge_total = goods_total + (fees['fees_total'] if fees else 0)
+
     c1, c2 = st.columns([1.3, 3])
-    c1.metric("구매금액 (청구액)", f"{fmt(display_total)}원")
-    c2.caption(f"상태: **{status_txt}**  ·  {len(items)}건  ·  {ds}")
+    c1.metric("청구액", f"{fmt(charge_total)}원")
+    c2.caption(f"상태: **{status_txt}**  ·  구매 {len(items)}건  ·  {ds}"
+               + ("  ·  📦 **말일 정산(택배·포장 포함)**" if fees else "  ·  매일=구매가만"))
+
+    if fees:
+        st.info(
+            f"📦 **말일 정산** — 구매가 {fmt(goods_total)}원 "
+            f"+ 그달 택배·포장 {fmt(fees['fees_total'])}원 "
+            f"(택배 {fees['ship_count']}건 × {fmt(fees['ship_fee'])} = {fmt(fees['ship_total'])} · "
+            f"포장 실배정 {fmt(fees['pkg_total'])})  =  **청구액 {fmt(charge_total)}원**")
 
     # ── 변경 고지 배지 (확정 & 예상과 다를 때) ──
     if badge:
