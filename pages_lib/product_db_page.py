@@ -679,17 +679,23 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         _cnt_oos    = sum(1 for p in products if (p.get('status') or 'SALE').upper() in ('OUTOFSTOCK', 'SOLD_OUT', 'SOLDOUT'))
         _cnt_susp   = sum(1 for p in products if (p.get('status') or 'SALE').upper() in ('SUSPENSION', 'STOP', 'PAUSE', 'CLOSE', 'PROHIBITION'))
         _cnt_total  = len(products)
-        # 소분판매 = 코스트코 상품번호 없이 네이버번호로 등록된 상품 (사용자 정의)
-        def _is_sobun(p):
+        # 🛠 네이버 자체등록 = 코스트코 상품번호 없이 네이버번호로만 등록된 상품(코스트코 미매칭).
+        #    (과거 '소분판매' 라벨 — 실제론 자체등록 상품이라 이름 정정. 87%가 걸려 소분과 무관.)
+        def _is_selfreg(p):
             return (not str(p.get('product_no') or '').strip()) and bool(
                 str(p.get('naver_channel_pno') or '').strip()
                 or str(p.get('naver_origin_pno') or '').strip())
-        _cnt_sobun  = sum(1 for p in products if _is_sobun(p))
+        # 🔵 소분 = 코스트코 묶음을 N개로 나눠 파는 상품(split_qty>1). 사용자가 소분수를 지정한 것만.
+        def _is_split(p):
+            return int(p.get('split_qty', 1) or 1) > 1
+        _cnt_selfreg = sum(1 for p in products if _is_selfreg(p))
+        _cnt_split   = sum(1 for p in products if _is_split(p))
         _filter_opts = [
             f"전체 ({_cnt_total})",
             f"🌐 코스트코 온라인 ({_cnt_online})",
             f"🛍 네이버 등록 상품 ({_cnt_naver})",
-            f"🔵 소분판매 ({_cnt_sobun})",
+            f"🛠 네이버 자체등록 ({_cnt_selfreg})",
+            f"🔵 소분 ({_cnt_split})",
             f"🟠 품절 ({_cnt_oos})",
             f"🚫 판매중지 ({_cnt_susp})",
         ]
@@ -707,7 +713,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         # 라벨에서 카운트 부분 제거하여 핵심 키워드로 분기
         _is_filter_online = "코스트코 온라인" in _db_filter
         _is_filter_naver  = "네이버 등록" in _db_filter
-        _is_filter_sobun  = "소분판매" in _db_filter
+        _is_filter_selfreg = "자체등록" in _db_filter
+        _is_filter_split  = "소분" in _db_filter
         _is_filter_oos    = "품절" in _db_filter
         _is_filter_susp   = "판매중지" in _db_filter
         if _is_filter_online:
@@ -717,8 +724,10 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         if int(p.get('from_naver') or 0) == 1
                         or (p.get('naver_product_no') and str(p.get('naver_product_no', '')).strip())
                         or (p.get('naver_origin_pno') and str(p.get('naver_origin_pno', '')).strip())]
-        elif _is_filter_sobun:
-            products = [p for p in products if _is_sobun(p)]
+        elif _is_filter_selfreg:
+            products = [p for p in products if _is_selfreg(p)]
+        elif _is_filter_split:
+            products = [p for p in products if _is_split(p)]
         elif _is_filter_oos:
             products = [p for p in products if (p.get('status') or 'SALE').upper() in ('OUTOFSTOCK', 'SOLD_OUT', 'SOLDOUT')]
         elif _is_filter_susp:
