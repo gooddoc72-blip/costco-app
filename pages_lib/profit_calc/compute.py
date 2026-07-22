@@ -22,6 +22,31 @@ def _int(v, d=0):
         return d
 
 
+# 고객배송비 정산 비율 — db_orders._ship_settle_factor와 일치(전액 정산 1.0).
+#   네이버 수수료 5.5%는 판매가에만 적용돼 정산예정금액에 이미 반영됨.
+SHIP_SETTLE_FACTOR = 1.0
+
+
+def settled_shipping(shipping_fee, factor=SHIP_SETTLE_FACTOR):
+    """실정산배송비 = round(배송비합계 × factor). page.py: df['배송비 합계'].round().astype(int)."""
+    try:
+        return int(round(float(shipping_fee or 0) * factor))
+    except (TypeError, ValueError):
+        return 0
+
+
+def compute_profit(settlement_amount, shipping_fee, cost_price, delivery_cost, box_cost,
+                   factor=SHIP_SETTLE_FACTOR, only_when_costed=False):
+    """행별 수입(순수). page.py 라인 585 · db_stats._PS_PROFIT_EXPR과 동일 공식:
+        수입 = (정산예정금액 + 실정산배송비) − (구입가격 + 택배원가 + 박스원가)
+    only_when_costed=True면 구입가<=0 행은 0으로(집계용 db_stats 규칙)."""
+    cp = _int(cost_price)
+    if only_when_costed and cp <= 0:
+        return 0
+    return (_int(settlement_amount) + settled_shipping(shipping_fee, factor)) - (
+        cp + _int(delivery_cost) + _int(box_cost))
+
+
 def compute_row(row, *, match_fn, receipt_by_pno, receipt_matches,
                 kw_overrides, receipt_pick, surcharge_map, calc_date_str):
     """한 주문행 매칭·원가. Returns dict(cost, source, matched_name, matched_pno, sqty, auto_links)."""
