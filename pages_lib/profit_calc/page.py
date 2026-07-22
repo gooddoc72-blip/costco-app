@@ -99,6 +99,14 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     excel_pw = _gs("excel_password")
 
     st.header("💰 수익 계산")
+    # 🆕 React 베타(정적 /calc) — 같은 API·데이터. sid를 넘겨 로그인 공유. 병행 운영(비교/검증용).
+    _sid_link = st.session_state.get('_sid', '')
+    if _sid_link:
+        st.markdown(
+            f'<a href="/calc/?sid={_sid_link}" target="_blank" '
+            f'style="font-size:13px;color:#0f3460;text-decoration:none">'
+            f'🆕 React 베타 버전 새 창으로 열기 — 같은 데이터·새 화면 (비교용)</a>',
+            unsafe_allow_html=True)
     _ship_default = int(_gs('shipping_cost') or 1800)
     _box_default  = int(_gs('box_cost') or 300)
     if _ship_default > 100000: _ship_default = 1800
