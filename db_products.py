@@ -20,7 +20,7 @@ def get_shared_products():
 
 def _upsert_shared_internal(costco_name, keyword, store_price=None, online_price=None,
                             product_no='', split_qty=1, updated_by='', image_url='',
-                            receipt_date=''):
+                            receipt_date='', force_store=False):
     conn = sqlite3.connect(AUTH_DB)
     conn.row_factory = sqlite3.Row
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -42,8 +42,11 @@ def _upsert_shared_internal(costco_name, keyword, store_price=None, online_price
         cur_online = existing['online_price'] or 0
         cur_st_at  = existing['store_updated_at'] or ''
         cur_on_at  = existing['online_updated_at'] or ''
+        # 관리자 영수증(force_store)은 날짜 가드 무시하고 항상 실단가로 덮어씀.
+        # 일반 경로는 옛 영수증이 최신가를 덮지 않도록 receipt_date로 가드.
         _skip_store = (
-            store_price is not None
+            not force_store
+            and store_price is not None
             and receipt_date
             and cur_st_at
             and receipt_date[:10] < cur_st_at[:10]
@@ -92,12 +95,12 @@ def _upsert_shared_internal(costco_name, keyword, store_price=None, online_price
 
 
 def upsert_shared_store_price(costco_name, keyword, price, product_no='', split_qty=1,
-                               updated_by='', image_url='', receipt_date=''):
+                               updated_by='', image_url='', receipt_date='', force_store=False):
     _upsert_shared_internal(costco_name, keyword,
                             store_price=price, online_price=None,
                             product_no=product_no, split_qty=split_qty,
                             updated_by=updated_by, image_url=image_url,
-                            receipt_date=receipt_date)
+                            receipt_date=receipt_date, force_store=force_store)
 
 
 def upsert_shared_online_price(costco_name, keyword, price, product_no='', split_qty=1,
@@ -743,11 +746,17 @@ def _contribute_shared_from_user(product_no, costco_name, keyword, price, split_
         return False
     conn = sqlite3.connect(AUTH_DB)
     conn.row_factory = sqlite3.Row
-    row = conn.execute("SELECT id, unit_price FROM shared_products WHERE product_no=?",
-                       (str(product_no),)).fetchone()
+    row = conn.execute(
+        "SELECT id, unit_price, store_price, updated_by FROM shared_products WHERE product_no=?",
+        (str(product_no),)).fetchone()
     conn.close()
     if (not manual) and row and int(row['unit_price'] or 0) > 0:
         return False  # 자동 기여는 기존 공유값 보호(다른 판매자 값 유지)
+    # 관리자 영수증 실단가는 최종권위 — 일반 사용자 수동 저장이 덮어쓰지 못하게 보호.
+    #   admin이 심은 store_price가 있으면, admin 본인(username=='admin')만 재갱신 가능.
+    if (manual and row and int(row['store_price'] or 0) > 0
+            and (row['updated_by'] or '') == 'admin' and username != 'admin'):
+        return False
     _upsert_shared_internal(costco_name or keyword, keyword or costco_name,
                             store_price=int(price), product_no=str(product_no),
                             split_qty=split_qty, updated_by=f'user:{username}'[:40])

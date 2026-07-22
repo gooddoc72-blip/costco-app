@@ -177,7 +177,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict, embedded: bool = False
                                 upsert_shared_store_price(
                                     costco_name=p['상품명'], keyword=p['상품명'],
                                     price=_pr, product_no=_pno, updated_by=USERNAME,
-                                    receipt_date=p.get('receipt_date', ''))
+                                    receipt_date=p.get('receipt_date', ''),
+                                    force_store=IS_ADMIN)
                                 _saved_n += 1
                             except Exception:
                                 pass
@@ -244,6 +245,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict, embedded: bool = False
                             price=_um_price, product_no=_um_pno,
                             updated_by=USERNAME,
                             receipt_date=_um.get('receipt_date', ''),
+                            force_store=IS_ADMIN,
                         )
                         _reg_ok += 1
                     if _reg_ok:
@@ -333,6 +335,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict, embedded: bool = False
                         product_no=p.get('상품번호', ''),
                         updated_by=USERNAME,
                         receipt_date=_rd,
+                        force_store=IS_ADMIN,
                     )
                     cnt += 1
                 st.session_state['_shared_cache_dirty'] = True; invalidate_data_cache()
