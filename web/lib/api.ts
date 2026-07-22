@@ -6,7 +6,10 @@ export type ProfitRow = {
   order_no: string;
   recipient: string;
   product_name: string;
+  product_no: string;
+  option_info: string;
   qty: number;
+  order_amount: number;
   settlement_amount: number;
   shipping_fee: number;
   extra_shipping: number;
@@ -18,8 +21,40 @@ export type ProfitRow = {
   match_source: string;
   matched_name: string;
   matched_pno: string;
+  matched_keyword: string;
   split_qty: number;
 };
+
+// 행별 수입 — compute_profit(factor 1.0)와 동일: 정산예정 + 실정산배송비 − (구입가+택배+박스).
+export function rowProfit(r: ProfitRow): number {
+  return (r.settlement_amount || 0) + (r.settled_shipping || 0)
+    - (r.cost_price || 0) - (r.delivery_cost || 0) - (r.box_cost || 0);
+}
+
+// 저장 스키마(save_profit_settlements)로 매핑.
+export function toSaveRow(r: ProfitRow): Record<string, unknown> {
+  return {
+    order_no: r.order_no,
+    recipient: r.recipient,
+    product_name: r.product_name,
+    product_no: r.product_no,
+    option_info: r.option_info,
+    qty: r.qty,
+    order_amount: r.order_amount,
+    shipping_fee: r.shipping_fee,
+    extra_shipping: r.extra_shipping,
+    settlement_amount: r.settlement_amount,
+    cost_price: r.cost_price,
+    delivery_cost: r.delivery_cost,
+    box_cost: r.box_cost,
+    profit: rowProfit(r),
+    matched_keyword: r.matched_keyword,
+    matched_product_no: r.matched_pno,
+    match_source: r.match_source,
+    split_qty: r.split_qty,
+    sell_factor: 1,
+  };
+}
 
 export type ProfitSummary = {
   settlement: number;

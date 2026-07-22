@@ -40,5 +40,10 @@ td.num { text-align: right; font-variant-numeric: tabular-nums; }
 tr:hover td { background: #fbfcfe; }
 .pos { color: #1D9E75; } .neg { color: #e11d48; }
 .tag { font-size: 11px; color: #6b7280; background: #eef1f5; border-radius: 4px; padding: 1px 6px; }
+input.edit {
+  width: 82px; text-align: right; font-size: 13px; padding: 4px 6px;
+  border: 1px solid #cbd5e1; border-radius: 6px; font-variant-numeric: tabular-nums;
+}
+input.edit:focus { outline: none; border-color: #0f3460; box-shadow: 0 0 0 2px #0f346022; }
 .err { background: #fee; border: 1px solid #f3b4c0; color: #b91c1c; padding: 10px 12px; border-radius: 8px; margin: 12px 0; }
 .ok { background: #ecfdf5; border: 1px solid #a7f3d0; color: #047857; padding: 10px 12px; border-radius: 8px; margin: 12px 0; }

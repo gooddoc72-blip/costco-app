@@ -61,7 +61,10 @@ class ProfitRow(BaseModel):
     order_no: str
     recipient: str
     product_name: str
+    product_no: str
+    option_info: str
     qty: int
+    order_amount: int
     settlement_amount: int
     shipping_fee: int
     extra_shipping: int
@@ -73,6 +76,7 @@ class ProfitRow(BaseModel):
     match_source: str
     matched_name: str
     matched_pno: str
+    matched_keyword: str
     split_qty: int
 
 
@@ -205,7 +209,10 @@ def get_profit(date: str, user: dict = Depends(require_user)):
             order_no=str(rec.get('_sk', '')),
             recipient=str(rec.get('수취인명', '') or ''),
             product_name=str(rec.get('상품명', '') or ''),
+            product_no=str(rec.get('product_no', '') or ''),
+            option_info=str(rec.get('옵션정보', '') or ''),
             qty=_int(rec.get('수량', 1), 1),
+            order_amount=_int(rec.get('최종 상품별 총 주문금액', 0)),
             settlement_amount=settlement,
             shipping_fee=shipping,
             extra_shipping=_int(rec.get('제주/도서 추가배송비', 0)),
@@ -217,6 +224,7 @@ def get_profit(date: str, user: dict = Depends(require_user)):
             match_source=str(res.get('source', '')),
             matched_name=str(res.get('matched_name', '')),
             matched_pno=str(res.get('matched_pno', '')),
+            matched_keyword=str(res.get('matched_name', '') or ''),
             split_qty=_int(res.get('sqty', 1), 1),
         ))
     summary = ProfitSummary(settlement=t_settle, settled_shipping=t_sship, cost=t_cost,
