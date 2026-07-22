@@ -93,7 +93,7 @@ from pages_lib import (
     profit_calc_page, settings_page, accounting_page,
     product_db_page, admin_page, naver_register_page,
     guide_page, settlement_page, cafe24_page, inventory_page,
-    receipt_settle_page, billing_page,
+    receipt_settle_page, billing_page, purchase_settle_page,
 )
 
 # 페이지 모듈에 캐시 헬퍼 주입 (페이지 모듈이 동일한 캐시 인스턴스 공유)
@@ -400,6 +400,10 @@ def run_billing():
     billing_page.render(USERNAME, IS_ADMIN, settings)
 
 
+def run_purchase_settle():
+    purchase_settle_page.render(USERNAME, IS_ADMIN, settings)
+
+
 # 페이지 정의 (섹션 그룹)
 _pages = {
     "운영": [
@@ -431,6 +435,7 @@ if IS_ADMIN:
     _pages["관리자"] = [
         st.Page(run_admin, title="관리자", icon=":material/admin_panel_settings:"),
         st.Page(run_receipt_settle, title="영수증 정산", icon=":material/receipt:"),
+        st.Page(run_purchase_settle, title="구매내역 정산", icon=":material/shopping_cart:"),
         st.Page(run_billing, title="포장·청구", icon=":material/inventory:"),
     ]
 

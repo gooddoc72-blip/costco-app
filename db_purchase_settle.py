@@ -84,9 +84,12 @@ def _ensure(conn):
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
             settle_date TEXT,
             username    TEXT,
-            goods_total INTEGER DEFAULT 0,
-            items_json  TEXT,
-            status      TEXT DEFAULT 'est',   -- 'est'(예상) | 'final'(확정)
+            est_total   INTEGER DEFAULT 0,   -- 예상 구매금액(기준선)
+            est_items_json TEXT,             -- 예상 상품별 스냅샷(변경 비교 기준)
+            final_total INTEGER DEFAULT 0,   -- 확정 구매금액(영수증 반영 후)
+            changed_json TEXT,               -- 확정 시 변경 상품 목록
+            fees_total  INTEGER DEFAULT 0,   -- 월말 택배+포장 (해당일만)
+            status      TEXT DEFAULT 'est',  -- 'est'(예상) | 'final'(확정)
             created_by  TEXT,
             created_at  TEXT,
             updated_at  TEXT,
@@ -96,21 +99,50 @@ def _ensure(conn):
     conn.commit()
 
 
-def save_snapshot(settle_date, username, goods_total, items, status='est', created_by=''):
-    """청구 스냅샷 upsert (사용자·날짜 1건). 확정 비교의 기준선."""
+def save_estimate(settle_date, username, est_total, est_items, created_by=''):
+    """예상 기준선 저장(upsert). 확정 비교의 baseline. status='est'로 초기화(final 해제)."""
     conn = _conn()
     _ensure(conn)
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     conn.execute(
         """INSERT INTO purchase_settle_snapshot
-           (settle_date, username, goods_total, items_json, status, created_by, created_at, updated_at)
-           VALUES (?,?,?,?,?,?,?,?)
+           (settle_date, username, est_total, est_items_json, final_total, changed_json,
+            status, created_by, created_at, updated_at)
+           VALUES (?,?,?,?,0,'','est',?,?,?)
            ON CONFLICT(settle_date, username) DO UPDATE SET
-             goods_total=excluded.goods_total, items_json=excluded.items_json,
-             status=excluded.status, updated_at=excluded.updated_at""",
-        (str(settle_date), username, int(goods_total), json.dumps(items, ensure_ascii=False),
-         status, created_by, now, now),
+             est_total=excluded.est_total, est_items_json=excluded.est_items_json,
+             final_total=0, changed_json='', status='est', updated_at=excluded.updated_at""",
+        (str(settle_date), username, int(est_total),
+         json.dumps(est_items, ensure_ascii=False), created_by, now, now),
     )
+    conn.commit()
+    conn.close()
+
+
+def finalize(settle_date, username, final_total, changed, fees_total=0, created_by=''):
+    """확정 — 예상 baseline은 보존하고 final_total·변경목록·상태만 갱신.
+    예상 저장이 없으면 baseline=final로 생성(변경 0)."""
+    conn = _conn()
+    _ensure(conn)
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    exists = conn.execute(
+        "SELECT id FROM purchase_settle_snapshot WHERE settle_date=? AND username=?",
+        (str(settle_date), username)).fetchone()
+    if exists:
+        conn.execute(
+            """UPDATE purchase_settle_snapshot
+               SET final_total=?, changed_json=?, fees_total=?, status='final', updated_at=?
+               WHERE settle_date=? AND username=?""",
+            (int(final_total), json.dumps(changed, ensure_ascii=False), int(fees_total),
+             now, str(settle_date), username))
+    else:
+        conn.execute(
+            """INSERT INTO purchase_settle_snapshot
+               (settle_date, username, est_total, est_items_json, final_total, changed_json,
+                fees_total, status, created_by, created_at, updated_at)
+               VALUES (?,?,?,?,?,?,?, 'final', ?,?,?)""",
+            (str(settle_date), username, int(final_total), '[]', int(final_total),
+             json.dumps(changed, ensure_ascii=False), int(fees_total), created_by, now, now))
     conn.commit()
     conn.close()
 
@@ -125,21 +157,22 @@ def get_snapshot(settle_date, username):
     if not r:
         return None
     d = dict(r)
-    try:
-        d['items'] = json.loads(d.get('items_json') or '[]')
-    except Exception:
-        d['items'] = []
+    for k, j in (('est_items', 'est_items_json'), ('changed', 'changed_json')):
+        try:
+            d[k] = json.loads(d.get(j) or '[]')
+        except Exception:
+            d[k] = []
     return d
 
 
 def diff_against_snapshot(settle_date, username):
-    """현재 계산(확정 후보) vs 저장 스냅샷(예상) 상품별 차액.
-    Returns {changed:[{order_no,product_name,prev,now,diff}], total_prev, total_now, total_diff}."""
+    """현재 계산(확정 후보) vs 저장된 예상 baseline 상품별 차액.
+    Returns {changed:[...], total_prev, total_now, total_diff}."""
     snap = get_snapshot(settle_date, username)
     cur_items, cur_total = compute_daily_purchase(username, settle_date)
     prev_by = {}
     if snap:
-        for it in snap.get('items', []):
+        for it in snap.get('est_items', []):
             prev_by[(it.get('order_no'), it.get('product_name'))] = int(it.get('amount', 0) or 0)
     changed = []
     for it in cur_items:
@@ -149,6 +182,20 @@ def diff_against_snapshot(settle_date, username):
         if prev is not None and prev != nowv:
             changed.append({'order_no': it['order_no'], 'product_name': it['product_name'],
                             'prev': prev, 'now': nowv, 'diff': nowv - prev})
-    total_prev = int(snap['goods_total']) if snap else cur_total
+    total_prev = int(snap['est_total']) if snap else cur_total
     return {'changed': changed, 'total_prev': total_prev,
             'total_now': cur_total, 'total_diff': cur_total - total_prev}
+
+
+def get_user_badge(settle_date, username):
+    """사용자 화면 배지용 — 확정되어 예상과 다르면 변경 요약 반환, 아니면 None."""
+    snap = get_snapshot(settle_date, username)
+    if not snap or snap.get('status') != 'final':
+        return None
+    diff = int(snap.get('final_total', 0)) - int(snap.get('est_total', 0))
+    changed = snap.get('changed', [])
+    if not changed and diff == 0:
+        return None
+    return {'diff': diff, 'changed': changed,
+            'est_total': int(snap.get('est_total', 0)),
+            'final_total': int(snap.get('final_total', 0))}
