@@ -8,10 +8,10 @@ User=costco
 Group=costco
 WorkingDirectory=/opt/costco-app
 EnvironmentFile=/opt/costco-app/.env
-# Streamlit(8501)과 별도 포트. nginx가 /api/* 만 이쪽으로 라우팅(Phase4).
+# 포트 8610 — 8501(Streamlit)·8600(costco-license)과 겹치지 않게. nginx가 /api/* 라우팅(Phase4).
 ExecStart=/opt/costco-app/venv/bin/uvicorn api.main:app \
     --host 127.0.0.1 \
-    --port 8600 \
+    --port 8610 \
     --workers 2
 
 Restart=always
