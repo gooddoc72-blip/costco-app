@@ -4,8 +4,8 @@ After=network.target
 
 [Service]
 Type=simple
-User=costco
-Group=costco
+User=ubuntu
+Group=ubuntu
 WorkingDirectory=/opt/costco-app
 EnvironmentFile=/opt/costco-app/.env
 # 포트 8610 — 8501(Streamlit)·8600(costco-license)과 겹치지 않게. nginx가 /api/* 라우팅(Phase4).
