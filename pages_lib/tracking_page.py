@@ -370,7 +370,20 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             elif _p["id"] == "coupang":
                 _dc3.caption("💡 쿠팡 상품주문번호 형식: `주문번호-아이템번호` — CJ 고객주문번호에 이 값 입력")
                 if _dc2.button("🚀 발송처리", key=f"btn_{_p['id']}", type="primary", use_container_width=True):
-                    _items = [{"productOrderId": str(r['상품주문번호']).strip(),
+                    # 업로드값이 orderId만(하이픈 없음)이면 order_history의 전체 상품주문번호
+                    # (orderId-vendorItemId)로 해결 — CJ에 orderId만 넣은 경우도 발송 가능하게.
+                    from db import search_order_history as _soh
+                    _cp_full = {}
+                    for _h in (_soh(USERNAME, date_from='', date_to='', limit=5000) or []):
+                        _ono = str(_h.get('order_no', '') or '')
+                        if '-' in _ono and not _ono.endswith('-None'):
+                            _cp_full.setdefault(_ono.split('-')[0], _ono)
+
+                    def _resolve_cp(_v):
+                        _v = str(_v).split('.')[0].strip()
+                        return _v if '-' in _v else _cp_full.get(_v, _v)
+
+                    _items = [{"productOrderId": _resolve_cp(r['상품주문번호']),
                                 "courierCode": _code_val,
                                 "trackingNumber": str(r['송장번호']).replace('-','').strip()}
                                for _, r in result_df.iterrows()]
