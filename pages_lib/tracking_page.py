@@ -186,10 +186,11 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             "available": HAS_COUPANG_API and bool(cq_access) and bool(cq_secret) and bool(cq_vendor),
             "unavail_tip": "설정 > 쿠팡 Wing API 키 입력 필요",
             "courier_map": {
-                "CJ대한통운": "CJ_LOGISTICS", "롯데택배": "LOTTE",
-                "한진택배": "HANJIN", "우체국택배": "EPOST", "로젠택배": "LOGEN",
+                "CJ대한통운": "CJGLS", "롯데택배": "HDEXP",
+                "한진택배": "HANJIN", "우체국택배": "EPOST", "로젠택배": "KGB",
+                "경동택배": "KDEXP", "대신택배": "DAESIN",
             },
-            "code_hint": "CJ_LOGISTICS / LOTTE / HANJIN / EPOST / LOGEN",
+            "code_hint": "CJGLS / HDEXP / HANJIN / EPOST / KGB / KDEXP",
         },
         # ── 향후 스토어 추가: 아래 주석 해제 후 id/label/courier_map 수정 ──
         # {"id": "gmarket", "label": "G마켓/옥션", "available": False,

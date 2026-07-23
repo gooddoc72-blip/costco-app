@@ -384,14 +384,16 @@ def dispatch_orders(access_key: str, secret_key: str, vendor_id: str, ship_data:
     Returns:
         ({"success": N, "fail": N, "fail_details": [...], "sent_count": N}, error_msg)
     """
+    # 쿠팡 실제 수용 코드로 검증됨(2026-07): CJGLS/HANJIN/HDEXP/EPOST/KGB/KDEXP/DAESIN.
+    #   (CJ_LOGISTICS·LOTTE·LOGEN·ILOGEN은 쿠팡에서 미지원)
     COURIER_MAP = {
-        "CJ대한통운": "CJ_LOGISTICS", "CJGLS": "CJ_LOGISTICS", "CJ": "CJ_LOGISTICS",
-        "한진택배":   "HANJIN",       "HANJIN": "HANJIN",
-        "롯데택배":   "LOTTE",        "HYUNDAI": "LOTTE",   # 네이버 코드 HYUNDAI → 쿠팡 LOTTE
-        "우체국택배": "EPOST",        "EPOST": "EPOST",
-        "로젠택배":   "LOGEN",        "KGB": "LOGEN",
-        "경동택배":   "KDEXP",        "KDEXP": "KDEXP",
-        "대신택배":   "DAESIN",       "DAESIN": "DAESIN",
+        "CJ대한통운": "CJGLS", "CJGLS": "CJGLS", "CJ": "CJGLS", "CJ_LOGISTICS": "CJGLS",
+        "한진택배":   "HANJIN", "HANJIN": "HANJIN",
+        "롯데택배":   "HDEXP", "LOTTE": "HDEXP", "HDEXP": "HDEXP", "HYUNDAI": "HDEXP",
+        "우체국택배": "EPOST", "EPOST": "EPOST",
+        "로젠택배":   "KGB", "LOGEN": "KGB", "ILOGEN": "KGB", "KGB": "KGB",
+        "경동택배":   "KDEXP", "KDEXP": "KDEXP",
+        "대신택배":   "DAESIN", "DAESIN": "DAESIN",
     }
 
     total_success = 0
