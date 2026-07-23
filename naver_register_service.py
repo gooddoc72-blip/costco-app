@@ -315,6 +315,7 @@ def auto_register(username, api_id, api_secret, *, margin=10, max_count=20,
     out = {
         "ok": 0, "fail": 0,
         "skipped_no_category": 0, "skipped_no_price": 0, "skipped_no_image": 0,
+        "skipped_soldout": 0,
         "processed": 0, "results": [],
     }
     processed = 0
@@ -333,6 +334,28 @@ def auto_register(username, api_id, api_secret, *, margin=10, max_count=20,
             out["skipped_no_image"] += 1
             out["results"].append({"상품명": name, "결과": "skip", "내용": "이미지 없음"})
             continue
+
+        # ── 코스트코 판매종료/품절 스킵 (죽은 상품 등록 방지) ──
+        #   AI·등록 비용 소모 전에 확인. 판매종료(exists=False)=영구 스킵,
+        #   품절(available=False)=이번 회차만(재입고 가능하므로 영구 제외 안 함).
+        _pno = str(p.get("product_no") or "").strip()
+        if _pno:
+            try:
+                from costco_crawler import fetch_costco_status as _fcs
+                _cs = _fcs(_pno)
+            except Exception:
+                _cs = {}
+            _ended = _cs.get("exists") is False
+            _oos = _cs.get("available") is False
+            if _ended or _oos:
+                out["skipped_soldout"] += 1
+                _rsn = _cs.get("reason") or ("판매종료" if _ended else "품절")
+                out["results"].append({"상품명": name, "결과": "skip", "내용": f"코스트코 {_rsn}"})
+                log(f"  ⏭ {name}: 코스트코 {_rsn} — 등록 안 함")
+                if _ended:
+                    _skip.add(_skey(p))
+                    _skip_dirty = True
+                continue
 
         # ── 여기부터 고비용(AI 카테고리·등록) → 회당 상한 적용 ──
         if processed >= max_count:

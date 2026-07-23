@@ -1233,6 +1233,19 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     _do_res.append({"상품명": _dp_name, "카테고리": _dcat_name,
                                     "결과": "❌", "내용": "가격 없음"})
                     _do_prog.progress((_di+1)/len(_cart_items)); continue
+                # 코스트코 판매종료/품절이면 등록 안 함 (죽은 상품 업로드 방지)
+                _dpno = str(_dp.get("product_no") or "").strip()
+                if _dpno:
+                    try:
+                        import costco_crawler as _cc_st
+                        _dcs = _cc_st.fetch_costco_status(_dpno)
+                    except Exception:
+                        _dcs = {}
+                    if _dcs.get("exists") is False or _dcs.get("available") is False:
+                        _drsn = _dcs.get("reason") or "판매종료/품절"
+                        _do_res.append({"상품명": _dp_name, "카테고리": _dcat_name,
+                                        "결과": "⏭", "내용": f"코스트코 {_drsn} — 등록 제외"})
+                        _do_prog.progress((_di+1)/len(_cart_items)); continue
                 _origin, _rerr = naver_register_service.register_one(
                     USERNAME, api_id, api_secret, _dp, _dcat,
                     opts={"sale_price": _dp_price, "as_tel": _do_as, "stock": 10})
