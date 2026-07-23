@@ -266,8 +266,12 @@ def _parse_order_and_excel(order: dict, seq_no: int) -> tuple:
         option_name = item.get("vendorOptionName") or item.get("optionName") or ""
         exposed_nm  = f"{item_name} ({option_name})" if option_name else item_name
 
+        # 쿠팡 아이템 식별자: orderItemId가 없으면(대부분 None) vendorItemId 사용.
+        #   발송처리(dispatch_orders) 상품주문번호 형식 orderId-itemId 에 쓰임. None 방지.
+        _item_id = (str(item.get("orderItemId") or "").strip()
+                    or str(item.get("vendorItemId") or "").strip())
         unified_rows.append({
-            "상품주문번호": f"{order.get('orderId')}-{item.get('orderItemId')}",
+            "상품주문번호": f"{order.get('orderId')}-{_item_id}",
             "수취인명":     recv_name,
             "상품명":       item_name,
             "옵션정보":     item.get("externalVendorSkuCode") or "",
