@@ -68,6 +68,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         st.session_state['_rs_fkey'] = _fkey
         st.session_state['_rs_fails'] = fails
         st.session_state.pop('rs_alloc', None)   # 새 업로드 → 이전 미리보기 초기화
+        st.session_state.pop('rs_day', None)     # 새 영수증 → 정산일을 새 영수증 날짜로 재설정
 
     for fn, em in st.session_state.get('_rs_fails', []):
         st.warning(f"⚠️ 자동 인식 실패: **{fn}** — {em}. 아래 표에 **직접 입력**해서 정산할 수 있습니다.")
@@ -111,7 +112,19 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     # ── 2) 당일 배치 ── (당일 주문건만 매칭 — 매일 그날 주문에 대해 정산)
     st.divider()
     st.subheader("📅 당일 주문 배치")
-    d_day = st.date_input("정산 날짜 (당일 주문 기준)", value=date.today(), key="rs_day")
+    # 영수증에서 인식된 날짜를 기본 정산일로 (영수증일자 ↔ 주문일자 매칭)
+    _rdates = sorted({(it.get('receipt_date') or '')[:10]
+                      for it in receipt_items if (it.get('receipt_date') or '')})
+    _def_day = date.today()
+    if _rdates:
+        try:
+            _def_day = date.fromisoformat(_rdates[-1])
+        except Exception:
+            _def_day = date.today()
+    d_day = st.date_input("정산 날짜 (당일 주문 기준)", value=_def_day, key="rs_day")
+    if _rdates:
+        st.caption(f"🧾 영수증 인식 날짜: **{', '.join(_rdates)}** → 기본 정산일로 설정됨. "
+                   "여러 날짜면 각 날짜별로 나눠 배치하세요.")
     st.caption(f"**{d_day}** 에 결제된(주문일 기준) 모든 판매자 주문 중, 위 영수증 상품번호와 일치하는 건에 배치합니다.")
     d_from = d_to = d_day
 
@@ -216,7 +229,7 @@ def _render_match_section(alloc, dmap, settings, USERNAME):
     if st.button("🤖 AI 자동매칭", key="rs_ai_match", disabled=not ai_key,
                  help=None if ai_key else "설정 탭에서 Anthropic API 키를 먼저 등록하세요."):
         with st.spinner("AI가 상품명을 비교해 매칭 중..."):
-            pairs = ai_match_receipt_orders(u_rcpt, u_ords, ai_key)
+            pairs, ai_err = ai_match_receipt_orders(u_rcpt, u_ords, ai_key)
         if pairs:
             new = build_manual_rows([
                 {'order': u_ords[p['order_index']], 'costco_no': p['costco_no'],
@@ -224,6 +237,13 @@ def _render_match_section(alloc, dmap, settings, USERNAME):
             _merge_matches(alloc, new, [p['order_index'] for p in pairs])
             st.success(f"🤖 AI가 {len(new)}건 매칭했습니다.")
             st.rerun()
+        elif ai_err:
+            # 실제 API 오류(크레딧 부족 등)를 그대로 노출 — '못 찾음'으로 오인 방지
+            _low = ('credit' in ai_err.lower() or '크레딧' in ai_err or 'balance' in ai_err.lower())
+            st.error(f"⚠️ AI 매칭을 실행하지 못했습니다: {ai_err}"
+                     + ("\n\n👉 Anthropic 계정의 **크레딧이 소진**됐습니다. Plans & Billing에서 "
+                        "크레딧을 충전하면 AI 매칭이 동작합니다. 그동안은 아래 **수동 매칭**을 이용하세요."
+                        if _low else "\n\n아래 수동 매칭을 이용하세요."))
         else:
             st.info("AI가 자신 있게 매칭할 항목을 못 찾았습니다. 아래 수동 매칭을 이용하세요.")
 

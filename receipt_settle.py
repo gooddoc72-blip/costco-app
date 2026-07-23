@@ -176,31 +176,39 @@ def build_manual_rows(pairs):
 
 def ai_match_receipt_orders(unmatched_receipt, unmatched_orders, ai_key):
     """AI(Claude)로 미매칭 영수증 품목 ↔ 미매칭 주문을 상품명 의미 기준으로 매칭.
-    Returns: [{order_index, costco_no}] (매칭된 것만). 실패 시 []."""
-    if not (unmatched_receipt and unmatched_orders and ai_key):
-        return []
+    Returns: (pairs, error).
+      pairs: [{order_index, costco_no, unit_price}] (매칭된 것만).
+      error: 실패 사유 문자열('' = 정상). API 크레딧 부족 등 실제 오류를 호출자가 표시하도록.
+    """
+    if not ai_key:
+        return [], 'Anthropic API 키가 없습니다 (설정 탭에서 등록).'
+    if not (unmatched_receipt and unmatched_orders):
+        return [], ''
     import json
     r_lines = "\n".join(f"R{i}: [{it['상품번호']}] {it['상품명']} ({it['단가']}원)"
                         for i, it in enumerate(unmatched_receipt))
     o_lines = "\n".join(f"O{i}: {o['product_name']} (수량 {o['qty']})"
                         for i, o in enumerate(unmatched_orders))
-    system = ("너는 코스트코 영수증 품목과 네이버 주문을 같은 상품끼리 매칭하는 도우미다. "
-              "브랜드/용량/상품종류가 같으면 매칭하고, 애매하면 매칭하지 않는다. JSON만 출력한다.")
+    system = ("너는 코스트코 영수증 품목과 네이버 스마트스토어 주문 상품명을 같은 상품끼리 "
+              "매칭하는 전문가다. 네이버 상품명은 검색 키워드가 잔뜩 붙어 길고, 영수증명은 짧다. "
+              "브랜드·핵심 상품종류·용량이 일치하면 적극적으로 매칭한다(키워드 나열은 무시). "
+              "명백히 다른 상품만 제외한다. 반드시 JSON만 출력한다.")
     user_msg = (
-        f"[영수증]\n{r_lines}\n\n[주문]\n{o_lines}\n\n"
-        "같은 상품끼리 매칭해서 JSON 배열로만 출력: "
-        "[{\"o\": 주문번호(int), \"r\": 영수증번호(int)}]. 매칭 없으면 []."
+        f"[영수증 품목]\n{r_lines}\n\n[미매칭 주문]\n{o_lines}\n\n"
+        "각 주문을 같은 상품의 영수증 품목에 연결해 JSON 배열로만 출력: "
+        "[{\"o\": 주문번호(int), \"r\": 영수증번호(int)}]. "
+        "한 영수증 품목에 여러 주문이 연결될 수 있다. 매칭 없으면 []."
     )
     try:
         from ai_service import claude_complete
         txt, err = claude_complete(ai_key, system, user_msg, max_tokens=1024,
                                    thinking={"type": "disabled"})
         if not txt:
-            return []
+            return [], (err or 'AI 응답이 비어 있습니다.')
         s = txt[txt.find('['): txt.rfind(']') + 1]
-        pairs = json.loads(s)
-    except Exception:
-        return []
+        pairs = json.loads(s) if s else []
+    except Exception as e:
+        return [], f'AI 매칭 처리 오류: {e}'
     out = []
     for p in pairs:
         try:
@@ -210,7 +218,7 @@ def ai_match_receipt_orders(unmatched_receipt, unmatched_orders, ai_key):
                             'unit_price': int(unmatched_receipt[ri]['단가'])})
         except Exception:
             continue
-    return out
+    return out, ''
 
 
 def cleanup_orphan_settlements():
