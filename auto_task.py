@@ -1250,19 +1250,30 @@ def run_naver_stock_sync_task(username="admin", force=False):
         log("❌ 네이버 커머스 API 키 미설정 → 건너뜀")
         return False
     try:
+        import time as _time
         import costco_crawler
         import naver_api
         import json as _json
-        from db import get_all_products, get_setting, set_setting
+        from db import get_all_products, get_shared_products, get_setting, set_setting
     except Exception as e:
         log(f"❌ 모듈 로드 실패: {e}")
         return False
 
+    # 코스트코 온라인몰에서 크롤링해 온 제품만 대상 (online_updated_at/online_price = 크롤러가 설정).
+    #   매장·소분·기타 경로 제품은 온라인 API 조회 시 오탐(404→판매종료)될 수 있어 제외.
+    _online_nos = {
+        str(sp.get('product_no') or '').strip()
+        for sp in (get_shared_products() or [])
+        if str(sp.get('product_no') or '').strip()
+        and (str(sp.get('online_updated_at') or '').strip()
+             or int(sp.get('online_price') or 0) > 0)
+    }
+
     prods = get_all_products(username) or []
     targets = [p for p in prods
-               if str(p.get('product_no') or '').strip()
+               if str(p.get('product_no') or '').strip() in _online_nos
                and str(p.get('naver_origin_pno') or p.get('naver_channel_pno') or '').strip()]
-    log(f"등록·코스트코번호 있는 상품 {len(targets)}개 점검")
+    log(f"코스트코 온라인 크롤 제품 {len(_online_nos)}종 · 등록된 대상 {len(targets)}개 점검")
 
     try:
         auto_stopped = set(_json.loads(get_setting(username, 'naver_auto_stopped') or '[]'))
@@ -1280,6 +1291,7 @@ def run_naver_stock_sync_task(username="admin", force=False):
             continue  # 조회 불확실 → 건너뜀(오탐 방지)
         dead = cs.get('exists') is False or cs.get('available') is False
         if dead and pno not in auto_stopped:
+            _time.sleep(0.5)   # 네이버 API 429(요청과다) 방지
             ok, e = naver_api.update_product_status(api_id, api_secret, pno, 'SUSPENSION')
             if ok:
                 n_stop += 1
@@ -1290,6 +1302,7 @@ def run_naver_stock_sync_task(username="admin", force=False):
                 n_err += 1
                 log(f"  ❌ 중지실패 {cno}: {e}")
         elif (not dead) and _reenable and pno in auto_stopped:
+            _time.sleep(0.5)   # 네이버 API 429 방지
             ok, e = naver_api.update_product_status(api_id, api_secret, pno, 'SALE')
             if ok:
                 n_resume += 1
