@@ -800,7 +800,33 @@ def run_fetch_orders_task(username="admin"):
         import pandas as _pd
         from db import save_order_history as _save_hist
         _df = _pd.DataFrame(all_orders)
-        saved = _save_hist(username, _df)
+        # 코스트코 상품가격이 DB에 있는 주문은 구매금액(구입가격)을 매칭해 order_history에 채움
+        _cost_df = None
+        try:
+            from db import get_all_products as _gap
+            _uprods_c = _gap(username)
+            _cost_rows = []
+            for _o in all_orders:
+                _nm = str(_o.get('상품명', '') or '')
+                if not _nm:
+                    continue
+                _mp = match_product_to_db(
+                    username, _nm, product_no=(str(_o.get('상품번호', '') or '') or None),
+                    _user_prods=_uprods_c)
+                if not _mp:
+                    continue
+                _pack_c = extract_pack_qty(str(_o.get('옵션정보', '') or ''), _nm)
+                _cost_c = calc_cost(_mp, int(_o.get('수량', 1) or 1), pack_qty=_pack_c)
+                if _cost_c > 0:
+                    _cost_rows.append({'상품명': _nm,
+                                       '수취인명': str(_o.get('수취인명', '') or ''),
+                                       '구입가격': _cost_c})
+            if _cost_rows:
+                _cost_df = _pd.DataFrame(_cost_rows)
+                log(f"💰 코스트코 구매금액 매칭: {len(_cost_rows)}건")
+        except Exception as _ce:
+            log(f"⚠️ 구매금액 매칭 실패(계속): {_ce}")
+        saved = _save_hist(username, _df, cost_df=_cost_df)
         log(f"💾 order_history UPSERT: {saved}건")
         # daily_orders(수익계산·홈달력용)에는 '오늘 처리할' 주문만 저장 → 항상 자동 저장.
         #   네이버: 결제완료/발주확인/발송대기 (발송완료 등 제외), 쿠팡: 수집분 전체(신규).
