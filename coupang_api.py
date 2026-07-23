@@ -338,6 +338,40 @@ def _parse_order(order: dict) -> list:
 
 # ── 일괄 발송처리 ──────────────────────────────────────────────────────────
 
+def _fetch_shipmentbox_map(access_key, secret_key, vendor_id, days=31):
+    """최근 발송대상(상품준비중/결제완료) 주문에서 {orderId(str): shipmentBoxId} 매핑.
+    송장업로드 API가 shipmentBoxId를 요구하므로 orderId로 역참조하기 위함."""
+    from urllib.parse import urlparse
+    d_to = datetime.now().strftime("%Y-%m-%d")
+    d_from = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+    m = {}
+    for status in ("ACCEPT", "INSTRUCT"):
+        next_token = None
+        for _ in range(40):   # 페이지 상한(안전)
+            path = f"/v2/providers/openapi/apis/api/v4/vendors/{vendor_id}/ordersheets"
+            params = {"createdAtFrom": d_from, "createdAtTo": d_to,
+                      "status": status, "maxPerPage": 50}
+            if next_token:
+                params["nextToken"] = next_token
+            prep = requests.Request("GET", BASE_URL + path, params=params).prepare()
+            q = urlparse(prep.url).query
+            h = _auth_header(access_key, secret_key, "GET", path, q)
+            try:
+                r = requests.get(prep.url, headers=h, timeout=30)
+                b = r.json() if r.content else {}
+            except Exception:
+                break
+            for o in (b.get("data") or []):
+                oid = str(o.get("orderId") or "")
+                sb = o.get("shipmentBoxId")
+                if oid and sb:
+                    m[oid] = sb
+            next_token = b.get("nextToken")
+            if not next_token:
+                break
+    return m
+
+
 def dispatch_orders(access_key: str, secret_key: str, vendor_id: str, ship_data: list):
     """쿠팡 Wing 일괄 발송처리.
 
@@ -365,53 +399,95 @@ def dispatch_orders(access_key: str, secret_key: str, vendor_id: str, ship_data:
     fail_details = []
     success_order_ids = []
 
+    # 송장업로드 API(orders/invoices)는 shipmentBoxId·orderId·vendorItemId를 요구.
+    #   상품주문번호 = orderId-vendorItemId → orderId로 shipmentBoxId 역참조.
+    box_map = _fetch_shipmentbox_map(access_key, secret_key, vendor_id)
+
+    dtos = []          # 전송할 orderSheetInvoiceApplyDtos
+    dto_poids = []     # dtos와 동일 순서의 상품주문번호(결과 매핑용)
+    dto_boxes = []     # dtos와 동일 순서의 shipmentBoxId
     for item in ship_data:
         poid = str(item.get("productOrderId", "")).strip()
         tracking = str(item.get("trackingNumber", "")).replace("-", "").strip()
-
-        # {orderId}-{orderItemId} 파싱
-        if "-" in poid:
-            parts = poid.split("-", 1)
-            order_id = parts[0]
-            item_id  = parts[1]
-        else:
-            # 하이픈 없으면 orderId만 있는 경우 — API 호출 불가, skip
-            total_fail += 1
-            fail_details.append(f"[건너뜀] {poid}: orderItemId를 파싱할 수 없습니다. 상품주문번호 형식(orderId-orderItemId)을 확인하세요.")
-            continue
-
         input_courier = str(item.get("courierCode", "")).strip()
         courier_code = COURIER_MAP.get(input_courier, input_courier)
 
-        path = (
-            f"/v2/providers/openapi/apis/api/v4/vendors/{vendor_id}"
-            f"/orders/{order_id}/items/{item_id}/invoices/{courier_code}"
-        )
-        headers = _auth_header(access_key, secret_key, "PUT", path, "")
-
-        try:
-            resp = requests.put(
-                BASE_URL + path,
-                headers=headers,
-                json={"invoiceNumber": tracking},
-                timeout=15,
-            )
-            try:
-                body = resp.json()
-            except Exception:
-                body = {}
-
-            code = str(body.get("code", ""))
-            if resp.status_code == 200 and code == "200":
-                total_success += 1
-                success_order_ids.append(poid)
-            else:
-                msg = body.get("message") or resp.text[:200]
-                total_fail += 1
-                fail_details.append(f"[실패] {poid}: [{resp.status_code}] {msg}")
-        except Exception as e:
+        if "-" not in poid:
             total_fail += 1
-            fail_details.append(f"[오류] {poid}: {str(e)}")
+            fail_details.append(f"[건너뜀] {poid}: 상품주문번호 형식(주문번호-아이템번호)을 확인하세요.")
+            continue
+        order_id, vendor_item_id = poid.split("-", 1)
+        box_id = box_map.get(str(order_id).strip())
+        if not box_id:
+            total_fail += 1
+            fail_details.append(f"[실패] {poid}: 발송 가능한 주문(상품준비중)을 찾지 못했습니다 "
+                                "(이미 발송됐거나 조회 범위 밖).")
+            continue
+        try:
+            dtos.append({
+                "shipmentBoxId": int(box_id),
+                "orderId": int(order_id),
+                "vendorItemId": int(vendor_item_id),
+                "deliveryCompanyCode": courier_code,
+                "invoiceNumber": str(tracking),
+                "splitShipping": False,
+                "preSplitShipped": False,
+                "estimatedShippingDate": "",
+            })
+            dto_poids.append(poid)
+            dto_boxes.append(str(box_id))
+        except (TypeError, ValueError) as e:
+            total_fail += 1
+            fail_details.append(f"[실패] {poid}: 번호 변환 오류 {e}")
+
+    if dtos:
+        # 송장업로드(상품준비중 → 배송): POST /orders/invoices (batch)
+        path = f"/v2/providers/openapi/apis/api/v4/vendors/{vendor_id}/orders/invoices"
+        headers = _auth_header(access_key, secret_key, "POST", path, "")
+        req_body = {"vendorId": vendor_id, "orderSheetInvoiceApplyDtos": dtos}
+        try:
+            resp = requests.post(BASE_URL + path, headers=headers, json=req_body, timeout=30)
+            try:
+                rb = resp.json()
+            except Exception:
+                rb = {}
+        except Exception as e:
+            return {"success": total_success, "fail": total_fail + len(dtos),
+                    "fail_details": fail_details + [f"[오류] 전송 실패: {e}"],
+                    "sent_count": len(ship_data), "success_order_ids": success_order_ids}, None
+
+        if resp.status_code != 200:
+            _msg = (rb.get("message") if isinstance(rb, dict) else "") or resp.text[:300]
+            for poid in dto_poids:
+                fail_details.append(f"[실패] {poid}: [{resp.status_code}] {_msg}")
+            total_fail += len(dtos)
+        else:
+            # 응답 responseList(=data): shipmentBoxId별 succeed/resultMessage
+            rlist = (rb.get("data") if isinstance(rb.get("data"), list) else None) \
+                or rb.get("responseList") or []
+            by_box = {}
+            for rr in (rlist or []):
+                if isinstance(rr, dict):
+                    by_box[str(rr.get("shipmentBoxId"))] = rr
+            for poid, box in zip(dto_poids, dto_boxes):
+                rr = by_box.get(box)
+                if rr is None:
+                    # 개별 결과가 없으면 전체 code 200 = 성공 간주
+                    if str(rb.get("code", "")) in ("200", ""):
+                        total_success += 1
+                        success_order_ids.append(poid)
+                    else:
+                        total_fail += 1
+                        fail_details.append(f"[실패] {poid}: {str(rb)[:180]}")
+                    continue
+                _ok = (rr.get("succeed") is True
+                       or str(rr.get("resultCode", "")).upper() in ("SUCCESS", "PERMANENT_SUCCESS"))
+                if _ok:
+                    total_success += 1
+                    success_order_ids.append(poid)
+                else:
+                    total_fail += 1
+                    fail_details.append(f"[실패] {poid}: {rr.get('resultMessage') or rr}")
 
     return {
         "success": total_success,
