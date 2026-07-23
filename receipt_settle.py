@@ -174,14 +174,16 @@ def build_manual_rows(pairs):
     return out
 
 
-def ai_match_receipt_orders(unmatched_receipt, unmatched_orders, ai_key):
-    """AI(Claude)로 미매칭 영수증 품목 ↔ 미매칭 주문을 상품명 의미 기준으로 매칭.
+def ai_match_receipt_orders(unmatched_receipt, unmatched_orders,
+                            anthropic_key='', gemini_key=''):
+    """AI로 미매칭 영수증 품목 ↔ 미매칭 주문을 상품명 의미 기준으로 매칭.
+    Gemini 키가 있으면 Gemini 우선, 없거나 실패 시 Claude 폴백.
     Returns: (pairs, error).
       pairs: [{order_index, costco_no, unit_price}] (매칭된 것만).
       error: 실패 사유 문자열('' = 정상). API 크레딧 부족 등 실제 오류를 호출자가 표시하도록.
     """
-    if not ai_key:
-        return [], 'Anthropic API 키가 없습니다 (설정 탭에서 등록).'
+    if not (anthropic_key or gemini_key):
+        return [], 'AI 키가 없습니다 (설정 탭 > 🤖 AI 설정에서 Gemini 또는 Claude 키 등록).'
     if not (unmatched_receipt and unmatched_orders):
         return [], ''
     import json
@@ -200,9 +202,9 @@ def ai_match_receipt_orders(unmatched_receipt, unmatched_orders, ai_key):
         "한 영수증 품목에 여러 주문이 연결될 수 있다. 매칭 없으면 []."
     )
     try:
-        from ai_service import claude_complete
-        txt, err = claude_complete(ai_key, system, user_msg, max_tokens=1024,
-                                   thinking={"type": "disabled"})
+        from ai_service import ai_complete
+        txt, err, _prov = ai_complete(system, user_msg, gemini_key=gemini_key,
+                                      anthropic_key=anthropic_key, max_tokens=1024)
         if not txt:
             return [], (err or 'AI 응답이 비어 있습니다.')
         s = txt[txt.find('['): txt.rfind(']') + 1]

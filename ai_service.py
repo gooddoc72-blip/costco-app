@@ -52,6 +52,66 @@ def claude_complete(api_key: str, system: str, user_msg: str,
         return None, str(e)
 
 
+# ── Gemini (Google) ────────────────────────────────────────
+GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+GEMINI_MODEL = "gemini-2.0-flash"   # 빠르고 저렴, 무료 등급 있음
+
+
+def gemini_complete(api_key: str, system: str, user_msg: str,
+                    max_tokens: int = 1200, model: str = GEMINI_MODEL):
+    """Gemini 메시지 1회 호출. 반환: (text, error)."""
+    if not api_key:
+        return None, "Gemini API 키 미설정 (설정 탭 > 🤖 AI 설정)"
+    try:
+        body = {
+            "systemInstruction": {"parts": [{"text": system}]},
+            "contents": [{"role": "user", "parts": [{"text": user_msg}]}],
+            "generationConfig": {"maxOutputTokens": max_tokens, "temperature": 0},
+        }
+        r = requests.post(
+            GEMINI_URL.format(model=model),
+            headers={"x-goog-api-key": api_key.strip(), "content-type": "application/json"},
+            json=body, timeout=60,
+        )
+        if r.status_code != 200:
+            try:
+                _e = r.json().get("error", {}).get("message") or r.text[:200]
+            except Exception:
+                _e = r.text[:200]
+            return None, f"[{r.status_code}] {_e}"
+        data = r.json()
+        cands = data.get("candidates") or []
+        if not cands:
+            return None, "빈 응답(후보 없음 — 안전차단/키 확인)"
+        parts = (cands[0].get("content") or {}).get("parts") or []
+        text = "".join(p.get("text", "") for p in parts)
+        return (text.strip() or None), (None if text.strip() else "빈 응답")
+    except Exception as e:
+        return None, str(e)
+
+
+def ai_complete(system: str, user_msg: str, *, gemini_key: str = '',
+                anthropic_key: str = '', max_tokens: int = 1200):
+    """가용 키로 자동 선택 — Gemini 우선(있으면), 실패 시 Claude 폴백.
+    반환: (text, error, provider)."""
+    if gemini_key:
+        txt, err = gemini_complete(gemini_key, system, user_msg, max_tokens=max_tokens)
+        if txt:
+            return txt, '', 'gemini'
+        if anthropic_key:
+            t2, e2 = claude_complete(anthropic_key, system, user_msg,
+                                     max_tokens=max_tokens, thinking={"type": "disabled"})
+            if t2:
+                return t2, '', 'claude'
+            return None, f"Gemini 실패({err}) · Claude 실패({e2})", ''
+        return None, err, 'gemini'
+    if anthropic_key:
+        t2, e2 = claude_complete(anthropic_key, system, user_msg,
+                                 max_tokens=max_tokens, thinking={"type": "disabled"})
+        return (t2, '', 'claude') if t2 else (None, e2, 'claude')
+    return None, "AI 키 없음 (설정 탭 > 🤖 AI 설정에서 Gemini 또는 Claude 키 등록)", ''
+
+
 # ── 정산 브리핑 ────────────────────────────────────────────
 
 def build_settlement_briefing_payload(username: str, date: str = "") -> dict:

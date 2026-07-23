@@ -215,20 +215,26 @@ def _render_settings_content(USERNAME: str, _gs):
         set_setting(USERNAME, 'cj_account_no', new_cj_acc)
         st.success(f"✅ 택배사 설정 저장 완료! (기본: {sel_courier})")
 
-    # ── 🤖 AI (Claude) 설정 ───────────────────────────────
+    # ── 🤖 AI 설정 (Claude / Gemini) ───────────────────────────────
     st.divider()
-    st.subheader("🤖 AI 설정 (Claude)")
-    st.caption("Anthropic API 키를 등록하면 정산 매칭 탭에서 **일일 정산 AI 브리핑**을 사용할 수 있습니다. "
-               "발급: [console.anthropic.com](https://console.anthropic.com) → API Keys")
+    st.subheader("🤖 AI 설정 (Claude / Gemini)")
+    st.caption("영수증 정산 AI 매칭·정산 브리핑에 사용합니다. **둘 중 하나만 있어도 동작**하며, "
+               "Gemini 키가 있으면 영수증 AI 매칭은 Gemini를 우선 사용합니다.")
     _ai_c1, _ai_c2 = st.columns([3, 1])
-    _new_ai_key = _ai_c1.text_input("Anthropic API 키", value=_gs('anthropic_api_key'),
+    _new_ai_key = _ai_c1.text_input("Anthropic(Claude) API 키", value=_gs('anthropic_api_key'),
                                     type="password", key="ai_key_in",
-                                    placeholder="sk-ant-...")
+                                    placeholder="sk-ant-...",
+                                    help="발급: console.anthropic.com → API Keys")
     _ai_auto = _ai_c2.checkbox("정산수집 후 카톡 자동발송", key="ai_auto_in",
                                value=(_gs('ai_briefing_auto') == '1'),
                                help="자동화 주문수집·정산매칭 후 AI 브리핑을 카카오톡으로 발송")
+    _new_gemini_key = st.text_input(
+        "Gemini(Google) API 키", value=_gs('gemini_api_key'),
+        type="password", key="gemini_key_in", placeholder="AIza...",
+        help="발급: aistudio.google.com/apikey (무료 등급 있음). 영수증 AI 매칭에 우선 사용됩니다.")
     if st.button("AI 설정 저장", key="save_ai"):
         set_setting(USERNAME, 'anthropic_api_key', _new_ai_key.strip())
+        set_setting(USERNAME, 'gemini_api_key', _new_gemini_key.strip())
         set_setting(USERNAME, 'ai_briefing_auto', '1' if _ai_auto else '0')
         st.success("✅ AI 설정 저장!")
 

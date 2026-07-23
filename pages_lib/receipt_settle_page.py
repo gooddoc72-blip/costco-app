@@ -225,11 +225,15 @@ def _render_match_section(alloc, dmap, settings, USERNAME):
     st.subheader(f"🔗 미매칭 매칭 — 주문 {len(u_ords)}건 · 영수증 {len(u_rcpt)}종")
     st.caption("자동으로 못 붙은 주문을 영수증 품목과 AI 또는 수동으로 연결합니다.")
 
-    ai_key = (settings.get('anthropic_api_key') if settings else '') or ''
-    if st.button("🤖 AI 자동매칭", key="rs_ai_match", disabled=not ai_key,
-                 help=None if ai_key else "설정 탭에서 Anthropic API 키를 먼저 등록하세요."):
+    _anthropic_key = (settings.get('anthropic_api_key') if settings else '') or ''
+    _gemini_key = (settings.get('gemini_api_key') if settings else '') or ''
+    _has_ai = bool(_anthropic_key or _gemini_key)
+    _ai_label = "🤖 AI 자동매칭" + (" (Gemini)" if _gemini_key else "")
+    if st.button(_ai_label, key="rs_ai_match", disabled=not _has_ai,
+                 help=None if _has_ai else "설정 탭 > 🤖 AI 설정에서 Gemini 또는 Claude 키를 먼저 등록하세요."):
         with st.spinner("AI가 상품명을 비교해 매칭 중..."):
-            pairs, ai_err = ai_match_receipt_orders(u_rcpt, u_ords, ai_key)
+            pairs, ai_err = ai_match_receipt_orders(
+                u_rcpt, u_ords, anthropic_key=_anthropic_key, gemini_key=_gemini_key)
         if pairs:
             new = build_manual_rows([
                 {'order': u_ords[p['order_index']], 'costco_no': p['costco_no'],
