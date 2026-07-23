@@ -967,6 +967,39 @@ def update_product_price(client_id, client_secret, origin_product_no, new_price,
         return False, f"판매가 수정 예외: {e}", None
 
 
+def update_product_status(client_id, client_secret, product_no, status_type="SUSPENSION"):
+    """스마트스토어 상품 판매상태 변경. status_type: SALE | SUSPENSION | OUTOFSTOCK.
+    product_no는 originProductNo 우선, channelProductNo면 origin으로 변환 후 재시도.
+    반환: (ok, err)."""
+    token, err = get_token(client_id, client_secret)
+    if not token:
+        return False, err
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    pno = str(product_no).strip()
+    if not pno:
+        return False, "상품번호가 비어 있습니다."
+    st = str(status_type or "").upper()
+    if st not in ("SALE", "SUSPENSION", "OUTOFSTOCK"):
+        return False, f"허용되지 않은 상태값: {status_type}"
+
+    def _put(p):
+        return requests.put(
+            f"https://api.commerce.naver.com/external/v1/products/origin-products/{p}/change-status",
+            headers=headers, json={"statusType": st}, timeout=20)
+
+    try:
+        r = _put(pno)
+        if r.status_code in (403, 404):
+            new_origin, rerr = resolve_origin_product_no(client_id, client_secret, pno)
+            if new_origin and new_origin != pno:
+                r = _put(new_origin)
+        if r.status_code == 200:
+            return True, None
+        return False, f"상태변경 실패({r.status_code}: {_format_naver_err(r)})"
+    except Exception as e:
+        return False, f"상태변경 예외: {e}"
+
+
 def update_product_name(client_id, client_secret, product_no, new_name):
     """스마트스토어 상품명 수정 (originProduct.name 교체).
     update_product_price와 동일한 GET origin-products → sanitize → PUT 구조 재사용.

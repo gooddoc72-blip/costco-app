@@ -42,6 +42,7 @@ from .products import (
     _sanitize_for_put,
     resolve_origin_product_no,
     update_product_price,
+    update_product_status,
     update_product_name,
     update_product_tags,
     get_origin_product_full,

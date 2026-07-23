@@ -697,6 +697,35 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
 
     st.divider()
 
+    # ── Task 9: 등록상품 재고 동기화 (코스트코 판매종료/품절 → 네이버 판매중지) ──
+    st.subheader("🔄 Task 9 — 등록상품 재고 동기화")
+    st.caption("이미 등록된 네이버 상품 중 **코스트코에서 판매종료·품절된 상품을 자동으로 판매중지**합니다. "
+               "재입고되면(이 기능이 중지시킨 상품만) 다시 판매중으로 되돌립니다. "
+               "활성화하면 서버에서 매일 자동 실행됩니다.")
+    _t9_en = st.checkbox("활성화 (매일 자동 동기화)",
+                         value=(_gs('naver_stock_sync_enabled') == '1'), key="t9_en")
+    _t9_re = st.checkbox("재입고 시 판매재개 (권장)",
+                         value=((_gs('naver_stock_reenable') or '1') != '0'), key="t9_re")
+    if not bool(_gs('api_client_id')):
+        st.warning("⚠️ 네이버 커머스 API 키가 필요합니다 (설정 탭).")
+    _s9c1, _s9c2 = st.columns(2)
+    if _s9c1.button("💾 저장", key="save_t9", type="primary", use_container_width=True):
+        set_setting(USERNAME, 'naver_stock_sync_enabled', '1' if _t9_en else '0')
+        set_setting(USERNAME, 'naver_stock_reenable', '1' if _t9_re else '0')
+        st.success("✅ 저장 — 매일 자동 동기화 켜짐" if _t9_en else "✅ 저장 — 비활성")
+        st.rerun()
+    if _s9c2.button("▶ 지금 동기화 실행", key="run_t9", use_container_width=True):
+        with st.spinner("코스트코 상태 확인 → 네이버 판매중지/재개 중... (상품 수에 따라 수 분)"):
+            r = subprocess.run(
+                [PYTHON_PATH, SCRIPT_PATH, "--task", "naverstock", "--user", USERNAME, "--force"],
+                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=1800
+            )
+        output = (r.stdout + r.stderr).strip()
+        st.success("✅ 실행 완료") if r.returncode == 0 else st.error("❌ 오류 발생")
+        st.code(output, language=None)
+
+    st.divider()
+
     # ── 실행 로그 ──
     st.subheader("📄 자동화 실행 로그")
     # 관리자는 전체 로그, 일반 사용자는 본인 로그만 조회 (타 사용자 로그 노출 방지)

@@ -1233,16 +1233,102 @@ def run_inventory_return_task(username="admin"):
 
 
 # ── 진입점 ────────────────────────────────────────
+def run_naver_stock_sync_task(username="admin", force=False):
+    """등록된 네이버 상품 중 코스트코 판매종료/품절 → 네이버 판매중지.
+    재입고(다시 판매중) → 우리가 중지한 것만 판매재개. per-user opt-in: naver_stock_sync_enabled='1'.
+    force=True면 opt-in 게이트 무시(수동 '지금 실행'용).
+    상태 추적: 설정 'naver_auto_stopped'(우리가 자동중지한 origin/channel 번호 목록)."""
+    log("=" * 50)
+    log(f"[Task 9] 네이버↔코스트코 재고 동기화 시작 (사용자: {username})")
+    settings = get_user_settings(username) or {}
+    if not force and settings.get("naver_stock_sync_enabled", "") != "1":
+        log("⏭ naver_stock_sync_enabled 미설정 — 건너뜀 (자동화 탭에서 활성화 필요)")
+        return True
+    api_id = settings.get("api_client_id", "")
+    api_secret = settings.get("api_client_secret", "")
+    if not (api_id and api_secret):
+        log("❌ 네이버 커머스 API 키 미설정 → 건너뜀")
+        return False
+    try:
+        import costco_crawler
+        import naver_api
+        import json as _json
+        from db import get_all_products, get_setting, set_setting
+    except Exception as e:
+        log(f"❌ 모듈 로드 실패: {e}")
+        return False
+
+    prods = get_all_products(username) or []
+    targets = [p for p in prods
+               if str(p.get('product_no') or '').strip()
+               and str(p.get('naver_origin_pno') or p.get('naver_channel_pno') or '').strip()]
+    log(f"등록·코스트코번호 있는 상품 {len(targets)}개 점검")
+
+    try:
+        auto_stopped = set(_json.loads(get_setting(username, 'naver_auto_stopped') or '[]'))
+    except Exception:
+        auto_stopped = set()
+    _reenable = settings.get("naver_stock_reenable", "1") == "1"
+
+    n_stop = n_resume = n_err = 0
+    dirty = False
+    for p in targets:
+        cno = str(p['product_no']).strip()
+        pno = str(p.get('naver_origin_pno') or p.get('naver_channel_pno') or '').strip()
+        cs = costco_crawler.fetch_costco_status(cno)
+        if cs.get('exists') is None:
+            continue  # 조회 불확실 → 건너뜀(오탐 방지)
+        dead = cs.get('exists') is False or cs.get('available') is False
+        if dead and pno not in auto_stopped:
+            ok, e = naver_api.update_product_status(api_id, api_secret, pno, 'SUSPENSION')
+            if ok:
+                n_stop += 1
+                auto_stopped.add(pno)
+                dirty = True
+                log(f"⛔ 판매중지: {str(p.get('costco_name'))[:24]} ({cs.get('reason')})")
+            else:
+                n_err += 1
+                log(f"  ❌ 중지실패 {cno}: {e}")
+        elif (not dead) and _reenable and pno in auto_stopped:
+            ok, e = naver_api.update_product_status(api_id, api_secret, pno, 'SALE')
+            if ok:
+                n_resume += 1
+                auto_stopped.discard(pno)
+                dirty = True
+                log(f"▶ 판매재개: {str(p.get('costco_name'))[:24]} (재입고)")
+            else:
+                n_err += 1
+
+    if dirty:
+        try:
+            set_setting(username, 'naver_auto_stopped',
+                        _json.dumps(sorted(auto_stopped), ensure_ascii=False))
+        except Exception:
+            pass
+
+    summary = (f"🔄 네이버 재고 동기화 완료\n"
+               f"⛔ 판매중지 {n_stop} · ▶ 판매재개 {n_resume} · ❌ 실패 {n_err} "
+               f"(점검 {len(targets)}개)")
+    log(summary)
+    if n_stop or n_resume or n_err:
+        send_notification(settings, summary, username)
+    log("[Task 9] 완료")
+    return True
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="코스트코핫딜 자동화 실행")
     parser.add_argument("--task",
                         choices=["shopping", "shipping", "crawl", "rank", "orders",
-                                 "products", "register", "cafe24sync", "invreturn", "all"],
+                                 "products", "register", "cafe24sync", "naverstock",
+                                 "invreturn", "all"],
                         default="all",
                         help="실행할 작업 (기본: all)")
     parser.add_argument("--user",
                         default="admin",
                         help="실행 대상 사용자명 (기본: admin)")
+    parser.add_argument("--force", action="store_true",
+                        help="opt-in 게이트 무시(수동 실행용, 현재 naverstock에서 사용)")
     args = parser.parse_args()
     # 이 실행의 모든 로그를 해당 사용자 전용 로그에도 기록 (타 사용자 로그 노출 방지)
     set_log_user(args.user)
@@ -1263,6 +1349,8 @@ if __name__ == "__main__":
         run_naver_register_task(args.user)
     elif args.task == "cafe24sync":
         run_cafe24_sync_task(args.user)
+    elif args.task == "naverstock":
+        run_naver_stock_sync_task(args.user, force=args.force)
     elif args.task == "invreturn":
         run_inventory_return_task(args.user)
     else:
