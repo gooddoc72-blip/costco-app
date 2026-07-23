@@ -54,19 +54,21 @@ def claude_complete(api_key: str, system: str, user_msg: str,
 
 # ── Gemini (Google) ────────────────────────────────────────
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-GEMINI_MODEL = "gemini-2.0-flash"   # 빠르고 저렴, 무료 등급 있음
+GEMINI_MODEL = "gemini-2.5-flash"   # 현행 flash. thinking 끄고 사용(아래).
 
 
 def gemini_complete(api_key: str, system: str, user_msg: str,
                     max_tokens: int = 1200, model: str = GEMINI_MODEL):
-    """Gemini 메시지 1회 호출. 반환: (text, error)."""
+    """Gemini 메시지 1회 호출. 반환: (text, error).
+    ⚠️ 2.5+ flash는 기본 thinking이 출력토큰을 소진해 빈 응답이 나므로 thinkingBudget=0로 끈다."""
     if not api_key:
         return None, "Gemini API 키 미설정 (설정 탭 > 🤖 AI 설정)"
     try:
         body = {
             "systemInstruction": {"parts": [{"text": system}]},
             "contents": [{"role": "user", "parts": [{"text": user_msg}]}],
-            "generationConfig": {"maxOutputTokens": max_tokens, "temperature": 0},
+            "generationConfig": {"maxOutputTokens": max_tokens, "temperature": 0,
+                                 "thinkingConfig": {"thinkingBudget": 0}},
         }
         r = requests.post(
             GEMINI_URL.format(model=model),

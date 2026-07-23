@@ -14,7 +14,7 @@ from db_receipt_settle import (
     save_settlement_batch, list_settlement_batches, get_settlement_items,
     get_user_settlement_summary, delete_settlement_batch,
 )
-from db import get_all_users
+from db import get_all_users, get_all_settings
 from utils import fmt
 
 invalidate_data_cache = None
@@ -225,8 +225,21 @@ def _render_match_section(alloc, dmap, settings, USERNAME):
     st.subheader(f"🔗 미매칭 매칭 — 주문 {len(u_ords)}건 · 영수증 {len(u_rcpt)}종")
     st.caption("자동으로 못 붙은 주문을 영수증 품목과 AI 또는 수동으로 연결합니다.")
 
-    _anthropic_key = (settings.get('anthropic_api_key') if settings else '') or ''
-    _gemini_key = (settings.get('gemini_api_key') if settings else '') or ''
+    # AI 키는 공유 인프라 — 관리자가 다른 계정 설정에 저장했어도 찾도록 폴백 스캔.
+    def _resolve_ai_key(name):
+        v = (settings.get(name) if settings else '') or ''
+        if v:
+            return v
+        try:
+            for _u in get_all_users():
+                vv = (get_all_settings(_u['username']) or {}).get(name) or ''
+                if vv:
+                    return vv
+        except Exception:
+            pass
+        return ''
+    _anthropic_key = _resolve_ai_key('anthropic_api_key')
+    _gemini_key = _resolve_ai_key('gemini_api_key')
     _has_ai = bool(_anthropic_key or _gemini_key)
     _ai_label = "🤖 AI 자동매칭" + (" (Gemini)" if _gemini_key else "")
     if st.button(_ai_label, key="rs_ai_match", disabled=not _has_ai,
