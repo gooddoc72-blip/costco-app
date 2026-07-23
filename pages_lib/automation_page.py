@@ -1163,3 +1163,17 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         for _em in _det_res["errors"][:5]:
                             st.caption(f"• {_em}")
                     st.rerun()
+
+                # 🖼 대표이미지 하이레스 재수집 (흐릿한 이미지 → 1200px, 브라우저 불필요)
+                _hi_c1, _hi_c2 = st.columns([3, 1])
+                _hi_c1.markdown("**🖼 대표이미지 하이레스 재수집** — 저해상도(흐릿한) 대표이미지를 "
+                                "코스트코 상세 API 1200px로 일괄 교체 (브라우저 불필요, 온라인 크롤 제품 전체)")
+                if _hi_c2.button("🖼 하이레스 재수집", key="btn_hires_img", use_container_width=True):
+                    with st.spinner("하이레스 이미지 재수집 중... 상품 수에 따라 수 분 소요"):
+                        _hr = subprocess.run(
+                            [PYTHON_PATH, SCRIPT_PATH, "--task", "hiresimg", "--user", USERNAME],
+                            capture_output=True, text=True, encoding="utf-8",
+                            errors="replace", timeout=3000)
+                    _hout = (_hr.stdout + _hr.stderr).strip()
+                    st.success("✅ 완료") if _hr.returncode == 0 else st.error("❌ 오류")
+                    st.code(_hout[-2000:], language=None)

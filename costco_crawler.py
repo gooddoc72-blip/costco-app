@@ -1329,6 +1329,55 @@ def run_crawl(
     }
 
 
+def refresh_hires_images(progress_cb=None, limit=None) -> dict:
+    """온라인 크롤 제품의 대표 이미지를 상세 API superZoom(1200px)으로 일괄 교체.
+    브라우저 불필요(urllib 상세 API). 이미 하이레스면 건너뜀(URL 동일).
+    반환: {checked, upgraded, failed, skipped}."""
+    conn = sqlite3.connect(AUTH_DB)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(
+        "SELECT id, product_no, image_url FROM shared_products "
+        "WHERE TRIM(COALESCE(product_no,'')) != '' "
+        "AND (TRIM(COALESCE(online_updated_at,'')) != '' OR COALESCE(online_price,0) > 0)"
+    ).fetchall()
+    conn.close()
+    rows = list(rows)
+    if limit:
+        rows = rows[:int(limit)]
+    total = len(rows)
+    _log(f"하이레스 재수집 대상 {total}개 (온라인 크롤 제품)", progress_cb)
+    checked = upgraded = failed = skipped = 0
+    for i, r in enumerate(rows):
+        pno = str(r["product_no"]).strip()
+        cur_url = str(r["image_url"] or "")
+        checked += 1
+        try:
+            hi_main, hi_extra = fetch_hires_images(pno)
+        except Exception:
+            hi_main, hi_extra = "", []
+        if not hi_main:
+            failed += 1
+        elif hi_main == cur_url:
+            skipped += 1   # 이미 하이레스
+        else:
+            try:
+                local = download_product_image(pno, hi_main)
+                c2 = sqlite3.connect(AUTH_DB)
+                c2.execute(
+                    "UPDATE shared_products SET image_url=?, local_image=?, extra_images=? WHERE id=?",
+                    (hi_main, local, json.dumps(hi_extra or [], ensure_ascii=False), r["id"]))
+                c2.commit()
+                c2.close()
+                upgraded += 1
+            except Exception:
+                failed += 1
+        if (i + 1) % 100 == 0:
+            _log(f"  {i+1}/{total} … 교체 {upgraded} · 이미하이레스 {skipped} · 실패 {failed}", progress_cb)
+    _log(f"하이레스 재수집 완료 — 점검 {checked} · 교체 {upgraded} · "
+         f"이미하이레스 {skipped} · 실패 {failed}", progress_cb)
+    return {"checked": checked, "upgraded": upgraded, "failed": failed, "skipped": skipped}
+
+
 # ─── CLI ─────────────────────────────────────────────────────────
 if __name__ == "__main__":
     if "--do-crawl" in sys.argv:

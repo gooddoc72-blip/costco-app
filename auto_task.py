@@ -1329,12 +1329,27 @@ def run_naver_stock_sync_task(username="admin", force=False):
     return True
 
 
+def run_hires_image_task(username="admin"):
+    """온라인 크롤 제품 대표이미지를 상세 API 하이레스(1200px)로 일괄 교체 (브라우저 불필요)."""
+    log("=" * 50)
+    log("[하이레스] 대표이미지 재수집 시작")
+    try:
+        import costco_crawler
+    except Exception as e:
+        log(f"❌ costco_crawler 로드 실패: {e}")
+        return False
+    res = costco_crawler.refresh_hires_images(progress_cb=lambda m: log(m))
+    log(f"[하이레스] 완료 — 교체 {res['upgraded']} · 이미하이레스 {res['skipped']} · "
+        f"실패 {res['failed']} (점검 {res['checked']})")
+    return True
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="코스트코핫딜 자동화 실행")
     parser.add_argument("--task",
                         choices=["shopping", "shipping", "crawl", "rank", "orders",
                                  "products", "register", "cafe24sync", "naverstock",
-                                 "invreturn", "all"],
+                                 "hiresimg", "invreturn", "all"],
                         default="all",
                         help="실행할 작업 (기본: all)")
     parser.add_argument("--user",
@@ -1364,6 +1379,8 @@ if __name__ == "__main__":
         run_cafe24_sync_task(args.user)
     elif args.task == "naverstock":
         run_naver_stock_sync_task(args.user, force=args.force)
+    elif args.task == "hiresimg":
+        run_hires_image_task(args.user)
     elif args.task == "invreturn":
         run_inventory_return_task(args.user)
     else:
