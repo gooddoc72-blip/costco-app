@@ -1019,6 +1019,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                  key="cf2n_ai_auto", type="primary"):
                         import ai_service
                         _rows = []
+                        _done_pnos = set()   # 등록 성공분 → 목록에서 제외(다음 클릭에 다음 상품 처리)
                         _prog = st.progress(0.0)
                         _targets = _cf2n_list[:30]
                         for _i, _p in enumerate(_targets):
@@ -1052,6 +1053,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                 "shipping_fee": 0, "origin_code": "03",
                                 "after_service_tel": _gs("naver_as_tel") or "1588-1234",
                             })
+                            if not _re2:
+                                _done_pnos.add(str(_p.get('product_no')))
                             _rows.append({
                                 '상품': _name[:26], '카테고리': str(_cat_full or '')[:24],
                                 '판매가': _sale,
@@ -1060,8 +1063,15 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         _ok_n = sum(1 for r in _rows if r.get('상태', '').startswith('✅'))
                         st.success(f"🤖 AI 자동등록 완료 — 성공 {_ok_n} / 전체 {len(_rows)}건")
                         st.dataframe(pd.DataFrame(_rows), use_container_width=True, hide_index=True)
+                        # 등록 성공분은 목록에서 제외 → 다시 누르면 다음 상품이 처리됨(전체 순차 등록)
+                        if _done_pnos:
+                            st.session_state['_cf2n_prods'] = [
+                                x for x in _cf2n_list if str(x.get('product_no')) not in _done_pnos]
+                            st.info(f"✅ 등록완료 {len(_done_pnos)}개를 목록에서 제외했습니다 — "
+                                    f"남은 {len(st.session_state['_cf2n_prods'])}개. "
+                                    "버튼을 다시 누르면 다음 상품이 등록됩니다.")
                         st.caption("💡 카테고리가 잘못 잡힌 건은 아래에서 상품 펼쳐 수동 카테고리로 다시 등록하세요.")
-            for _p in _cf2n_list[:20]:
+            for _p in _cf2n_list[:50]:
                 _pno = _p['product_no']; _cfprice = int(_p['price'])
                 _nprice_default = int(round(_cfprice * (1 + _margin / 100.0) / 0.945 / 10) * 10)
                 with st.expander(f"{str(_p['product_name'])[:44]} · 카페24 {fmt(_cfprice)}원 "
