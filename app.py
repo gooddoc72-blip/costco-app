@@ -130,6 +130,47 @@ def _clear_qparams():
     st.query_params.clear()
 
 
+# ── 로그인 지속: 브라우저 쿠키(same-origin) 기반 ─────────────────
+#   URL의 ?sid= 는 네비게이션·카페24 콜백·북마크에서 쉽게 유실됨.
+#   토큰을 쿠키에도 저장해 새로고침·URL 변경과 무관하게 로그인 유지.
+import streamlit.components.v1 as _components
+
+_COOKIE_NAME = "coco_sid"
+
+
+def _get_cookie_sid():
+    try:
+        return st.context.cookies.get(_COOKIE_NAME) or ''
+    except Exception:
+        return ''
+
+
+def _write_login_cookie(token, days=30):
+    # 컴포넌트 iframe(동일 도메인)에서 부모 문서 쿠키에 기록 → 새로고침에도 유지.
+    _max_age = int(days) * 24 * 3600
+    _components.html(
+        f"""<script>
+try {{
+  window.parent.document.cookie =
+    "{_COOKIE_NAME}={token}; path=/; max-age={_max_age}; SameSite=Lax; Secure";
+}} catch (e) {{}}
+</script>""",
+        height=0,
+    )
+
+
+def _erase_login_cookie():
+    _components.html(
+        f"""<script>
+try {{
+  window.parent.document.cookie =
+    "{_COOKIE_NAME}=; path=/; max-age=0; SameSite=Lax; Secure";
+}} catch (e) {{}}
+</script>""",
+        height=0,
+    )
+
+
 # ── 카페24 OAuth 콜백 (redirect_uri=https://cocobiz.shop/app/?code=..&state=sid) ──
 #   state에 로그인 sid를 실어 보냈으므로 이를 이용해 사용자 복원 후 토큰 저장.
 _cf_code = _get_qparam('code')
@@ -206,8 +247,8 @@ if st.session_state['user'] is None and st.session_state.get('_license_ok'):
         pass
 
 if st.session_state['user'] is None:
-    # 자동 로그인 — query param의 sid 토큰
-    _sid = _get_qparam('sid') or ''
+    # 자동 로그인 — URL의 sid 토큰 우선, 없으면 브라우저 쿠키의 토큰 사용
+    _sid = _get_qparam('sid') or _get_cookie_sid()
     if _sid:
         _auto_username = get_session_user(_sid)
         if _auto_username:
@@ -219,6 +260,7 @@ if st.session_state['user'] is None:
                 st.rerun()
         else:
             _clear_qparams()
+            _erase_login_cookie()
 
     # 로그인 UI
     st.markdown("<h1 style='text-align:center;margin-top:60px'>📦 costcobiz</h1>",
@@ -267,6 +309,13 @@ if st.session_state['user'] is None:
 user = st.session_state['user']
 USERNAME = user['username']
 IS_ADMIN = user['is_admin']
+
+# 로그인 토큰을 쿠키에 세션당 1회 동기화 → 새로고침/네비게이션/카페24 인증에도 로그인 유지
+_sync_sid = st.session_state.get('_sid')
+if _sync_sid and not st.session_state.get('_cookie_synced'):
+    _write_login_cookie(_sync_sid, days=30)
+    st.session_state['_cookie_synced'] = True
+
 settings = get_all_settings(USERNAME)
 
 # 카페24 인증 콜백 결과 알림 (OAuth 리다이렉트 처리 후)
@@ -317,6 +366,7 @@ with st.sidebar:
         _sid = st.session_state.get('_sid')
         if _sid:
             delete_session(_sid)
+        _erase_login_cookie()
         _clear_qparams()
         st.session_state.clear()
         st.rerun()
