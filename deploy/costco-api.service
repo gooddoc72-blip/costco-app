@@ -12,7 +12,7 @@ EnvironmentFile=/opt/costco-app/.env
 ExecStart=/opt/costco-app/venv/bin/uvicorn api.main:app \
     --host 127.0.0.1 \
     --port 8610 \
-    --workers 2
+    --workers 1
 
 Restart=always
 RestartSec=5
