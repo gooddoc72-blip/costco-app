@@ -339,36 +339,74 @@ def run_shopping_task(username="admin"):
 
     api_id = settings.get("api_client_id", "")
     api_secret = settings.get("api_client_secret", "")
-    if not api_id or not api_secret:
-        log("❌ 네이버 API 키 미설정 → 앱 설정에서 등록 필요")
+    cpg_access = settings.get("coupang_access_key", "")
+    cpg_secret = settings.get("coupang_secret_key", "")
+    cpg_vendor = settings.get("coupang_vendor_id", "")
+    _has_naver = bool(api_id and api_secret)
+    _has_coupang = bool(cpg_access and cpg_secret and cpg_vendor)
+    if not _has_naver and not _has_coupang:
+        log("❌ 네이버·쿠팡 API 키 모두 미설정 → 앱 설정에서 등록 필요")
         return False
 
-    # 발송상태 동기화: 미발송으로 잡힌 주문의 실제 상태를 갱신(이미 발송된 건 제외)
-    try:
-        from services import sync_active_order_status
-        _sy = sync_active_order_status(username, api_id, api_secret)
-        if _sy.get('error'):
-            log(f"⚠️ 발송상태 동기화 경고: {_sy['error']}")
-        elif _sy.get('checked'):
-            log(f"🚚 발송상태 동기화 — 조회 {_sy['checked']} / 갱신 {_sy['updated']} / 발송완료 제외 {_sy['cleared']}")
-    except Exception as e:
-        log(f"⚠️ 발송상태 동기화 실패(계속 진행): {e}")
-
-    # 장보기 대상 = 결제완료(신규) + 발송대기(READY) 모두. 발주확인 전(PAYED) 주문도 사야 하므로 포함.
-    log("📋 주문 조회 중 (결제완료 + 발송대기)...")
     orders, err = [], None
     _seen_ono = set()
-    for _stt in ("READY", "PAYED"):
-        _o, _e = naver_api.get_new_orders(api_id, api_secret, hours_back=48, status_type=_stt)
-        if _o:
-            for _od in _o:
+
+    # ── 네이버 주문 수집 ──
+    if _has_naver:
+        # 발송상태 동기화: 미발송으로 잡힌 주문의 실제 상태를 갱신(이미 발송된 건 제외)
+        try:
+            from services import sync_active_order_status
+            _sy = sync_active_order_status(username, api_id, api_secret)
+            if _sy.get('error'):
+                log(f"⚠️ 발송상태 동기화 경고: {_sy['error']}")
+            elif _sy.get('checked'):
+                log(f"🚚 발송상태 동기화 — 조회 {_sy['checked']} / 갱신 {_sy['updated']} / 발송완료 제외 {_sy['cleared']}")
+        except Exception as e:
+            log(f"⚠️ 발송상태 동기화 실패(계속 진행): {e}")
+
+        # 장보기 대상 = 결제완료(신규) + 발송대기(READY) 모두. 발주확인 전(PAYED) 주문도 사야 하므로 포함.
+        log("📋 네이버 주문 조회 중 (결제완료 + 발송대기)...")
+        for _stt in ("READY", "PAYED"):
+            _o, _e = naver_api.get_new_orders(api_id, api_secret, hours_back=48, status_type=_stt)
+            if _o:
+                for _od in _o:
+                    _ono = str(_od.get("상품주문번호", ""))
+                    if _ono and _ono in _seen_ono:
+                        continue
+                    _seen_ono.add(_ono)
+                    orders.append(_od)
+            elif _e:
+                err = _e
+
+    # ── 쿠팡 주문 수집 (쿠팡 셀러도 장보기 목록 자동 발송) ──
+    if _has_coupang:
+        log("🛒 쿠팡 주문 조회 중 (결제완료 + 발주확인, 7일)...")
+        try:
+            import coupang_api
+            _crows, _cerr, _, _ = coupang_api.get_orders(
+                cpg_access, cpg_secret, cpg_vendor, status="ALL", days_back=7)
+            if _cerr and not _crows:
+                log(f"⚠️ 쿠팡 오류: {_cerr}")
+                if not orders:
+                    err = _cerr
+            # 쿠팡 상태(영문) → 네이버식 한글 매핑. DEPARTURE(출고완료) 이후는 이미 구매분이라 제외.
+            _CPG_KR = {"ACCEPT": "결제완료", "INSTRUCT": "발주확인"}
+            _cadd = 0
+            for _od in (_crows or []):
+                _st = str(_od.get("주문상태", "")).upper()
+                if _st not in _CPG_KR:
+                    continue
+                _od["주문상태"] = _CPG_KR[_st]
                 _ono = str(_od.get("상품주문번호", ""))
                 if _ono and _ono in _seen_ono:
                     continue
                 _seen_ono.add(_ono)
                 orders.append(_od)
-        elif _e:
-            err = _e
+                _cadd += 1
+            log(f"  ✅ 쿠팡 {_cadd}건 (장보기 대상)")
+        except Exception as _ce:
+            log(f"⚠️ 쿠팡 수집 예외(계속 진행): {_ce}")
+
     if err and not orders:
         log(f"❌ API 오류: {err}")
         return False
