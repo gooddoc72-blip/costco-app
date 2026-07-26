@@ -1230,6 +1230,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         elif _cart_items:
             _do_margin = int(_gs("cafe24_naver_margin") or 10)
             _do_as = _gs("naver_as_tel") or "1588-1234"
+            # AI 상세설명 + 제품 상세정보표 활성화 (전역 Anthropic 키 있을 때만 설명 생성)
+            _do_aikey = get_global_setting('anthropic_api_key') or _gs('anthropic_api_key') or ''
             _do_prog = st.progress(0)
             _do_txt = st.empty()
             _do_res = []
@@ -1265,7 +1267,9 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         _do_prog.progress((_di+1)/len(_cart_items)); continue
                 _origin, _rerr = naver_register_service.register_one(
                     USERNAME, api_id, api_secret, _dp, _dcat,
-                    opts={"sale_price": _dp_price, "as_tel": _do_as, "stock": 10})
+                    opts={"sale_price": _dp_price, "as_tel": _do_as, "stock": 10,
+                          "ai_key": _do_aikey, "ai_desc": bool(_do_aikey),
+                          "with_spec": True})
                 if _rerr or not _origin:
                     _do_res.append({"상품명": _dp_name, "카테고리": _dcat_name,
                                     "결과": "❌", "내용": str(_rerr)[:80]})

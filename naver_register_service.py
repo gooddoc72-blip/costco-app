@@ -160,6 +160,20 @@ def register_one(username, api_id, api_secret, product, cat_id, opts=None):
     if not rep:
         return None, "대표이미지 없음"
 
+    # 대표이미지가 목록API 저해상도(160px) 썸네일이면 상세API 1200px(superZoom)로 교체.
+    #   저해상도를 네이버 1000×1000으로 확대하면 뭉개져 '깨진' 것처럼 보이던 문제 해결.
+    #   상세API 실패 시 기존 rep 유지(무회귀). hi_extra는 저장 추가이미지 없을 때만 보완.
+    _hi_extra = []
+    _pno_img = str(product.get("product_no") or "").strip()
+    if _pno_img:
+        try:
+            from costco_crawler import fetch_hires_images as _fhi
+            _hi_main, _hi_extra = _fhi(_pno_img)
+            if _hi_main:
+                rep = _hi_main
+        except Exception:
+            _hi_extra = []
+
     # 대표 이미지 → 네이버 CDN (1000×1000 자동변환)
     rep_cdn, e1 = naver_api.upload_product_image(api_id, api_secret, rep)
     if not rep_cdn:
@@ -179,6 +193,9 @@ def register_one(username, api_id, api_secret, product, cat_id, opts=None):
                 xlist = []
             if xlist:
                 extra_cdn, _ = naver_api.upload_images_batch(api_id, api_secret, xlist)
+    # 저장된 추가이미지가 없으면 상세API 하이레스 갤러리로 보완 (순수 추가, 무회귀)
+    if not extra_cdn and _hi_extra:
+        extra_cdn, _ = naver_api.upload_images_batch(api_id, api_secret, _hi_extra)
 
     _catf = opts.get("cat_full", "")
 
