@@ -7,9 +7,10 @@ Streamlit 앱과 **같은 세션(auth.db sessions)**을 재사용한다. 별도 
   · pages_lib.profit_calc.loader.build_settlement_df  — 세션 비의존 주문 df
   · pages_lib.profit_calc.compute.compute_rows        — 매칭·구입가(순수, 패리티 0)
 
-⚠️ Phase2 범위: 조회(구입가·매칭) / 저장 / 삭제 / 영수증. 행별 '수입 총액' 공식은
-   page.py에서 순수함수로 추출 + 패리티 테스트 후 노출 예정(돈 계산 원칙). 지금 GET은
-   영수증/세션 오버라이드 없이 **DB 기준 구입가**만 계산한다(Streamlit과 값이 다를 수 있음).
+범위: 조회(구입가·매칭·수입) / 저장 / 삭제 / 영수증. GET 구입가(cost)는 영수증 매칭·
+   수동 키워드 오버라이드·타인재고 웃돈까지 DB에서 재구성해 반영(pages_lib.profit_calc.enrich)
+   → Streamlit(신규 세션)과 구입가 일치. 세션 한정(영수증 picker 라이브 선택)과 profit 축
+   (실정산확정·포장배정 박스비)은 아직 미반영.
 """
 from typing import Optional
 
@@ -26,6 +27,9 @@ from db import (
 from services import match_product_to_db
 from pages_lib.profit_calc.loader import build_settlement_df
 from pages_lib.profit_calc.compute import compute_rows, compute_profit, settled_shipping
+from pages_lib.profit_calc.enrich import (
+    build_receipt_maps, build_kw_overrides, load_surcharge_map,
+)
 
 app = FastAPI(title="Costco 수익계산 API", version="0.2.0")
 
@@ -97,7 +101,8 @@ class ProfitResponse(BaseModel):
     summary: ProfitSummary
     saved: bool = False
     note: str = ("ps(정산저장) 소스면 저장값 그대로(대시보드 일치). 그 외는 DB매칭 구입가"
-                 "+설정 기본 택배/박스비로 추정(영수증·행별 오버라이드 미반영).")
+                 "(영수증·수동 키워드 오버라이드·타인재고 웃돈 반영) + 설정 기본 택배/박스비."
+                 " 영수증 picker 라이브 선택·실정산확정·포장배정 박스비는 미반영.")
 
 
 class SaveRequest(BaseModel):
@@ -189,16 +194,34 @@ def get_profit(date: str, user: dict = Depends(require_user)):
             '수량': rec.get('수량', 1),
             '구입가격': (rec.get('구입가격', 0) if has_cost else 0),
         })
-    # 영수증/행별 오버라이드는 미반영 — DB 기준 매칭.
-    results, _links = compute_rows(rows_in, match_fn=match_fn, calc_date_str=date)
+
+    # ⚓ 영수증 매칭·수동 오버라이드·타인재고 웃돈을 DB에서 재구성 → compute_rows(순수)에 주입.
+    #   page.py가 세션에서 만들던 값을 세션 없이 DB로 동일하게 복원(pages_lib.profit_calc.enrich).
+    #   → 구입가(cost)가 Streamlit(신규 세션)과 일치. receipt_pick(라이브 수동선택)은 세션 한정이라 제외.
+    unique_products = list(dict.fromkeys(str(r['상품명'] or '') for r in rows_in))
+    receipt_by_pno, receipt_matches = build_receipt_maps(username, unique_products, match_fn)
+    kw_overrides = build_kw_overrides(username, rows_in, date)
+    surcharge_map = load_surcharge_map(username, [r['idx'] for r in rows_in])
+    results, _links = compute_rows(
+        rows_in, match_fn=match_fn,
+        receipt_by_pno=receipt_by_pno, receipt_matches=receipt_matches,
+        kw_overrides=kw_overrides, surcharge_map=surcharge_map, calc_date_str=date)
 
     out = []
     t_settle = t_sship = t_cost = t_deliv = t_box = t_profit = 0
     for rec, res in zip(records, results):
         settlement = _int(rec.get('정산예정금액', 0))
         shipping = _int(rec.get('배송비 합계', 0))
+        _src = str(res.get('source', ''))
         # ps 저장 소스면 저장된 구입가·택배·박스 그대로(대시보드 일치), 아니면 매칭+기본값.
-        cost = _int(rec.get('구입가격', 0)) if (saved and has_cost) else _int(res.get('cost', 0))
+        if saved and has_cost:
+            cost = _int(rec.get('구입가격', 0))
+        else:
+            # 타인재고 웃돈(+원가) 가산 — page.py 후처리(costs += surcharge)와 동일.
+            _sur = _int(surcharge_map.get(str(rec.get('_sk', '')), 0))
+            cost = _int(res.get('cost', 0)) + _sur
+            if _sur and '타인재고' not in _src:
+                _src = f"{_src}+타인재고"
         deliv = _int(rec.get('택배원가', def_ship)) if (saved and has_deliv) else def_ship
         box = _int(rec.get('박스원가', def_box)) if (saved and has_box) else def_box
         sship = settled_shipping(shipping)
@@ -221,7 +244,7 @@ def get_profit(date: str, user: dict = Depends(require_user)):
             delivery_cost=deliv,
             box_cost=box,
             profit=profit,
-            match_source=str(res.get('source', '')),
+            match_source=_src,
             matched_name=str(res.get('matched_name', '')),
             matched_pno=str(res.get('matched_pno', '')),
             matched_keyword=str(res.get('matched_name', '') or ''),
