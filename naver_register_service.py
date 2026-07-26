@@ -29,6 +29,20 @@ def _noop(*_a, **_k):
     pass
 
 
+def _fallback_desc_body(name, raw_detail):
+    """비-AI 상세설명 본문(HTML 안전) — AI 미사용/실패/크레딧부족 시.
+
+    코스트코 크롤 상세 텍스트(raw_detail)를 태그 제거·정제해 그대로 쓴다(실제 제품 설명).
+    쓸 만한 텍스트가 없으면 빈 문자열 반환(제품 상세정보 표가 정보를 대신 제공).
+    상품명 반복은 무의미(상단 제목과 중복)하므로 넣지 않는다."""
+    import re as _re, html as _h
+    _txt = _re.sub(r"<[^>]+>", " ", str(raw_detail or ""))
+    _txt = _re.sub(r"\s+", " ", _txt).strip()
+    if len(_txt) >= 30:
+        return _h.escape(_txt[:1500])
+    return ""
+
+
 # ─── 판매가 계산 ──────────────────────────────────────────────────
 def compute_sale_price(product: dict, margin: float) -> int:
     """코스트코가(온라인가 우선) → 네이버 판매가.
@@ -199,34 +213,42 @@ def register_one(username, api_id, api_secret, product, cat_id, opts=None):
 
     _catf = opts.get("cat_full", "")
 
-    # 상세설명: AI가 코스트코 내용 분석해 새로 작성(opt) — 지저분한 원본HTML 대신 깔끔한 문장
-    _desc_block = ""
-    if _ai and opts.get("ai_desc"):
+    # 코스트코 스펙 1회 조회 (상세설명 폴백 + '제품 상세정보' 표 공용)
+    import costco_crawler as _cc
+    _spec = {}
+    if opts.get("with_spec") or opts.get("ai_desc"):
         try:
-            import ai_service, html as _h2
-            _d, _ = ai_service.generate_description_from_costco(_ai, name, _raw_detail, _catf)
-            if _d:
-                _desc_block = ('<div style="font-size:17px;line-height:1.9;text-align:center;'
-                               'padding:4px 16px 8px;color:#333">'
-                               + _h2.escape(_d).replace("\n", "<br>") + '</div>')
+            _spec = _cc.fetch_costco_spec(str(product.get("product_no") or "").strip()) or {}
         except Exception:
-            _desc_block = ""
+            _spec = {}
+
+    # 상세설명: ① AI가 코스트코 내용 분석해 새로 작성(크레딧 필요)
+    #           ② AI 미사용/실패/크레딧부족 → 비-AI 폴백(코스트코 크롤 상세 텍스트 정제)
+    import html as _h2
+    _desc_block = ""
+    if opts.get("ai_desc"):
+        _d = None
+        if _ai:
+            try:
+                import ai_service
+                _d, _ = ai_service.generate_description_from_costco(_ai, name, _raw_detail, _catf)
+            except Exception:
+                _d = None
+        _body = (_h2.escape(_d).replace("\n", "<br>") if _d
+                 else _fallback_desc_body(name, _raw_detail))
+        if _body:
+            _desc_block = ('<div style="font-size:17px;line-height:1.9;text-align:center;'
+                           'padding:4px 16px 8px;color:#333">' + _body + '</div>')
 
     # 한글표시사항: 코스트코 스펙 → '제품 상세정보' 표 + 제조자
     _spec_table = ""
     _manufacturer = ""
-    if opts.get("with_spec"):
-        try:
-            import costco_crawler as _cc
-            _spec = _cc.fetch_costco_spec(str(product.get("product_no") or "").strip())
-        except Exception:
-            _spec = {}
-        if _spec:
-            _spec_table = _cc.build_spec_table_html(_spec)
-            for _k in ("제조자/수입자", "제조원/수입원", "제조원", "수입원", "제조사"):
-                if _spec.get(_k):
-                    _manufacturer = str(_spec[_k]).strip()
-                    break
+    if opts.get("with_spec") and _spec:
+        _spec_table = _cc.build_spec_table_html(_spec)
+        for _k in ("제조자/수입자", "제조원/수입원", "제조원", "수입원", "제조사"):
+            if _spec.get(_k):
+                _manufacturer = str(_spec[_k]).strip()
+                break
 
     # 상세페이지: [공통상단] + 상품명 + (2줄 여백) + 상품설명 + 이미지들 + 표시사항표 + [공통하단]
     _top = str(get_setting(username, "naver_detail_top_img") or "").strip()

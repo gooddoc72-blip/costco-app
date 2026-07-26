@@ -1268,7 +1268,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 _origin, _rerr = naver_register_service.register_one(
                     USERNAME, api_id, api_secret, _dp, _dcat,
                     opts={"sale_price": _dp_price, "as_tel": _do_as, "stock": 10,
-                          "ai_key": _do_aikey, "ai_desc": bool(_do_aikey),
+                          "ai_key": _do_aikey, "ai_desc": True,
                           "with_spec": True})
                 if _rerr or not _origin:
                     _do_res.append({"상품명": _dp_name, "카테고리": _dcat_name,
