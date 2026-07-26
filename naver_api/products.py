@@ -277,7 +277,9 @@ def register_product(client_id, client_secret, product_info):
 
     shipping_fee = int(product_info.get("shipping_fee", 0))
     fee_type = "FREE" if shipping_fee == 0 else "CHARGE"
-    name = (product_info.get("name") or "")[:100]
+    # 상품명 하드가드: 같은 키워드 2회 이상 반복 제거 (모든 등록 경로가 지나는 최종 지점)
+    from .keywords import dedup_product_name
+    name = dedup_product_name(product_info.get("name") or "")[:100]
     # detail_html (코스트코 상세) 우선, 없으면 detail_content, 없으면 기본값
     detail = _sanitize_detail_html(
         product_info.get("detail_html")

@@ -10,6 +10,25 @@ def get_last_match_info():
     return _last_match_info[0]
 
 
+def dedup_product_name(name):
+    """상품명에서 같은 키워드(공백 구분 토큰)가 2회 이상 반복되지 않도록 중복 제거.
+
+    첫 등장만 남기고 이후 동일 토큰은 삭제(순서=관련도 보존). 비교는 소문자·양끝
+    문장부호 정규화(예: 'FiJi'=='fiji', '요거트,'=='요거트'). 표시 토큰은 원문 유지.
+    네이버 상품명 어뷰징 필터(동일 키워드 반복) 회피 목적 — 등록/생성 공용 하드가드."""
+    if not name:
+        return name
+    seen, out = set(), []
+    for tok in str(name).split():
+        norm = tok.lower().strip(".,·/|()[]{}\"'")
+        if norm and norm in seen:
+            continue
+        if norm:
+            seen.add(norm)
+        out.append(tok)
+    return " ".join(out)
+
+
 def check_keyword_rank(open_client_id, open_client_secret, keyword,
                        our_product_name='', naver_product_no='',
                        store_name='', max_pages=10):
@@ -322,12 +341,12 @@ def keyword_seo_name(ad_api_key, ad_secret, customer_id, seed, ai_key=None,
             if _txt:
                 _name = " ".join(str(_txt).split()).strip().strip('"').strip()
                 if len(_name) >= 4:
-                    result["name"] = _name[:100]
+                    result["name"] = dedup_product_name(_name)[:100]
                     return result, None
         except Exception as _ex:
             err = str(_ex)
-    # AI 실패/미사용 → 앞단 키워드 + 원본명 이어붙임
-    result["name"] = (" ".join(ordered) + " " + _seed).strip()[:100]
+    # AI 실패/미사용 → 앞단 키워드 + 원본명 이어붙임 (중복 키워드 제거)
+    result["name"] = dedup_product_name((" ".join(ordered) + " " + _seed).strip())[:100]
     return result, err
 
 
@@ -379,10 +398,10 @@ def keyword_optimized_name(ad_api_key, ad_secret, customer_id, seed,
             if _txt:
                 _name = " ".join(str(_txt).split()).strip().strip('"').strip()
                 if len(_name) >= 4:
-                    return _name[:100], info
+                    return dedup_product_name(_name)[:100], info
         except Exception as _ex:
             info["err"] = str(_ex)
-    return (" ".join(kws))[:100] or _seed, info
+    return dedup_product_name(" ".join(kws))[:100] or _seed, info
 
 
 def naver_shopping_search(open_client_id, open_client_secret, query, display=10):
