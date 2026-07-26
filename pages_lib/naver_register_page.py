@@ -181,6 +181,13 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         if not d:
             return ""
         import html as _hm
+        import re as _rem
+
+        def _cell(v):
+            # <br>·개행은 실제 줄바꿈으로 보존, 나머지 텍스트만 escape (문자 그대로 <br> 노출 방지).
+            _s = _rem.sub(r'(?i)<\s*br\s*/?\s*>', '\n', str(v))
+            return '<br>'.join(_hm.escape(_p.strip()) for _p in _s.split('\n') if _p.strip())
+
         _rows = [
             ("식품유형", d.get("food_type")), ("내용량", d.get("volume")),
             ("원재료명", d.get("ingredients")), ("보관방법", d.get("storage")),
@@ -199,7 +206,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 'text-align:center;width:28%;font-weight:700;color:#333;white-space:nowrap">'
                 f'{_hm.escape(_lbl)}</th>'
                 '<td style="border:1px solid #ddd;padding:10px 12px;text-align:left;'
-                f'color:#333;line-height:1.6">{_hm.escape(_v)}</td></tr>')
+                f'color:#333;line-height:1.6">{_cell(_v)}</td></tr>')
         if not _tr:
             return ""
         return ('<div style="max-width:720px;margin:24px auto 8px;padding:0 12px">'

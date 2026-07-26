@@ -1052,10 +1052,21 @@ def fetch_costco_status(product_no: str) -> dict:
 
 
 def build_spec_table_html(spec: dict) -> str:
-    """한글표시사항 스펙 dict → 상세페이지용 '제품 상세정보' 표 HTML. 빈 값 생략."""
+    """한글표시사항 스펙 dict → 상세페이지용 '제품 상세정보' 표 HTML. 빈 값 생략.
+
+    ⚠️ 코스트코 원본 값에는 줄바꿈용 <br>이 섞여 있다(예: '용도 : ...<br>제형 : 액체형').
+       값 전체를 escape하면 <br>이 '&lt;br&gt;' → 화면에 문자 그대로 노출된다.
+       → <br>·개행은 실제 줄바꿈으로 보존하고, 나머지 텍스트만 escape한다(주입 방지 유지)."""
     if not spec:
         return ""
     import html as _h
+    import re as _re
+
+    def _cell(v):
+        # <br>, <br/>, <br /> 및 개행 → 줄바꿈 마커로 통일 후, 세그먼트만 escape → <br>로 결합
+        s = _re.sub(r'(?i)<\s*br\s*/?\s*>', '\n', str(v))
+        return '<br>'.join(_h.escape(p.strip()) for p in s.split('\n') if p.strip())
+
     rows = []
     for k, v in spec.items():
         v = str(v or "").strip()
@@ -1066,7 +1077,7 @@ def build_spec_table_html(spec: dict) -> str:
             'text-align:center;width:32%;font-weight:700;color:#333;white-space:nowrap">'
             + _h.escape(str(k)) + '</th>'
             '<td style="border:1px solid #ddd;padding:10px 12px;text-align:left;'
-            'color:#333;line-height:1.6">' + _h.escape(v) + '</td></tr>')
+            'color:#333;line-height:1.6">' + _cell(v) + '</td></tr>')
     if not rows:
         return ""
     return ('<div style="max-width:720px;margin:28px auto 8px;padding:0 12px">'
