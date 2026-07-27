@@ -305,6 +305,29 @@ ACTIVE_ORDER_STATUSES = (
 )
 
 
+def delete_orders_from_history(username, order_nos):
+    """order_history에서 주문(order_no) 영구 삭제 → 미발송 목록 재복원 방지.
+
+    ⚠️ order_history만 삭제(active/미발송 목록의 원천). profit_settlements(정산저장)·daily_orders는
+       건드리지 않아 수익 기록은 보존된다. 네이버에서 아직 열린 주문은 다음 수집 때 정상 재수집되고,
+       이미 진행(배송완료 등)돼 status가 고착된 스테일 주문만 영구히 사라진다.
+    반환: 삭제된 행 수."""
+    onos = [str(o).strip() for o in (order_nos or []) if str(o).strip() and str(o).strip() != 'nan']
+    if not onos:
+        return 0
+    conn = get_user_db(username)
+    deleted = 0
+    CHUNK = 900
+    for i in range(0, len(onos), CHUNK):
+        chunk = onos[i:i + CHUNK]
+        ph = ",".join("?" * len(chunk))
+        cur = conn.execute(f"DELETE FROM order_history WHERE order_no IN ({ph})", chunk)
+        deleted += cur.rowcount
+    conn.commit()
+    conn.close()
+    return deleted
+
+
 def get_active_orders(username):
     conn = get_user_db(username)
     placeholders = ",".join("?" * len(ACTIVE_ORDER_STATUSES))

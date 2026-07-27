@@ -788,6 +788,51 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             st.session_state['_orders_cleared'] = True  # DB 자동복원 방지
             st.rerun()
 
+        # ── 미발송 영구 삭제 (스테일 주문 정리) ──────────────────────────
+        #   '지우기'는 세션만 비워 재접속 시 order_history에서 다시 복원된다.
+        #   이미 진행(배송완료 등)됐는데 status가 '결제완료'로 고착돼 계속 미발송으로
+        #   되살아나는 스테일 주문을 order_history에서 영구 삭제한다.
+        #   (아직 열린 주문은 다음 수집 때 정상 복원, 정산저장=수익기록은 보존)
+        with st.expander("🗑 미발송 주문 영구 삭제 (계속 복원되는 스테일 주문 정리)", expanded=False):
+            _perm_ids_all = (df['상품주문번호'].astype(str).tolist()
+                             if '상품주문번호' in df.columns else [])
+            _pc1, _pc2 = st.columns([1.2, 3])
+            _perm_scope = _pc1.radio(
+                "삭제 범위", ["네이버만", "쿠팡만", "현재 표시 전체"],
+                key="perm_del_scope",
+                help="상품주문번호에 '-' 있으면 쿠팡, 없으면 네이버")
+            if _perm_scope == "네이버만":
+                _perm_ids = [o for o in _perm_ids_all if '-' not in o]
+            elif _perm_scope == "쿠팡만":
+                _perm_ids = [o for o in _perm_ids_all if '-' in o]
+            else:
+                _perm_ids = _perm_ids_all
+            with _pc2:
+                st.caption(
+                    "⚠️ order_history에서 **영구 삭제**합니다. 네이버/쿠팡에서 아직 열린 주문은 "
+                    "다음 수집 때 다시 들어오고, 이미 진행된 스테일 주문만 사라집니다. "
+                    "정산저장(수익 기록)은 보존됩니다.")
+                _perm_confirm = st.checkbox(
+                    f"위 **{len(_perm_ids)}건**({_perm_scope})을 영구 삭제하는 데 동의합니다",
+                    key="perm_del_confirm")
+                if st.button("🗑 영구 삭제 실행", key="perm_del_btn", type="secondary",
+                             disabled=not (_perm_confirm and _perm_ids)):
+                    from db import delete_orders_from_history
+                    _pn = delete_orders_from_history(USERNAME, _perm_ids)
+                    for _k in ['orders', 'order_full', 'order_full_naver', 'order_full_coupang',
+                               'order_excel_bytes', 'order_excel_bytes_coupang']:
+                        st.session_state.pop(_k, None)
+                    st.session_state['_orders_cleared'] = True
+                    st.session_state['perm_del_confirm'] = False
+                    try:
+                        if invalidate_data_cache:
+                            invalidate_data_cache()
+                    except Exception:
+                        pass
+                    st.success(f"🗑 {_pn}건 영구 삭제 완료 — 미발송 목록에서 제거됨 "
+                               "(아직 열린 주문은 다음 수집 시 정상 복원)")
+                    st.rerun()
+
         # 디버그: API status 분포 (수량 안 맞을 때 원인 추적용)
         _dist_str = st.session_state.get('_naver_status_dist')
         if _dist_str:

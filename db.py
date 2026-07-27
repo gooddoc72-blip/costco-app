@@ -63,6 +63,7 @@ from db_orders import (
     save_order_history,
     ACTIVE_ORDER_STATUSES,
     get_active_orders,
+    delete_orders_from_history,
     update_order_status_bulk,
     _NAVER_EXCEL_COLUMNS,
     _db_row_to_naver_excel_row,
