@@ -66,6 +66,103 @@ def compute_sale_price(product: dict, margin: float,
     return int(round(cost * (1 + margin / 100.0) / 0.945 / 10) * 10)
 
 
+# ─── 등록상품 일괄 재가격 (가드 적용) ─────────────────────────────
+def _unit_cost(product):
+    """저장 원가에서 단품 원가 추정 — split_qty(소분)면 카톤가 ÷ split_qty.
+    묶음배수(상품명 'xN개')는 방향이 반대(곱)이라 재가격에선 위험해 미적용(상한 가드로 방어)."""
+    raw = (int(product.get("online_price") or 0) or int(product.get("unit_price") or 0)
+           or int(product.get("sale_price") or 0))
+    if raw <= 0:
+        return 0
+    sq = max(1, int(product.get("split_qty") or 1))
+    return raw // sq if sq > 1 else raw
+
+
+def reprice_registered(username, api_id, api_secret, *, margin=10, dry_run=True,
+                       max_ratio=2.0, max_count=0, log=None):
+    """등록된(naver_product_no 있는) 상품을 '단품원가 + 택배비 3000 + 마진'으로 재가격.
+
+    등록 당시 값으로 굳어 코스트코 가격 인상·택배비 미포함으로 역마진이 된 리스팅을 바로잡는다.
+    get_product_list로 현재 판매가를 한 번에 조회 → 목표가 산출 → 가드 통과분만 PUT.
+
+    ⚠️ 안전 가드 (돈 계산 — 카톤가가 원가로 저장된 이상치로 인한 참사 방지):
+      · split_qty 반영(_unit_cost) — 소분 단품 원가로 환산
+      · 인상만: 신규가 > 현재가일 때만 (이미 충분하면 건너뜀)
+      · 인상비율 상한: 신규가 ≤ 현재가 × max_ratio (초과 시 '수동확인'으로 분류, 미적용)
+        → 카톤가(x240 등)로 인한 수십~수백 배 폭등을 자동 제외
+      · 라이브 목록에 없거나 현재가 0이면 건너뜀
+
+    dry_run=True: 실제 수정 없이 변경안만.  max_count: 실제수정 상한(0=무제한).
+    반환 dict{targeted, updated, failed, ok_or_lower, over_cap, not_listed, no_price,
+             no_cost, results[], over_cap_samples[]}."""
+    log = log or _noop
+    listed, lerr = naver_api.get_product_list(api_id, api_secret)
+    if listed is None:
+        return {"error": lerr or "네이버 상품목록 조회 실패", "targeted": 0,
+                "updated": 0, "failed": 0}
+    cur_by_no = {}
+    for _it in listed:
+        for _k in ("originProductNo", "channelProductNo"):
+            _v = str(_it.get(_k) or "").strip()
+            if _v:
+                cur_by_no[_v] = _it
+
+    merged = get_all_products_merged(username)
+    out = {"targeted": 0, "updated": 0, "failed": 0, "ok_or_lower": 0,
+           "over_cap": 0, "not_listed": 0, "no_price": 0, "no_cost": 0,
+           "results": [], "over_cap_samples": []}
+    _n = 0
+    for p in merged:
+        nno = str(p.get("naver_product_no") or "").strip()
+        if not nno:
+            continue
+        ucost = _unit_cost(p)
+        if ucost <= 0:
+            out["no_cost"] += 1
+            continue
+        new_price = compute_sale_price({"online_price": ucost}, margin)  # 택배비 3000 포함
+        cur = cur_by_no.get(nno)
+        if cur is None:
+            out["not_listed"] += 1               # 라이브 목록에 없음(판매종료 등) — 손 안 댐
+            continue
+        cur_price = int(cur.get("salePrice") or 0)
+        name = (p.get("costco_name") or "")[:40]
+        if cur_price <= 0:
+            out["no_price"] += 1
+            continue
+        if new_price <= cur_price:
+            out["ok_or_lower"] += 1              # 이미 충분(인상 불필요)
+            continue
+        rec = {"name": name, "naver_no": nno, "unit_cost": ucost, "current": cur_price,
+               "new": new_price, "diff": new_price - cur_price,
+               "ratio": round(new_price / cur_price, 2)}
+        # 상한 초과 = 카톤가/이상치 의심 → 적용 안 하고 수동확인 목록으로
+        if new_price > cur_price * max_ratio:
+            out["over_cap"] += 1
+            if len(out["over_cap_samples"]) < 30:
+                out["over_cap_samples"].append(rec)
+            continue
+        out["targeted"] += 1
+        if dry_run:
+            out["results"].append(rec)
+            continue
+        if max_count and _n >= max_count:
+            rec["skipped"] = "상한 도달"
+            out["results"].append(rec)
+            continue
+        _n += 1
+        ok, err, _used = naver_api.update_product_price(api_id, api_secret, nno, new_price)
+        if ok:
+            out["updated"] += 1
+            log(f"  ✅ {name}: {cur_price:,} → {new_price:,}")
+        else:
+            out["failed"] += 1
+            rec["err"] = str(err)[:80]
+            out["results"].append(rec)
+            log(f"  ❌ {name}: {str(err)[:60]}")
+    return out
+
+
 # ─── 카테고리 해결 ────────────────────────────────────────────────
 def _resolve_leaf(api_id, api_secret, path):
     """카테고리 경로(A>B>C>D) → (leaf_id, full_name).
