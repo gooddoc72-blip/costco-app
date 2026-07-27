@@ -43,10 +43,17 @@ def _fallback_desc_body(name, raw_detail):
     return ""
 
 
+# 코스트코 상품을 네이버로 가져올 때 판매가에 기본 반영하는 택배비.
+#   무료배송으로 등록하므로 배송비를 판매가에 녹여 역마진을 막는다.
+DEFAULT_IMPORT_SHIPPING = 3000
+
+
 # ─── 판매가 계산 ──────────────────────────────────────────────────
-def compute_sale_price(product: dict, margin: float) -> int:
+def compute_sale_price(product: dict, margin: float,
+                       shipping_cost: int = DEFAULT_IMPORT_SHIPPING) -> int:
     """코스트코가(온라인가 우선) → 네이버 판매가.
-    공식: 원가 ×(1+마진%) ÷0.945 (네이버 수수료 5.5% 그로스업) → 10원 단위 반올림.
+    공식: (원가 + 택배비) ×(1+마진%) ÷0.945 (네이버 수수료 5.5% 그로스업) → 10원 단위 반올림.
+    택배비 기본 3000원: 무료배송으로 등록하므로 배송비를 판매가에 포함해 역마진 방지.
     원가 없으면 0 반환."""
     cost = (
         int(product.get("online_price") or 0)
@@ -55,6 +62,7 @@ def compute_sale_price(product: dict, margin: float) -> int:
     )
     if cost <= 0:
         return 0
+    cost += int(shipping_cost or 0)   # 택배비 포함 (판매가로 회수)
     return int(round(cost * (1 + margin / 100.0) / 0.945 / 10) * 10)
 
 
