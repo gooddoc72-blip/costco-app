@@ -595,3 +595,68 @@ def test_connection(access_key: str, secret_key: str, vendor_id: str):
     if err:
         return False, err
     return True, f"연결 성공 (오늘 ACCEPT 주문 {len(rows)}건 조회됨)"
+
+
+# ── 상품 가격 조회/변경 (마켓플레이스 상품 API) ─────────────────────────────
+#   ※ 주문/발송/정산과 별개인 '상품 관리' API. 가격 관리 기능(reprice)용.
+#     아이템 식별자 = vendorItemId(옵션ID). 주문번호 'orderId-vendorItemId'에서 추출 가능.
+
+def get_coupang_item_price(access_key: str, secret_key: str, vendor_id: str,
+                           vendor_item_id) -> tuple:
+    """쿠팡 아이템(옵션) 현재 판매가·재고 조회.
+    GET .../marketplace/vendor-items/{vendorItemId}/inventories
+    반환: (dict{salePrice:int, stock:int} | None, err)."""
+    vi = str(vendor_item_id).strip()
+    if not vi:
+        return None, "vendorItemId 없음"
+    path = f"/v2/providers/seller_api/apis/api/v1/marketplace/vendor-items/{vi}/inventories"
+    headers = _auth_header(access_key, secret_key, "GET", path, "")
+    try:
+        resp = requests.get(BASE_URL + path, headers=headers, timeout=15)
+        if resp.status_code != 200:
+            try:
+                _m = resp.json().get("message") or resp.text[:200]
+            except Exception:
+                _m = resp.text[:200]
+            return None, f"[{resp.status_code}] {_m}"
+        rb = resp.json()
+        d = rb.get("data") if isinstance(rb, dict) else None
+        d = d or {}
+        return {"salePrice": int(d.get("salePrice") or 0),
+                "stock": int(d.get("amountInStock") or 0)}, None
+    except Exception as e:
+        return None, str(e)
+
+
+def update_coupang_price(access_key: str, secret_key: str, vendor_id: str,
+                         vendor_item_id, new_price, force: bool = True) -> tuple:
+    """쿠팡 아이템(옵션) 판매가 변경.
+    PUT .../marketplace/vendor-items/{vendorItemId}/prices/{price}
+    force=True → forceSalePriceUpdate=true 로 쿠팡 가격 변동률 제한 우회.
+    반환: (ok: bool, err | None)."""
+    vi = str(vendor_item_id).strip()
+    try:
+        pr = int(new_price)
+    except (TypeError, ValueError):
+        return False, "가격 변환 오류"
+    if not vi or pr <= 0:
+        return False, "vendorItemId/가격 오류"
+    path = f"/v2/providers/seller_api/apis/api/v1/marketplace/vendor-items/{vi}/prices/{pr}"
+    query = "forceSalePriceUpdate=true" if force else ""
+    headers = _auth_header(access_key, secret_key, "PUT", path, query)
+    url = BASE_URL + path + (("?" + query) if query else "")
+    try:
+        resp = requests.put(url, headers=headers, timeout=20)
+        try:
+            rb = resp.json()
+        except Exception:
+            rb = {}
+        if resp.status_code == 200:
+            code = str((rb or {}).get("code", "")).upper()
+            if code in ("200", "SUCCESS", ""):
+                return True, None
+            return False, f"{code}: {(rb or {}).get('message') or resp.text[:200]}"
+        _m = (rb or {}).get("message") if isinstance(rb, dict) else None
+        return False, f"[{resp.status_code}] {_m or resp.text[:200]}"
+    except Exception as e:
+        return False, str(e)

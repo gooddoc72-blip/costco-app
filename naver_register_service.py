@@ -23,6 +23,8 @@ from db import (
     set_setting,
     AUTH_DB,
 )
+# 판매가 공식은 플랫폼 공통(pricing.py) — 쿠팡(coupang_reprice)과 동일 공식 공유.
+from pricing import DEFAULT_IMPORT_SHIPPING, compute_sale_price, unit_cost as _unit_cost
 
 
 def _noop(*_a, **_k):
@@ -43,41 +45,9 @@ def _fallback_desc_body(name, raw_detail):
     return ""
 
 
-# 코스트코 상품을 네이버로 가져올 때 판매가에 기본 반영하는 택배비.
-#   무료배송으로 등록하므로 배송비를 판매가에 녹여 역마진을 막는다.
-DEFAULT_IMPORT_SHIPPING = 3000
-
-
-# ─── 판매가 계산 ──────────────────────────────────────────────────
-def compute_sale_price(product: dict, margin: float,
-                       shipping_cost: int = DEFAULT_IMPORT_SHIPPING) -> int:
-    """코스트코가(온라인가 우선) → 네이버 판매가.
-    공식: (원가 + 택배비) ×(1+마진%) ÷0.945 (네이버 수수료 5.5% 그로스업) → 10원 단위 반올림.
-    택배비 기본 3000원: 무료배송으로 등록하므로 배송비를 판매가에 포함해 역마진 방지.
-    원가 없으면 0 반환."""
-    cost = (
-        int(product.get("online_price") or 0)
-        or int(product.get("unit_price") or 0)
-        or int(product.get("sale_price") or 0)
-    )
-    if cost <= 0:
-        return 0
-    cost += int(shipping_cost or 0)   # 택배비 포함 (판매가로 회수)
-    return int(round(cost * (1 + margin / 100.0) / 0.945 / 10) * 10)
-
-
 # ─── 등록상품 일괄 재가격 (가드 적용) ─────────────────────────────
-def _unit_cost(product):
-    """저장 원가에서 단품 원가 추정 — split_qty(소분)면 카톤가 ÷ split_qty.
-    묶음배수(상품명 'xN개')는 방향이 반대(곱)이라 재가격에선 위험해 미적용(상한 가드로 방어)."""
-    raw = (int(product.get("online_price") or 0) or int(product.get("unit_price") or 0)
-           or int(product.get("sale_price") or 0))
-    if raw <= 0:
-        return 0
-    sq = max(1, int(product.get("split_qty") or 1))
-    return raw // sq if sq > 1 else raw
-
-
+#   판매가 공식(compute_sale_price)·단품원가(_unit_cost)·택배비 상수(DEFAULT_IMPORT_SHIPPING)는
+#   플랫폼 공통이라 pricing.py에서 import(위). 쿠팡은 coupang_reprice가 같은 공식을 공유한다.
 def reprice_registered(username, api_id, api_secret, *, margin=10, dry_run=True,
                        max_ratio=2.0, max_count=0, log=None):
     """등록된(naver_product_no 있는) 상품을 '단품원가 + 택배비 3000 + 마진'으로 재가격.
