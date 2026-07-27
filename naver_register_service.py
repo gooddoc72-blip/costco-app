@@ -133,7 +133,10 @@ def reprice_registered(username, api_id, api_secret, *, margin=10, dry_run=True,
         if new_price <= cur_price:
             out["ok_or_lower"] += 1              # 이미 충분(인상 불필요)
             continue
-        rec = {"name": name, "naver_no": nno, "unit_cost": ucost, "current": cur_price,
+        # PUT 대상 번호: 라이브 목록의 originProductNo 우선(저장 naver_no가 채널번호면
+        # origin-products GET이 404 → 변환 실패하던 문제 방지). 없으면 저장 naver_no.
+        put_no = str(cur.get("originProductNo") or "").strip() or nno
+        rec = {"name": name, "naver_no": put_no, "unit_cost": ucost, "current": cur_price,
                "new": new_price, "diff": new_price - cur_price,
                "ratio": round(new_price / cur_price, 2)}
         # 상한 초과 = 카톤가/이상치 의심 → 적용 안 하고 수동확인 목록으로
@@ -151,7 +154,7 @@ def reprice_registered(username, api_id, api_secret, *, margin=10, dry_run=True,
             out["results"].append(rec)
             continue
         _n += 1
-        ok, err, _used = naver_api.update_product_price(api_id, api_secret, nno, new_price)
+        ok, err, _used = naver_api.update_product_price(api_id, api_secret, put_no, new_price)
         if ok:
             out["updated"] += 1
             log(f"  ✅ {name}: {cur_price:,} → {new_price:,}")
