@@ -838,10 +838,39 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         if _dist_str:
             st.caption(f"🔍 네이버 API 상태 분포: {_dist_str}")
 
+        # ── 구매금액(원가) 계산 — 주문 상품을 매칭해 구매가 산출 (정산금과 함께 표시) ──
+        #   compute_daily_purchase와 동일 공식: (unit_price // split_qty) × 수량 × pack_factor.
+        #   매칭/구매가 없으면 0. 공유DB(영수증 실단가) 우선 반영.
+        try:
+            from services import match_product_to_db, resolve_pack_factor
+            from db import get_all_products, get_shared_products
+            _pu = get_all_products(USERNAME)
+            _ps = get_shared_products()
+            _cost_memo = {}
+
+            def _row_purchase(_r):
+                _nm = str(_r.get('상품명', '') or '')
+                _pno = str(_r.get('상품번호', '') or '').strip()
+                _qty = max(1, int(pd.to_numeric(_r.get('수량', 1), errors='coerce') or 1))
+                _k = (_nm, _pno)
+                if _k not in _cost_memo:
+                    _p = match_product_to_db(USERNAME, _nm, product_no=_pno or None,
+                                             _user_prods=_pu, _shared_prods=_ps)
+                    if _p:
+                        _sq = max(1, int(_p.get('split_qty', 1) or 1))
+                        _sf = resolve_pack_factor(_p, _nm)
+                        _cost_memo[_k] = (int(_p.get('unit_price') or 0) // _sq) * _sf  # 1수량 원가
+                    else:
+                        _cost_memo[_k] = 0
+                return int(_cost_memo[_k]) * _qty
+            df['구매금액'] = df.apply(_row_purchase, axis=1).astype(int)
+        except Exception:
+            df['구매금액'] = 0
+
         # ── 플랫폼별 분리 ────────────────────────────────────────────
         if '소분단위' in df.columns:
             df['소분'] = df['소분단위'].apply(lambda x: f'÷{int(x)}' if pd.notna(x) and int(x) > 1 else '')
-        _disp_base = ['수취인명','상품명','옵션정보','수량','최종 상품별 총 주문금액','배송비 합계','정산예정금액']
+        _disp_base = ['수취인명','상품명','옵션정보','수량','최종 상품별 총 주문금액','배송비 합계','정산예정금액','구매금액']
         if '소분' in df.columns:
             _disp_base = ['소분'] + _disp_base
 
