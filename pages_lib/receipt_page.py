@@ -356,7 +356,36 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict, embedded: bool = False
             pd.DataFrame(_existing)[['상품번호', '상품명', '수량', '단가']],
             use_container_width=True, hide_index=True
         )
-        if st.button("🗑 영수증 초기화", key="clear_receipt_items"):
+        # 로드된 영수증 → 공유 DB 저장 (전체 판매자 매입가 반영). 새 업로드 시점(save_parsed)과 동일 동작.
+        #   ⚠️ 아래 '정산 데이터 저장'은 수익표 정산 저장(별개). 영수증 가격 반영은 이 버튼으로 한다.
+        _rc_c1, _rc_c2 = st.columns([2.7, 1])
+        if _rc_c1.button("💾 공유 DB 가격 저장 (전체 판매자 매입가 업데이트)",
+                         type="primary", key="save_loaded_receipt"):
+            cnt = skipped = 0
+            for p in _existing:
+                _pno = str(p.get('상품번호', '') or '').strip()
+                try:
+                    _pr = int(float(p.get('단가') or 0))
+                except (TypeError, ValueError):
+                    _pr = 0
+                if _pno and _pr > 0:
+                    upsert_shared_store_price(
+                        costco_name=p.get('상품명', ''), keyword=p.get('상품명', ''),
+                        price=_pr, product_no=_pno, updated_by=USERNAME,
+                        receipt_date=p.get('receipt_date', ''), force_store=IS_ADMIN)
+                    cnt += 1
+                else:
+                    skipped += 1
+            st.session_state['_shared_cache_dirty'] = True
+            try:
+                invalidate_data_cache()
+            except Exception:
+                pass
+            _msg = f"✅ {cnt}종 공유 DB 저장 완료! 모든 판매자에게 반영됩니다."
+            if skipped:
+                _msg += f" (상품번호/가격 없는 {skipped}건 제외)"
+            st.success(_msg)
+        if _rc_c2.button("🗑 영수증 초기화", key="clear_receipt_items"):
             st.session_state['receipt_items'] = []
             st.rerun()
 
