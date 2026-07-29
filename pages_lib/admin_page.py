@@ -602,12 +602,12 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 '@media print{body{padding:8px}.noprint{display:none}}'
                 '</style></head><body>'
                 f'<h1>🛒 장보기 — {_html_lib.escape(str(_sub["username"]))} ({_sub["order_date"]})</h1>'
-                f'<div class="meta">총 {len(_items)}종 · 정산 총액 {fmt(_sub["total_amount"])}원 · 제출 {_sub["submitted_at"]}</div>'
+                f'<div class="meta">총 {len(_items)}종 · 구매 예상금액 {fmt(_sub["total_amount"])}원 · 제출 {_sub["submitted_at"]}</div>'
                 '<table><thead><tr><th>상품번호</th><th>상품명</th><th>옵션</th>'
                 '<th style="text-align:right">수량</th><th style="text-align:right">정산금액</th>'
                 '<th style="text-align:right">택배비</th></tr></thead><tbody>'
                 + ''.join(_prows) +
-                f'</tbody></table><div class="tot">💰 정산 총액: {fmt(_sub["total_amount"])}원</div>'
+                f'</tbody></table><div class="tot">💰 구매 예상금액: {fmt(_sub["total_amount"])}원</div>'
                 '<button class="noprint" onclick="window.print()" '
                 'style="margin-top:20px;padding:10px 24px;font-size:14px;cursor:pointer">🖨 인쇄</button>'
                 '</body></html>'
@@ -646,6 +646,35 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     # ── 당일 제출건만 리스트로 노출 — 전날건은 일자가 바뀌면 노출하지 않음 ──
     if _subs_today:
         st.caption(f"📅 오늘({_today_str_adm}) 제출 {len(_subs_today)}건")
+
+        # ── 사용자별 오늘 합계 (금액 = 코스트코 구매 예상금액) ──
+        _agg_a = {}
+        for _s in _subs_today:
+            _a = _agg_a.setdefault(_s['username'], {'종수': 0, '건수': 0, '금액': 0, '제출': ''})
+            _a['종수'] += int(_s.get('total_items') or 0)
+            _a['금액'] += int(_s.get('total_amount') or 0)
+            try:
+                _a['건수'] += sum(int(_i.get('주문건수') or 0)
+                                for _i in json.loads(_s.get('items_json') or '[]'))
+            except Exception:
+                pass
+            _a['제출'] = max(_a['제출'], str(_s.get('submitted_at') or ''))
+        st.markdown(
+            f"**📊 오늘 사용자별 합계** — {len(_agg_a)}명 · "
+            f"주문 {sum(v['건수'] for v in _agg_a.values())}건 · "
+            f"구매금액 합계 **{fmt(sum(v['금액'] for v in _agg_a.values()))}원**"
+        )
+        st.dataframe(
+            pd.DataFrame([
+                {'사용자': _u, '상품 종수': f"{_v['종수']}개", '주문건수': f"{_v['건수']}건",
+                 '구매금액(예상)': f"{fmt(_v['금액'])}원", '최종 제출': _v['제출']}
+                for _u, _v in sorted(_agg_a.items(), key=lambda kv: -kv[1]['금액'])
+            ]),
+            use_container_width=True, hide_index=True,
+        )
+        st.caption("💰 금액 = 코스트코 구매 예상금액(팩단가 × 구매수량) 합계 — 정산예정금액이 아닙니다.")
+        st.divider()
+
         for _sub in _subs_today:
             _render_shop_sub(_sub)
     else:

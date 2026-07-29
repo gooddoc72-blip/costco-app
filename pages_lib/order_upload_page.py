@@ -117,6 +117,41 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             else:
                 import html as _hl
                 import streamlit.components.v1 as _cmp
+
+                # ── 사용자별 오늘 합계 (금액 = 코스트코 구매 예상금액 = 예상금액 열 합계) ──
+                #   제출은 (사용자×날짜) 1건으로 덮어쓰지만, 혹시 복수면 합산되도록 집계한다.
+                _agg = {}
+                for _s in _subs:
+                    _a = _agg.setdefault(_s['username'],
+                                         {'종수': 0, '건수': 0, '금액': 0, '제출': ''})
+                    _a['종수'] += int(_s.get('total_items') or 0)
+                    _a['금액'] += int(_s.get('total_amount') or 0)
+                    try:
+                        _a['건수'] += sum(int(_i.get('주문건수') or 0)
+                                        for _i in json.loads(_s.get('items_json') or '[]'))
+                    except Exception:
+                        pass
+                    _a['제출'] = max(_a['제출'], str(_s.get('submitted_at') or ''))
+
+                _tot_amt = sum(v['금액'] for v in _agg.values())
+                _tot_cnt = sum(v['건수'] for v in _agg.values())
+                st.markdown(
+                    f"**📊 오늘 사용자별 합계** — {len(_agg)}명 · 주문 {_tot_cnt}건 · "
+                    f"구매금액 합계 **{fmt(_tot_amt)}원**"
+                )
+                st.dataframe(
+                    pd.DataFrame([
+                        {'사용자': _u, '상품 종수': f"{_v['종수']}개",
+                         '주문건수': f"{_v['건수']}건",
+                         '구매금액(예상)': f"{fmt(_v['금액'])}원",
+                         '최종 제출': _v['제출']}
+                        for _u, _v in sorted(_agg.items(), key=lambda kv: -kv[1]['금액'])
+                    ]),
+                    use_container_width=True, hide_index=True,
+                )
+                st.caption("💰 금액 = 코스트코 구매 예상금액(팩단가 × 구매수량) 합계 — 정산예정금액이 아닙니다.")
+                st.divider()
+
                 for _sub in _subs:
                     _lbl = (f"📅 {_sub['order_date']} | 👤 {_sub['username']} | "
                             f"📦 {_sub['total_items']}개 | 💰 {fmt(_sub['total_amount'])}원 | ⏰ {_sub['submitted_at']}")
@@ -153,12 +188,12 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                             '.tot{margin-top:16px;font-size:15px;font-weight:600}@media print{body{padding:8px}.noprint{display:none}}'
                             '</style></head><body>'
                             f'<h1>🛒 장보기 — {_hl.escape(str(_sub["username"]))} ({_sub["order_date"]})</h1>'
-                            f'<div class="meta">총 {len(_its)}종 · 정산 총액 {fmt(_sub["total_amount"])}원 · 제출 {_sub["submitted_at"]}</div>'
+                            f'<div class="meta">총 {len(_its)}종 · 구매 예상금액 {fmt(_sub["total_amount"])}원 · 제출 {_sub["submitted_at"]}</div>'
                             '<table><thead><tr><th>상품번호</th><th>상품명</th><th>옵션</th>'
                             '<th style="text-align:right">수량</th><th style="text-align:right">정산금액</th>'
                             '<th style="text-align:right">택배비</th></tr></thead><tbody>'
                             + ''.join(_pr) +
-                            f'</tbody></table><div class="tot">💰 정산 총액: {fmt(_sub["total_amount"])}원</div>'
+                            f'</tbody></table><div class="tot">💰 구매 예상금액: {fmt(_sub["total_amount"])}원</div>'
                             '<button class="noprint" onclick="window.print()" '
                             'style="margin-top:20px;padding:10px 24px;font-size:14px;cursor:pointer">🖨 인쇄</button></body></html>'
                         )
