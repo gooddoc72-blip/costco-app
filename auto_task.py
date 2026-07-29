@@ -1125,7 +1125,8 @@ def run_naver_register_task(username="admin"):
         f"✅ 등록 {res['ok']}건 / ❌ 실패 {res['fail']}건\n"
         f"⏭ 스킵 — 카테고리미해결 {res['skipped_no_category']} · "
         f"가격없음 {res['skipped_no_price']} · 이미지없음 {res['skipped_no_image']} · "
-        f"판매종료/품절 {res.get('skipped_soldout', 0)}"
+        f"판매종료/품절 {res.get('skipped_soldout', 0)} · "
+        f"제외규칙 {res.get('skipped_excluded', 0)}"
     )
     if res["skipped_no_category"]:
         summary += "\n※ 카테고리 미해결 건은 앱 '네이버 등록' 탭 장바구니에서 수동 확인하세요."

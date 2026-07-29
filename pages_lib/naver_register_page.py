@@ -1340,7 +1340,26 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         else:
             _cc_pool = [p for p in _nr_unreg if p.get("category","") == _nr4_cc]
 
-        st.caption(f"후보 상품: {len(_cc_pool)}개")
+        # 등록 제외 규칙 (자동화 탭 Task 7에서 설정 — 자동 등록과 동일 규칙)
+        _x_dropped = []
+        try:
+            import naver_register_service as _nrs_x
+            _x_rules = _nrs_x.parse_exclude_rules(settings)
+            if _nrs_x.has_exclude_rules(_x_rules):
+                _x_kept, _x_dropped = _nrs_x.filter_excluded(_cc_pool, _x_rules)
+                if _x_dropped and not st.checkbox(
+                    f"🚫 제외 규칙에 걸린 {len(_x_dropped)}개도 표시",
+                    value=False, key="nr4_show_excluded",
+                    help="자동화 탭 → Task 7 → '등록 제외 규칙'에서 설정합니다.",
+                ):
+                    _cc_pool = _x_kept
+                else:
+                    _x_dropped = []
+        except Exception:
+            pass
+
+        st.caption(f"후보 상품: {len(_cc_pool)}개"
+                   + (f" (제외 규칙 {len(_x_dropped)}개 숨김)" if _x_dropped else ""))
         st.divider()
 
         # ── 장바구니 뷰어 ──────────────────────────────────────────────

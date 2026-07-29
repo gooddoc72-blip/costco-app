@@ -7,10 +7,12 @@
 
 - compute_sale_price : 코스트코가 → 마진·수수료 반영 판매가
 - resolve_category   : 상품 → 네이버 리프카테고리ID (저장값→매핑→AI 순)
+- exclude_reason     : 규칙 기반 등록 제외 판정 (키워드·카테고리·원가·카톤)
 - register_one       : 단일 상품 등록 (이미지 업로드 + 상세 + register_product)
 - auto_register      : 미등록 상품 일괄 자동 등록 (카테고리 미해결은 스킵 → 장바구니 회수)
 """
 import os
+import re
 import json
 import sqlite3
 
@@ -43,6 +45,127 @@ def _fallback_desc_body(name, raw_detail):
     if len(_txt) >= 30:
         return _h.escape(_txt[:1500])
     return ""
+
+
+# ─── 규칙 기반 등록 제외 ──────────────────────────────────────────
+#   '조건에 맞는 상품군'을 통째로 거른다. (개별 상품 영구 스킵은 auto_register_skip 담당)
+#   자동 등록(auto_register)과 수동 후보 목록(naver_register_page)이 같은 규칙을 쓰도록
+#   판정 로직을 여기 한 곳에 둔다. 설정은 사용자별(자동화 탭 Task 7).
+EXCLUDE_KEYS = (
+    "auto_register_exclude_keywords",     # 상품명 포함 키워드 (콤마/개행 구분)
+    "auto_register_exclude_categories",   # 코스트코 카테고리 (콤마/개행 구분)
+    "auto_register_exclude_cost_min",     # 단품원가 하한 (미만이면 제외, 0=미사용)
+    "auto_register_exclude_cost_max",     # 단품원가 상한 (초과면 제외, 0=미사용)
+    "auto_register_exclude_carton",       # '1'이면 카톤 표기 상품 제외
+    "auto_register_carton_min",           # 카톤 판정 최소 수량 (기본 30)
+)
+
+CARTON_MIN_DEFAULT = 30
+
+# 카톤/대량 표기: 'x240', '×432', '*100' 처럼 2자리 이상 수량이 붙은 것.
+#   'x24개'(소분 묶음)·'x250ml'(용량)는 정상 상품이라 제외 대상이 아니므로 부정 전방탐색으로 배제.
+#   치수 표기('200x300', '200 x 300')는 앞이 숫자이므로 부정 후방탐색으로 배제.
+#   → 저장 원가가 단품가가 아니라 카톤 전체가격인 상품을 거르는 용도.
+_CARTON_RE = re.compile(
+    r"(?<![\d.])(?<!\d )[xX×*]\s*(\d{2,})(?!\d)"
+    r"(?!\s*(?:개|입|매|팩|ml|mL|L|g|kg|G|KG|mm|cm|m\b|인치))"
+)
+
+
+def _split_terms(raw):
+    """콤마/개행 구분 문자열 → 소문자 term 리스트 (공백 항목 제거)."""
+    out = []
+    for t in str(raw or "").replace("\n", ",").split(","):
+        t = t.strip().lower()
+        if t:
+            out.append(t)
+    return out
+
+
+def carton_qty(name):
+    """상품명에서 카톤/대량 표기 수량 추정 (없으면 0). 여러 개면 최댓값."""
+    try:
+        nums = [int(m) for m in _CARTON_RE.findall(str(name or ""))]
+    except Exception:
+        return 0
+    return max(nums) if nums else 0
+
+
+def parse_exclude_rules(raw):
+    """설정 dict(문자열 값) → 규칙 dict. DB 비의존 순수함수(UI·무인 공용)."""
+    raw = raw or {}
+
+    def _int(k):
+        try:
+            return int(float(str(raw.get(k) or 0)))
+        except Exception:
+            return 0
+
+    return {
+        "keywords":   _split_terms(raw.get("auto_register_exclude_keywords")),
+        "categories": _split_terms(raw.get("auto_register_exclude_categories")),
+        "cost_min":   max(0, _int("auto_register_exclude_cost_min")),
+        "cost_max":   max(0, _int("auto_register_exclude_cost_max")),
+        "carton":     str(raw.get("auto_register_exclude_carton") or "") == "1",
+        "carton_min": _int("auto_register_carton_min") or CARTON_MIN_DEFAULT,
+    }
+
+
+def has_exclude_rules(rules):
+    """설정된 규칙이 하나라도 있는지."""
+    r = rules or {}
+    return bool(r.get("keywords") or r.get("categories")
+                or r.get("cost_min") or r.get("cost_max") or r.get("carton"))
+
+
+def load_exclude_rules(username):
+    """사용자 설정에서 제외 규칙 로드."""
+    return parse_exclude_rules({k: (get_setting(username, k) or "") for k in EXCLUDE_KEYS})
+
+
+def exclude_reason(product, rules):
+    """상품이 제외 규칙에 걸리면 사유 문자열, 아니면 None.
+    원가 규칙은 원가가 0(미수집)인 건에는 적용하지 않는다 — '가격 없음'으로 따로 스킵되기 때문."""
+    if not has_exclude_rules(rules):
+        return None
+    name = str(product.get("costco_name") or "")
+    low = name.lower()
+    for kw in rules.get("keywords") or []:
+        if kw in low:
+            return f"키워드 '{kw}'"
+
+    cat = str(product.get("category") or "").strip().lower()
+    if cat:
+        for c in rules.get("categories") or []:
+            if c in cat:
+                return f"카테고리 '{c}'"
+
+    cmin = rules.get("cost_min") or 0
+    cmax = rules.get("cost_max") or 0
+    if cmin or cmax:
+        cost = _unit_cost(product)
+        if cost > 0:
+            if cmin and cost < cmin:
+                return f"원가 {cost:,}원 < 하한 {cmin:,}원"
+            if cmax and cost > cmax:
+                return f"원가 {cost:,}원 > 상한 {cmax:,}원"
+
+    if rules.get("carton"):
+        q = carton_qty(name)
+        if q >= (rules.get("carton_min") or CARTON_MIN_DEFAULT):
+            return f"카톤 표기 x{q}"
+    return None
+
+
+def filter_excluded(products, rules):
+    """(통과 목록, [(상품, 사유), ...]) — UI 미리보기·후보 목록 필터 공용."""
+    if not has_exclude_rules(rules):
+        return list(products), []
+    kept, dropped = [], []
+    for p in products:
+        r = exclude_reason(p, rules)
+        (dropped.append((p, r)) if r else kept.append(p))
+    return kept, dropped
 
 
 # ─── 등록상품 일괄 재가격 (가드 적용) ─────────────────────────────
@@ -402,15 +525,20 @@ def register_one(username, api_id, api_secret, product, cat_id, opts=None):
 def auto_register(username, api_id, api_secret, *, margin=10, max_count=20,
                   open_creds=None, ai_key="", cat_map=None, as_tel="", stock=100,
                   gen_tags=True, optimize_name=True, ai_desc=True, with_spec=True,
-                  log=None):
+                  exclude_rules=None, log=None):
     """미등록 코스트코 상품을 자동 등록.
     - merged에서 naver_product_no 빈 상품만 대상.
+    - 제외 규칙(키워드·카테고리·원가·카톤)에 걸린 건은 비용 없이 스킵.
     - 가격/이미지 없는 건은 비용 없이 스킵.
     - 카테고리 미해결 건은 등록하지 않고 스킵(미등록 유지 → UI 장바구니로 회수).
     - max_count: 회당 '처리(카테고리해결+등록)' 상한 (AI 호출·라이브 등록 폭주 방지).
-    반환: dict{ok, fail, skipped_no_category, skipped_no_price, skipped_no_image, processed, results[]}."""
+    - exclude_rules: None이면 사용자 설정에서 로드. {}를 넘기면 규칙 미적용.
+    반환: dict{ok, fail, skipped_no_category, skipped_no_price, skipped_no_image,
+             skipped_excluded, processed, results[]}."""
     log = log or _noop
     cat_map = cat_map or {}
+    if exclude_rules is None:
+        exclude_rules = load_exclude_rules(username)
 
     merged = get_all_products_merged(username)
 
@@ -428,11 +556,24 @@ def auto_register(username, api_id, api_secret, *, margin=10, max_count=20,
              if not str(p.get("naver_product_no") or "").strip()
              and _skey(p) not in _skip]
     log(f"미등록 후보 {len(unreg)}개 (전체 {len(merged)}개, 스킵 {len(_skip)}개 제외)")
+    if has_exclude_rules(exclude_rules):
+        _rd = []
+        if exclude_rules.get("keywords"):
+            _rd.append(f"키워드 {len(exclude_rules['keywords'])}개")
+        if exclude_rules.get("categories"):
+            _rd.append(f"카테고리 {len(exclude_rules['categories'])}개")
+        if exclude_rules.get("cost_min"):
+            _rd.append(f"원가 {exclude_rules['cost_min']:,}원 미만")
+        if exclude_rules.get("cost_max"):
+            _rd.append(f"원가 {exclude_rules['cost_max']:,}원 초과")
+        if exclude_rules.get("carton"):
+            _rd.append(f"카톤 x{exclude_rules['carton_min']}+")
+        log("제외 규칙 적용: " + " · ".join(_rd))
 
     out = {
         "ok": 0, "fail": 0,
         "skipped_no_category": 0, "skipped_no_price": 0, "skipped_no_image": 0,
-        "skipped_soldout": 0,
+        "skipped_soldout": 0, "skipped_excluded": 0,
         "processed": 0, "results": [],
     }
     processed = 0
@@ -442,6 +583,13 @@ def auto_register(username, api_id, api_secret, *, margin=10, max_count=20,
         name = (p.get("costco_name") or "")[:40]
 
         # ── 저비용 사전 스킵 (예산 미소모) ──
+        # 규칙 기반 제외가 최우선 — 크롤 조회·AI·등록 어느 것도 태우지 않는다.
+        _xr = exclude_reason(p, exclude_rules)
+        if _xr:
+            out["skipped_excluded"] += 1
+            out["results"].append({"상품명": name, "결과": "skip", "내용": f"제외규칙 — {_xr}"})
+            continue
+
         sale = compute_sale_price(p, margin)
         if sale <= 0:
             out["skipped_no_price"] += 1

@@ -649,6 +649,100 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     st.caption("판매가 = 코스트코가 ×(1+마진%) ÷0.945(수수료 5.5%). "
                "회당 최대 = 1회 실행당 등록 상한(AI 호출·등록 폭주 방지). 등록된 상품은 다음 실행 시 자동 제외됩니다.")
 
+    # ── 등록 제외 규칙 (자동 등록 + '네이버 등록' 탭 후보 목록 공용) ──
+    _x_on = any(_gs(k) for k in (
+        'auto_register_exclude_keywords', 'auto_register_exclude_categories',
+        'auto_register_exclude_cost_min', 'auto_register_exclude_cost_max',
+    )) or _gs('auto_register_exclude_carton') == '1'
+    with st.expander("🚫 등록 제외 규칙" + (" — 적용 중" if _x_on else " — 미설정"),
+                     expanded=False):
+        st.caption("조건에 맞는 상품은 자동 등록에서 제외되고, '네이버 등록' 탭 후보 목록에서도 숨겨집니다. "
+                   "AI·등록 API를 태우기 전에 걸러내므로 비용이 들지 않습니다.")
+
+        _x_kw = st.text_area(
+            "상품명 키워드 제외 (콤마 또는 줄바꿈 구분)",
+            value=_gs('auto_register_exclude_keywords'),
+            placeholder="예: 냉장, 냉동, 정육, 회, 주류, 위스키",
+            key="t7_x_kw", height=80,
+            help="상품명에 이 단어가 포함되면 제외합니다. 대소문자 구분 없음.")
+
+        # 코스트코 카테고리 목록을 실제 수집 데이터에서 뽑아 멀티셀렉트로 제공
+        try:
+            _x_all = get_all_products_merged(USERNAME)
+        except Exception:
+            _x_all = []
+        _x_cats = sorted({str(p.get('category') or '').strip()
+                          for p in _x_all if str(p.get('category') or '').strip()})
+        _x_cat_saved = [c.strip() for c in
+                        (_gs('auto_register_exclude_categories') or '').replace('\n', ',').split(',')
+                        if c.strip()]
+        if _x_cats:
+            _x_cat_sel = st.multiselect(
+                "코스트코 카테고리 제외", options=_x_cats,
+                default=[c for c in _x_cat_saved if c in _x_cats],
+                key="t7_x_cat")
+            # 목록에 없는(과거 저장) 값은 보존
+            _x_cat_val = _x_cat_sel + [c for c in _x_cat_saved if c not in _x_cats]
+        else:
+            _x_cat_val = _x_cat_saved
+            st.caption("수집된 카테고리가 없습니다 — 크롤링 후 목록이 나타납니다.")
+
+        _xc1, _xc2 = st.columns(2)
+        _x_min = _xc1.number_input(
+            "단품원가 하한 (원, 0=미사용)", min_value=0, max_value=10_000_000, step=1000,
+            value=int(_gs('auto_register_exclude_cost_min') or 0), key="t7_x_min",
+            help="원가가 이 금액 미만이면 제외. 무료배송 3,000원 구조상 역마진이 나는 저가 상품을 거릅니다.")
+        _x_max = _xc2.number_input(
+            "단품원가 상한 (원, 0=미사용)", min_value=0, max_value=10_000_000, step=10000,
+            value=int(_gs('auto_register_exclude_cost_max') or 0), key="t7_x_max",
+            help="원가가 이 금액을 초과하면 제외. 카톤가가 원가로 잘못 저장된 건을 거르는 데도 유효합니다.")
+
+        _xc3, _xc4 = st.columns([2, 1])
+        _x_carton = _xc3.checkbox(
+            "카톤/대량 표기 상품 제외 (예: 'x240', 'x432')",
+            value=(_gs('auto_register_exclude_carton') == '1'), key="t7_x_carton",
+            help="'x24개'처럼 개수 단위가 붙은 소분 묶음은 제외 대상이 아닙니다. "
+                 "저장 원가가 단품가가 아니라 카톤 전체가격인 상품을 거릅니다.")
+        _x_cmin = _xc4.number_input(
+            "카톤 판정 수량", min_value=2, max_value=1000, step=10,
+            value=int(_gs('auto_register_carton_min') or 30), key="t7_x_cmin")
+
+        _xb1, _xb2 = st.columns([1, 2])
+        if _xb1.button("💾 제외 규칙 저장", key="save_t7_x", use_container_width=True):
+            set_setting(USERNAME, 'auto_register_exclude_keywords', _x_kw.strip())
+            set_setting(USERNAME, 'auto_register_exclude_categories', ", ".join(_x_cat_val))
+            set_setting(USERNAME, 'auto_register_exclude_cost_min', str(int(_x_min)))
+            set_setting(USERNAME, 'auto_register_exclude_cost_max', str(int(_x_max)))
+            set_setting(USERNAME, 'auto_register_exclude_carton', '1' if _x_carton else '0')
+            set_setting(USERNAME, 'auto_register_carton_min', str(int(_x_cmin)))
+            st.success("✅ 제외 규칙 저장됨 (스케줄 재등록 불필요)")
+            st.rerun()
+
+        if _xb2.button("🔍 지금 설정으로 미리보기", key="prev_t7_x", use_container_width=True):
+            try:
+                import naver_register_service as _nrs_p
+                _x_rules = _nrs_p.parse_exclude_rules({
+                    'auto_register_exclude_keywords':   _x_kw,
+                    'auto_register_exclude_categories': ", ".join(_x_cat_val),
+                    'auto_register_exclude_cost_min':   str(int(_x_min)),
+                    'auto_register_exclude_cost_max':   str(int(_x_max)),
+                    'auto_register_exclude_carton':     '1' if _x_carton else '0',
+                    'auto_register_carton_min':         str(int(_x_cmin)),
+                })
+                _x_unreg = [p for p in _x_all if not p.get('naver_product_no')]
+                _x_keep, _x_drop = _nrs_p.filter_excluded(_x_unreg, _x_rules)
+                st.info(f"미등록 {len(_x_unreg)}개 중 **{len(_x_drop)}개 제외** → 등록 대상 {len(_x_keep)}개")
+                if _x_drop:
+                    st.dataframe(
+                        pd.DataFrame([{"상품명": (p.get('costco_name') or '')[:50],
+                                       "카테고리": p.get('category') or '',
+                                       "제외 사유": r} for p, r in _x_drop[:200]]),
+                        use_container_width=True, hide_index=True)
+                    if len(_x_drop) > 200:
+                        st.caption(f"※ 상위 200개만 표시 (전체 {len(_x_drop)}개)")
+            except Exception as _xe:
+                st.error(f"미리보기 실패: {_xe}")
+
     _need7 = []
     if not bool(_gs('api_client_id')):
         _need7.append("네이버 커머스 API")
