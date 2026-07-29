@@ -56,19 +56,29 @@ EXCLUDE_KEYS = (
     "auto_register_exclude_categories",   # 코스트코 카테고리 (콤마/개행 구분)
     "auto_register_exclude_cost_min",     # 단품원가 하한 (미만이면 제외, 0=미사용)
     "auto_register_exclude_cost_max",     # 단품원가 상한 (초과면 제외, 0=미사용)
-    "auto_register_exclude_carton",       # '1'이면 카톤 표기 상품 제외
+    "auto_register_exclude_carton",       # '1'이면 카톤 표기 + 고액 원가 상품 제외
     "auto_register_carton_min",           # 카톤 판정 최소 수량 (기본 30)
+    "auto_register_carton_cost_min",      # 카톤 판정 최소 원가 (기본 20만원, 0=원가조건 끔)
 )
 
 CARTON_MIN_DEFAULT = 30
+# 카톤 판정에 요구하는 최소 단품원가.
+#   실데이터(미등록 2,027건) 검증: 이름의 'xN'만으로 판정하면 137건이 걸리는데
+#   그중 실제 카톤가는 19건뿐이고 118건은 '초콜릿 1.3kg x 200'(내용물 개수)처럼
+#   원가 1~3만원인 정상 단품이었다 → 이름 패턴 단독은 오탐 86%.
+#   카톤가로 저장된 건은 예외 없이 고액(수십만~수천만원)이므로 원가 조건을 AND로 건다.
+CARTON_COST_MIN_DEFAULT = 200_000
 
 # 카톤/대량 표기: 'x240', '×432', '*100' 처럼 2자리 이상 수량이 붙은 것.
-#   'x24개'(소분 묶음)·'x250ml'(용량)는 정상 상품이라 제외 대상이 아니므로 부정 전방탐색으로 배제.
+#   'x24개'·'x90캡슐'(내용물 개수)·'x250ml'(용량)는 부정 전방탐색으로 배제.
 #   치수 표기('200x300', '200 x 300')는 앞이 숫자이므로 부정 후방탐색으로 배제.
-#   → 저장 원가가 단품가가 아니라 카톤 전체가격인 상품을 거르는 용도.
+#   ct/ea는 배제하지 않는다 — 'X 50CT'(카톤 수)와 'x 170ct'(내용물 수)가 섞여 쓰이는데,
+#   여러 개 매칭 시 최댓값을 쓰므로 카톤 수가 선택되고, 저가 오탐은 원가 조건이 막는다.
+#   ※ 'x 84ea x 3'처럼 카톤 배수가 1자리면 84가 잡힌다(수량 기준만 넘으면 무방).
 _CARTON_RE = re.compile(
     r"(?<![\d.])(?<!\d )[xX×*]\s*(\d{2,})(?!\d)"
-    r"(?!\s*(?:개|입|매|팩|ml|mL|L|g|kg|G|KG|mm|cm|m\b|인치))"
+    r"(?!\s*(?:개|입|매|장|알|정|포|봉|컵|롤|팩|스틱|캡슐|티백|조각|인분|세트"
+    r"|ml|mL|L|g|kg|G|KG|mm|cm|m\b|인치))"
 )
 
 
@@ -101,6 +111,8 @@ def parse_exclude_rules(raw):
         except Exception:
             return 0
 
+    # 카톤 원가조건: 미저장(빈값)이면 기본값, 명시적 0이면 '원가조건 끔'(이름 패턴만).
+    _ccm_raw = str(raw.get("auto_register_carton_cost_min") or "").strip()
     return {
         "keywords":   _split_terms(raw.get("auto_register_exclude_keywords")),
         "categories": _split_terms(raw.get("auto_register_exclude_categories")),
@@ -108,6 +120,8 @@ def parse_exclude_rules(raw):
         "cost_max":   max(0, _int("auto_register_exclude_cost_max")),
         "carton":     str(raw.get("auto_register_exclude_carton") or "") == "1",
         "carton_min": _int("auto_register_carton_min") or CARTON_MIN_DEFAULT,
+        "carton_cost_min": (max(0, _int("auto_register_carton_cost_min"))
+                            if _ccm_raw else CARTON_COST_MIN_DEFAULT),
     }
 
 
@@ -153,7 +167,14 @@ def exclude_reason(product, rules):
     if rules.get("carton"):
         q = carton_qty(name)
         if q >= (rules.get("carton_min") or CARTON_MIN_DEFAULT):
-            return f"카톤 표기 x{q}"
+            # 이름 패턴만으로는 '1.3kg x 200'(내용물 개수) 정상 단품을 오탐한다.
+            # 카톤가로 저장된 건은 고액이므로 원가 하한을 AND 조건으로 요구한다.
+            ccm = rules.get("carton_cost_min", CARTON_COST_MIN_DEFAULT)
+            if not ccm:
+                return f"카톤 표기 x{q}"
+            uc = _unit_cost(product)
+            if uc >= ccm:
+                return f"카톤 표기 x{q} · 원가 {uc:,}원"
     return None
 
 
@@ -567,7 +588,9 @@ def auto_register(username, api_id, api_secret, *, margin=10, max_count=20,
         if exclude_rules.get("cost_max"):
             _rd.append(f"원가 {exclude_rules['cost_max']:,}원 초과")
         if exclude_rules.get("carton"):
-            _rd.append(f"카톤 x{exclude_rules['carton_min']}+")
+            _ccm = exclude_rules.get("carton_cost_min") or 0
+            _rd.append(f"카톤 x{exclude_rules['carton_min']}+"
+                       + (f" & 원가 {_ccm:,}원+" if _ccm else " (원가무관)"))
         log("제외 규칙 적용: " + " · ".join(_rd))
 
     out = {

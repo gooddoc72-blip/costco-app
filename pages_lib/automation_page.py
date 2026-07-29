@@ -697,15 +697,22 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             value=int(_gs('auto_register_exclude_cost_max') or 0), key="t7_x_max",
             help="원가가 이 금액을 초과하면 제외. 카톤가가 원가로 잘못 저장된 건을 거르는 데도 유효합니다.")
 
-        _xc3, _xc4 = st.columns([2, 1])
+        _xc3, _xc4, _xc5 = st.columns([2, 1, 1.2])
         _x_carton = _xc3.checkbox(
-            "카톤/대량 표기 상품 제외 (예: 'x240', 'x432')",
+            "카톤 상품 제외 (예: '커피 1.1g x 170ct x 432' 1,899만원)",
             value=(_gs('auto_register_exclude_carton') == '1'), key="t7_x_carton",
-            help="'x24개'처럼 개수 단위가 붙은 소분 묶음은 제외 대상이 아닙니다. "
-                 "저장 원가가 단품가가 아니라 카톤 전체가격인 상품을 거릅니다.")
+            help="저장 원가가 단품가가 아니라 카톤 전체가격인 상품을 거릅니다. "
+                 "상품명 'xN' 표기와 원가 조건을 함께 만족해야 제외됩니다.")
         _x_cmin = _xc4.number_input(
             "카톤 판정 수량", min_value=2, max_value=1000, step=10,
             value=int(_gs('auto_register_carton_min') or 30), key="t7_x_cmin")
+        _x_ccost = _xc5.number_input(
+            "카톤 판정 원가 (0=원가무관)", min_value=0, max_value=10_000_000, step=50000,
+            value=(int(_gs('auto_register_carton_cost_min'))
+                   if str(_gs('auto_register_carton_cost_min')).strip() else 200000),
+            key="t7_x_ccost",
+            help="⚠️ 0으로 두면 '초콜릿 1.3kg x 200'(내용물 개수)처럼 원가 1~3만원인 "
+                 "정상 단품까지 대량 제외됩니다. 실데이터 기준 이름 패턴 단독 오탐률 86%.")
 
         _xb1, _xb2 = st.columns([1, 2])
         if _xb1.button("💾 제외 규칙 저장", key="save_t7_x", use_container_width=True):
@@ -715,6 +722,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             set_setting(USERNAME, 'auto_register_exclude_cost_max', str(int(_x_max)))
             set_setting(USERNAME, 'auto_register_exclude_carton', '1' if _x_carton else '0')
             set_setting(USERNAME, 'auto_register_carton_min', str(int(_x_cmin)))
+            set_setting(USERNAME, 'auto_register_carton_cost_min', str(int(_x_ccost)))
             st.success("✅ 제외 규칙 저장됨 (스케줄 재등록 불필요)")
             st.rerun()
 
@@ -728,6 +736,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     'auto_register_exclude_cost_max':   str(int(_x_max)),
                     'auto_register_exclude_carton':     '1' if _x_carton else '0',
                     'auto_register_carton_min':         str(int(_x_cmin)),
+                    'auto_register_carton_cost_min':    str(int(_x_ccost)),
                 })
                 _x_unreg = [p for p in _x_all if not p.get('naver_product_no')]
                 _x_keep, _x_drop = _nrs_p.filter_excluded(_x_unreg, _x_rules)
