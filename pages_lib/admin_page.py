@@ -549,17 +549,23 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     _subs_today = [s for s in _all_subs if s.get('order_date') == _today_str_adm]
 
     def _render_shop_sub(_sub):
+        try:
+            _items = json.loads(_sub['items_json'])
+        except Exception:
+            _items = []
+        _sub_set = sum(int(_i.get('정산금액') or 0) for _i in _items)
+        _sub_amt = int(_sub.get('total_amount') or 0)
         _label = (f"📅 {_sub['order_date']}  |  👤 {_sub['username']}  |  "
-                  f"📦 {_sub['total_items']}개 상품  |  💰 {fmt(_sub['total_amount'])}원  "
-                  f"|  ⏰ {_sub['submitted_at']}")
+                  f"📦 {_sub['total_items']}개 상품  |  💰 구매 {fmt(_sub_amt)}원  "
+                  f"|  🧾 정산 {fmt(_sub_set)}원  |  ⏰ {_sub['submitted_at']}")
         with st.expander(_label, expanded=False):
-            try:
-                _items = json.loads(_sub['items_json'])
-            except Exception:
-                _items = []
             if not _items:
                 st.warning("항목이 비어있습니다.")
                 return
+            _mc1, _mc2, _mc3 = st.columns(3)
+            _mc1.metric("💰 구매금액 합계", f"{fmt(_sub_amt)}원")
+            _mc2.metric("🧾 정산금액 합계", f"{fmt(_sub_set)}원")
+            _mc3.metric("차액(정산−구매)", f"{fmt(_sub_set - _sub_amt)}원")
             _df_sub = pd.DataFrame(_items)
             st.dataframe(_df_sub, use_container_width=True, hide_index=True)
 
@@ -602,12 +608,14 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 '@media print{body{padding:8px}.noprint{display:none}}'
                 '</style></head><body>'
                 f'<h1>🛒 장보기 — {_html_lib.escape(str(_sub["username"]))} ({_sub["order_date"]})</h1>'
-                f'<div class="meta">총 {len(_items)}종 · 구매 예상금액 {fmt(_sub["total_amount"])}원 · 제출 {_sub["submitted_at"]}</div>'
+                f'<div class="meta">총 {len(_items)}종 · 구매 예상금액 {fmt(_sub_amt)}원 · '
+                f'정산금액 {fmt(_sub_set)}원 · 제출 {_sub["submitted_at"]}</div>'
                 '<table><thead><tr><th>상품번호</th><th>상품명</th><th>옵션</th>'
                 '<th style="text-align:right">수량</th><th style="text-align:right">정산금액</th>'
                 '<th style="text-align:right">택배비</th></tr></thead><tbody>'
                 + ''.join(_prows) +
-                f'</tbody></table><div class="tot">💰 구매 예상금액: {fmt(_sub["total_amount"])}원</div>'
+                f'</tbody></table><div class="tot">💰 구매 예상금액: {fmt(_sub_amt)}원'
+                f' &nbsp;·&nbsp; 🧾 정산금액: {fmt(_sub_set)}원</div>'
                 '<button class="noprint" onclick="window.print()" '
                 'style="margin-top:20px;padding:10px 24px;font-size:14px;cursor:pointer">🖨 인쇄</button>'
                 '</body></html>'
@@ -650,29 +658,39 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         # ── 사용자별 오늘 합계 (금액 = 코스트코 구매 예상금액) ──
         _agg_a = {}
         for _s in _subs_today:
-            _a = _agg_a.setdefault(_s['username'], {'종수': 0, '건수': 0, '금액': 0, '제출': ''})
+            _a = _agg_a.setdefault(_s['username'],
+                                   {'종수': 0, '건수': 0, '금액': 0, '정산': 0, '제출': ''})
             _a['종수'] += int(_s.get('total_items') or 0)
             _a['금액'] += int(_s.get('total_amount') or 0)
             try:
-                _a['건수'] += sum(int(_i.get('주문건수') or 0)
-                                for _i in json.loads(_s.get('items_json') or '[]'))
+                for _i in json.loads(_s.get('items_json') or '[]'):
+                    _a['건수'] += int(_i.get('주문건수') or 0)
+                    _a['정산'] += int(_i.get('정산금액') or 0)
             except Exception:
                 pass
             _a['제출'] = max(_a['제출'], str(_s.get('submitted_at') or ''))
+        _tot_amt_a = sum(v['금액'] for v in _agg_a.values())
+        _tot_set_a = sum(v['정산'] for v in _agg_a.values())
         st.markdown(
             f"**📊 오늘 사용자별 합계** — {len(_agg_a)}명 · "
             f"주문 {sum(v['건수'] for v in _agg_a.values())}건 · "
-            f"구매금액 합계 **{fmt(sum(v['금액'] for v in _agg_a.values()))}원**"
+            f"구매금액 **{fmt(_tot_amt_a)}원** · 정산금액 **{fmt(_tot_set_a)}원** "
+            f"· 차액 **{fmt(_tot_set_a - _tot_amt_a)}원**"
         )
         st.dataframe(
             pd.DataFrame([
                 {'사용자': _u, '상품 종수': f"{_v['종수']}개", '주문건수': f"{_v['건수']}건",
-                 '구매금액(예상)': f"{fmt(_v['금액'])}원", '최종 제출': _v['제출']}
+                 '구매금액(예상)': f"{fmt(_v['금액'])}원",
+                 '정산금액': f"{fmt(_v['정산'])}원",
+                 '차액(정산−구매)': f"{fmt(_v['정산'] - _v['금액'])}원",
+                 '최종 제출': _v['제출']}
                 for _u, _v in sorted(_agg_a.items(), key=lambda kv: -kv[1]['금액'])
             ]),
             use_container_width=True, hide_index=True,
         )
-        st.caption("💰 금액 = 코스트코 구매 예상금액(팩단가 × 구매수량) 합계 — 정산예정금액이 아닙니다.")
+        st.caption("💰 구매금액 = 코스트코 구매 예상금액(팩단가 × 구매수량) 합계 · "
+                   "🧾 정산금액 = 항목별 정산예정금액 합계. "
+                   "차액은 택배·박스 원가와 수수료를 뺀 값이 아니므로 순이익이 아닙니다.")
         st.divider()
 
         for _sub in _subs_today:
