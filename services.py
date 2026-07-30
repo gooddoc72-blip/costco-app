@@ -191,17 +191,22 @@ def split_orders_by_cutoff(orders, cutoff_hour, now=None):
 def split_df_by_cutoff(df, cutoff_hour, now=None):
     """주문 DataFrame에서 마감 이후 주문을 걷어낸다 → (오늘 마감분 df, 제외 건수).
 
-    DB 복원분에도 적용하기 위한 DataFrame 버전. 시각 컬럼이 없거나 값이 비면
-    (구버전 데이터) 누락 방지를 위해 그대로 남긴다.
+    판정 순서:
+      1) 주문시각(주문일시/결제일/주문일)이 마감 이후 → 제외
+      2) 주문시각을 모르면(쿠팡 등 일부 응답) 수집시각이 마감 이후 → 제외
+         (= 마감 후에 새로 유입된 주문. 12:00 정각 크론 수집분은 남도록 초과 비교)
+      3) 둘 다 모르면 누락 방지를 위해 남긴다.
     """
     _cut = order_cutoff_dt(cutoff_hour, now)
     if _cut is None or df is None or getattr(df, 'empty', True):
         return df, 0
     _col = next((c for c in _ORDER_TIME_COLS if c in df.columns), None)
-    if _col is None:
-        return df, 0
-    _ts = pd.to_datetime(df[_col], errors='coerce')
+    _ts = (pd.to_datetime(df[_col], errors='coerce') if _col is not None
+           else pd.Series(pd.NaT, index=df.index))
     _after = _ts.notna() & (_ts >= _cut)
+    if '수집시각' in df.columns:
+        _cts = pd.to_datetime(df['수집시각'], errors='coerce')
+        _after = _after | (_ts.isna() & _cts.notna() & (_cts > _cut))
     _n = int(_after.sum())
     if not _n:
         return df, 0

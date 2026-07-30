@@ -379,6 +379,11 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     if c in df.columns:
                         df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0).astype(int)
                 df = df.sort_values('상품명').reset_index(drop=True)
+                # ⏰ DB에 이미 있던 마감 이후 주문도 오늘 목록에서 제외
+                if _cut_h is not None and not _cut_include:
+                    df, _df_cut_n = split_df_by_cutoff(df, _cut_h)
+                    if _df_cut_n:
+                        st.caption(f"⏰ DB에 있던 마감 이후 주문 {_df_cut_n}건도 제외됨")
 
                 # 구입가격 재계산 (DB 1회 로드)
                 import re as _re_ord

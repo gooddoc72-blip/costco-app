@@ -583,6 +583,7 @@ def db_rows_to_orders_df(rows):
         'order_group_no':'주문번호',
         'order_date':   '결제일',
         'ordered_at':   '주문일시',   # 마감시각(12:00) 판정용 실제 주문시각
+        'created_at':   '수집시각',   # 주문시각 불명일 때 마감 판정 대체값
     }
     df = df.rename(columns=rename)
     df['제주/도서 추가배송비'] = 0
