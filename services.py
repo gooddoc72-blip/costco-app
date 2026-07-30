@@ -188,6 +188,26 @@ def split_orders_by_cutoff(orders, cutoff_hour, now=None):
     return keep, deferred
 
 
+def split_df_by_cutoff(df, cutoff_hour, now=None):
+    """주문 DataFrame에서 마감 이후 주문을 걷어낸다 → (오늘 마감분 df, 제외 건수).
+
+    DB 복원분에도 적용하기 위한 DataFrame 버전. 시각 컬럼이 없거나 값이 비면
+    (구버전 데이터) 누락 방지를 위해 그대로 남긴다.
+    """
+    _cut = order_cutoff_dt(cutoff_hour, now)
+    if _cut is None or df is None or getattr(df, 'empty', True):
+        return df, 0
+    _col = next((c for c in _ORDER_TIME_COLS if c in df.columns), None)
+    if _col is None:
+        return df, 0
+    _ts = pd.to_datetime(df[_col], errors='coerce')
+    _after = _ts.notna() & (_ts >= _cut)
+    _n = int(_after.sum())
+    if not _n:
+        return df, 0
+    return df[~_after].reset_index(drop=True), _n
+
+
 def get_cross_surcharge_map(username, df):
     """타인 재고로 나간 주문의 웃돈(구입가+500) 조회 — {주문번호: 웃돈합계}.
 

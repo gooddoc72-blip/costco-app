@@ -27,6 +27,7 @@ from db import (
     get_product_detail,
     save_daily_orders, get_daily_orders, save_order_history, search_order_history,
     get_active_orders, db_rows_to_orders_df, active_orders_to_naver_excel_df,
+    get_excluded_orders, remove_excluded_orders,
     save_receipt_items, get_recent_receipt_items, delete_receipt_items_by_date, get_receipt_dates,
     get_date_range_stats, get_monthly_stats, get_product_ranking, get_saved_dates,
     get_dashboard_kpi, get_daily_profit_trend, get_week_best_products,
@@ -40,7 +41,7 @@ from db import (
 )
 from services import (
     match_product_to_db, match_shared_product,
-    get_order_cutoff_hour, split_orders_by_cutoff,
+    get_order_cutoff_hour, split_orders_by_cutoff, split_df_by_cutoff,
     update_product_info_from_orders, update_product_shipping_fees, update_product_sale_price,
     detect_price_changes, build_price_alert_msg,
     parse_costco_receipt_pdf, match_receipt_to_orders,
@@ -764,6 +765,13 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 if c in _db_df.columns:
                     _db_df[c] = pd.to_numeric(_db_df[c], errors='coerce').fillna(0).astype(int)
             _db_df = _db_df.sort_values('상품명').reset_index(drop=True)
+            # ⏰ 마감시각 이후 주문은 오늘 목록에서 제외 (DB에 남아 있어도 내일분으로 넘김)
+            _rst_cut_h = get_order_cutoff_hour(USERNAME)
+            _db_df, _rst_defer_n = split_df_by_cutoff(_db_df, _rst_cut_h)
+            if _rst_defer_n:
+                st.session_state['_cutoff_deferred_n'] = (_rst_cut_h, _rst_defer_n)
+            else:
+                st.session_state.pop('_cutoff_deferred_n', None)
             st.session_state['orders']        = _db_df
             st.session_state['orders_unsaved'] = False
             st.session_state.pop('orders_api_count', None)
@@ -777,7 +785,13 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     st.session_state['order_full_naver'] = _xl_df
                     st.session_state['order_excel_bytes'] = None  # lazy 재생성
 
-    if st.session_state.get('orders') is not None:
+    # 마감 이후로 넘긴 주문 안내 (DB 복원분에서 걷어낸 건수)
+    _cut_info = st.session_state.get('_cutoff_deferred_n')
+    if _cut_info:
+        st.info(f"⏰ {int(_cut_info[0]):02d}:00 마감 이후 주문 {_cut_info[1]}건은 오늘 목록에서 제외됨 "
+                "(내일 수집분). 설정 탭 → 주문 마감시각에서 변경 가능.")
+
+    if st.session_state.get('orders') is not None and not getattr(st.session_state['orders'], 'empty', True):
         df = st.session_state['orders']
         _default_date_str = st.session_state.get('order_date', datetime.today().strftime("%Y-%m-%d"))
 
@@ -864,10 +878,10 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
 
         # ── 미발송 영구 삭제 (스테일 주문 정리) ──────────────────────────
         #   '지우기'는 세션만 비워 재접속 시 order_history에서 다시 복원된다.
-        #   이미 진행(배송완료 등)됐는데 status가 '결제완료'로 고착돼 계속 미발송으로
-        #   되살아나는 스테일 주문을 order_history에서 영구 삭제한다.
-        #   (아직 열린 주문은 다음 수집 때 정상 복원, 정산저장=수익기록은 보존)
-        with st.expander("🗑 미발송 주문 영구 삭제 (계속 복원되는 스테일 주문 정리)", expanded=False):
+        #   영구 삭제는 order_history 삭제 + 제외목록(excluded_orders) 등록 →
+        #   네이버/쿠팡에 주문이 열려 있어도 다음 수집에서 다시 들어오지 않는다.
+        #   (정산저장=수익기록은 보존. 되살리려면 아래 '제외 목록'에서 복구)
+        with st.expander("🗑 미발송 주문 영구 삭제 (다시 수집돼도 복원 안 됨)", expanded=False):
             _perm_ids_all = (df['상품주문번호'].astype(str).tolist()
                              if '상품주문번호' in df.columns else [])
             _pc1, _pc2 = st.columns([1.2, 3])
@@ -883,9 +897,9 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 _perm_ids = _perm_ids_all
             with _pc2:
                 st.caption(
-                    "⚠️ order_history에서 **영구 삭제**합니다. 네이버/쿠팡에서 아직 열린 주문은 "
-                    "다음 수집 때 다시 들어오고, 이미 진행된 스테일 주문만 사라집니다. "
-                    "정산저장(수익 기록)은 보존됩니다.")
+                    "⚠️ order_history에서 삭제하고 **제외 목록에 등록**합니다. "
+                    "네이버/쿠팡에 주문이 열려 있어도 다음 수집에서 다시 들어오지 않습니다. "
+                    "정산저장(수익 기록)은 보존되며, 되살리려면 아래 '제외 목록'에서 복구하세요.")
                 _perm_confirm = st.checkbox(
                     f"위 **{len(_perm_ids)}건**({_perm_scope})을 영구 삭제하는 데 동의합니다",
                     key="perm_del_confirm")
@@ -903,9 +917,37 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                             invalidate_data_cache()
                     except Exception:
                         pass
-                    st.success(f"🗑 {_pn}건 영구 삭제 완료 — 미발송 목록에서 제거됨 "
-                               "(아직 열린 주문은 다음 수집 시 정상 복원)")
+                    st.success(f"🗑 {_pn}건 영구 삭제 완료 — 제외 목록에 등록되어 "
+                               "다시 수집해도 복원되지 않습니다.")
                     st.rerun()
+
+            # ── 제외 목록 (복구) ──────────────────────────────
+            st.divider()
+            _exc = get_excluded_orders(USERNAME)
+            if not _exc:
+                st.caption("제외 목록이 비어 있습니다.")
+            else:
+                st.caption(f"🚫 제외된 주문 {len(_exc)}건 — 수집·복원에서 항상 배제됩니다. "
+                           "실수로 삭제했다면 복구하세요 (다음 수집 때 다시 들어옵니다).")
+                st.dataframe(pd.DataFrame(_exc), use_container_width=True, hide_index=True,
+                             height=min(240, 40 + 28 * len(_exc)))
+                _rc1, _rc2 = st.columns([3, 1])
+                _restore_sel = _rc1.multiselect(
+                    "복구할 주문번호", [str(_e['order_no']) for _e in _exc],
+                    key="exc_restore_sel")
+                with _rc2:
+                    st.write("")
+                    if st.button("↩️ 선택 복구", key="exc_restore_btn",
+                                 disabled=not _restore_sel, use_container_width=True):
+                        _rn = remove_excluded_orders(USERNAME, _restore_sel)
+                        st.session_state.pop('exc_restore_sel', None)
+                        st.success(f"↩️ {_rn}건 복구 — 다음 주문 조회 때 다시 수집됩니다.")
+                        st.rerun()
+                    if st.button("↩️ 전체 복구", key="exc_restore_all",
+                                 use_container_width=True):
+                        _rn = remove_excluded_orders(USERNAME, [str(_e['order_no']) for _e in _exc])
+                        st.success(f"↩️ {_rn}건 전체 복구 — 다음 주문 조회 때 다시 수집됩니다.")
+                        st.rerun()
 
         # 디버그: API status 분포 (수량 안 맞을 때 원인 추적용)
         _dist_str = st.session_state.get('_naver_status_dist')

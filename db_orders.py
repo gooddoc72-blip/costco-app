@@ -222,6 +222,19 @@ def save_order_history(username, full_df, cost_df=None):
         conn.execute("ALTER TABLE order_history ADD COLUMN option_code TEXT DEFAULT ''")
     except Exception:
         pass
+    # ordered_at: 실제 주문시각(YYYY-MM-DD HH:MM:SS) — 마감시각 판정용.
+    #   order_date는 '수집일'(날짜만)이라 마감 전/후를 구분할 수 없다.
+    try:
+        conn.execute("ALTER TABLE order_history ADD COLUMN ordered_at TEXT DEFAULT ''")
+    except Exception:
+        pass
+    # 영구 제외된 주문은 수집돼도 다시 넣지 않는다 (삭제 → 재복원 차단)
+    try:
+        _ensure_excluded_table(conn)
+        _excluded = {str(r['order_no']) for r in
+                     conn.execute("SELECT order_no FROM excluded_orders").fetchall()}
+    except Exception:
+        _excluded = set()
     s_cost = b_cost = 0
     try:
         s_cost = int(conn.execute("SELECT value FROM settings WHERE key='shipping_cost'").fetchone()['value'])
@@ -240,9 +253,18 @@ def save_order_history(username, full_df, cost_df=None):
         if not order_no:
             raw = f"{r.get('결제일','')}{r.get('수취인명','')}{r.get('상품명','')}{r.get('수량','')}"
             order_no = f"H{_hl.md5(raw.encode()).hexdigest()[:14]}"
+        if order_no in _excluded:
+            continue
         order_date = str(r.get('결제일', '') or r.get('주문일', '') or now[:10])
         if 'T' in order_date:
             order_date = order_date[:10]
+        # 주문시각 — 주문일시 → 결제일 → 주문일 중 'YYYY-MM-DD HH:MM' 형태인 첫 값
+        ordered_at = ''
+        for _tc in ('주문일시', '결제일', '주문일'):
+            _tv = str(r.get(_tc, '') or '').strip().replace('T', ' ') if _tc in r.index else ''
+            if len(_tv) >= 16:
+                ordered_at = _tv[:19]
+                break
         qty    = int(pd.to_numeric(r.get('수량', 1), errors='coerce') or 1)
         total  = int(pd.to_numeric(r.get('최종 상품별 총 주문금액', 0), errors='coerce') or 0)
         ship   = int(pd.to_numeric(r.get('배송비 합계', 0), errors='coerce') or 0)
@@ -271,10 +293,11 @@ def save_order_history(username, full_df, cost_df=None):
                 (order_no, order_group_no, order_date, recipient, buyer,
                  product_name, product_no, option_info, option_code, qty, unit_price,
                  order_amount, shipping_fee, settlement, status,
-                 tracking_no, courier, cost_price, profit, created_at, raw_json)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                 tracking_no, courier, cost_price, profit, created_at, raw_json, ordered_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(order_no) DO UPDATE SET
                     option_code  = COALESCE(NULLIF(excluded.option_code, ''), order_history.option_code),
+                    ordered_at   = COALESCE(NULLIF(excluded.ordered_at, ''), order_history.ordered_at),
                     status       = excluded.status,
                     tracking_no  = COALESCE(NULLIF(excluded.tracking_no, ''), order_history.tracking_no),
                     courier      = COALESCE(NULLIF(excluded.courier, ''),     order_history.courier),
@@ -290,7 +313,8 @@ def save_order_history(username, full_df, cost_df=None):
                  str(r.get('옵션정보', '') or ''), str(r.get('옵션번호', '') or ''),
                  qty, unit_p, total, ship, settle,
                  str(r.get('주문상태', '') or ''), str(r.get('송장번호', '') or ''),
-                 str(r.get('택배사', '') or ''), cost_price, profit, now, raw_json_str))
+                 str(r.get('택배사', '') or ''), cost_price, profit, now, raw_json_str,
+                 ordered_at))
             saved += 1
         except Exception:
             pass
@@ -305,16 +329,99 @@ ACTIVE_ORDER_STATUSES = (
 )
 
 
-def delete_orders_from_history(username, order_nos):
+# ── 제외 주문(영구 삭제) 목록 ────────────────────────────────
+#   order_history에서 지워도 네이버/쿠팡에 주문이 열려 있으면 다음 수집에서 되살아난다.
+#   '영구 삭제'는 이 목록에 주문번호를 남겨 이후 수집·복원에서 아예 배제하는 것으로 구현.
+
+def _ensure_excluded_table(conn):
+    conn.execute("""CREATE TABLE IF NOT EXISTS excluded_orders (
+                        order_no    TEXT PRIMARY KEY,
+                        excluded_at TEXT,
+                        reason      TEXT DEFAULT ''
+                    )""")
+
+
+def get_excluded_order_nos(username):
+    """영구 제외된 주문번호 set."""
+    conn = get_user_db(username)
+    try:
+        _ensure_excluded_table(conn)
+        rows = conn.execute("SELECT order_no FROM excluded_orders").fetchall()
+        return {str(r['order_no']) for r in rows}
+    except Exception:
+        return set()
+    finally:
+        conn.close()
+
+
+def get_excluded_orders(username, limit=500):
+    """영구 제외 목록 상세 (복구 UI용) — 최근 제외 순."""
+    conn = get_user_db(username)
+    try:
+        _ensure_excluded_table(conn)
+        rows = conn.execute(
+            "SELECT order_no, excluded_at, reason FROM excluded_orders "
+            "ORDER BY excluded_at DESC LIMIT ?", (int(limit),)).fetchall()
+        return [dict(r) for r in rows]
+    except Exception:
+        return []
+    finally:
+        conn.close()
+
+
+def add_excluded_orders(username, order_nos, reason=''):
+    """주문번호를 영구 제외 목록에 등록. 반환: 등록된 건수."""
+    onos = [str(o).strip() for o in (order_nos or []) if str(o).strip() and str(o).strip() != 'nan']
+    if not onos:
+        return 0
+    conn = get_user_db(username)
+    _ensure_excluded_table(conn)
+    _now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    n = 0
+    for _o in onos:
+        try:
+            conn.execute("INSERT OR REPLACE INTO excluded_orders (order_no, excluded_at, reason) "
+                         "VALUES (?,?,?)", (_o, _now, str(reason or '')))
+            n += 1
+        except Exception:
+            pass
+    conn.commit()
+    conn.close()
+    return n
+
+
+def remove_excluded_orders(username, order_nos):
+    """제외 목록에서 해제(복구) → 다음 수집 때 다시 들어온다. 반환: 해제 건수."""
+    onos = [str(o).strip() for o in (order_nos or []) if str(o).strip()]
+    if not onos:
+        return 0
+    conn = get_user_db(username)
+    _ensure_excluded_table(conn)
+    removed = 0
+    CHUNK = 900
+    for i in range(0, len(onos), CHUNK):
+        chunk = onos[i:i + CHUNK]
+        ph = ",".join("?" * len(chunk))
+        cur = conn.execute(f"DELETE FROM excluded_orders WHERE order_no IN ({ph})", chunk)
+        removed += cur.rowcount
+    conn.commit()
+    conn.close()
+    return removed
+
+
+def delete_orders_from_history(username, order_nos, blocklist=True):
     """order_history에서 주문(order_no) 영구 삭제 → 미발송 목록 재복원 방지.
 
-    ⚠️ order_history만 삭제(active/미발송 목록의 원천). profit_settlements(정산저장)·daily_orders는
-       건드리지 않아 수익 기록은 보존된다. 네이버에서 아직 열린 주문은 다음 수집 때 정상 재수집되고,
-       이미 진행(배송완료 등)돼 status가 고착된 스테일 주문만 영구히 사라진다.
+    blocklist=True(기본)면 excluded_orders에도 등록해 **다음 수집에서도 다시 들어오지 않는다**.
+    (네이버/쿠팡에 열려 있는 주문이 계속 되살아나는 문제 차단 — 복구는 제외 목록에서 해제)
+    ⚠️ order_history만 삭제. profit_settlements(정산저장)·daily_orders는 건드리지 않아
+       수익 기록은 보존된다.
     반환: 삭제된 행 수."""
     onos = [str(o).strip() for o in (order_nos or []) if str(o).strip() and str(o).strip() != 'nan']
     if not onos:
         return 0
+    if blocklist:
+        add_excluded_orders(username, onos, reason='영구 삭제')
     conn = get_user_db(username)
     deleted = 0
     CHUNK = 900
@@ -330,11 +437,13 @@ def delete_orders_from_history(username, order_nos):
 
 def get_active_orders(username):
     conn = get_user_db(username)
+    _ensure_excluded_table(conn)
     placeholders = ",".join("?" * len(ACTIVE_ORDER_STATUSES))
     rows = conn.execute(
         f"""SELECT * FROM order_history
             WHERE status IN ({placeholders})
               AND COALESCE(tracking_no, '') = ''
+              AND order_no NOT IN (SELECT order_no FROM excluded_orders)
             ORDER BY order_date DESC, id DESC""",
         ACTIVE_ORDER_STATUSES,
     ).fetchall()
@@ -473,6 +582,7 @@ def db_rows_to_orders_df(rows):
         'order_no':     '상품주문번호',
         'order_group_no':'주문번호',
         'order_date':   '결제일',
+        'ordered_at':   '주문일시',   # 마감시각(12:00) 판정용 실제 주문시각
     }
     df = df.rename(columns=rename)
     df['제주/도서 추가배송비'] = 0
