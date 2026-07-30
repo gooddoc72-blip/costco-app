@@ -27,7 +27,7 @@ from db import (
     get_product_detail,
     save_daily_orders, get_daily_orders, save_order_history, search_order_history,
     get_active_orders, db_rows_to_orders_df, active_orders_to_naver_excel_df,
-    get_excluded_orders, remove_excluded_orders,
+    get_excluded_orders, remove_excluded_orders, get_excluded_order_nos,
     save_receipt_items, get_recent_receipt_items, delete_receipt_items_by_date, get_receipt_dates,
     get_date_range_stats, get_monthly_stats, get_product_ranking, get_saved_dates,
     get_dashboard_kpi, get_daily_profit_trend, get_week_best_products,
@@ -99,6 +99,20 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     """📋 주문 업로드 탭 렌더링."""
     def _gs(k, default=""):
         return settings.get(k) or default
+
+    def _drop_excluded(_df):
+        """영구 삭제(제외 목록) 주문은 어떤 경로로 들어와도 화면·저장에서 배제.
+        반환: (걸러낸 df, 제외 건수)"""
+        if _df is None or getattr(_df, 'empty', True) or '상품주문번호' not in _df.columns:
+            return _df, 0
+        _ex = get_excluded_order_nos(USERNAME)
+        if not _ex:
+            return _df, 0
+        _m = _df['상품주문번호'].astype(str).isin(_ex)
+        if not _m.any():
+            return _df, 0
+        return _df[~_m].reset_index(drop=True), int(_m.sum())
+
     api_id = _gs("api_client_id")
     api_secret = _gs("api_client_secret")
     channel_seller_id = _gs("channel_seller_id")
@@ -532,6 +546,10 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     if _c in cq_df.columns:
                         cq_df[_c] = pd.to_numeric(cq_df[_c], errors='coerce').fillna(0).astype(int)
                 cq_df = cq_df.sort_values('상품명').reset_index(drop=True)
+                # 🚫 영구 삭제(제외 목록) 주문 배제
+                cq_df, _cq_exc_n = _drop_excluded(cq_df)
+                if _cq_exc_n:
+                    st.caption(f"🚫 제외 목록 주문 {_cq_exc_n}건 배제됨")
 
                 # 통합 진입점으로 매입가 계산만 수행 (daily_orders는 사용자 저장 시점에)
                 from services import process_and_save_orders
@@ -706,6 +724,17 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             if missing:
                 st.error(f"필요한 컬럼이 없습니다: {missing}")
             else:
+                # 🚫 영구 삭제(제외 목록) 주문은 엑셀로 다시 올려도 배제
+                df, _xl_exc_n = _drop_excluded(df)
+                if _xl_exc_n:
+                    st.caption(f"🚫 제외 목록 주문 {_xl_exc_n}건은 업로드에서 배제됨 "
+                               "(복구는 아래 '미발송 주문 영구 삭제 → 제외 목록')")
+                # ⏰ 마감시각 이후 주문 제외 — 엑셀에도 동일 규칙 (엑셀엔 주문일시가 있음)
+                _xl_cut_h = get_order_cutoff_hour(USERNAME)
+                if _xl_cut_h is not None and not st.session_state.get('ou_incl_after_cutoff'):
+                    df, _xl_cut_n = split_df_by_cutoff(df, _xl_cut_h)
+                    if _xl_cut_n:
+                        st.info(f"⏰ {_xl_cut_h:02d}:00 마감 이후 주문 {_xl_cut_n}건 제외 (내일 마감분)")
                 # 송장번호 등록용 전체 데이터 저장 + Excel bytes 미리 생성
                 if '상품주문번호' in df.columns:
                     st.session_state['order_full'] = df.copy()
