@@ -892,8 +892,10 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         #   compute_daily_purchase와 동일 공식: (unit_price // split_qty) × 수량 × pack_factor.
         #   매칭/구매가 없으면 0. 공유DB(영수증 실단가) 우선 반영.
         try:
-            from services import match_product_to_db, resolve_pack_factor
-            from db import get_all_products, get_shared_products
+            from services import resolve_pack_factor
+            # match_product_to_db / get_all_products / get_shared_products 는 모듈 상단에서 import됨.
+            # 여기서 다시 import하면 render() 전체에서 로컬 변수로 취급되어
+            # 앞쪽(352행 등) 사용부가 UnboundLocalError를 일으킴.
             _pu = get_all_products(USERNAME)
             _ps = get_shared_products()
             _cost_memo = {}

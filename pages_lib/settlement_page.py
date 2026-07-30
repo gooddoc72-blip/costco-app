@@ -862,7 +862,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 key=f"cp_ad_{_ad_month}",
                 help="쿠팡 광고는 API로 안 와서 광고센터의 해당 월 광고비를 직접 입력합니다. 실수익에서 차감됩니다."))
             if _ad_cost != _ad_default:
-                from db import set_setting
+                # set_setting 은 모듈 상단에서 import됨 (여기서 재import하면 render() 전체가
+                # 로컬 변수로 취급되어 앞쪽 사용부에서 UnboundLocalError 발생)
                 set_setting(USERNAME, _ad_key, str(_ad_cost))
             _ad_b.metric("💵 실수익 (정산금 − 광고비)", f"{fmt(_sum_settle - _ad_cost)}원",
                          delta=(f"광고비 -{fmt(_ad_cost)}원" if _ad_cost else "광고비 미입력"))
