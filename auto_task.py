@@ -605,6 +605,17 @@ def run_shipping_task(username="admin"):
         log(f"❌ API 오류: {err}")
         return False
 
+    # ⏰ 마감시각 이후 주문은 아직 장보기 전(물건 없음) → 송장 접수 대상에서 제외.
+    try:
+        from services import get_order_cutoff_hour, split_orders_by_cutoff
+        _cut_h2 = get_order_cutoff_hour(username)
+        if orders and _cut_h2 is not None:
+            orders, _deferred2 = split_orders_by_cutoff(orders, _cut_h2)
+            if _deferred2:
+                log(f"⏰ {_cut_h2:02d}:00 마감 이후 주문 {len(_deferred2)}건 발송 제외 (내일 발송분)")
+    except Exception as _cute2:
+        log(f"⚠️ 마감시각 필터 실패(계속 진행): {_cute2}")
+
     if not orders:
         log("ℹ️  발송대기 주문 없음 → 종료")
         return True
