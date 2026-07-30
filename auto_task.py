@@ -407,6 +407,18 @@ def run_shopping_task(username="admin"):
         except Exception as _ce:
             log(f"⚠️ 쿠팡 수집 예외(계속 진행): {_ce}")
 
+    # ⏰ 마감시각(기본 12:00) 이후 주문 제외 — 오늘 장볼 대상은 마감 전 주문까지.
+    #    마감 후 들어온 주문은 내일 수집분(48h 윈도로 다시 조회됨)에 포함된다.
+    try:
+        from services import get_order_cutoff_hour, split_orders_by_cutoff
+        _cut_h = get_order_cutoff_hour(username)
+        if orders and _cut_h is not None:
+            orders, _deferred = split_orders_by_cutoff(orders, _cut_h, now=now)
+            if _deferred:
+                log(f"⏰ {_cut_h:02d}:00 마감 이후 주문 {len(_deferred)}건 제외 (내일 마감분)")
+    except Exception as _cute:
+        log(f"⚠️ 마감시각 필터 실패(계속 진행): {_cute}")
+
     if err and not orders:
         log(f"❌ API 오류: {err}")
         return False
@@ -782,6 +794,17 @@ def run_fetch_orders_task(username="admin"):
             errors.append(f"쿠팡: {e}")
     else:
         log("  ⏭ 쿠팡 API 키 미설정 — 건너뜀")
+
+    # ⏰ 마감시각(기본 12:00) 이후 주문 제외 — 내일 마감분이 오늘 미발송 목록에 섞이는 것 방지.
+    try:
+        from services import get_order_cutoff_hour, split_orders_by_cutoff
+        _cut_h5 = get_order_cutoff_hour(username)
+        if all_orders and _cut_h5 is not None:
+            all_orders, _deferred5 = split_orders_by_cutoff(all_orders, _cut_h5)
+            if _deferred5:
+                log(f"⏰ {_cut_h5:02d}:00 마감 이후 주문 {len(_deferred5)}건 제외 (내일 수집분)")
+    except Exception as _cute5:
+        log(f"⚠️ 마감시각 필터 실패(계속 진행): {_cute5}")
 
     # 정산 매칭 자동 (주문 유무와 무관) — 최근 정산건 수집·역추적 매칭·실정산 반영 (네이버)
     try:

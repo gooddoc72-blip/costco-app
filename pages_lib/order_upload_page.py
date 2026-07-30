@@ -40,6 +40,7 @@ from db import (
 )
 from services import (
     match_product_to_db, match_shared_product,
+    get_order_cutoff_hour, split_orders_by_cutoff,
     update_product_info_from_orders, update_product_shipping_fees, update_product_sale_price,
     detect_price_changes, build_price_alert_msg,
     parse_costco_receipt_pdf, match_receipt_to_orders,
@@ -278,6 +279,16 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     except Exception: pass
                 st.rerun()
 
+        # ⏰ 주문 마감시각 — 마감 이후 들어온 주문은 '내일 마감분'이므로 오늘 수집에서 제외.
+        #   (48h 윈도로 다시 조회되므로 내일 수집 때 자동 포함됨)
+        _cut_h = get_order_cutoff_hour(USERNAME)
+        _cut_include = False
+        if _cut_h is not None:
+            _cut_include = st.checkbox(
+                f"⏰ {_cut_h:02d}:00 마감 이후 주문도 포함", value=False, key="ou_incl_after_cutoff",
+                help=f"기본은 오늘 {_cut_h:02d}:00 마감분까지만 수집합니다. "
+                     "마감 이후 주문은 내일 수집분에 들어갑니다. 설정 탭에서 마감시각 변경 가능.")
+
         # 선택 날짜 범위 → hours_back 변환 (안전 마진 +24h)
         from datetime import datetime as _dt
         _nav_delta_h = int((_dt.now() - _dt.combine(_nav_date_from, _dt.min.time())).total_seconds() / 3600) + 24
@@ -296,6 +307,13 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                             st.caption(f"🔍 API 응답: {err[11:]}")
                         else:
                             st.warning(f"{st_type} 조회: {err}")
+
+            # ── 0. 마감시각 이후 주문 분리 (오늘 장보기 대상이 아님) ──
+            if _cut_h is not None and not _cut_include and all_orders:
+                all_orders, _deferred_cut = split_orders_by_cutoff(all_orders, _cut_h)
+                if _deferred_cut:
+                    st.info(f"⏰ {_cut_h:02d}:00 마감 이후 주문 {len(_deferred_cut)}건은 제외했습니다 "
+                            "(내일 마감분). 지금 포함하려면 위 '마감 이후 주문도 포함'을 체크하세요.")
 
             # ── 1. API raw 주문 → DB에 UPSERT (status 누적 갱신용) ──
             api_count = 0
@@ -495,6 +513,12 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 )
             if cq_debug:
                 st.session_state['_cq_last_debug'] = cq_debug
+            # 마감시각 이후 주문 제외 (네이버와 동일 규칙 — 내일 마감분)
+            _cq_cut_h = get_order_cutoff_hour(USERNAME)
+            if cq_rows and _cq_cut_h is not None and not st.session_state.get('ou_incl_after_cutoff'):
+                cq_rows, _cq_deferred = split_orders_by_cutoff(cq_rows, _cq_cut_h)
+                if _cq_deferred:
+                    st.info(f"⏰ {_cq_cut_h:02d}:00 마감 이후 쿠팡 주문 {len(_cq_deferred)}건 제외 (내일 마감분)")
             if cq_err:
                 st.error(f"❌ {cq_err}")
             elif not cq_rows:
@@ -1170,11 +1194,14 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         disp_cols += ['주문수량']
         if '정산금액' in shopping.columns:
             disp_cols += ['정산금액']
+        # 구매금액(코스트코 예상 구매가) — 정산금액과 대조해 마진을 바로 볼 수 있게 병기
+        shopping['구매금액'] = shopping['예상금액']
+        disp_cols += ['구매금액']
         if '배송비' in shopping.columns:
             disp_cols += ['배송비']
 
         # ── HTML 테이블로 렌더링 ──
-        num_cols = {'주문수량', '정산금액', '배송비'}
+        num_cols = {'주문수량', '정산금액', '구매금액', '배송비'}
         # 분리/묶음 행은 배경색으로 시각 구분만 유지 (해당 컬럼은 표시 안 함)
         def _row_bg(row):
             if int(row.get('분리수량', 1)) > 1:
@@ -1232,10 +1259,17 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         for cap in captions:
             st.caption(cap)
 
-        c1, c2 = st.columns(2)
+        c1, c2, c3, c4 = st.columns(4)
         _total_settle = int(shopping['정산금액'].sum()) if '정산금액' in shopping.columns else 0
-        c1.metric("정산 총액", f"{fmt(_total_settle)}원")
-        c2.metric("종 수", f"{len(shopping)}종")
+        _total_buy = int(pd.to_numeric(shopping['구매금액'], errors='coerce').fillna(0).sum())
+        c1.metric("🧾 정산 총액", f"{fmt(_total_settle)}원")
+        c2.metric("💰 구매 총액", f"{fmt(_total_buy)}원")
+        c3.metric("차액(정산−구매)", f"{fmt(_total_settle - _total_buy)}원")
+        c4.metric("종 수", f"{len(shopping)}종")
+        _no_price_n = int(shopping['구매금액'].isna().sum())
+        st.caption("구매금액 = 코스트코 예상 구매가(팩단가 × 구매수량). "
+                   "차액은 택배·박스 원가와 수수료 차감 전이라 순이익이 아닙니다."
+                   + (f" ⚠️ 단가 미등록 {_no_price_n}종은 구매금액 0으로 집계." if _no_price_n else ""))
 
         # 휴대폰으로 장보기 목록 전송 (카카오톡 — 텔레그램은 2026-07 삭제)
         kakao_token = _gs('kakao_access_token')
@@ -1275,11 +1309,17 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 _cnt = int(_r.get('주문건수', 0) or 0)
                 _settle = int(_r.get('정산금액', 0) or 0)
                 _ship = int(_r.get('배송비', 0) or 0)
+                _buy = _r.get('구매금액')
                 _lines.append(f"• {_nm} × {_qty}개 ({_cnt}건)")
-                _dd = ([f"옵션 {_opt}"] if _opt else []) + [f"정산 {fmt(_settle)}원", f"택배 {fmt(_ship)}원"]
+                _dd = ([f"옵션 {_opt}"] if _opt else []) + [f"정산 {fmt(_settle)}원"]
+                if pd.notna(_buy):
+                    _dd.append(f"구매 {fmt(int(_buy))}원")
+                _dd.append(f"택배 {fmt(_ship)}원")
                 _lines.append("  " + " · ".join(_dd))
             _tot = int(shopping['정산금액'].sum()) if '정산금액' in shopping.columns else 0
-            _lines += ["", f"💰 정산 총액: {fmt(_tot)}원 / 📦 {len(df)}건"]
+            _tot_buy = int(pd.to_numeric(shopping['구매금액'], errors='coerce').fillna(0).sum())
+            _lines += ["", f"🧾 정산 총액: {fmt(_tot)}원", f"💰 구매 총액: {fmt(_tot_buy)}원",
+                       f"📦 {len(df)}건"]
             return "\n".join(_lines)
 
         # ── 수집 직후 자동발송 (본인 + 관리자) — 세션당 예약 1회 소비 ──
@@ -1319,6 +1359,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         for _, r in shopping.iterrows():
             _ship_v = int(r.get('배송비', 0) or 0)
             _settle = int(r.get('정산금액', 0) or 0)
+            _buy_v = r.get('구매금액')
+            _buy_s = f'{fmt(int(_buy_v))}원' if pd.notna(_buy_v) else '-'
             _print_rows.append(
                 '<tr>'
                 f'<td>{r.get("상품번호","")}</td>'
@@ -1327,10 +1369,12 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 f'<td>{str(r.get("주문자","") or "-")}</td>'
                 f'<td style="text-align:right">{int(r.get("주문수량",0))}</td>'
                 f'<td style="text-align:right;font-weight:600">{fmt(_settle)}원</td>'
+                f'<td style="text-align:right">{_buy_s}</td>'
                 f'<td style="text-align:right;color:#555">{fmt(_ship_v)}원</td>'
                 '</tr>'
             )
         _total_settle_print = int(shopping['정산금액'].sum()) if '정산금액' in shopping.columns else 0
+        _total_buy_print = int(pd.to_numeric(shopping['구매금액'], errors='coerce').fillna(0).sum())
         _print_html = (
             '<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8">'
             f'<title>코스트코 장보기 — {order_date_str}</title>'
@@ -1345,14 +1389,18 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             '@media print{body{padding:8px} .noprint{display:none}}'
             '</style></head><body>'
             f'<h1>🛒 코스트코 장보기 — {order_date_str}</h1>'
-            f'<div class="meta">총 {len(shopping)}종 · 정산 총액 {fmt(_total_settle_print)}원</div>'
+            f'<div class="meta">총 {len(shopping)}종 · 정산 총액 {fmt(_total_settle_print)}원 · '
+            f'구매 총액 {fmt(_total_buy_print)}원</div>'
             '<table><thead><tr>'
             '<th>상품번호</th><th>상품명</th><th>옵션정보</th><th>주문자</th>'
             '<th style="text-align:right">수량</th>'
             '<th style="text-align:right">정산금액</th>'
+            '<th style="text-align:right">구매금액</th>'
             '<th style="text-align:right">택배비</th>'
             '</tr></thead><tbody>' + ''.join(_print_rows) + '</tbody></table>'
-            f'<div class="tot">💰 정산 총액: {fmt(_total_settle_print)}원</div>'
+            f'<div class="tot">🧾 정산 총액: {fmt(_total_settle_print)}원 &nbsp;·&nbsp; '
+            f'💰 구매 총액: {fmt(_total_buy_print)}원 &nbsp;·&nbsp; '
+            f'📊 차액: {fmt(_total_settle_print - _total_buy_print)}원</div>'
             '<button class="noprint" onclick="window.print()" '
             'style="margin-top:20px;padding:10px 24px;font-size:14px;cursor:pointer">🖨 인쇄</button>'
             '</body></html>'

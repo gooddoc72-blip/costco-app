@@ -329,6 +329,26 @@ def _render_settings_content(USERNAME: str, _gs):
             f"배송비 수수료율 {new_naver_ship_fee_rate}% 저장"
         )
 
+    # ── 주문 마감시각 ─────────────────────────────────────
+    st.divider()
+    st.subheader("⏰ 주문 마감시각")
+    st.caption("이 시각까지 들어온 주문만 그날 장보기·수집 대상입니다. "
+               "마감 이후 주문은 다음날 수집분에 포함됩니다. (0 = 마감 없음, 전부 수집)")
+    _cut_cur = str(_gs('order_cutoff_hour') or '').strip()
+    try:
+        _cut_val = int(float(_cut_cur)) if _cut_cur else 12
+    except Exception:
+        _cut_val = 12
+    _cc1, _cc2 = st.columns([1, 2])
+    _new_cut = _cc1.number_input("마감 시각 (시)", value=max(0, min(23, _cut_val)),
+                                 min_value=0, max_value=23, step=1, key="order_cutoff_in")
+    _cc2.write("")
+    _cc2.write(f"현재: **{'마감 없음' if _new_cut == 0 else f'{int(_new_cut):02d}:00 마감'}**")
+    if st.button("마감시각 저장", key="save_order_cutoff"):
+        set_setting(USERNAME, 'order_cutoff_hour', int(_new_cut))
+        st.success("✅ 마감 없음 (모든 주문 수집)" if _new_cut == 0
+                   else f"✅ 주문 마감시각 {int(_new_cut):02d}:00 저장")
+
     # ── 가격 자동 조정 ────────────────────────────────────
     st.divider()
     st.subheader("💰 가격 자동 조정")

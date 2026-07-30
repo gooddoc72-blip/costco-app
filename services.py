@@ -123,6 +123,71 @@ def calc_cost(product: dict, qty: int, pack_qty: int = 1) -> int:
     return (unit_price // split_qty) * qty * pack_qty
 
 
+# ── 주문 마감시각(기본 12:00) ────────────────────────────────
+# 매일 정해진 시각에 그날 장볼 주문을 마감하고 코스트코에 다녀온다.
+# 마감 이후 들어온 주문은 '다음날 마감분' → 오늘 수집/장보기 목록에 넣으면 안 된다.
+# (48h 윈도로 다시 조회되므로 다음날 수집에서 자연히 포함된다.)
+ORDER_CUTOFF_DEFAULT_HOUR = 12
+_ORDER_TIME_COLS = ('주문일시', '결제일', '주문일')
+
+
+def get_order_cutoff_hour(username, default=ORDER_CUTOFF_DEFAULT_HOUR):
+    """사용자 설정 order_cutoff_hour(0~23) 반환. 0 또는 미설정/이상값이면 마감 미적용(None)."""
+    try:
+        from db import get_setting
+        _v = str(get_setting(username, 'order_cutoff_hour') or '').strip()
+    except Exception:
+        _v = ''
+    if _v == '':
+        return default
+    try:
+        _h = int(float(_v))
+    except Exception:
+        return default
+    return _h if 1 <= _h <= 23 else None
+
+
+def order_cutoff_dt(cutoff_hour, now=None):
+    """오늘의 마감 시각(datetime). cutoff_hour가 None이면 None."""
+    if cutoff_hour is None:
+        return None
+    _n = now or datetime.now()
+    return _n.replace(hour=int(cutoff_hour), minute=0, second=0, microsecond=0)
+
+
+def _order_dt(order):
+    """주문 dict/Series에서 주문시각 파싱. 없거나 못 읽으면 None."""
+    for _c in _ORDER_TIME_COLS:
+        try:
+            _v = order.get(_c)
+        except Exception:
+            _v = None
+        _s = str(_v or '').strip().replace('T', ' ')
+        if len(_s) < 16:      # 'YYYY-MM-DD HH:MM' 미만 → 시각 정보 없음
+            continue
+        try:
+            return datetime.strptime(_s[:16], '%Y-%m-%d %H:%M')
+        except Exception:
+            continue
+    return None
+
+
+def split_orders_by_cutoff(orders, cutoff_hour, now=None):
+    """주문 목록을 (오늘 마감분, 마감 이후분)으로 분리.
+
+    마감시각 이후에 들어온 주문만 뒤로 넘긴다. 주문시각을 못 읽는 주문은
+    누락 위험이 크므로 오늘 마감분에 남긴다(보수적).
+    """
+    _cut = order_cutoff_dt(cutoff_hour, now)
+    if _cut is None or not orders:
+        return list(orders or []), []
+    keep, deferred = [], []
+    for _o in orders:
+        _dt = _order_dt(_o)
+        (deferred if (_dt is not None and _dt >= _cut) else keep).append(_o)
+    return keep, deferred
+
+
 def get_cross_surcharge_map(username, df):
     """타인 재고로 나간 주문의 웃돈(구입가+500) 조회 — {주문번호: 웃돈합계}.
 
