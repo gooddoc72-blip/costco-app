@@ -218,8 +218,10 @@ def _render_settings_content(USERNAME: str, _gs):
     # ── 🤖 AI 설정 (Claude / Gemini) ───────────────────────────────
     st.divider()
     st.subheader("🤖 AI 설정 (Claude / Gemini)")
-    st.caption("영수증 정산 AI 매칭·정산 브리핑에 사용합니다. **둘 중 하나만 있어도 동작**하며, "
-               "Gemini 키가 있으면 영수증 AI 매칭은 Gemini를 우선 사용합니다.")
+    st.caption("영수증 사진 판독 · 상품사진/가격표 판독 · 영수증 정산 AI 매칭 · 정산 브리핑에 사용합니다. "
+               "**둘 중 하나만 있어도 동작**하며, Gemini 키가 있으면 Gemini를 우선 사용합니다(비용 약 1/5). "
+               "**두 키를 모두 넣으면** 영수증은 Gemini 판독 → 금액·수량 자가검증 → "
+               "실패한 사진만 Claude로 재판독합니다(권장).")
     _ai_c1, _ai_c2 = st.columns([3, 1])
     _new_ai_key = _ai_c1.text_input("Anthropic(Claude) API 키", value=_gs('anthropic_api_key'),
                                     type="password", key="ai_key_in",
@@ -231,7 +233,7 @@ def _render_settings_content(USERNAME: str, _gs):
     _new_gemini_key = st.text_input(
         "Gemini(Google) API 키", value=_gs('gemini_api_key'),
         type="password", key="gemini_key_in", placeholder="AIza...",
-        help="발급: aistudio.google.com/apikey (무료 등급 있음). 영수증 AI 매칭에 우선 사용됩니다.")
+        help="발급: aistudio.google.com/apikey (무료 등급 있음). 사진 판독·AI 매칭에 우선 사용됩니다.")
     if st.button("AI 설정 저장", key="save_ai"):
         set_setting(USERNAME, 'anthropic_api_key', _new_ai_key.strip())
         set_setting(USERNAME, 'gemini_api_key', _new_gemini_key.strip())

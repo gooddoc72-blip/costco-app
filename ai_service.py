@@ -268,6 +268,118 @@ def claude_vision(api_key, image_bytes, media_type, system, user_text,
         return None, str(e)
 
 
+def gemini_vision(api_key, image_bytes, media_type, system, user_text,
+                  max_tokens=600, model=GEMINI_MODEL, max_edge=1092):
+    """이미지 1장 + 텍스트 → Gemini 멀티모달 응답. 반환: (text, error).
+
+    claude_vision과 동일한 시그니처 — ai_vision에서 서로 바꿔 끼울 수 있게 맞췄다.
+    ⚠️ flash는 기본 thinking이 출력토큰을 다 먹어 빈 응답이 나므로 thinkingBudget=0.
+    """
+    if not api_key:
+        return None, "Gemini API 키 미설정"
+    try:
+        image_bytes, media_type = _shrink_for_ai(image_bytes, media_type, max_edge)
+        _b64 = base64.standard_b64encode(image_bytes).decode("ascii")
+        body = {
+            "systemInstruction": {"parts": [{"text": system}]},
+            "contents": [{"role": "user", "parts": [
+                {"inline_data": {"mime_type": media_type, "data": _b64}},
+                {"text": user_text},
+            ]}],
+            "generationConfig": {"maxOutputTokens": max_tokens, "temperature": 0,
+                                 "thinkingConfig": {"thinkingBudget": 0}},
+        }
+        r = requests.post(
+            GEMINI_URL.format(model=model),
+            headers={"x-goog-api-key": api_key.strip(), "content-type": "application/json"},
+            json=body, timeout=90,
+        )
+        if r.status_code != 200:
+            try:
+                _e = r.json().get("error", {}).get("message") or r.text[:200]
+            except Exception:
+                _e = r.text[:200]
+            return None, f"[{r.status_code}] {_e}"
+        _cands = r.json().get("candidates") or []
+        if not _cands:
+            return None, "빈 응답(후보 없음 — 안전차단/키 확인)"
+        _parts = (_cands[0].get("content") or {}).get("parts") or []
+        _text = "".join(p.get("text", "") for p in _parts)
+        return (_text.strip() or None), (None if _text.strip() else "빈 응답")
+    except Exception as e:
+        return None, str(e)
+
+
+def ai_vision(system, user_text, image_bytes, media_type, *,
+              gemini_key='', anthropic_key='', max_tokens=600, max_edge=1092):
+    """사진 판독 — Gemini 우선(있으면), 실패 시 Claude 폴백. 반환: (text, error, provider).
+
+    ai_complete(텍스트)의 이미지 버전. 판독 비용은 Gemini가 약 1/5.
+    """
+    if gemini_key:
+        _t, _e = gemini_vision(gemini_key, image_bytes, media_type, system, user_text,
+                               max_tokens=max_tokens, max_edge=max_edge)
+        if _t:
+            return _t, '', 'gemini'
+        if anthropic_key:
+            _t2, _e2 = claude_vision(anthropic_key, image_bytes, media_type, system,
+                                     user_text, max_tokens=max_tokens, max_edge=max_edge)
+            if _t2:
+                return _t2, '', 'claude'
+            return None, f"Gemini 실패({_e}) · Claude 실패({_e2})", ''
+        return None, _e or "빈 응답", 'gemini'
+    if anthropic_key:
+        _t2, _e2 = claude_vision(anthropic_key, image_bytes, media_type, system,
+                                 user_text, max_tokens=max_tokens, max_edge=max_edge)
+        return (_t2, '', 'claude') if _t2 else (None, _e2 or "빈 응답", 'claude')
+    return None, "AI 키 없음 (설정 탭 > 🤖 AI 설정에서 Gemini 또는 Claude 키 등록)", ''
+
+
+def _extract_json(text):
+    """모델 응답에서 JSON 본문만 추출 → dict. 실패 시 None.
+    코드블록/설명이 앞뒤에 붙어 나와도 첫 '{' ~ 마지막 '}'만 잘라 파싱한다."""
+    _s = (text or "").strip()
+    _i, _j = _s.find("{"), _s.rfind("}")
+    if _i >= 0 and _j > _i:
+        _s = _s[_i:_j + 1]
+    try:
+        _d = json.loads(_s)
+        return _d if isinstance(_d, dict) else None
+    except Exception:
+        return None
+
+
+def get_ai_keys(settings=None):
+    """설정에서 (anthropic_key, gemini_key) 해석. 전역(관리자 공용키) 우선.
+
+    AI 키는 공유 인프라 — 관리자가 다른 계정 설정에 저장했어도 찾도록 폴백 스캔한다.
+    """
+    settings = settings or {}
+
+    def _one(name):
+        try:
+            from db import get_global_setting
+            v = (get_global_setting(name) or '').strip()
+            if v:
+                return v
+        except Exception:
+            pass
+        v = str(settings.get(name) or '').strip()
+        if v:
+            return v
+        try:
+            from db import get_all_users, get_all_settings
+            for _u in get_all_users():
+                vv = str((get_all_settings(_u['username']) or {}).get(name) or '').strip()
+                if vv:
+                    return vv
+        except Exception:
+            pass
+        return ''
+
+    return _one('anthropic_api_key'), _one('gemini_api_key')
+
+
 _DESC_SYSTEM = (
     "너는 네이버 스마트스토어 상세페이지 카피라이터다. 상품 사진과 정보를 보고 "
     "구매욕을 높이는 한국어 상세설명을 작성한다.\n"
@@ -295,13 +407,16 @@ def _desc_to_lines(text):
     return "\n\n".join(_parts)   # 문장 사이 빈 줄
 
 
-def generate_product_description(api_key, image_bytes, media_type, name="", category=""):
+def generate_product_description(api_key, image_bytes, media_type, name="", category="",
+                                 *, gemini_key=''):
     """상품 사진 + 상품명/카테고리로 상세페이지 설명 초안 생성 (문장별 줄바꿈). 반환: (text, error)."""
-    if not api_key:
-        return None, "Anthropic API 키 미설정 (설정 탭 > 🤖 AI 설정)"
+    if not (api_key or gemini_key):
+        return None, "AI 키 미설정 (설정 탭 > 🤖 AI 설정)"
     _u = (f"상품명: {name or '(미상)'}\n카테고리: {category or '(미상)'}\n"
           "이 상품 사진을 보고 상세페이지에 넣을 상세설명을 작성해줘. 문장마다 줄바꿈해서.")
-    _txt, _err = claude_vision(api_key, image_bytes, media_type, _DESC_SYSTEM, _u, max_tokens=500)
+    _txt, _err, _prov = ai_vision(_DESC_SYSTEM, _u, image_bytes, media_type,
+                                  gemini_key=gemini_key, anthropic_key=api_key,
+                                  max_tokens=500)
     if _txt:
         return _desc_to_lines(_txt), None
     return None, _err
@@ -323,20 +438,19 @@ _PHOTO_SYSTEM = (
 )
 
 
-def analyze_product_photo(api_key, image_bytes, media_type):
-    """상품 사진 → {name, price, category, origin, brand}. 반환: (dict, error)."""
-    _txt, _err = claude_vision(api_key, image_bytes, media_type, _PHOTO_SYSTEM,
-                               "이 상품 사진을 분석해 등록용 JSON을 출력해줘.")
+def analyze_product_photo(api_key, image_bytes, media_type, *, gemini_key=''):
+    """상품 사진 → {name, price, category, origin, brand}. 반환: (dict, error).
+
+    Gemini 키가 있으면 Gemini 우선(비용 약 1/5), 실패 시 Claude 폴백.
+    등록 직전 화면에서 사람이 확인·수정하는 값이라 판독 오류 비용이 낮다.
+    """
+    _txt, _err, _prov = ai_vision(_PHOTO_SYSTEM, "이 상품 사진을 분석해 등록용 JSON을 출력해줘.",
+                                  image_bytes, media_type,
+                                  gemini_key=gemini_key, anthropic_key=api_key)
     if _err or not _txt:
         return None, _err or "빈 응답"
-    _s = _txt.strip()
-    # 코드블록/여분 텍스트 제거 후 JSON 파싱
-    _i, _j = _s.find("{"), _s.rfind("}")
-    if _i >= 0 and _j > _i:
-        _s = _s[_i:_j + 1]
-    try:
-        _d = json.loads(_s)
-    except Exception:
+    _d = _extract_json(_txt)
+    if _d is None:
         return None, f"JSON 파싱 실패: {_txt[:120]}"
     try:
         _price = int(float(_d.get("price", 0) or 0))
@@ -353,6 +467,7 @@ def analyze_product_photo(api_key, image_bytes, media_type):
         "category": str(_d.get("category", "") or "").strip(),
         "origin": str(_d.get("origin", "") or "국산").strip(),
         "brand": str(_d.get("brand", "") or "").strip(),
+        "_provider": _prov,
     }, None
 
 
@@ -378,27 +493,26 @@ _FOODLABEL_SYSTEM = (
 )
 
 
-def analyze_food_label(api_key, image_bytes, media_type):
+def analyze_food_label(api_key, image_bytes, media_type, *, gemini_key=''):
     """식품 표시사항 라벨 사진 → {food_type, volume, ingredients, storage, origin,
     manufacturer, importer, calories, nutrition, expiration}. 반환: (dict, error)."""
-    if not api_key:
-        return None, "Anthropic API 키 미설정 (설정 탭 > 🤖 AI 설정)"
+    if not (api_key or gemini_key):
+        return None, "AI 키 미설정 (설정 탭 > 🤖 AI 설정)"
     # 식품 표시사항은 원재료·영양성분이 깨알글씨 → 축소 상한을 크게(1568) 잡아 가독성 보존
-    _txt, _err = claude_vision(api_key, image_bytes, media_type, _FOODLABEL_SYSTEM,
-                               "이 식품 표시사항 사진을 분석해 JSON으로 출력해줘.",
-                               max_tokens=700, max_edge=1568)
+    _txt, _err, _prov = ai_vision(_FOODLABEL_SYSTEM,
+                                  "이 식품 표시사항 사진을 분석해 JSON으로 출력해줘.",
+                                  image_bytes, media_type,
+                                  gemini_key=gemini_key, anthropic_key=api_key,
+                                  max_tokens=700, max_edge=1568)
     if _err or not _txt:
         return None, _err or "빈 응답"
-    _s = _txt.strip()
-    _i, _j = _s.find("{"), _s.rfind("}")
-    if _i >= 0 and _j > _i:
-        _s = _s[_i:_j + 1]
-    try:
-        _d = json.loads(_s)
-    except Exception:
+    _d = _extract_json(_txt)
+    if _d is None:
         return None, f"JSON 파싱 실패: {_txt[:120]}"
     _keys = ("food_type", "volume", "ingredients", "storage", "origin",
              "manufacturer", "importer", "calories", "nutrition", "expiration")
+    # ⚠️ 반환 dict는 상세페이지 제품정보 표(_food_info_html)로 그대로 흘러가므로
+    #    _provider 같은 부가 키를 넣지 않는다 (표에 노출됨).
     return {_k: str(_d.get(_k, "") or "").strip() for _k in _keys}, None
 
 
@@ -414,20 +528,14 @@ _PRICETAG_SYSTEM = (
 )
 
 
-def analyze_price_tag(api_key, image_bytes, media_type):
-    """코스트코 가격표 사진 → {product_no, price, product_name}. 반환: (dict, error)."""
-    _txt, _err = claude_vision(api_key, image_bytes, media_type, _PRICETAG_SYSTEM,
-                               "이 코스트코 가격표에서 상품번호와 최종 판매가를 읽어 JSON으로 출력해줘.")
-    if _err or not _txt:
-        return None, _err or "빈 응답"
-    _s = _txt.strip()
-    _i, _j = _s.find("{"), _s.rfind("}")
-    if _i >= 0 and _j > _i:
-        _s = _s[_i:_j + 1]
-    try:
-        _d = json.loads(_s)
-    except Exception:
-        return None, f"JSON 파싱 실패: {_txt[:120]}"
+_PRICETAG_USER = "이 코스트코 가격표에서 상품번호와 최종 판매가를 읽어 JSON으로 출력해줘."
+
+
+def _parse_price_tag_json(txt):
+    """가격표 응답 → dict|None."""
+    _d = _extract_json(txt)
+    if _d is None:
+        return None
     try:
         _price = int(float(str(_d.get("price", 0)).replace(",", "") or 0))
     except Exception:
@@ -436,7 +544,49 @@ def analyze_price_tag(api_key, image_bytes, media_type):
         "product_no": "".join(ch for ch in str(_d.get("product_no", "") or "") if ch.isdigit()),
         "price": _price,
         "product_name": str(_d.get("product_name", "") or "").strip(),
-    }, None
+    }
+
+
+def analyze_price_tag(api_key, image_bytes, media_type, *, gemini_key=''):
+    """코스트코 가격표 사진 → {product_no, price, product_name}. 반환: (dict, error).
+
+    가격표 값은 제품 원가로 저장되므로 판독 실수 비용이 크다.
+    → Gemini로 먼저 읽고, 결과가 수상하면(상품번호 6~7자리 아님 / 가격 0) Claude로 재판독.
+    """
+    def _suspicious(d):
+        return (not d) or d.get("price", 0) <= 0 or not (6 <= len(d.get("product_no", "")) <= 7)
+
+    _out = None
+    if gemini_key:
+        _t, _e = gemini_vision(gemini_key, image_bytes, media_type,
+                               _PRICETAG_SYSTEM, _PRICETAG_USER)
+        if _t:
+            _out = _parse_price_tag_json(_t)
+            if _out and not _suspicious(_out):
+                _out["_provider"] = "gemini"
+                return _out, None
+        if not api_key:
+            if _out:
+                _out["_provider"] = "gemini"
+                return _out, None
+            return None, _e or "판독 실패"
+
+    _txt, _err = claude_vision(api_key, image_bytes, media_type,
+                               _PRICETAG_SYSTEM, _PRICETAG_USER)
+    if _err or not _txt:
+        # Claude 실패 시 Gemini 결과라도 있으면 그걸 반환 (완전 실패보다 낫다)
+        if _out:
+            _out["_provider"] = "gemini"
+            return _out, None
+        return None, _err or "빈 응답"
+    _c = _parse_price_tag_json(_txt)
+    if _c is None:
+        if _out:
+            _out["_provider"] = "gemini"
+            return _out, None
+        return None, f"JSON 파싱 실패: {_txt[:120]}"
+    _c["_provider"] = "claude"
+    return _c, None
 
 
 _RECEIPT_SYSTEM = (
@@ -465,29 +615,22 @@ _RECEIPT_SYSTEM = (
 )
 
 
-def parse_receipt_photo(api_key, image_bytes, media_type, max_tokens=4000):
-    """코스트코/트레이더스 영수증 사진 → 매입 정보 dict. 반환: (dict, error).
+_RECEIPT_USER = (
+    "이 영수증에서 구매일자·매장(코스트코/트레이더스)·구매수량·구매금액·할인금액·"
+    "카드 끝 4자리·현금영수증 승인번호와 품목 내역을 읽어 JSON으로 출력해줘."
+)
+
+
+def _parse_receipt_json(txt):
+    """영수증 판독 응답(JSON 문자열) → 정규화 dict. 실패 시 None.
 
     dict = {purchase_date, purchase_time, store_type, store_name, total_qty,
             item_kinds, total_amount, discount_amount, card_last4,
             cash_receipt_no, items:[{상품번호,상품명,수량,단가,금액,할인}]}
-    영수증은 글씨가 작고 세로로 길어 축소 상한을 1568px로 둔다(가격표보다 크게).
     """
-    _txt, _err = claude_vision(
-        api_key, image_bytes, media_type, _RECEIPT_SYSTEM,
-        "이 영수증에서 구매일자·매장(코스트코/트레이더스)·구매수량·구매금액·할인금액·"
-        "카드 끝 4자리·현금영수증 승인번호와 품목 내역을 읽어 JSON으로 출력해줘.",
-        max_tokens=max_tokens, max_edge=1568)
-    if _err or not _txt:
-        return None, _err or "빈 응답"
-    _s = _txt.strip()
-    _i, _j = _s.find("{"), _s.rfind("}")
-    if _i >= 0 and _j > _i:
-        _s = _s[_i:_j + 1]
-    try:
-        _d = json.loads(_s)
-    except Exception:
-        return None, f"JSON 파싱 실패: {_txt[:200]}"
+    _d = _extract_json(txt)
+    if _d is None:
+        return None
 
     def _num(v):
         try:
@@ -532,7 +675,128 @@ def parse_receipt_photo(api_key, image_bytes, media_type, max_tokens=4000):
         "cash_receipt_no": "".join(ch for ch in str(_d.get("cash_receipt_no", "") or "")
                                    if ch.isdigit()),
         "items": _items,
-    }, None
+    }
+
+
+def validate_receipt(data, tolerance=1):
+    """영수증 판독 결과 자가검증 — 영수증에 내장된 체크섬으로 판독 오류를 잡는다.
+
+    영수증은 (품목 금액 합계 − 할인 = 결제금액), (품목 수량 합계 = 총수량),
+    (품목 줄 수 = 품목 종수)라는 관계가 항상 성립한다. 이게 깨지면 AI가 숫자를
+    잘못 읽었거나 지어냈다는 신호다.
+
+    반환: (ok, issues). ok=False = 금액/수량이 안 맞는 '심각' 오류 → 재판독 대상.
+    """
+    import re as _re
+    if not data:
+        return False, ["판독 결과 없음"]
+    _issues, _critical = [], False
+    _items = data.get("items") or []
+    if not _items:
+        return False, ["품목 내역을 하나도 못 읽음"]
+
+    _sum_amt = sum(int(i.get("금액") or 0) for i in _items)
+    _sum_disc = sum(int(i.get("할인") or 0) for i in _items)
+    _sum_qty = sum(int(i.get("수량") or 0) for i in _items)
+    _total = int(data.get("total_amount") or 0)
+    _disc = int(data.get("discount_amount") or 0)
+
+    if _total > 0:
+        # 할인이 품목별로 찍히는 영수증 / 합계로만 찍히는 영수증이 섞여 있어 둘 다 허용
+        _cands = (_sum_amt, _sum_amt - _disc, _sum_amt - _sum_disc,
+                  _sum_amt - _disc - _sum_disc)
+        if not any(abs(_total - c) <= tolerance for c in _cands):
+            _issues.append(f"금액 불일치 — 품목합 {_sum_amt:,}원"
+                           f"(할인 {max(_disc, _sum_disc):,}원) vs 결제금액 {_total:,}원")
+            _critical = True
+    else:
+        _issues.append("결제금액(합계)을 못 읽음")
+        _critical = True
+
+    _tq = int(data.get("total_qty") or 0)
+    if _tq and _sum_qty and _tq != _sum_qty:
+        _issues.append(f"수량 불일치 — 품목합 {_sum_qty}개 vs 총수량 {_tq}개")
+        _critical = True
+
+    _kinds = int(data.get("item_kinds") or 0)
+    if _kinds and _kinds != len(_items):
+        _issues.append(f"품목 수 불일치 — 읽은 {len(_items)}종 vs 표기 {_kinds}종")
+
+    for _i in _items:
+        _q = int(_i.get("수량") or 0)
+        _u = int(_i.get("단가") or 0)
+        _a = int(_i.get("금액") or 0)
+        if _q and _u and _a and abs(_q * _u - _a) > tolerance:
+            _issues.append(f"'{str(_i.get('상품명', ''))[:16]}' "
+                           f"단가×수량({_q * _u:,}) ≠ 금액({_a:,})")
+
+    _dt_s = str(data.get("purchase_date") or "")
+    if not _re.match(r"^\d{4}-\d{2}-\d{2}$", _dt_s):
+        _issues.append("구매일자를 못 읽음")
+    else:
+        try:
+            if datetime.strptime(_dt_s, "%Y-%m-%d") > datetime.now() + timedelta(days=1):
+                _issues.append(f"미래 날짜({_dt_s})")
+        except Exception:
+            _issues.append(f"구매일자 이상({_dt_s})")
+
+    return (not _critical), _issues
+
+
+def parse_receipt_photo(api_key, image_bytes, media_type, max_tokens=4000, *, gemini_key=''):
+    """코스트코/트레이더스 영수증 사진 → 매입 정보 dict. 반환: (dict, error).
+
+    비용/정확도 전략: Gemini로 먼저 읽고 validate_receipt로 자가검증 →
+      · 검증 통과 → 그대로 채택 (판독 비용 약 1/5)
+      · 검증 실패 → Claude로 재판독해 더 나은 쪽 채택
+    선명한 사진은 대부분 Gemini에서 끝나고, 흐린 사진만 Claude가 받는다.
+
+    결과 dict 부가 키: _provider('gemini'|'claude') · _check(경고 목록) · _verified(bool)
+    영수증은 글씨가 작고 세로로 길어 축소 상한을 1568px로 둔다(가격표보다 크게).
+    """
+    def _tag(d, prov, issues, ok):
+        d["_provider"] = prov
+        d["_check"] = issues
+        d["_verified"] = ok
+        return d
+
+    _g_data, _g_err = None, ''
+    if gemini_key:
+        _gt, _g_err = gemini_vision(gemini_key, image_bytes, media_type, _RECEIPT_SYSTEM,
+                                    _RECEIPT_USER, max_tokens=max_tokens, max_edge=1568)
+        if _gt:
+            _g_data = _parse_receipt_json(_gt)
+            if _g_data:
+                _gok, _giss = validate_receipt(_g_data)
+                if _gok:
+                    return _tag(_g_data, 'gemini', _giss, True), None
+        if not api_key:
+            if _g_data:
+                _gok, _giss = validate_receipt(_g_data)
+                return _tag(_g_data, 'gemini', _giss, _gok), None
+            return None, _g_err or "판독 실패"
+
+    if not api_key:
+        return None, "AI 키 없음 (설정 탭 > 🤖 AI 설정에서 Gemini 또는 Claude 키 등록)"
+
+    _txt, _err = claude_vision(api_key, image_bytes, media_type, _RECEIPT_SYSTEM,
+                               _RECEIPT_USER, max_tokens=max_tokens, max_edge=1568)
+    _c_data = _parse_receipt_json(_txt) if _txt else None
+    if _c_data is None:
+        if _g_data is not None:   # Claude 실패 → 검증 못 넘긴 Gemini 결과라도 돌려준다
+            _gok, _giss = validate_receipt(_g_data)
+            return _tag(_g_data, 'gemini', _giss, _gok), None
+        if _err:
+            return None, _err
+        return None, (f"JSON 파싱 실패: {_txt[:200]}" if _txt else "빈 응답")
+
+    _cok, _ciss = validate_receipt(_c_data)
+    if _g_data is not None and not _cok:
+        # 둘 다 검증 실패 → 경고가 적은 쪽 채택 (동률이면 Claude)
+        _gok, _giss = validate_receipt(_g_data)
+        if _gok or len(_giss) < len(_ciss):
+            return _tag(_g_data, 'gemini', _giss, _gok), None
+    return _tag(_c_data, 'claude', _ciss, _cok), None
 
 
 _CAT_SYSTEM = (

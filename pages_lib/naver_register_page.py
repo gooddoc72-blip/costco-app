@@ -150,6 +150,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     #   AI 키: 관리자 공용키(전역) 우선(강제 통일). 공용키가 설정되면 본인 키가 있어도 공용키 사용.
     #   공용키 미설정 시에만 본인 키로 폴백.
     _ph_aikey = get_global_setting('anthropic_api_key') or _gs('anthropic_api_key')
+    #   사진 판독은 Gemini 우선(비용 약 1/5) → 실패/의심 시 Claude 폴백 (ai_service.ai_vision)
+    _ph_gkey = get_global_setting('gemini_api_key') or _gs('gemini_api_key')
     _ph_oc = _gs('naver_open_client_id'); _ph_os = _gs('naver_open_client_secret')
 
     def _ph_mt(_f):
@@ -318,12 +320,12 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     st.info("공용 AI 키 해제됨.")
                 st.rerun()
 
-    if not _ph_aikey:
-        st.info("ℹ️ AI 사진 등록 메뉴는 Anthropic 키가 있어야 표시됩니다. "
+    if not (_ph_aikey or _ph_gkey):
+        st.info("ℹ️ AI 사진 등록 메뉴는 Anthropic 또는 Gemini 키가 있어야 표시됩니다. "
                 + ("위 🔑 공용 AI 키에 내 키를 넣으면 모든 사용자에게 열립니다."
                    if IS_ADMIN else "관리자가 공용 키를 설정하면 사용할 수 있습니다."))
 
-    if _ph_aikey:
+    if _ph_aikey or _ph_gkey:
         with st.expander("📷 제품사진(여러 장) + 가격사진으로 신상품 등록 (건별)", expanded=False):
             if not (_ph_oc and _ph_os):
                 st.info("카테고리 자동판단에 **네이버 Open API(쇼핑검색)** 키가 필요합니다. (설정 탭)")
@@ -357,8 +359,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 import ai_service
                 set_setting(USERNAME, 'cafe24_naver_margin', str(int(_ph_margin)))
                 with st.spinner("제품사진·가격사진 분석 중..."):
-                    _i1, _e1 = ai_service.analyze_product_photo(_ph_aikey, _prod_imgs[0].getvalue(), _ph_mt(_prod_imgs[0]))
-                    _i2, _e2 = ai_service.analyze_price_tag(_ph_aikey, _price_img.getvalue(), _ph_mt(_price_img))
+                    _i1, _e1 = ai_service.analyze_product_photo(_ph_aikey, _prod_imgs[0].getvalue(), _ph_mt(_prod_imgs[0]), gemini_key=_ph_gkey)
+                    _i2, _e2 = ai_service.analyze_price_tag(_ph_aikey, _price_img.getvalue(), _ph_mt(_price_img), gemini_key=_ph_gkey)
                 if _e1 or not _i1:
                     st.error(f"제품사진 분석 실패: {_e1}")
                 elif _e2 or not _i2:
@@ -464,7 +466,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     with st.spinner("상품 사진 분석 → 상세설명 작성 중..."):
                         _dtxt, _derr = ai_service.generate_product_description(
                             _ph_aikey, _prod_imgs[0].getvalue(), _ph_mt(_prod_imgs[0]),
-                            _en.strip(), _pv.get('cat_full', ''))
+                            _en.strip(), _pv.get('cat_full', ''), gemini_key=_ph_gkey)
                     if _dtxt:
                         st.session_state['ph_desc'] = _dtxt.strip()
                         st.rerun()
@@ -483,7 +485,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     import ai_service
                     with st.spinner("표시사항(라벨) 분석 중 — 내용량·원재료·보관·영양성분..."):
                         _fdd, _fderr = ai_service.analyze_food_label(
-                            _ph_aikey, _label_img.getvalue(), _ph_mt(_label_img))
+                            _ph_aikey, _label_img.getvalue(), _ph_mt(_label_img),
+                            gemini_key=_ph_gkey)
                     if _fdd:
                         st.session_state['_ph_food'] = _fdd
                         st.rerun()
@@ -623,7 +626,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         st.divider()
 
     # ── 📷 여러 개 한번에 등록 (일괄) — 제품사진들 + 가격사진들 1:1 순서매칭 ──
-    if _ph_aikey:
+    if _ph_aikey or _ph_gkey:
         with st.expander("📷 여러 개 한번에 등록 (일괄) — 제품사진들 + 가격사진들", expanded=False):
             if not (_ph_oc and _ph_os):
                 st.info("카테고리 자동판단에 **네이버 Open API(쇼핑검색)** 키가 필요합니다. (설정 탭)")
@@ -649,8 +652,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 for _bi in range(len(_bp)):
                     _bprog.progress((_bi + 1) / len(_bp))
                     _pf = _bp[_bi]; _rf = _bpr[_bi]
-                    _i1, _e1 = ai_service.analyze_product_photo(_ph_aikey, _pf.getvalue(), _ph_mt(_pf))
-                    _i2, _e2 = ai_service.analyze_price_tag(_ph_aikey, _rf.getvalue(), _ph_mt(_rf))
+                    _i1, _e1 = ai_service.analyze_product_photo(_ph_aikey, _pf.getvalue(), _ph_mt(_pf), gemini_key=_ph_gkey)
+                    _i2, _e2 = ai_service.analyze_price_tag(_ph_aikey, _rf.getvalue(), _ph_mt(_rf), gemini_key=_ph_gkey)
                     if _e1 or not _i1:
                         _brows.append({'제품파일': _pf.name[:14], '상태': '❌ 제품사진 분석실패'}); continue
                     _nm = _i1.get('name') or (_i2 or {}).get('product_name', '')
@@ -818,14 +821,14 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 "제품 설명 (입력하거나 새 사진을 올리면 상세페이지를 재구성. 둘 다 비우면 기존 상세 유지)",
                 key="ed_desc", height=90,
                 placeholder="예: 코스트코 프리미엄 원두 1kg / 진한 풍미 …")
-            if _ph_aikey and _ed_newimgs:
+            if (_ph_aikey or _ph_gkey) and _ed_newimgs:
                 _edg1, _edg2 = st.columns([1, 3])
                 if _edg1.button("🤖 AI 상세설명 생성", key="ed_desc_gen", use_container_width=True):
                     import ai_service
                     with st.spinner("사진 분석 → 상세설명 작성 중..."):
                         _edt, _ederr = ai_service.generate_product_description(
                             _ph_aikey, _ed_newimgs[0].getvalue(), _ph_mt(_ed_newimgs[0]),
-                            _ed_name.strip(), '')
+                            _ed_name.strip(), '', gemini_key=_ph_gkey)
                     if _edt:
                         st.session_state['ed_desc'] = _edt.strip(); st.rerun()
                     else:

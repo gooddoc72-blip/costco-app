@@ -162,11 +162,19 @@ def _render_photo_receipt(USERNAME: str, settings: dict):
     st.caption("구매일자 · 매장(코스트코/트레이더스) · 구매수량 · 구매금액 · 할인금액 · "
                "카드 끝4자리 · 현금영수증 승인번호를 AI가 읽어 매입 장부에 저장합니다.")
 
+    # 판독 전략: Gemini로 먼저 읽고 영수증 내장 체크섬(합계·수량)으로 자가검증 →
+    #            검증 실패한 사진만 Claude로 재판독. (ai_service.parse_receipt_photo)
     _ai_key = (get_global_setting('anthropic_api_key')
                or settings.get('anthropic_api_key') or '')
-    if not _ai_key:
-        st.warning("⚠️ Anthropic(Claude) API 키가 없어 사진 판독을 할 수 없습니다. "
-                   "설정 탭 > 🤖 AI 설정에서 키를 먼저 등록하세요.")
+    _g_key = (get_global_setting('gemini_api_key')
+              or settings.get('gemini_api_key') or '')
+    if not (_ai_key or _g_key):
+        st.warning("⚠️ AI 키가 없어 사진 판독을 할 수 없습니다. "
+                   "설정 탭 > 🤖 AI 설정에서 Gemini 또는 Claude 키를 먼저 등록하세요.")
+    elif _g_key and _ai_key:
+        st.caption("🤖 판독: Gemini 1차 → 금액·수량 자가검증 → 불일치 시 Claude 재판독")
+    elif _g_key:
+        st.caption("🤖 판독: Gemini (Claude 키를 함께 넣으면 검증 실패 사진을 재판독합니다)")
 
     _photos = st.file_uploader(
         "영수증 사진 (여러 장 선택 가능 · 휴대폰에서는 '사진 찍기' 선택)",
@@ -179,7 +187,7 @@ def _render_photo_receipt(USERNAME: str, settings: dict):
 
     _cache = st.session_state.setdefault('_rcpt_photo_parsed', {})
 
-    if _uploads and _ai_key:
+    if _uploads and (_ai_key or _g_key):
         _todo = []
         for _up in _uploads:
             _sig = f"{getattr(_up, 'name', 'cam')}|{getattr(_up, 'size', 0)}"
@@ -193,7 +201,8 @@ def _render_photo_receipt(USERNAME: str, settings: dict):
                 if _ierr:
                     _cache[_sig] = {'_error': _ierr, '_name': getattr(_up, 'name', '사진')}
                     continue
-                _data, _perr = ai_service.parse_receipt_photo(_ai_key, _img[0], _img[1])
+                _data, _perr = ai_service.parse_receipt_photo(_ai_key, _img[0], _img[1],
+                                                              gemini_key=_g_key)
                 if _perr or not _data:
                     _cache[_sig] = {'_error': _perr or '판독 실패',
                                     '_name': getattr(_up, 'name', '사진')}
@@ -216,12 +225,27 @@ def _render_photo_receipt(USERNAME: str, settings: dict):
             st.rerun()
 
     if _parsed:
-        st.success(f"✅ {len(_parsed)}장 판독 완료 — 값을 확인·수정한 뒤 저장하세요.")
+        _nok = sum(1 for _, _d in _parsed if _d.get('_verified', True))
+        st.success(f"✅ {len(_parsed)}장 판독 완료 (자가검증 통과 {_nok}장) — "
+                   "값을 확인·수정한 뒤 저장하세요.")
     for _sig, _d in _parsed:
-        _label = (f"🧾 {_d.get('purchase_date') or '날짜?'} · "
-                  f"{_d.get('store_type') or _d.get('store_name') or '매장?'} · "
-                  f"{int(_d.get('total_amount') or 0):,}원")
-        with st.expander(_label, expanded=(len(_parsed) == 1)):
+        _vok = bool(_d.get('_verified', True))
+        _prov = {'gemini': 'Gemini', 'claude': 'Claude'}.get(_d.get('_provider'), '')
+        _label = (("🧾 " if _vok else "⚠️ ")
+                  + f"{_d.get('purchase_date') or '날짜?'} · "
+                  + f"{_d.get('store_type') or _d.get('store_name') or '매장?'} · "
+                  + f"{int(_d.get('total_amount') or 0):,}원"
+                  + (f"  ·  {_prov}" if _prov else ""))
+        with st.expander(_label, expanded=(len(_parsed) == 1 or not _vok)):
+            # 영수증 자가검증 결과 — 금액/수량이 안 맞으면 AI가 숫자를 잘못 읽었다는 신호
+            _iss = _d.get('_check') or []
+            if not _vok:
+                st.error("❗ 영수증 합계와 품목이 맞지 않습니다 — 저장 전 값을 꼭 확인하세요.\n"
+                         + "\n".join(f"- {x}" for x in _iss[:6]))
+            elif _iss:
+                st.warning("⚠️ 판독 참고사항\n" + "\n".join(f"- {x}" for x in _iss[:6]))
+            else:
+                st.caption("✔ 자가검증 통과 — 품목 합계 = 결제금액, 품목 수량 = 총수량")
             # 위젯 키는 파일 시그니처 기준 — 목록 순서가 바뀌어도 입력값이 섞이지 않게
             _k = "rp_" + "".join(ch if ch.isalnum() else "_" for ch in _sig)[-40:]
             _c1, _c2, _c3 = st.columns(3)
@@ -240,6 +264,15 @@ def _render_photo_receipt(USERNAME: str, settings: dict):
                                     value=int(_d.get('total_amount') or 0), key=f"{_k}_amt")
             _disc = _c6.number_input("할인금액", min_value=0, step=100,
                                      value=int(_d.get('discount_amount') or 0), key=f"{_k}_disc")
+
+            # 사용자가 수정한 값 기준으로 재검증 (수정으로 맞춰졌는지 즉시 확인)
+            if _d.get('items'):
+                _lok, _liss = ai_service.validate_receipt(
+                    {**_d, 'total_qty': _qty, 'total_amount': _amt, 'discount_amount': _disc})
+                if _lok:
+                    st.caption("✔ 현재 입력값 기준 검증 통과")
+                else:
+                    st.warning("⚠️ 현재 입력값으로도 안 맞습니다 — " + " / ".join(_liss[:2]))
 
             _c7, _c8, _c9 = st.columns(3)
             _card = _c7.text_input("사용카드 끝 4자리", value=_d.get('card_last4', ''),

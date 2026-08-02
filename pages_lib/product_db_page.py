@@ -229,15 +229,17 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
 
             with _tab_cam:
                 _pt_key = _gs('anthropic_api_key')
-                if not _pt_key:
-                    st.info("사진 판독은 설정 탭 > 🤖 AI 설정에 Anthropic 키가 필요합니다.")
+                _pt_gkey = _gs('gemini_api_key')   # Gemini 우선 판독(비용↓) → 의심 시 Claude 재판독
+                if not (_pt_key or _pt_gkey):
+                    st.info("사진 판독은 설정 탭 > 🤖 AI 설정에 Anthropic 또는 Gemini 키가 필요합니다.")
                 else:
                     _pt_img = st.file_uploader("가격표 사진 (모바일은 파일선택 시 '촬영' 가능)", key="pt_up")
                     if _pt_img is not None and st.button("🔎 가격표 판독", key="pt_read", type="primary"):
                         import ai_service
                         _b = _pt_img.getvalue(); _mt = getattr(_pt_img, 'type', None) or 'image/jpeg'
                         with st.spinner("가격표 판독 중..."):
-                            _pinfo, _pe = ai_service.analyze_price_tag(_pt_key, _b, _mt)
+                            _pinfo, _pe = ai_service.analyze_price_tag(_pt_key, _b, _mt,
+                                                                       gemini_key=_pt_gkey)
                         st.session_state['_pt_read'] = None if _pe else _pinfo
                         if _pe:
                             st.error(f"판독 실패: {_pe}")

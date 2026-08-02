@@ -136,6 +136,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             _ag_tas = _ag_ts.get('naver_as_tel') or '1588-1234'
             _ag_oc = settings.get('naver_open_client_id', ''); _ag_os = settings.get('naver_open_client_secret', '')
             _ag_ai = get_global_setting('anthropic_api_key') or settings.get('anthropic_api_key', '')
+            _ag_gai = get_global_setting('gemini_api_key') or settings.get('gemini_api_key', '')
             # 검색광고 API (연관키워드 조회수 기반 상품명용) — 관리자 키 글로벌 우선
             _ad_key = get_global_setting('naver_ad_api_key') or settings.get('naver_ad_api_key', '')
             _ad_sec = get_global_setting('naver_ad_secret') or settings.get('naver_ad_secret', '')
@@ -156,8 +157,9 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     value=True, key="ag_imgdetail")
                 _ag_photo_ai = st.checkbox(
                     "📷 AI 제품사진 분석으로 상품명·속성 생성 (제품사진 등록 방식)",
-                    value=bool(_ag_ai), key="ag_photoai", disabled=not _ag_ai,
-                    help="대표 제품이미지를 Claude 비전으로 분석해 상품명·원산지·브랜드를 뽑고, "
+                    value=bool(_ag_ai or _ag_gai), key="ag_photoai",
+                    disabled=not (_ag_ai or _ag_gai),
+                    help="대표 제품이미지를 AI 비전(Gemini 우선·Claude 폴백)으로 분석해 상품명·원산지·브랜드를 뽑고, "
                          "그 상품명으로 카테고리 판단·연관키워드 최적화까지 진행합니다.")
                 _agq1, _agq2 = st.columns([3, 1])
                 _ag_q = _agq1.text_input("카페24 상품명 검색(비우면 최근)", key="ag_q",
@@ -205,10 +207,11 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                 _ag_rows.append({'상품': _name[:24], '상태': '❌ 이미지업로드 실패'}); continue
                             # ① AI 제품사진 분석(비전) → 상품명·원산지·브랜드
                             _ai_photo = {}
-                            if _ag_photo_ai and _ag_ai:
+                            if _ag_photo_ai and (_ag_ai or _ag_gai):
                                 _imgb, _mt = _fetch_image_bytes(_rep)
                                 if _imgb:
-                                    _apr, _ape = ai_service.analyze_product_photo(_ag_ai, _imgb, _mt)
+                                    _apr, _ape = ai_service.analyze_product_photo(
+                                        _ag_ai, _imgb, _mt, gemini_key=_ag_gai)
                                     if _apr:
                                         _ai_photo = _apr
                             _base_name = str(_ai_photo.get('name') or '').strip() or _cf_name
