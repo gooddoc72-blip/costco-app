@@ -715,9 +715,32 @@ def _render_calendar(USERNAME: str, today: datetime, IS_ADMIN: bool = False):
                if not _is_no_ship_day(s.get('order_date', '')))
     m_disp = sum(disp_map.values())
     m_dep = sum(dep_map.values()) if dep_map else 0
-    st.caption(f"📆 {sel_month} 합계 — 주문 {m_cnt}건 · 발송 {m_disp}건 · "
-               f"수익 {fmt(m_pf)}원 · 입금정산 {fmt(m_dep)}원 "
-               f"(📋 입금 = 그날 실제 입금된 정산금, 정산일 기준)")
+
+    # ── 선택한 월 합계 요약 카드 (주문건수 · 발송건수 · 수익금액 · 정산금액) ──
+    def _sum_card(title: str, value: str, icon: str, accent: str) -> str:
+        return (
+            f'<div style="flex:1 1 160px;min-width:140px;'
+            f'background:{COLORS["bg"]};border:1px solid {COLORS["border"]};'
+            f'border-top:3px solid {accent};border-radius:10px;'
+            f'padding:12px 14px;box-shadow:0 1px 3px rgba(0,0,0,0.05);box-sizing:border-box">'
+            f'<div style="font-size:13px;color:{COLORS["muted"]};font-weight:500">{icon} {title}</div>'
+            f'<div style="font-size:22px;font-weight:700;color:{COLORS["text"]};margin-top:4px">{value}</div>'
+            f'</div>'
+        )
+
+    st.markdown(f"##### 📆 {sel_month} 합계")
+    st.markdown(
+        '<div style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:6px">'
+        + _sum_card("주문건수", f"{m_cnt:,}건", "🧾", COLORS["warning"])
+        + _sum_card("발송건수", f"{m_disp:,}건", "🚚", COLORS["info"])
+        + _sum_card("수익금액", f"{fmt(m_pf)}원", "💰",
+                    COLORS["success"] if m_pf >= 0 else COLORS["danger"])
+        + _sum_card("정산금액", f"{fmt(m_dep)}원", "📋", COLORS["primary"])
+        + '</div>',
+        unsafe_allow_html=True,
+    )
+    st.caption("📋 정산금액 = 그날 실제 입금된 정산금(정산일 기준) · "
+               "💰 수익금액 = 발송 가능한 날(주말·공휴일 제외) 합계")
 
     # ── [관리자] 사용자별 주문건수 · 코스트코 구매금액 상세 ──
     if IS_ADMIN and adm_rows:
