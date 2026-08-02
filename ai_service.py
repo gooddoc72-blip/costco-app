@@ -439,6 +439,102 @@ def analyze_price_tag(api_key, image_bytes, media_type):
     }, None
 
 
+_RECEIPT_SYSTEM = (
+    "너는 한국 대형마트(코스트코 / 이마트 트레이더스) 영수증 판독 전문가다. "
+    "휴대폰으로 찍은 영수증 사진을 보고 JSON으로만 출력한다(설명·마크다운 금지).\n"
+    "출력 형식:\n"
+    '{"purchase_date":"YYYY-MM-DD","purchase_time":"HH:MM","store_type":"코스트코|트레이더스",'
+    '"store_name":"지점 포함 매장명","total_qty":정수,"item_kinds":정수,"total_amount":정수,'
+    '"discount_amount":정수,"card_last4":"1234","cash_receipt_no":"승인번호",'
+    '"items":[{"product_no":"상품번호","name":"상품명","qty":정수,"unit_price":정수,'
+    '"amount":정수,"discount":정수}]}\n'
+    "규칙:\n"
+    "- purchase_date: 영수증의 거래일자. 2자리 연도는 20xx로. 안 보이면 ''.\n"
+    "- store_type: 로고/상호에 COSTCO·코스트코면 '코스트코', TRADERS·트레이더스면 '트레이더스'. "
+    "판단 불가면 ''.\n"
+    "- store_name: '코스트코 상봉점'처럼 매장명+지점. 지점 안 보이면 매장명만.\n"
+    "- total_qty: 구매수량 합계(영수증의 '총수량'/'수량합계'. 없으면 품목 수량의 합).\n"
+    "- item_kinds: 품목 종수(줄 수).\n"
+    "- total_amount: 실제 결제한 최종 합계금액(할인 반영 후). 숫자만.\n"
+    "- discount_amount: 할인·쿠폰·즉시할인 합계. 없으면 0. 양수로.\n"
+    "- card_last4: 카드번호 마스킹의 **끝 4자리 숫자만**. 현금결제면 ''.\n"
+    "- cash_receipt_no: 현금영수증 승인번호(숫자). 없으면 ''.\n"
+    "- items: 품목 줄마다 1개. 상품번호(보통 6~7자리)가 있으면 넣고 없으면 ''. "
+    "unit_price=단가, amount=금액. 안 보이는 값은 0.\n"
+    "- 흐리거나 잘려서 안 보이는 값은 절대 지어내지 말고 빈 문자열/0으로 둔다."
+)
+
+
+def parse_receipt_photo(api_key, image_bytes, media_type, max_tokens=4000):
+    """코스트코/트레이더스 영수증 사진 → 매입 정보 dict. 반환: (dict, error).
+
+    dict = {purchase_date, purchase_time, store_type, store_name, total_qty,
+            item_kinds, total_amount, discount_amount, card_last4,
+            cash_receipt_no, items:[{상품번호,상품명,수량,단가,금액,할인}]}
+    영수증은 글씨가 작고 세로로 길어 축소 상한을 1568px로 둔다(가격표보다 크게).
+    """
+    _txt, _err = claude_vision(
+        api_key, image_bytes, media_type, _RECEIPT_SYSTEM,
+        "이 영수증에서 구매일자·매장(코스트코/트레이더스)·구매수량·구매금액·할인금액·"
+        "카드 끝 4자리·현금영수증 승인번호와 품목 내역을 읽어 JSON으로 출력해줘.",
+        max_tokens=max_tokens, max_edge=1568)
+    if _err or not _txt:
+        return None, _err or "빈 응답"
+    _s = _txt.strip()
+    _i, _j = _s.find("{"), _s.rfind("}")
+    if _i >= 0 and _j > _i:
+        _s = _s[_i:_j + 1]
+    try:
+        _d = json.loads(_s)
+    except Exception:
+        return None, f"JSON 파싱 실패: {_txt[:200]}"
+
+    def _num(v):
+        try:
+            return int(float(str(v).replace(",", "").replace("원", "").strip() or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    _store = str(_d.get("store_type", "") or "").strip()
+    if "트레이더스" in _store or "TRADERS" in _store.upper():
+        _store = "트레이더스"
+    elif "코스트코" in _store or "COSTCO" in _store.upper():
+        _store = "코스트코"
+
+    _items = []
+    for _it in (_d.get("items") or []):
+        _name = str(_it.get("name", "") or "").strip()
+        if not _name:
+            continue
+        _q = _num(_it.get("qty")) or 1
+        _up = _num(_it.get("unit_price"))
+        _items.append({
+            "상품번호": "".join(ch for ch in str(_it.get("product_no", "") or "") if ch.isdigit()),
+            "상품명": _name,
+            "수량": _q,
+            "단가": _up,
+            "금액": _num(_it.get("amount")) or _q * _up,
+            "할인": _num(_it.get("discount")),
+        })
+
+    _date = str(_d.get("purchase_date", "") or "").strip()[:10]
+    return {
+        "purchase_date": _date,
+        "purchase_time": str(_d.get("purchase_time", "") or "").strip()[:5],
+        "store_type": _store,
+        "store_name": str(_d.get("store_name", "") or "").strip(),
+        "total_qty": _num(_d.get("total_qty")) or sum(i["수량"] for i in _items),
+        "item_kinds": _num(_d.get("item_kinds")) or len(_items),
+        "total_amount": _num(_d.get("total_amount")),
+        "discount_amount": abs(_num(_d.get("discount_amount"))),
+        "card_last4": "".join(ch for ch in str(_d.get("card_last4", "") or "")
+                              if ch.isdigit())[-4:],
+        "cash_receipt_no": "".join(ch for ch in str(_d.get("cash_receipt_no", "") or "")
+                                   if ch.isdigit()),
+        "items": _items,
+    }, None
+
+
 _CAT_SYSTEM = (
     "너는 네이버 쇼핑 카테고리 분류 전문가다. 상품명과 '후보 카테고리 경로' 목록을 보고 "
     "그 상품에 가장 정확한 카테고리 경로 하나만 고른다.\n"

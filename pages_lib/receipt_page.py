@@ -77,6 +77,263 @@ def _set_cache_helpers(shared_fn, user_fn, merged_fn, invalidate_fn, **kwargs):
     invalidate_data_cache = invalidate_fn
 
 
+_IMG_TYPES = ['jpg', 'jpeg', 'png', 'webp', 'heic', 'heif']
+
+
+def _image_for_ai(upload) -> tuple:
+    """업로드 이미지 → (bytes, media_type). HEIC(아이폰)은 JPEG로 변환.
+    반환 실패 시 (None, 오류메시지)."""
+    try:
+        upload.seek(0)
+        raw = upload.read()
+    except Exception as e:
+        return None, f"파일 읽기 오류: {e}"
+    if not raw:
+        return None, "빈 파일"
+    _ext = (upload.name.rsplit('.', 1)[-1] if '.' in upload.name else '').lower()
+    _mt = {'jpg': 'image/jpeg', 'jpeg': 'image/jpeg', 'png': 'image/png',
+           'webp': 'image/webp'}.get(_ext, '')
+    if _mt:
+        return (raw, _mt), None
+    # HEIC/HEIF 등 Claude 미지원 포맷 → PIL로 JPEG 변환 시도
+    try:
+        try:
+            import pillow_heif   # noqa: F401  (설치돼 있으면 HEIC 디코딩 등록)
+            pillow_heif.register_heif_opener()
+        except ImportError:
+            pass
+        from PIL import Image
+        with Image.open(io.BytesIO(raw)) as im:
+            buf = io.BytesIO()
+            im.convert("RGB").save(buf, "JPEG", quality=90)
+            return (buf.getvalue(), "image/jpeg"), None
+    except Exception:
+        return None, (f"{_ext.upper()} 형식은 읽을 수 없습니다. "
+                      "휴대폰 설정에서 '호환성(JPEG)' 촬영으로 바꾸거나 JPG/PNG로 저장 후 올려주세요.")
+
+
+def _receipt_ledger_excel(rows: list, items: list) -> bytes:
+    """매입 장부 → 엑셀 bytes (시트: 영수증 / 품목내역)."""
+    _hdr = pd.DataFrame([{
+        "구매일자": r.get('purchase_date', ''),
+        "구매시각": r.get('purchase_time', ''),
+        "구매매장명": r.get('store_type', '') or r.get('store_name', ''),
+        "매장(지점)": r.get('store_name', ''),
+        "구매수량": int(r.get('total_qty') or 0),
+        "품목종수": int(r.get('item_kinds') or 0),
+        "구매금액": int(r.get('total_amount') or 0),
+        "할인금액": int(r.get('discount_amount') or 0),
+        "사용카드 끝4자리": r.get('card_last4', ''),
+        "현금영수증 승인번호": r.get('cash_receipt_no', ''),
+        "메모": r.get('memo', ''),
+    } for r in rows])
+    _itm = pd.DataFrame([{
+        "구매일자": it.get('purchase_date', ''),
+        "구매매장명": it.get('store_type', '') or it.get('store_name', ''),
+        "상품번호": it.get('product_no', ''),
+        "상품명": it.get('product_name', ''),
+        "수량": int(it.get('qty') or 0),
+        "단가": int(it.get('unit_price') or 0),
+        "금액": int(it.get('amount') or 0),
+        "할인": int(it.get('discount') or 0),
+    } for it in items])
+    _buf = io.BytesIO()
+    with pd.ExcelWriter(_buf, engine='openpyxl') as _w:
+        (_hdr if not _hdr.empty else pd.DataFrame(
+            columns=["구매일자", "구매매장명", "구매수량", "구매금액", "할인금액",
+                     "사용카드 끝4자리", "현금영수증 승인번호"])).to_excel(
+            _w, sheet_name="영수증", index=False)
+        if not _itm.empty:
+            _itm.to_excel(_w, sheet_name="품목내역", index=False)
+    return _buf.getvalue()
+
+
+def _render_photo_receipt(USERNAME: str, settings: dict):
+    """📱 휴대폰 영수증 사진 → AI 파싱 → 매입 장부 저장 → 엑셀(재고관리용).
+
+    수집 항목: 구매일자 · 구매매장명(코스트코/트레이더스) · 구매수량 · 구매금액 ·
+              할인금액 · 사용카드 끝4자리 · 현금영수증 승인번호 (+ 품목 내역)
+    """
+    from db import (get_global_setting, save_purchase, list_purchases,
+                    get_purchase_items_range, delete_purchase, STORE_TYPES)
+    import ai_service
+
+    st.subheader("📱 영수증 사진 업로드 (휴대폰 촬영)")
+    st.caption("구매일자 · 매장(코스트코/트레이더스) · 구매수량 · 구매금액 · 할인금액 · "
+               "카드 끝4자리 · 현금영수증 승인번호를 AI가 읽어 매입 장부에 저장합니다.")
+
+    _ai_key = (get_global_setting('anthropic_api_key')
+               or settings.get('anthropic_api_key') or '')
+    if not _ai_key:
+        st.warning("⚠️ Anthropic(Claude) API 키가 없어 사진 판독을 할 수 없습니다. "
+                   "설정 탭 > 🤖 AI 설정에서 키를 먼저 등록하세요.")
+
+    _photos = st.file_uploader(
+        "영수증 사진 (여러 장 선택 가능 · 휴대폰에서는 '사진 찍기' 선택)",
+        type=_IMG_TYPES, key="receipt_photo", accept_multiple_files=True)
+    with st.expander("📷 카메라로 바로 찍기", expanded=False):
+        _cam = st.camera_input("영수증을 화면에 꽉 차게 찍어주세요", key="receipt_cam")
+    _uploads = list(_photos or [])
+    if _cam is not None:
+        _uploads.append(_cam)
+
+    _cache = st.session_state.setdefault('_rcpt_photo_parsed', {})
+
+    if _uploads and _ai_key:
+        _todo = []
+        for _up in _uploads:
+            _sig = f"{getattr(_up, 'name', 'cam')}|{getattr(_up, 'size', 0)}"
+            if _sig not in _cache:
+                _todo.append((_sig, _up))
+        if _todo:
+            _prog = st.progress(0.0, text="영수증 판독 중...")
+            for _n, (_sig, _up) in enumerate(_todo, 1):
+                _prog.progress(_n / len(_todo), text=f"영수증 판독 중... ({_n}/{len(_todo)})")
+                _img, _ierr = _image_for_ai(_up)
+                if _ierr:
+                    _cache[_sig] = {'_error': _ierr, '_name': getattr(_up, 'name', '사진')}
+                    continue
+                _data, _perr = ai_service.parse_receipt_photo(_ai_key, _img[0], _img[1])
+                if _perr or not _data:
+                    _cache[_sig] = {'_error': _perr or '판독 실패',
+                                    '_name': getattr(_up, 'name', '사진')}
+                else:
+                    _data['_name'] = getattr(_up, 'name', '사진')
+                    _cache[_sig] = _data
+            _prog.empty()
+
+    # ── 판독 결과 확인·수정·저장 ──
+    #  저장/버린 사진도 sig를 캐시에 남긴다 — 업로더에 파일이 남아 있어도 재판독(=재과금) 방지.
+    _parsed = [(_s, _d) for _s, _d in _cache.items()
+               if not _d.get('_error') and not _d.get('_done')]
+    _failed = [(_s, _d) for _s, _d in _cache.items() if _d.get('_error')]
+
+    for _fi, (_sig, _d) in enumerate(_failed):
+        _fc1, _fc2 = st.columns([4, 1])
+        _fc1.error(f"⚠️ {_d.get('_name', '사진')} 판독 실패 — {_d['_error']}")
+        if _fc2.button("🔄 다시 판독", key=f"rp_retry_{_fi}"):
+            _cache.pop(_sig, None)
+            st.rerun()
+
+    if _parsed:
+        st.success(f"✅ {len(_parsed)}장 판독 완료 — 값을 확인·수정한 뒤 저장하세요.")
+    for _sig, _d in _parsed:
+        _label = (f"🧾 {_d.get('purchase_date') or '날짜?'} · "
+                  f"{_d.get('store_type') or _d.get('store_name') or '매장?'} · "
+                  f"{int(_d.get('total_amount') or 0):,}원")
+        with st.expander(_label, expanded=(len(_parsed) == 1)):
+            # 위젯 키는 파일 시그니처 기준 — 목록 순서가 바뀌어도 입력값이 섞이지 않게
+            _k = "rp_" + "".join(ch if ch.isalnum() else "_" for ch in _sig)[-40:]
+            _c1, _c2, _c3 = st.columns(3)
+            _date = _c1.text_input("구매일자 (YYYY-MM-DD)", value=_d.get('purchase_date', ''),
+                                   key=f"{_k}_date")
+            _stype = _c2.selectbox(
+                "구매매장명", STORE_TYPES,
+                index=STORE_TYPES.index(_d['store_type']) if _d.get('store_type') in STORE_TYPES else 0,
+                key=f"{_k}_stype")
+            _sname = _c3.text_input("매장(지점)", value=_d.get('store_name', ''), key=f"{_k}_sname")
+
+            _c4, _c5, _c6 = st.columns(3)
+            _qty = _c4.number_input("구매수량", min_value=0, step=1,
+                                    value=int(_d.get('total_qty') or 0), key=f"{_k}_qty")
+            _amt = _c5.number_input("구매금액", min_value=0, step=100,
+                                    value=int(_d.get('total_amount') or 0), key=f"{_k}_amt")
+            _disc = _c6.number_input("할인금액", min_value=0, step=100,
+                                     value=int(_d.get('discount_amount') or 0), key=f"{_k}_disc")
+
+            _c7, _c8, _c9 = st.columns(3)
+            _card = _c7.text_input("사용카드 끝 4자리", value=_d.get('card_last4', ''),
+                                   max_chars=4, key=f"{_k}_card")
+            _cash = _c8.text_input("현금영수증 승인번호", value=_d.get('cash_receipt_no', ''),
+                                   key=f"{_k}_cash")
+            _memo = _c9.text_input("메모", value="", key=f"{_k}_memo")
+
+            _items = _d.get('items') or []
+            if _items:
+                st.caption(f"📦 품목 {len(_items)}종 (재고 입고 수량으로 저장됩니다)")
+                st.dataframe(pd.DataFrame(_items)[['상품번호', '상품명', '수량', '단가', '금액']],
+                             use_container_width=True, hide_index=True)
+            else:
+                st.caption("📦 품목 내역 미인식 — 영수증 합계만 저장됩니다.")
+
+            _b1, _b2 = st.columns([1, 1])
+            if _b1.button("💾 매입 장부 저장", type="primary", key=f"{_k}_save"):
+                if not _date:
+                    st.error("구매일자가 비어 있습니다. 직접 입력해주세요.")
+                else:
+                    _pid, _new = save_purchase(USERNAME, {
+                        'purchase_date': _date, 'purchase_time': _d.get('purchase_time', ''),
+                        'store_type': _stype, 'store_name': _sname or _stype,
+                        'total_qty': _qty, 'item_kinds': len(_items),
+                        'total_amount': _amt, 'discount_amount': _disc,
+                        'card_last4': _card, 'cash_receipt_no': _cash,
+                        'memo': _memo, 'source': 'photo',
+                    }, _items)
+                    if _pid:
+                        # 품목이 있으면 기존 영수증 흐름(공유DB 매입가 반영)에도 그대로 태운다
+                        if _items:
+                            st.session_state['receipt_items'] = [
+                                {"상품명": it['상품명'], "수량": it['수량'], "단가": it['단가'],
+                                 "상품번호": it.get('상품번호', ''), "receipt_date": _date}
+                                for it in _items if it.get('단가')]
+                        _cache[_sig] = {'_done': True, '_name': _d.get('_name', '')}
+                        st.success(f"✅ {'저장' if _new else '갱신'} 완료 — {_date} {_stype} "
+                                   f"{_amt:,}원 (품목 {len(_items)}종)")
+                        st.rerun()
+                    else:
+                        st.error("저장 실패 — 구매일자를 확인해주세요.")
+            if _b2.button("🗑 이 영수증 버리기", key=f"{_k}_drop"):
+                _cache[_sig] = {'_done': True, '_name': _d.get('_name', '')}
+                st.rerun()
+
+    # ── 매입 장부 (저장된 영수증) + 엑셀 ──
+    st.markdown("##### 📒 매입 영수증 장부")
+    _t = datetime.now()
+    _lc1, _lc2, _lc3 = st.columns([1, 1, 1.4])
+    _lf = _lc1.date_input("조회 시작", value=(_t - timedelta(days=30)).date(),
+                          key="rp_ledger_from")
+    _lt = _lc2.date_input("조회 종료", value=_t.date(), key="rp_ledger_to")
+    _rows = list_purchases(USERNAME, str(_lf), str(_lt))
+    if not _rows:
+        st.info("해당 기간에 저장된 매입 영수증이 없습니다.")
+        return
+
+    _sum_amt = sum(int(r.get('total_amount') or 0) for r in _rows)
+    _sum_disc = sum(int(r.get('discount_amount') or 0) for r in _rows)
+    _sum_qty = sum(int(r.get('total_qty') or 0) for r in _rows)
+    _lc3.metric("기간 합계", f"{_sum_amt:,}원",
+                f"영수증 {len(_rows)}장 · 수량 {_sum_qty:,} · 할인 {_sum_disc:,}원")
+
+    _disp = pd.DataFrame([{
+        "구매일자": r.get('purchase_date', ''),
+        "구매매장명": r.get('store_type', '') or r.get('store_name', ''),
+        "구매수량": int(r.get('total_qty') or 0),
+        "구매금액": int(r.get('total_amount') or 0),
+        "할인금액": int(r.get('discount_amount') or 0),
+        "카드 끝4자리": r.get('card_last4', ''),
+        "현금영수증 승인번호": r.get('cash_receipt_no', ''),
+        "품목종수": int(r.get('item_kinds') or 0),
+        "ID": r.get('id'),
+    } for r in _rows])
+    st.dataframe(_disp, use_container_width=True, hide_index=True)
+
+    _items_all = get_purchase_items_range(USERNAME, str(_lf), str(_lt))
+    _dc1, _dc2 = st.columns([1.6, 1])
+    _dc1.download_button(
+        "📥 매입 장부 엑셀 다운로드 (재고관리용)",
+        data=_receipt_ledger_excel(_rows, _items_all),
+        file_name=f"매입영수증_{_lf}_{_lt}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        key="rp_ledger_dl", use_container_width=True)
+    _del_id = _dc2.number_input("삭제할 ID", min_value=0, step=1, value=0, key="rp_del_id")
+    if _dc2.button("🗑 영수증 삭제", key="rp_del_btn") and _del_id:
+        if delete_purchase(USERNAME, int(_del_id)):
+            st.success(f"🗑 ID {int(_del_id)} 삭제 완료")
+            st.rerun()
+        else:
+            st.error("해당 ID를 찾을 수 없습니다.")
+
+
 def render(USERNAME: str, IS_ADMIN: bool, settings: dict, embedded: bool = False, order_date: str = ""):
     """🧾 영수증 등록 탭 렌더링.
 
@@ -93,6 +350,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict, embedded: bool = False
 
     if not embedded:
         st.header("🧾 코스트코 영수증 등록")
+        _render_photo_receipt(USERNAME, settings)
+        st.divider()
 
     st.subheader("📄 영수증 PDF 업로드 (여러 파일 동시 등록 가능)")
     receipt_files = st.file_uploader(
