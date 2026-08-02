@@ -394,6 +394,25 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         'origin': _i1.get('origin', '국산'), 'brand': _i1.get('brand', ''),
                         'costco_no': str((_i2 or {}).get('product_no', '') or ''),
                     }
+                    # ── SEO 상품명 자동 적용 ──
+                    #  사진에서 읽은 이름은 '검색용'이 아니라 '표기용'이라 그대로 등록하면
+                    #  롱테일 노출을 통째로 버린다. 검색광고 키가 있으면 여기서 바로
+                    #  연관검색어를 조회해 저검색 키워드를 앞단에 배치한 이름으로 교체한다.
+                    #  (원본명은 name_raw로 보존 → 미리보기에서 1클릭 되돌리기)
+                    _adk0 = _gs('naver_ad_api_key'); _ads0 = _gs('naver_ad_secret')
+                    _adc0 = _gs('naver_ad_customer_id')
+                    if _nm and _adk0 and _ads0 and _adc0:
+                        with st.spinner("연관검색어 분석 → 저검색 키워드 앞단 배치..."):
+                            _sres, _serr0 = naver_api.keyword_seo_name(
+                                _adk0, _ads0, _adc0, _nm, ai_key=_ph_aikey,
+                                category=_cfull or '', front_max=200,
+                                gemini_key=_ph_gkey)
+                        if _sres and _sres.get('name') and _sres['name'] != _nm:
+                            st.session_state['_ph_pv']['name_raw'] = _nm
+                            st.session_state['_ph_pv']['name'] = _sres['name']
+                            st.session_state['_ph_seo'] = _sres
+                        elif _serr0:
+                            st.session_state['_ph_pv']['seo_err'] = str(_serr0)[:80]
 
             _pv = st.session_state.get('_ph_pv')
             if _pv:
@@ -404,8 +423,27 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                             f"(마진 {_ph_margin}%)")
                 _en = st.text_input("상품명", value=_pv['name'], key="ph_en")
 
+                # SEO 자동적용 결과 안내 + 원본↔SEO 1클릭 토글
+                if _pv.get('name_raw'):
+                    _sfront = ", ".join((st.session_state.get('_ph_seo') or {}).get('front') or [])
+                    _rc1, _rc2 = st.columns([3, 1])
+                    if str(_en).strip() == str(_pv['name_raw']).strip():
+                        _rc1.caption(f"🔑 사진 판독 원본명 사용 중 · SEO 제안: {_pv['name']}")
+                        _btn_lbl, _btn_to = "🔑 SEO명 적용", _pv['name']
+                    else:
+                        _rc1.caption(f"🔑 SEO 자동적용 — 앞단 저검색 키워드: **{_sfront or '-'}**"
+                                     f"  ·  사진 판독 원본: {_pv['name_raw']}")
+                        _btn_lbl, _btn_to = "↩ 원본명으로", _pv['name_raw']
+                    if _rc2.button(_btn_lbl, key="ph_seo_revert", use_container_width=True):
+                        st.session_state['_ph_en_pending'] = _btn_to
+                        st.rerun()
+                elif _pv.get('seo_err'):
+                    st.caption(f"🔑 SEO 자동적용 실패 — {_pv['seo_err']} "
+                               "(아래 '상품명 SEO 키워드'에서 다시 시도할 수 있습니다)")
+
                 # ── 🔑 상품명 SEO 키워드 — 검색량 분석해 저검색(≤N) 키워드를 앞단 배치 ──
-                with st.expander("🔑 상품명 SEO 키워드 (검색량 분석 → 저검색 키워드 앞단 배치)",
+                with st.expander("🔑 상품명 SEO 키워드 (검색량 분석 → 저검색 키워드 앞단 배치)"
+                                 + ("  ·  ✅ 자동적용됨" if _pv.get('name_raw') else ""),
                                  expanded=False):
                     _adk = _gs('naver_ad_api_key'); _ads = _gs('naver_ad_secret')
                     _adc = _gs('naver_ad_customer_id')
@@ -422,7 +460,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                 _seed = str(st.session_state.get('ph_en') or _pv['name']).strip()
                                 _res, _serr = _na.keyword_seo_name(
                                     _adk, _ads, _adc, _seed, ai_key=_ph_aikey,
-                                    category=_pv.get('cat_full', ''), front_max=int(_fmax))
+                                    category=_pv.get('cat_full', ''), front_max=int(_fmax),
+                                    gemini_key=_ph_gkey)
                             if _serr and not (_res or {}).get('candidates'):
                                 st.warning(f"키워드 조회 실패: {_serr}")
                             else:
@@ -455,7 +494,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                     _seed2 = str(st.session_state.get('ph_en') or _pv['name']).strip()
                                     _res2, _ = _na.keyword_seo_name(
                                         _adk, _ads, _adc, _seed2, ai_key=_ph_aikey,
-                                        category=_pv.get('cat_full', ''), manual_kw=_picked)
+                                        category=_pv.get('cat_full', ''), manual_kw=_picked,
+                                        gemini_key=_ph_gkey)
                                 st.session_state['_ph_en_pending'] = _res2['name']
                                 st.session_state['_ph_seo'] = {**_seo, 'name': _res2['name']}
                                 st.rerun()

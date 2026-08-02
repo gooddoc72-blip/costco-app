@@ -93,25 +93,46 @@ def gemini_complete(api_key: str, system: str, user_msg: str,
 
 
 def ai_complete(system: str, user_msg: str, *, gemini_key: str = '',
-                anthropic_key: str = '', max_tokens: int = 1200):
+                anthropic_key: str = '', max_tokens: int = 1200,
+                claude_model: str = None):
     """가용 키로 자동 선택 — Gemini 우선(있으면), 실패 시 Claude 폴백.
+    claude_model: Claude 폴백 시 쓸 모델 (기본 DEFAULT_MODEL=haiku).
+                  상품명 작문처럼 품질이 중요하면 VISION_MODEL을 넘긴다.
     반환: (text, error, provider)."""
+    _cm = claude_model or DEFAULT_MODEL
+
+    def _claude():
+        return claude_complete(anthropic_key, system, user_msg, max_tokens=max_tokens,
+                               model=_cm, thinking={"type": "disabled"})
+
     if gemini_key:
         txt, err = gemini_complete(gemini_key, system, user_msg, max_tokens=max_tokens)
         if txt:
             return txt, '', 'gemini'
         if anthropic_key:
-            t2, e2 = claude_complete(anthropic_key, system, user_msg,
-                                     max_tokens=max_tokens, thinking={"type": "disabled"})
+            t2, e2 = _claude()
             if t2:
                 return t2, '', 'claude'
             return None, f"Gemini 실패({err}) · Claude 실패({e2})", ''
         return None, err, 'gemini'
     if anthropic_key:
-        t2, e2 = claude_complete(anthropic_key, system, user_msg,
-                                 max_tokens=max_tokens, thinking={"type": "disabled"})
+        t2, e2 = _claude()
         return (t2, '', 'claude') if t2 else (None, e2, 'claude')
     return None, "AI 키 없음 (설정 탭 > 🤖 AI 설정에서 Gemini 또는 Claude 키 등록)", ''
+
+
+def resolve_gemini_key(gemini_key=None):
+    """gemini_key=None → 설정에서 자동 해석 / ''(빈 문자열) → 명시적 미사용.
+
+    호출부가 여러 파일에 흩어져 있어, 각 함수가 내부에서 이걸 호출해
+    '키를 안 넘긴 기존 호출도 Gemini 폴백을 타도록' 한다.
+    """
+    if gemini_key is None:
+        try:
+            return get_ai_keys()[1]
+        except Exception:
+            return ''
+    return gemini_key
 
 
 # ── 정산 브리핑 ────────────────────────────────────────────
@@ -349,11 +370,20 @@ def _extract_json(text):
         return None
 
 
-def get_ai_keys(settings=None):
+_KEYS_CACHE = {"t": 0.0, "v": None}   # 전역 키 조회 캐시 (DB 스캔 반복 방지)
+
+
+def get_ai_keys(settings=None, ttl=20):
     """설정에서 (anthropic_key, gemini_key) 해석. 전역(관리자 공용키) 우선.
 
     AI 키는 공유 인프라 — 관리자가 다른 계정 설정에 저장했어도 찾도록 폴백 스캔한다.
+    settings 없이 호출한 결과만 ttl초 캐시한다(설정 저장 직후 반영을 막지 않게 짧게).
     """
+    import time as _time
+    if settings is None and _KEYS_CACHE["v"] is not None \
+            and (_time.time() - _KEYS_CACHE["t"]) < ttl:
+        return _KEYS_CACHE["v"]
+    _auto = settings is None
     settings = settings or {}
 
     def _one(name):
@@ -377,7 +407,11 @@ def get_ai_keys(settings=None):
             pass
         return ''
 
-    return _one('anthropic_api_key'), _one('gemini_api_key')
+    _out = (_one('anthropic_api_key'), _one('gemini_api_key'))
+    if _auto:
+        import time as _time2
+        _KEYS_CACHE.update(t=_time2.time(), v=_out)
+    return _out
 
 
 _DESC_SYSTEM = (
@@ -807,19 +841,21 @@ _CAT_SYSTEM = (
 )
 
 
-def suggest_naver_category(api_key, product_name, candidate_paths):
+def suggest_naver_category(api_key, product_name, candidate_paths, *, gemini_key=None):
     """상품명 + 쇼핑검색 후보 카테고리 경로들 → 최적 경로 1개 선택.
-    api_key 없거나 실패 시 최빈(majority) 경로로 폴백. 반환: (path, err)."""
+    키 없거나 실패 시 최빈(majority) 경로로 폴백. 반환: (path, err)."""
     from collections import Counter
     _uniq = list(dict.fromkeys([p for p in candidate_paths if p]))
     if not _uniq:
         return None, "후보 카테고리 없음"
     _majority = Counter([p for p in candidate_paths if p]).most_common(1)[0][0]
-    if not api_key:
+    _gk = resolve_gemini_key(gemini_key)
+    if not (api_key or _gk):
         return _majority, None
     _msg = (f"상품명: {product_name}\n\n후보 카테고리 경로:\n"
             + "\n".join(f"- {p}" for p in _uniq))
-    _txt, _err = claude_complete(api_key, _CAT_SYSTEM, _msg, max_tokens=120)
+    _txt, _err, _ = ai_complete(_CAT_SYSTEM, _msg, gemini_key=_gk,
+                                anthropic_key=api_key, max_tokens=120)
     if _err or not _txt:
         return _majority, None
     _pick = _txt.strip().splitlines()[0].strip().strip('"').strip()

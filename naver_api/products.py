@@ -517,8 +517,9 @@ _TAG_CAND_SYSTEM = (
 )
 
 
-def _ai_tag_candidates(ai_key, name, category_path, detail, n=24):
-    """Claude로 검색 키워드 후보 생성 (관련도순). 실패 시 상품명 토큰 폴백."""
+def _ai_tag_candidates(ai_key, name, category_path, detail, n=24, gemini_key=None):
+    """AI로 검색 키워드 후보 생성 (관련도순). 실패 시 상품명 토큰 폴백.
+    Gemini 우선 → Claude 폴백 (gemini_key=None → 설정에서 자동 해석)."""
     _cands = []
     try:
         import ai_service, json as _json2, re as _re2
@@ -528,7 +529,10 @@ def _ai_tag_candidates(ai_key, name, category_path, detail, n=24):
             f"상세(발췌): {(detail or '')[:300]}\n\n"
             f"위 상품의 검색 키워드 후보를 관련도순으로 {n}개 JSON 배열로."
         )
-        _txt, _err = ai_service.claude_complete(ai_key, _TAG_CAND_SYSTEM, _msg, max_tokens=700)
+        _txt, _err, _ = ai_service.ai_complete(
+            _TAG_CAND_SYSTEM, _msg,
+            gemini_key=ai_service.resolve_gemini_key(gemini_key),
+            anthropic_key=ai_key or '', max_tokens=700)
         if _txt:
             _m = _re2.search(r"\[.*\]", _txt, _re2.S)
             if _m:
@@ -548,7 +552,7 @@ def _ai_tag_candidates(ai_key, name, category_path, detail, n=24):
 
 
 def build_seller_tags(client_id, client_secret, ai_key, name, category_path="",
-                      detail="", ad_creds=None, limit=10):
+                      detail="", ad_creds=None, limit=10, gemini_key=None):
     """상품등록용 sellerTags 상위 N개 생성.
     1) AI로 검색 키워드 후보 → 2) 추천태그 API 검증(code 有) → 3) 제한태그 제거
     → 4) (ad_creds 있으면) 검색량 우선, 없으면 관련도순 → 상위 limit개.
@@ -560,7 +564,7 @@ def build_seller_tags(client_id, client_secret, ai_key, name, category_path="",
         info["err"] = err
         return [], info
 
-    cands = _ai_tag_candidates(ai_key, name, category_path, detail)
+    cands = _ai_tag_candidates(ai_key, name, category_path, detail, gemini_key=gemini_key)
     info["candidates"] = len(cands)
 
     # 2) 후보별 추천태그 검증 — code 있는 사전태그만 수집 (관련도 순위 = rank 보존)

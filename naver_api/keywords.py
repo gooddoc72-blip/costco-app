@@ -293,7 +293,8 @@ def order_seo_keywords(rows, front_max=200, n_front=2):
 
 
 def keyword_seo_name(ad_api_key, ad_secret, customer_id, seed, ai_key=None,
-                     category="", front_max=200, n_front=2, manual_kw=None):
+                     category="", front_max=200, n_front=2, manual_kw=None,
+                     gemini_key=None):
     """검색량 분석 기반 SEO 상품명 + 후보 키워드. (메인 네이버 등록용)
 
     저검색(≤front_max) 키워드를 상품명 '앞단'에 배치한다.
@@ -325,7 +326,12 @@ def keyword_seo_name(ad_api_key, ad_secret, customer_id, seed, ai_key=None,
     if not ordered:
         return result, None
 
-    if ai_key:
+    try:
+        import ai_service
+        _gk = ai_service.resolve_gemini_key(gemini_key)
+    except Exception:
+        _gk = ''
+    if ai_key or _gk:
         try:
             import ai_service
             _sys = ("너는 네이버 스마트스토어 SEO 상품명 작성 전문가다. 주어진 키워드를 "
@@ -335,9 +341,10 @@ def keyword_seo_name(ad_api_key, ad_secret, customer_id, seed, ai_key=None,
             _msg = (f"원본 상품명: {_seed}\n카테고리: {category or '미상'}\n"
                     f"앞단부터 순서대로 포함할 키워드: {', '.join(ordered)}\n"
                     f"상품명 한 줄만 출력.")
-            _txt, _e = ai_service.claude_complete(
-                ai_key, _sys, _msg, max_tokens=120,
-                model=getattr(ai_service, "VISION_MODEL", None), thinking={"type": "disabled"})
+            # Gemini 우선 → Claude 폴백 (gemini_key=None → 설정에서 자동 해석)
+            _txt, _e, _ = ai_service.ai_complete(
+                _sys, _msg, gemini_key=_gk, anthropic_key=ai_key or '', max_tokens=120,
+                claude_model=getattr(ai_service, "VISION_MODEL", None))
             if _txt:
                 _name = " ".join(str(_txt).split()).strip().strip('"').strip()
                 if len(_name) >= 4:
@@ -351,7 +358,8 @@ def keyword_seo_name(ad_api_key, ad_secret, customer_id, seed, ai_key=None,
 
 
 def keyword_optimized_name(ad_api_key, ad_secret, customer_id, seed,
-                           ai_key=None, category="", low=100, high=300):
+                           ai_key=None, category="", low=100, high=300,
+                           gemini_key=None):
     """연관키워드 조회수 기반 상품명 생성.
     저경쟁(총검색량 low~high, 경쟁도 낮은 순) 1~2개 + 대표어(최고 검색량) 1개를 조합.
     ai_key 있으면 AI가 자연스러운 상품명으로 조합, 없으면 단순 이어붙임.
@@ -382,7 +390,12 @@ def keyword_optimized_name(ad_api_key, ad_secret, customer_id, seed,
     if not kws:
         return _seed, info
 
-    if ai_key:
+    try:
+        import ai_service
+        _gk = ai_service.resolve_gemini_key(gemini_key)
+    except Exception:
+        _gk = ''
+    if ai_key or _gk:
         try:
             import ai_service
             _sys = ("너는 네이버 스마트스토어 SEO 상품명 작성 전문가다. 주어진 핵심 키워드를 "
@@ -390,9 +403,9 @@ def keyword_optimized_name(ad_api_key, ad_secret, customer_id, seed,
                     "중복·과장·특수문자·이모지 금지, 최대 40자. 상품명만 출력.")
             _msg = (f"원본 상품명: {_seed}\n카테고리: {category or '미상'}\n"
                     f"반드시 포함할 키워드: {', '.join(kws)}\n상품명 한 줄만 출력.")
-            _txt, _e = ai_service.claude_complete(
-                ai_key, _sys, _msg, max_tokens=120,
-                model=getattr(ai_service, "VISION_MODEL", None), thinking={"type": "disabled"})
+            _txt, _e, _ = ai_service.ai_complete(
+                _sys, _msg, gemini_key=_gk, anthropic_key=ai_key or '', max_tokens=120,
+                claude_model=getattr(ai_service, "VISION_MODEL", None))
             if _e:
                 info["err"] = _e
             if _txt:
