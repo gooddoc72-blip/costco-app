@@ -244,7 +244,10 @@ def _parse_order_and_excel(order: dict, seq_no: int) -> tuple:
     if ordered_at and "T" in str(ordered_at):
         ordered_at = str(ordered_at).replace("T", " ").rstrip("Z").strip()
 
-    bundle_id = (order.get("bundleShippingOrderId")
+    # 묶음배송번호 = shipmentBoxId (Wing 송장 일괄등록의 매칭 키).
+    #   orderId로 채우면 Wing이 배송건을 찾지 못해 '택배사 등록 실패'가 된다.
+    bundle_id = (order.get("shipmentBoxId")
+                 or order.get("bundleShippingOrderId")
                  or order.get("shippingOrderId")
                  or order.get("orderId")
                  or "")

@@ -580,8 +580,10 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         _cq_excel_df.to_excel(_w, index=False)
                     st.session_state['order_full_coupang'] = _cq_excel_df
                     st.session_state['order_excel_bytes_coupang'] = _cq_xl.getvalue()
+                    st.session_state['order_coupang_excel_wing'] = True   # Wing 송장등록 양식 여부
                 else:
                     st.session_state['order_full_coupang'] = cq_df.copy()
+                    st.session_state['order_coupang_excel_wing'] = False
                 # 택배사 등록(송장) 엑셀은 네이버/쿠팡 분리 유지 —
                 # 네이버 엑셀은 order_full_naver(네이버 전용)에서 생성하므로 쿠팡 데이터로 덮지 않는다.
                 # (order_excel_bytes는 네이버 다운로드 전용 → None으로 두면 네이버 전용으로 재생성)
@@ -905,7 +907,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 st.error(f"저장 실패: {_e}")
         if _clear_clicked:
             for _k in ['orders', 'order_date', 'order_full', 'order_full_naver', 'order_full_coupang',
-                        'order_excel_bytes', 'order_excel_bytes_coupang', 'orders_unsaved', '_naver_status_dist']:
+                        'order_excel_bytes', 'order_excel_bytes_coupang', 'order_coupang_excel_wing',
+                        'orders_unsaved', '_naver_status_dist']:
                 st.session_state.pop(_k, None)
             st.session_state['_orders_cleared'] = True  # DB 자동복원 방지
             st.rerun()
@@ -942,7 +945,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     from db import delete_orders_from_history
                     _pn = delete_orders_from_history(USERNAME, _perm_ids)
                     for _k in ['orders', 'order_full', 'order_full_naver', 'order_full_coupang',
-                               'order_excel_bytes', 'order_excel_bytes_coupang']:
+                               'order_excel_bytes', 'order_excel_bytes_coupang',
+                               'order_coupang_excel_wing']:
                         st.session_state.pop(_k, None)
                     st.session_state['_orders_cleared'] = True
                     st.session_state['perm_del_confirm'] = False
@@ -1149,29 +1153,43 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 _cq_disp_cols = [c for c in _disp_base if c in _coupang_df.columns]
                 _prep_coupang = _coupang_df[_cq_disp_cols].copy()
 
-                # 쿠팡 엑셀 bytes (수집된 원본 형식)
+                # 쿠팡 엑셀 bytes — Wing 송장등록 양식은 '쿠팡 주문 조회' 시점에만 생성된다.
+                #   세션이 끊겨 양식 df가 없으면 화면 컬럼 그대로 내보내면 안 된다
+                #   (Wing 업로드 시 컬럼 불일치 → 택배사/송장 등록 실패).
                 _excel_bytes_cq = st.session_state.get('order_excel_bytes_coupang')
-                if not _excel_bytes_cq and st.session_state.get('order_full_coupang') is not None:
+                _is_wing_cq = bool(st.session_state.get('order_coupang_excel_wing'))
+                _full_cq = st.session_state.get('order_full_coupang')
+                if not _excel_bytes_cq and _is_wing_cq and _full_cq is not None:
                     _tmp_cq = io.BytesIO()
                     with pd.ExcelWriter(_tmp_cq, engine='openpyxl') as _w:
-                        st.session_state['order_full_coupang'].to_excel(_w, index=False)
+                        _full_cq.to_excel(_w, index=False)
                     _excel_bytes_cq = _tmp_cq.getvalue()
                     st.session_state['order_excel_bytes_coupang'] = _excel_bytes_cq
-                elif not _excel_bytes_cq:
-                    # fallback: 현재 화면 데이터로 생성
-                    _tmp_cq = io.BytesIO()
-                    with pd.ExcelWriter(_tmp_cq, engine='openpyxl') as _w:
-                        _coupang_df.to_excel(_w, index=False)
-                    _excel_bytes_cq = _tmp_cq.getvalue()
 
-                if _excel_bytes_cq:
+                if _excel_bytes_cq and _is_wing_cq:
                     st.download_button(
-                        label="📥 쿠팡 엑셀 다운로드",
+                        label="📥 쿠팡 송장등록 엑셀 다운로드 (Wing 양식)",
                         data=_excel_bytes_cq,
                         file_name=f"coupang_orders_{order_date_str}.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         use_container_width=False,
                         key="coupang_excel_dl",
+                    )
+                else:
+                    st.warning(
+                        "⚠️ Wing 송장등록 양식 엑셀이 없습니다 — 위 **🛒 쿠팡 주문 조회**를 다시 실행하세요. "
+                        "(아래는 화면 데이터 그대로이며 Wing 업로드용이 아닙니다)"
+                    )
+                    _tmp_cq = io.BytesIO()
+                    with pd.ExcelWriter(_tmp_cq, engine='openpyxl') as _w:
+                        _coupang_df.to_excel(_w, index=False)
+                    st.download_button(
+                        label="📥 쿠팡 주문 목록 엑셀 (확인용 · Wing 업로드 불가)",
+                        data=_tmp_cq.getvalue(),
+                        file_name=f"coupang_view_{order_date_str}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=False,
+                        key="coupang_excel_dl_view",
                     )
                 st.dataframe(_prep_coupang, use_container_width=True, hide_index=True)
 
