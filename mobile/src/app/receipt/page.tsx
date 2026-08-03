@@ -4,7 +4,7 @@
  */
 import Header from '@/components/Header';
 import BottomNav from '@/components/BottomNav';
-import { Upload, Save, RefreshCw } from 'lucide-react';
+import { Upload, Save, RefreshCw, Camera } from 'lucide-react';
 import { won } from '@/lib/fmt';
 import { useReceipt } from '@/hooks/useReceipt';
 
@@ -12,8 +12,25 @@ export default function ReceiptPage() {
   const r = useReceipt();
   return (
     <>
-      <Header title="🧾 영수증" subtitle="PDF 업로드 → 매입가 갱신" />
+      <Header title="🧾 영수증" subtitle="사진 촬영 · PDF 업로드 → 매입가 갱신" />
       <main className="px-4 pt-4 pb-32 space-y-3">
+
+        {/* 📷 휴대폰 촬영 — capture 속성으로 카메라가 바로 열린다 */}
+        <section className="bg-white rounded-xl p-3 border space-y-2">
+          <div className="text-sm font-semibold flex items-center gap-1">
+            <Camera size={14} /> 영수증 사진 촬영 (AI 판독)
+          </div>
+          <label className="block">
+            <span className="sr-only">영수증 촬영</span>
+            <input type="file" accept="image/*" capture="environment" multiple disabled={r.busy}
+              onChange={e => { if (e.target.files) { r.onUploadPhotos(e.target.files); e.target.value = ''; } }}
+              className="w-full text-xs border border-gray-200 rounded p-2 file:mr-2 file:py-1 file:px-2 file:rounded file:border-0 file:bg-emerald-50 file:text-emerald-700" />
+          </label>
+          <p className="text-[11px] text-gray-500">
+            영수증이 화면에 꽉 차게, 구겨짐 없이 찍어주세요. 여러 장 한번에 올릴 수 있습니다.
+          </p>
+          {r.busy && <p className="text-xs text-gray-500">⏳ AI 판독 중… (장당 10~30초)</p>}
+        </section>
 
         <section className="bg-white rounded-xl p-3 border space-y-2">
           <div className="text-sm font-semibold flex items-center gap-1">
@@ -26,6 +43,30 @@ export default function ReceiptPage() {
         </section>
 
         {r.error && <div className="bg-red-50 text-red-700 text-sm p-3 rounded-lg">❌ {r.error}</div>}
+
+        {/* 사진 판독 자가검증 — 금액·수량이 영수증과 안 맞으면 값을 믿지 말 것 */}
+        {r.checks && r.checks.length > 0 && (
+          <section className="space-y-2">
+            {r.checks.map((c, i) => (
+              <div key={i}
+                className={`text-xs p-3 rounded-lg border ${c.verified
+                  ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
+                  : 'bg-red-50 border-red-200 text-red-900'}`}>
+                <div className="font-semibold">
+                  {c.verified ? '✔' : '⚠️'} {c.file}
+                  <span className="ml-1 font-normal opacity-70">
+                    ({c.provider === 'gemini' ? 'Gemini' : 'Claude'})
+                  </span>
+                </div>
+                {c.verified && c.issues.length === 0
+                  ? <div className="mt-1 opacity-80">금액·수량 자가검증 통과</div>
+                  : <ul className="mt-1 list-disc list-inside space-y-0.5">
+                      {c.issues.slice(0, 5).map((s, k) => <li key={k}>{s}</li>)}
+                    </ul>}
+              </div>
+            ))}
+          </section>
+        )}
 
         {r.parsed && (
           <>
