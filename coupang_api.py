@@ -52,6 +52,11 @@ def _auth_header(access_key: str, secret_key: str,
 
 # ── 주문 조회 ──────────────────────────────────────────────────────────────
 
+#: 쿠팡 판매수수료율(%). 정산예정금액 = 판매금액 × (1 − 이 값/100).
+#  쿠팡 주문 API는 정산예정금액을 주지 않아 이 비율로 산정한다.
+COUPANG_COMMISSION_RATE = 12.0
+
+
 def get_orders(access_key: str, secret_key: str, vendor_id: str,
                status: str = "ACCEPT",
                days_back: int = 2,
@@ -262,7 +267,10 @@ def _parse_order_and_excel(order: dict, seq_no: int) -> tuple:
 
         qty        = int(item.get("quantity") or 1)
         unit_price = int(item.get("orderPrice") or 0)
-        settlement = int(item.get("shippingCountPriceWithCommission") or 0)
+        # 쿠팡은 주문 API에 실제 정산예정금액을 주지 않는다
+        # (shippingCountPriceWithCommission은 배송비 관련 값이라 판매가와 무관한 숫자가 찍힘).
+        # → 판매금액에서 수수료율(기본 12%)을 공제해 정산금액으로 산정한다.
+        settlement = int(round(unit_price * qty * (1 - COUPANG_COMMISSION_RATE / 100.0)))
         ship_fee   = order_ship if idx == 0 else 0
 
         item_name   = item.get("vendorItemName") or ""

@@ -492,8 +492,14 @@ def run_shopping_task(username="admin"):
                                               _user_prods=products)
             _pack_price = int(matched_p.get('unit_price') or 0) if matched_p else 0
             _est_cost = calc_cost(matched_p, costco_qty) if matched_p else 0
+            # 매장금액 = 코스트코 계산대에서 실제로 결제할 금액.
+            #   소분 상품(split_qty>1)은 낱개로 못 사고 팩 단위로 사야 하므로 팩 수를 올림한다.
+            #   (calc_cost는 소분 안분가라 '오늘 얼마 들고 가야 하나'와는 다르다)
+            _split_q = max(1, int(matched_p.get('split_qty', 1) or 1)) if matched_p else 1
+            _packs = -(-int(costco_qty) // _split_q)          # 올림 나눗셈
+            _store_amt = _pack_price * _packs
             if matched_p:
-                total_cost += _est_cost
+                total_cost += _store_amt
             total_settlement += settlement
             total_costco_qty += costco_qty
 
@@ -518,8 +524,7 @@ def run_shopping_task(username="admin"):
                 "주문건수": int(order_cnt),
                 "주문수량": int(order_qty),
                 "코스트코구매수량": int(costco_qty),
-                "팩단가": _pack_price,
-                "예상금액": int(_est_cost),
+                "매장금액": int(_store_amt),
                 "정산금액": int(settlement),
                 "배송비": int(ship_each),
             })

@@ -35,6 +35,7 @@ from db import (
     get_daily_ranks_in_month, get_yearly_rank_history, delete_trackings_bulk,
     get_rank_drops,
     submit_shopping_list, get_recent_shopping_submissions, delete_shopping_submission,
+    normalize_shopping_items,
     AUTH_DB,
 )
 from services import (
@@ -563,10 +564,11 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 st.warning("항목이 비어있습니다.")
                 return
             _mc1, _mc2, _mc3 = st.columns(3)
-            _mc1.metric("💰 구매금액 합계", f"{fmt(_sub_amt)}원")
+            _mc1.metric("💰 매장금액 합계", f"{fmt(_sub_amt)}원")
             _mc2.metric("🧾 정산금액 합계", f"{fmt(_sub_set)}원")
-            _mc3.metric("차액(정산−구매)", f"{fmt(_sub_set - _sub_amt)}원")
-            _df_sub = pd.DataFrame(_items)
+            _mc3.metric("차액(정산−매장)", f"{fmt(_sub_set - _sub_amt)}원")
+            # 팩단가 제외 + 구 스키마('예상금액') 하위호환
+            _df_sub = pd.DataFrame(normalize_shopping_items(_items))
             st.dataframe(_df_sub, use_container_width=True, hide_index=True)
 
             _xbuf = io.BytesIO()
@@ -608,13 +610,13 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 '@media print{body{padding:8px}.noprint{display:none}}'
                 '</style></head><body>'
                 f'<h1>🛒 장보기 — {_html_lib.escape(str(_sub["username"]))} ({_sub["order_date"]})</h1>'
-                f'<div class="meta">총 {len(_items)}종 · 구매 예상금액 {fmt(_sub_amt)}원 · '
+                f'<div class="meta">총 {len(_items)}종 · 매장금액 {fmt(_sub_amt)}원 · '
                 f'정산금액 {fmt(_sub_set)}원 · 제출 {_sub["submitted_at"]}</div>'
                 '<table><thead><tr><th>상품번호</th><th>상품명</th><th>옵션</th>'
                 '<th style="text-align:right">수량</th><th style="text-align:right">정산금액</th>'
                 '<th style="text-align:right">택배비</th></tr></thead><tbody>'
                 + ''.join(_prows) +
-                f'</tbody></table><div class="tot">💰 구매 예상금액: {fmt(_sub_amt)}원'
+                f'</tbody></table><div class="tot">💰 매장금액: {fmt(_sub_amt)}원'
                 f' &nbsp;·&nbsp; 🧾 정산금액: {fmt(_sub_set)}원</div>'
                 '<button class="noprint" onclick="window.print()" '
                 'style="margin-top:20px;padding:10px 24px;font-size:14px;cursor:pointer">🖨 인쇄</button>'
@@ -655,7 +657,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     if _subs_today:
         st.caption(f"📅 오늘({_today_str_adm}) 제출 {len(_subs_today)}건")
 
-        # ── 사용자별 오늘 합계 (금액 = 코스트코 구매 예상금액) ──
+        # ── 사용자별 오늘 합계 (금액 = 코스트코 매장금액) ──
         _agg_a = {}
         for _s in _subs_today:
             _a = _agg_a.setdefault(_s['username'],
@@ -688,7 +690,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             ]),
             use_container_width=True, hide_index=True,
         )
-        st.caption("💰 구매금액 = 코스트코 구매 예상금액(팩단가 × 구매수량) 합계 · "
+        st.caption("💰 매장금액 = 코스트코 계산대 결제 예상액 합계 · "
                    "🧾 정산금액 = 항목별 정산예정금액 합계. "
                    "차액은 택배·박스 원가와 수수료를 뺀 값이 아니므로 순이익이 아닙니다.")
         st.divider()

@@ -134,7 +134,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 import html as _hl
                 import streamlit.components.v1 as _cmp
 
-                # ── 사용자별 오늘 합계 (금액 = 코스트코 구매 예상금액 = 예상금액 열 합계) ──
+                # ── 사용자별 오늘 합계 (금액 = 코스트코 매장금액 합계) ──
                 #   제출은 (사용자×날짜) 1건으로 덮어쓰지만, 혹시 복수면 합산되도록 집계한다.
                 _agg = {}
                 _items_by_sub = {}
@@ -172,7 +172,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     ]),
                     use_container_width=True, hide_index=True,
                 )
-                st.caption("💰 구매금액 = 코스트코 구매 예상금액(팩단가 × 구매수량) 합계 · "
+                st.caption("💰 매장금액 = 코스트코 계산대 결제 예상액 합계 · "
                            "🧾 정산금액 = 항목별 정산예정금액 합계. "
                            "차액은 택배·박스 원가와 수수료를 뺀 값이 아니므로 순이익이 아닙니다.")
                 st.divider()
@@ -217,13 +217,13 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                             '.tot{margin-top:16px;font-size:15px;font-weight:600}@media print{body{padding:8px}.noprint{display:none}}'
                             '</style></head><body>'
                             f'<h1>🛒 장보기 — {_hl.escape(str(_sub["username"]))} ({_sub["order_date"]})</h1>'
-                            f'<div class="meta">총 {len(_its)}종 · 구매 예상금액 {fmt(_sub_amt)}원 · '
+                            f'<div class="meta">총 {len(_its)}종 · 매장금액 {fmt(_sub_amt)}원 · '
                             f'정산금액 {fmt(_sub_set)}원 · 제출 {_sub["submitted_at"]}</div>'
                             '<table><thead><tr><th>상품번호</th><th>상품명</th><th>옵션</th>'
                             '<th style="text-align:right">수량</th><th style="text-align:right">정산금액</th>'
                             '<th style="text-align:right">택배비</th></tr></thead><tbody>'
                             + ''.join(_pr) +
-                            f'</tbody></table><div class="tot">💰 구매 예상금액: {fmt(_sub_amt)}원'
+                            f'</tbody></table><div class="tot">💰 매장금액: {fmt(_sub_amt)}원'
                             f' &nbsp;·&nbsp; 🧾 정산금액: {fmt(_sub_set)}원</div>'
                             '<button class="noprint" onclick="window.print()" '
                             'style="margin-top:20px;padding:10px 24px;font-size:14px;cursor:pointer">🖨 인쇄</button></body></html>'
@@ -1361,7 +1361,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         c3.metric("차액(정산−구매)", f"{fmt(_total_settle - _total_buy)}원")
         c4.metric("종 수", f"{len(shopping)}종")
         _no_price_n = int(shopping['구매금액'].isna().sum())
-        st.caption("구매금액 = 코스트코 예상 구매가(팩단가 × 구매수량). "
+        st.caption("구매금액 = 코스트코 매장 결제 예상액. "
                    "차액은 택배·박스 원가와 수수료 차감 전이라 순이익이 아닙니다."
                    + (f" ⚠️ 단가 미등록 {_no_price_n}종은 구매금액 0으로 집계." if _no_price_n else ""))
 
@@ -1385,8 +1385,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     "분리수량": int(_r.get('분리수량', 1) or 1),
                     "묶음수량": int(_r.get('묶음수량', 1) or 1),
                     "코스트코구매수량": int(_r.get('코스트코구매수량', 0) or 0),
-                    "팩단가": int(_r['팩단가']) if pd.notna(_r.get('팩단가')) else 0,
-                    "예상금액": _est_v,
+                    "매장금액": _est_v,
                     "정산금액": int(_r['정산금액']) if pd.notna(_r.get('정산금액')) else 0,
                     "배송비": int(_r.get('배송비', 0) or 0),
                 })
@@ -1572,8 +1571,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     "분리수량": int(r.get('분리수량', 1) or 1),
                     "묶음수량": int(r.get('묶음수량', 1) or 1),
                     "코스트코구매수량": int(r.get('코스트코구매수량', 0) or 0),
-                    "팩단가": int(r['팩단가']) if pd.notna(r.get('팩단가')) else 0,
-                    "예상금액": _est_v,
+                    "매장금액": _est_v,
                     "정산금액": int(r['정산금액']) if pd.notna(r.get('정산금액')) else 0,
                     "배송비": int(r.get('배송비', 0) or 0),
                 })

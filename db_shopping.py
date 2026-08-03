@@ -61,6 +61,39 @@ def submit_shopping_list(username: str, order_date: str, items: list,
     return retry_on_lock(_write)
 
 
+#: 관리자 화면·엑셀에 보여줄 컬럼 순서 (팩단가는 노출하지 않음)
+SHOP_ITEM_COLS = ("코스트코상품번호", "상품명", "옵션정보", "주문건수", "주문수량",
+                  "코스트코구매수량", "매장금액", "정산금액", "배송비")
+
+
+def normalize_shopping_items(items: list) -> list:
+    """저장된 items_json → 화면/엑셀용 표준 형태.
+
+    · '팩단가'는 제외 (매장금액에 이미 반영됨)
+    · 예전 제출분의 '예상금액'은 '매장금액'으로 읽어준다 (하위호환)
+    """
+    out = []
+    for _it in (items or []):
+        if not isinstance(_it, dict):
+            continue
+        _amt = _it.get("매장금액")
+        if _amt in (None, ""):
+            _amt = _it.get("예상금액") or 0      # 구 스키마 폴백
+        _row = {}
+        for _c in SHOP_ITEM_COLS:
+            if _c == "매장금액":
+                _row[_c] = int(_amt or 0)
+            elif _c in ("주문건수", "주문수량", "코스트코구매수량", "정산금액", "배송비"):
+                try:
+                    _row[_c] = int(_it.get(_c) or 0)
+                except (TypeError, ValueError):
+                    _row[_c] = 0
+            else:
+                _row[_c] = str(_it.get(_c, "") or "")
+        out.append(_row)
+    return out
+
+
 def get_recent_shopping_submissions(limit: int = 50, username: str = None) -> list:
     """최근 제출 목록. username 지정 시 해당 사용자만."""
     _ensure_table()
