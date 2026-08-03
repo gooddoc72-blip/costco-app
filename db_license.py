@@ -7,11 +7,11 @@ import sqlite3
 import secrets
 from datetime import datetime
 
-from db_core import AUTH_DB
+from db_core import AUTH_DB, get_auth_db
 
 
 def _conn():
-    c = sqlite3.connect(AUTH_DB)
+    c = get_auth_db()
     c.row_factory = sqlite3.Row
     _ensure_table(c)
     return c

@@ -9,7 +9,7 @@ import os
 import bcrypt
 from datetime import datetime, timedelta
 
-from db_core import AUTH_DB, DATA_DIR, get_user_db
+from db_core import AUTH_DB, DATA_DIR, get_user_db, get_auth_db
 
 
 def hash_pw(pw):
@@ -21,7 +21,7 @@ def _sha256(pw):
 
 
 def init_auth_db():
-    conn = sqlite3.connect(AUTH_DB)
+    conn = get_auth_db()
     conn.row_factory = sqlite3.Row
     conn.execute("""CREATE TABLE IF NOT EXISTS users (
         username TEXT PRIMARY KEY,
@@ -116,7 +116,7 @@ def init_auth_db():
 
 
 def check_login(username, password):
-    conn = sqlite3.connect(AUTH_DB)
+    conn = get_auth_db()
     row = conn.execute(
         "SELECT password, display_name, is_admin, status FROM users WHERE username=?",
         (username,)
@@ -154,14 +154,14 @@ def check_login(username, password):
 
 
 def get_global_setting(key, default=''):
-    conn = sqlite3.connect(AUTH_DB)
+    conn = get_auth_db()
     row = conn.execute("SELECT value FROM app_settings WHERE key=?", (key,)).fetchone()
     conn.close()
     return row[0] if row else default
 
 
 def set_global_setting(key, value):
-    conn = sqlite3.connect(AUTH_DB)
+    conn = get_auth_db()
     conn.execute("INSERT OR REPLACE INTO app_settings VALUES (?,?)", (key, str(value)))
     conn.commit()
     conn.close()
@@ -170,7 +170,7 @@ def set_global_setting(key, value):
 def register_user(username, password, display_name=""):
     require_approval = get_global_setting('require_approval', '1')
     status = 'pending' if require_approval == '1' else 'active'
-    conn = sqlite3.connect(AUTH_DB)
+    conn = get_auth_db()
     try:
         conn.execute("INSERT INTO users VALUES (?,?,?,?,?,?)",
                      (username, hash_pw(password), display_name or username, 0,
@@ -189,7 +189,7 @@ def ensure_local_user(username, display_name=""):
     import re as _re
     import secrets as _secrets
     safe = _re.sub(r'[^A-Za-z0-9_\-]', '', (username or '').strip()) or 'local'
-    conn = sqlite3.connect(AUTH_DB)
+    conn = get_auth_db()
     row = conn.execute("SELECT display_name, is_admin FROM users WHERE username=?", (safe,)).fetchone()
     if not row:
         conn.execute("INSERT OR IGNORE INTO users VALUES (?,?,?,?,?,?)",
@@ -208,7 +208,7 @@ def ensure_local_user(username, display_name=""):
 
 
 def get_pending_users():
-    conn = sqlite3.connect(AUTH_DB)
+    conn = get_auth_db()
     rows = conn.execute(
         "SELECT username, display_name, created_at FROM users WHERE status='pending' ORDER BY created_at"
     ).fetchall()
@@ -217,21 +217,21 @@ def get_pending_users():
 
 
 def approve_user(username):
-    conn = sqlite3.connect(AUTH_DB)
+    conn = get_auth_db()
     conn.execute("UPDATE users SET status='active' WHERE username=?", (username,))
     conn.commit()
     conn.close()
 
 
 def reject_user(username):
-    conn = sqlite3.connect(AUTH_DB)
+    conn = get_auth_db()
     conn.execute("UPDATE users SET status='rejected' WHERE username=?", (username,))
     conn.commit()
     conn.close()
 
 
 def get_all_users():
-    conn = sqlite3.connect(AUTH_DB)
+    conn = get_auth_db()
     rows = conn.execute(
         "SELECT username, display_name, is_admin, created_at, status FROM users ORDER BY created_at"
     ).fetchall()
@@ -241,7 +241,7 @@ def get_all_users():
 
 
 def add_user(username, password, display_name=""):
-    conn = sqlite3.connect(AUTH_DB)
+    conn = get_auth_db()
     try:
         conn.execute("INSERT INTO users VALUES (?,?,?,?,?,?)",
                      (username, hash_pw(password), display_name or username, 0,
@@ -255,7 +255,7 @@ def add_user(username, password, display_name=""):
 
 
 def delete_user(username):
-    conn = sqlite3.connect(AUTH_DB)
+    conn = get_auth_db()
     conn.execute("DELETE FROM users WHERE username=? AND is_admin=0", (username,))
     conn.commit()
     conn.close()
@@ -265,14 +265,14 @@ def delete_user(username):
 
 
 def change_password(username, new_password):
-    conn = sqlite3.connect(AUTH_DB)
+    conn = get_auth_db()
     conn.execute("UPDATE users SET password=? WHERE username=?", (hash_pw(new_password), username))
     conn.commit()
     conn.close()
 
 
 def get_user_info(username):
-    conn = sqlite3.connect(AUTH_DB)
+    conn = get_auth_db()
     row = conn.execute(
         "SELECT username, display_name, is_admin FROM users WHERE username=?", (username,)
     ).fetchone()
@@ -286,7 +286,7 @@ def create_session(username, days=30):
     token = secrets.token_urlsafe(32)
     now = datetime.now()
     expires = (now + timedelta(days=days)).strftime("%Y-%m-%d %H:%M")
-    conn = sqlite3.connect(AUTH_DB)
+    conn = get_auth_db()
     conn.execute("INSERT INTO sessions VALUES (?,?,?,?)",
                  (token, username, now.strftime("%Y-%m-%d %H:%M"), expires))
     conn.commit()
@@ -297,7 +297,7 @@ def create_session(username, days=30):
 def get_session_user(token):
     if not token:
         return None
-    conn = sqlite3.connect(AUTH_DB)
+    conn = get_auth_db()
     row = conn.execute(
         "SELECT username, expires_at FROM sessions WHERE token=?", (token,)
     ).fetchone()
@@ -314,7 +314,7 @@ def get_session_user(token):
 def delete_session(token):
     if not token:
         return
-    conn = sqlite3.connect(AUTH_DB)
+    conn = get_auth_db()
     conn.execute("DELETE FROM sessions WHERE token=?", (token,))
     conn.commit()
     conn.close()

@@ -5,13 +5,13 @@ import sqlite3
 import os
 from datetime import datetime
 
-from db_core import AUTH_DB, DATA_DIR, get_user_db
+from db_core import AUTH_DB, DATA_DIR, get_user_db, get_auth_db
 
 
 # ── 공유 제품 (auth.db/shared_products) ──────────────────
 
 def get_shared_products():
-    conn = sqlite3.connect(AUTH_DB)
+    conn = get_auth_db()
     conn.row_factory = sqlite3.Row
     rows = conn.execute("SELECT * FROM shared_products ORDER BY costco_name").fetchall()
     conn.close()
@@ -21,7 +21,7 @@ def get_shared_products():
 def _upsert_shared_internal(costco_name, keyword, store_price=None, online_price=None,
                             product_no='', split_qty=1, updated_by='', image_url='',
                             receipt_date='', force_store=False):
-    conn = sqlite3.connect(AUTH_DB)
+    conn = get_auth_db()
     conn.row_factory = sqlite3.Row
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     split_qty = max(1, int(split_qty or 1))
@@ -127,7 +127,7 @@ def upsert_shared_product(costco_name, keyword, price, product_no='', split_qty=
 
 
 def delete_shared_product(shared_id):
-    conn = sqlite3.connect(AUTH_DB)
+    conn = get_auth_db()
     conn.execute("DELETE FROM shared_products WHERE id=?", (shared_id,))
     conn.commit()
     conn.close()
@@ -170,7 +170,7 @@ def upsert_shared_naver_map(costco_pno, username, naver_pno='', naver_origin_pno
     # 네이버번호가 하나도 없거나 코스트코번호가 없으면 저장 불가
     if not costco_pno or (not naver_pno and not naver_origin_pno):
         return False
-    conn = sqlite3.connect(AUTH_DB)
+    conn = get_auth_db()
     _ensure_shared_naver_map(conn)
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     conn.execute(
@@ -198,7 +198,7 @@ def upsert_shared_naver_map(costco_pno, username, naver_pno='', naver_origin_pno
 
 def get_shared_naver_map_rows():
     """공유 네이버↔코스트코 매핑 전체 행 조회 (관리/표시용)."""
-    conn = sqlite3.connect(AUTH_DB)
+    conn = get_auth_db()
     conn.row_factory = sqlite3.Row
     _ensure_shared_naver_map(conn)
     rows = conn.execute(
@@ -210,7 +210,7 @@ def get_shared_naver_map_rows():
 
 def get_shared_naver_costco_map():
     """{네이버번호(channel/origin): 코스트코번호} 통합 맵 (전체 사용자 누적)."""
-    conn = sqlite3.connect(AUTH_DB)
+    conn = get_auth_db()
     _ensure_shared_naver_map(conn)
     rows = conn.execute(
         "SELECT costco_pno, naver_pno, naver_origin_pno FROM shared_naver_map"
@@ -229,7 +229,7 @@ def get_shared_naver_costco_map():
 
 
 def get_product_detail(shared_id):
-    conn = sqlite3.connect(AUTH_DB)
+    conn = get_auth_db()
     conn.row_factory = sqlite3.Row
     row = conn.execute(
         "SELECT extra_images, detail_html FROM shared_products WHERE id=?", (shared_id,)
@@ -454,7 +454,7 @@ def delete_user_products_by_ids(username, ids):
 
 
 def link_naver_to_shared(username: str, user_product_id: int, shared_id: int):
-    conn_auth = sqlite3.connect(AUTH_DB)
+    conn_auth = get_auth_db()
     sp_row = conn_auth.execute(
         "SELECT product_no FROM shared_products WHERE id=?", (shared_id,)
     ).fetchone()
@@ -744,7 +744,7 @@ def _contribute_shared_from_user(product_no, costco_name, keyword, price, split_
       덮어쓰지 않으면 저장한 단가가 매칭 때 공유 옛값으로 원복됨(원복 버그 해결)."""
     if not product_no or int(price or 0) <= 0:
         return False
-    conn = sqlite3.connect(AUTH_DB)
+    conn = get_auth_db()
     conn.row_factory = sqlite3.Row
     row = conn.execute(
         "SELECT id, unit_price, store_price, updated_by FROM shared_products WHERE product_no=?",

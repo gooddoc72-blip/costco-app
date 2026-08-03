@@ -14,7 +14,7 @@ import json
 import sqlite3
 from datetime import datetime
 
-from db_core import AUTH_DB, get_user_db
+from db_core import AUTH_DB, get_user_db, get_auth_db
 
 
 # ── 월말 택배·포장 (그달 1일~말일 누적) ──────────────────────
@@ -134,7 +134,7 @@ def compute_daily_purchase(username, date):
 
 # ── 스냅샷 저장/조회 (예상 기준선) ───────────────────────────
 def _conn():
-    conn = sqlite3.connect(AUTH_DB)
+    conn = get_auth_db()
     conn.row_factory = sqlite3.Row
     return conn
 

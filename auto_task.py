@@ -560,7 +560,9 @@ def run_shopping_task(username="admin"):
                 set_setting(username, 'admin_shop_sent_date', _order_date)
                 log(f"📋 관리자 제출 완료 ({len(_admin_items)}종 / {fmt(int(total_cost))}원)")
         except Exception as _ae:
-            log(f"⚠️ 관리자 제출 실패(계속 진행): {_ae}")
+            # 여기서 실패하면 관리자 페이지에 그 사용자 목록이 통째로 안 뜬다.
+            # 조용한 ⚠️ 로 두면 며칠 지나서야 발견되므로 ❌ 로 남긴다.
+            log(f"❌ 관리자 제출 실패 (재시도 후에도 실패 — 관리자 페이지에 목록 누락): {_ae}")
 
     except Exception as e:
         import traceback

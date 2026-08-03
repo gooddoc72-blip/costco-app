@@ -7,11 +7,11 @@ import json
 import sqlite3
 from datetime import datetime
 
-from db_core import AUTH_DB
+from db_core import AUTH_DB, get_auth_db, retry_on_lock
 
 
 def _ensure_table():
-    conn = sqlite3.connect(AUTH_DB)
+    conn = get_auth_db()
     conn.execute("""CREATE TABLE IF NOT EXISTS shopping_list_submissions (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         username TEXT NOT NULL,
@@ -29,32 +29,42 @@ def _ensure_table():
 
 def submit_shopping_list(username: str, order_date: str, items: list,
                          total_items: int = 0, total_amount: int = 0) -> int:
-    """장보기 목록 스냅샷 저장. 같은 (username, order_date)에 기존 있으면 덮어씀."""
+    """장보기 목록 스냅샷 저장. 같은 (username, order_date)에 기존 있으면 덮어씀.
+
+    ⚠️ 12시 크론 동시실행 구간에서 auth.db 잠금으로 통째로 실패한 적이 있다
+       (관리자 페이지에 그 사용자 목록이 아예 안 뜸). 잠금은 재시도로 넘긴다.
+    """
     _ensure_table()
-    conn = sqlite3.connect(AUTH_DB)
-    # 기존 동일 사용자×날짜 삭제 (재제출 시 덮어쓰기)
-    conn.execute(
-        "DELETE FROM shopping_list_submissions WHERE username=? AND order_date=?",
-        (username, order_date)
-    )
-    cur = conn.execute(
-        """INSERT INTO shopping_list_submissions
-           (username, order_date, submitted_at, total_items, total_amount, items_json)
-           VALUES (?, ?, ?, ?, ?, ?)""",
-        (username, order_date, datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-         int(total_items), int(total_amount),
-         json.dumps(items, ensure_ascii=False))
-    )
-    sid = cur.lastrowid
-    conn.commit()
-    conn.close()
-    return sid
+
+    def _write():
+        conn = get_auth_db()
+        try:
+            # 기존 동일 사용자×날짜 삭제 (재제출 시 덮어쓰기) + INSERT를 한 트랜잭션으로
+            conn.execute(
+                "DELETE FROM shopping_list_submissions WHERE username=? AND order_date=?",
+                (username, order_date)
+            )
+            cur = conn.execute(
+                """INSERT INTO shopping_list_submissions
+                   (username, order_date, submitted_at, total_items, total_amount, items_json)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (username, order_date, datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                 int(total_items), int(total_amount),
+                 json.dumps(items, ensure_ascii=False))
+            )
+            sid = cur.lastrowid
+            conn.commit()
+            return sid
+        finally:
+            conn.close()
+
+    return retry_on_lock(_write)
 
 
 def get_recent_shopping_submissions(limit: int = 50, username: str = None) -> list:
     """최근 제출 목록. username 지정 시 해당 사용자만."""
     _ensure_table()
-    conn = sqlite3.connect(AUTH_DB)
+    conn = get_auth_db()
     conn.row_factory = sqlite3.Row
     if username:
         rows = conn.execute(
@@ -80,7 +90,7 @@ def get_shopping_submissions_range(date_from: str, date_to: str) -> list:
     order_count = items_json 각 항목의 '주문건수' 합계. 같은 (user,date)는 제출이 이미 덮어써서 1행.
     """
     _ensure_table()
-    conn = sqlite3.connect(AUTH_DB)
+    conn = get_auth_db()
     conn.row_factory = sqlite3.Row
     rows = conn.execute(
         """SELECT username, order_date, total_items, total_amount, items_json
@@ -110,7 +120,7 @@ def get_shopping_submissions_range(date_from: str, date_to: str) -> list:
 
 def delete_shopping_submission(submission_id: int) -> bool:
     _ensure_table()
-    conn = sqlite3.connect(AUTH_DB)
+    conn = get_auth_db()
     cur = conn.execute(
         "DELETE FROM shopping_list_submissions WHERE id=?", (int(submission_id),)
     )
