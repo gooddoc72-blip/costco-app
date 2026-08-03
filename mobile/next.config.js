@@ -11,8 +11,12 @@ const nextConfig = {
   reactStrictMode: true,
   basePath: BASE_PATH || undefined,
   env: { NEXT_PUBLIC_BASE_PATH: BASE_PATH },
-  // SQLite native module을 server bundle에 포함
-  serverExternalPackages: ['better-sqlite3', 'bcrypt'],
+  // SQLite/bcrypt 네이티브 모듈은 번들에 넣지 않고 런타임 require로 넘긴다.
+  // ⚠️ Next 14 키 이름은 experimental.serverComponentsExternalPackages.
+  //    (serverExternalPackages는 Next 15부터 — 14에서는 무시돼 빌드가 깨졌다)
+  experimental: {
+    serverComponentsExternalPackages: ['better-sqlite3', 'bcrypt'],
+  },
   // PWA 헤더
   async headers() {
     return [
