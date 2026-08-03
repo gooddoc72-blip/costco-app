@@ -33,6 +33,22 @@ export function getCurrentUser(): string | null {
   return getSessionUsername(token);
 }
 
+export interface SessionUser {
+  username: string;
+}
+
+/**
+ * 현재 로그인 사용자 (API 라우트용). 미로그인이면 null.
+ *
+ * 라우트 25곳이 `const user = await getSessionUser()` 형태로 쓰는데 정작
+ * 이 함수가 없어서 앱 전체가 컴파일되지 않았다. 호출부가 전부 await를 쓰므로
+ * 시그니처를 async로 맞춘다(내부는 동기라 즉시 resolve).
+ */
+export async function getSessionUser(): Promise<SessionUser | null> {
+  const username = getCurrentUser();
+  return username ? { username } : null;
+}
+
 export function createSession(username: string, days = 30): string {
   const token = crypto.randomBytes(32).toString('base64url');
   const now = new Date();
