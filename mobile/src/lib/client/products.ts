@@ -1,3 +1,4 @@
+import { withBase } from '@/lib/basePath';
 import type { ProductRow } from '@/lib/services/products';
 
 export type { ProductRow };
@@ -14,7 +15,7 @@ export async function patchProduct(
   id: number,
   fields: { unitPrice?: number; splitQty?: number; matchKeyword?: string; costcoName?: string }
 ): Promise<{ saved: boolean }> {
-  const res = await fetch(`/api/products/${id}`, {
+  const res = await fetch(withBase(`/api/products/${id}`), {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(fields),
@@ -25,14 +26,14 @@ export async function patchProduct(
 }
 
 export async function deleteProductRequest(id: number): Promise<{ deleted: boolean }> {
-  const res = await fetch(`/api/products/${id}`, { method: 'DELETE' });
+  const res = await fetch(withBase(`/api/products/${id}`), { method: 'DELETE' });
   const json = await res.json();
   if (!res.ok) throw new Error(json.error || '삭제 실패');
   return json;
 }
 
 export async function unlockProduct(id: number): Promise<{ unlocked: boolean }> {
-  const res = await fetch(`/api/products/${id}/unlock`, { method: 'POST' });
+  const res = await fetch(withBase(`/api/products/${id}/unlock`), { method: 'POST' });
   const json = await res.json();
   if (!res.ok) throw new Error(json.error || '해제 실패');
   return json;

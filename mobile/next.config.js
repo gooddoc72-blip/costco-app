@@ -1,6 +1,16 @@
+/**
+ * basePath — 기존 사이트(/app Streamlit, /api FastAPI, /calc 정적앱)와 충돌하지 않도록
+ * 모바일 앱은 하위 경로에 격리 배포한다. 기본 '/m'.
+ * ⚠️ 직접 쓴 절대경로(fetch('/api/...'), location.href)는 src/lib/basePath.ts의
+ *    withBase()를 반드시 거칠 것 — Next는 그런 문자열엔 basePath를 안 붙인다.
+ */
+const BASE_PATH = process.env.NEXT_PUBLIC_BASE_PATH ?? '/m';
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
+  basePath: BASE_PATH || undefined,
+  env: { NEXT_PUBLIC_BASE_PATH: BASE_PATH },
   // SQLite native module을 server bundle에 포함
   serverExternalPackages: ['better-sqlite3', 'bcrypt'],
   // PWA 헤더

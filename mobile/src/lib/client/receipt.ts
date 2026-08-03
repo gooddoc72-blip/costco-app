@@ -1,3 +1,4 @@
+import { withBase } from '@/lib/basePath';
 import type { ReceiptItem, ParseSummary, ApplyResult } from '@/lib/services/receipt';
 
 export type { ReceiptItem, ParseSummary, ApplyResult };
@@ -5,7 +6,7 @@ export type { ReceiptItem, ParseSummary, ApplyResult };
 export async function parseReceipts(files: File[]): Promise<ParseSummary> {
   const fd = new FormData();
   for (const f of files) fd.append('files', f);
-  const res = await fetch('/api/receipt/parse', { method: 'POST', body: fd });
+  const res = await fetch(withBase('/api/receipt/parse'), { method: 'POST', body: fd });
   const json = await res.json();
   if (!res.ok) throw new Error(json.error || '파싱 실패');
   return json;
@@ -45,14 +46,14 @@ export async function parseReceiptPhotos(files: File[]): Promise<PhotoParseSumma
     const blob = await shrinkForAi(f);
     fd.append('files', blob, f.name || 'receipt.jpg');
   }
-  const res = await fetch('/api/receipt/parse-photo', { method: 'POST', body: fd });
+  const res = await fetch(withBase('/api/receipt/parse-photo'), { method: 'POST', body: fd });
   const json = await res.json();
   if (!res.ok) throw new Error(json.error || '판독 실패');
   return json;
 }
 
 export async function applyReceipts(items: ReceiptItem[]): Promise<ApplyResult> {
-  const res = await fetch('/api/receipt/apply', {
+  const res = await fetch(withBase('/api/receipt/apply'), {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ items }),
   });

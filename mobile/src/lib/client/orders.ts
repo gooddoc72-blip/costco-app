@@ -1,3 +1,4 @@
+import { withBase } from '@/lib/basePath';
 import type { NormalizedOrder, Platform } from '@/lib/services/orders';
 
 export interface CollectResponse {
@@ -18,7 +19,7 @@ export interface CollectParams {
 }
 
 export async function collectOrders(params: CollectParams): Promise<CollectResponse> {
-  const res = await fetch('/api/orders/collect', {
+  const res = await fetch(withBase('/api/orders/collect'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(params),

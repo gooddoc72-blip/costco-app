@@ -1,3 +1,4 @@
+import { withBase } from '@/lib/basePath';
 export interface TrackingLogItem {
   orderNo: string;
   trackingNo?: string;
@@ -8,7 +9,7 @@ export interface TrackingLogItem {
 export async function postTrackingLog(
   items: TrackingLogItem[], dispatchDate: string
 ): Promise<{ saved: number; errors: string[] }> {
-  const res = await fetch('/api/tracking/log', {
+  const res = await fetch(withBase('/api/tracking/log'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ items, dispatchDate }),

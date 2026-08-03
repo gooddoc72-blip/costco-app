@@ -1,5 +1,6 @@
+import { withBase } from '@/lib/basePath';
 export async function runMigration(action: string): Promise<{ ok: boolean; results: any }> {
-  const res = await fetch('/api/admin/migrate', {
+  const res = await fetch(withBase('/api/admin/migrate'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ action }),
