@@ -1007,6 +1007,65 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             from pages_lib.profit_calc.save import save_price_db
             save_price_db(df, USERNAME, calc_date_str, shipping_cost, box_cost, _preload_user, invalidate_data_cache)
 
+        # ── 🔗 소분·코스트코번호 없는 건 — 네이버 상품번호로 식별해 저장 ──────
+        #    위 버튼은 코스트코 상품번호 기준이라, 소분 판매나 코스트코번호가
+        #    아직 안 붙은 상품은 저장 대상에서 빠지거나 엉뚱한 레코드에 붙었다.
+        with st.expander("🔗 소분·코스트코번호 없는 상품 — 네이버 상품번호로 제품가격 DB 저장",
+                         expanded=False):
+            from pages_lib.profit_calc.price_apply import build_row_updates
+            import re as _re_sf
+
+            def _sf_of(_nm):
+                _m = _re_sf.search(r'x\s*(\d+)\s*개', str(_nm or ''), _re_sf.IGNORECASE)
+                _v = int(_m.group(1)) if _m else 1
+                return _v if 1 < _v <= 50 else 1
+
+            _all_rows = df.to_dict('records')
+            # 대상 = 코스트코번호가 없거나 소분(÷N) 상품
+            _target_rows = [r for r in _all_rows
+                            if not str(r.get('매칭상품번호', '') or '').strip()
+                            or int(r.get('소분단위', 1) or 1) > 1]
+            if not _target_rows:
+                st.caption("해당 상품이 없습니다 (모두 코스트코 상품번호로 매칭됨).")
+            else:
+                _rw_up, _rw_skip = build_row_updates(_target_rows, _preload_user or [],
+                                                     sell_factor_fn=_sf_of)
+                st.caption(f"대상 {len(_target_rows)}건 중 반영할 변경 {len(_rw_up)}건"
+                           + (f" · 제외 {len(_rw_skip)}건" if _rw_skip else "")
+                           + "  ·  화면 구입가를 1팩 단가로 환산해 저장합니다"
+                             "(구입가 × 소분수 ÷ (수량 × 묶음수)).")
+                if _rw_up:
+                    st.dataframe(pd.DataFrame([{
+                        '상품명': u['product_name'][:34],
+                        '코스트코번호': u['costco_no'] or '—',
+                        '네이버번호': u['naver_origin'] or '—',
+                        '소분': u['split_qty'], '기존단가': u['old_price'],
+                        '새단가': u['new_price'], '식별': u['by'],
+                    } for u in _rw_up]), use_container_width=True, hide_index=True)
+                    if st.button(f"💾 네이버번호 기준으로 제품가격 DB 저장 ({len(_rw_up)}건)",
+                                 key="apply_naver_price", type="primary",
+                                 use_container_width=True):
+                        _n2 = 0
+                        for u in _rw_up:
+                            try:
+                                upsert_product(USERNAME, u['keyword'], u['keyword'], u['new_price'],
+                                               product_no=u['costco_no'], split_qty=u['split_qty'],
+                                               naver_origin_pno=u['naver_origin'],
+                                               auto_split_costco_no=False, manual=True)
+                                _n2 += 1
+                            except Exception as _ue2:
+                                st.warning(f"⚠️ {u['product_name'][:20]}: {_ue2}")
+                        invalidate_data_cache()
+                        st.session_state.pop('_pcalc_match_cache', None)
+                        st.session_state.pop(f"_do_restored_{calc_date_str}", None)
+                        st.session_state['_profit_save_toast'] = (
+                            f"✅ 네이버번호 기준 {_n2}건을 제품가격 DB에 저장했습니다.")
+                        st.rerun()
+                if _rw_skip:
+                    with st.expander(f"⚠️ 제외된 {len(_rw_skip)}건 — 사유", expanded=False):
+                        for _s2 in _rw_skip[:30]:
+                            st.caption(f"· {_s2['product_name'][:34]} — {_s2['reason']}")
+
         # ── 페이지 네비게이션 ──
         if _total_pages > 1:
             _pnav_cols = st.columns([1, 1, 2, 1, 1])
@@ -1062,6 +1121,54 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         with st.expander(_rcpt_label, expanded=not _rcpt_loaded):
             from pages_lib import receipt_page as _rcpt_pg
             _rcpt_pg.render(USERNAME, IS_ADMIN, settings, embedded=True, order_date=calc_date_str)
+
+            # ── 💾 영수증 실단가 → 제품가격 DB 반영 ──────────────────
+            #    예전엔 영수증을 올려도 화면 표시만 보정되고 원가는 그대로였다.
+            #    (표에서 단가를 손으로 다시 쳐야 저장됐음)
+            _rc_now = st.session_state.get('receipt_items') or []
+            if _rc_now:
+                from pages_lib.profit_calc.price_apply import build_receipt_updates
+                _rc_by_pno = {}
+                for _ri in _rc_now:
+                    _rp = str(_ri.get('상품번호', '') or '').strip()
+                    if _rp and _rp not in _rc_by_pno:
+                        _rc_by_pno[_rp] = _ri
+                _rc_rows = df.to_dict('records')
+                _rc_up, _rc_skip = build_receipt_updates(_rc_rows, _rc_by_pno, _preload_user or [])
+                st.divider()
+                st.markdown("##### 💾 영수증 단가를 제품가격 DB에 반영")
+                if not _rc_up:
+                    st.caption("반영할 변경 없음 (이미 같은 단가이거나 매칭된 영수증 항목이 없습니다)."
+                               + (f" 제외 {len(_rc_skip)}건" if _rc_skip else ""))
+                else:
+                    st.dataframe(pd.DataFrame([{
+                        '상품명': u['product_name'][:34], '영수증명': u['receipt_name'][:24],
+                        '코스트코번호': u['costco_no'], '기존단가': u['old_price'],
+                        '영수증단가': u['new_price'], '식별': u['by'],
+                    } for u in _rc_up]), use_container_width=True, hide_index=True)
+                    if st.button(f"💾 영수증 단가로 제품가격 DB 저장 ({len(_rc_up)}건)",
+                                 key="apply_receipt_price", type="primary",
+                                 use_container_width=True):
+                        _n_ok = 0
+                        for u in _rc_up:
+                            try:
+                                upsert_product(USERNAME, u['keyword'], u['keyword'], u['new_price'],
+                                               product_no=u['costco_no'], split_qty=u['split_qty'],
+                                               naver_origin_pno=u['naver_origin'],
+                                               auto_split_costco_no=False, manual=True)
+                                _n_ok += 1
+                            except Exception as _ue:
+                                st.warning(f"⚠️ {u['product_name'][:20]}: {_ue}")
+                        invalidate_data_cache()
+                        st.session_state.pop('_pcalc_match_cache', None)
+                        st.session_state.pop(f"_do_restored_{calc_date_str}", None)
+                        st.session_state['_profit_save_toast'] = (
+                            f"✅ 영수증 단가 {_n_ok}건을 제품가격 DB에 저장했습니다.")
+                        st.rerun()
+                if _rc_skip:
+                    with st.expander(f"⚠️ 제외된 {len(_rc_skip)}건 — 사유", expanded=False):
+                        for _s in _rc_skip[:30]:
+                            st.caption(f"· {_s['product_name'][:34]} — {_s['reason']}")
 
         st.divider()
         if st.button("💾 정산 데이터 저장", type="primary"):
