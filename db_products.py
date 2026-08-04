@@ -58,7 +58,16 @@ def _upsert_shared_internal(costco_name, keyword, store_price=None, online_price
         if store_price is not None:
             new_unit, new_pt = new_store, '매장'
         elif online_price is not None:
-            new_unit, new_pt = new_online, '온라인'
+            # ⚠️ 온라인가로 원가(unit_price)를 덮지 않는다.
+            #   unit_price는 수익계산·장보기·구매내역정산이 쓰는 '매장 실단가'다.
+            #   코스트코 온라인몰가는 묶음/카톤 단위라 매장가와 자릿수가 다르고
+            #   (블루베리 매장 9,990 vs 온라인 3,299,000) 매일 바뀌어서,
+            #   덮어쓰면 과거 날짜 수익계산의 구입가격까지 매일 요동친다.
+            #   매장가가 없을 때만 온라인가를 임시 원가로 쓴다.
+            if new_store > 0:
+                new_unit, new_pt = new_store, '매장'
+            else:
+                new_unit, new_pt = new_online, '온라인'
         else:
             new_unit, new_pt = existing['unit_price'] or 0, existing['price_type'] or '매장'
         conn.execute("""UPDATE shared_products

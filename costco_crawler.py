@@ -908,16 +908,24 @@ def save_to_shared_products(
 
             if existing:
                 # 크롤러 → 온라인가만 갱신 (매장가 보존)
+                # ⚠️ 매장 실단가(store_price)가 있으면 unit_price·price_type을 건드리지 않는다.
+                #    예전엔 무조건 온라인가로 덮어써서, 매일 09시 크롤링마다
+                #    과거 수익계산의 구입가격이 통째로 바뀌었다
+                #    (블루베리 매장 9,990 → 온라인 3,299,000).
                 conn.execute(
                     """UPDATE shared_products
-                       SET costco_name=?, unit_price=?, product_no=?,
-                           updated_by=?, updated_at=?, price_type='온라인',
+                       SET costco_name=?, product_no=?,
+                           updated_by=?, updated_at=?,
                            image_url=?, local_image=?, category=?,
-                           online_price=?, online_updated_at=?
+                           online_price=?, online_updated_at=?,
+                           unit_price = CASE WHEN COALESCE(store_price, 0) > 0
+                                             THEN unit_price ELSE ? END,
+                           price_type = CASE WHEN COALESCE(store_price, 0) > 0
+                                             THEN price_type ELSE '온라인' END
                        WHERE id=?""",
-                    (name, p["price"], product_no, updated_by, now,
+                    (name, product_no, updated_by, now,
                      image_url, local_image, category,
-                     p["price"], now, existing[0])
+                     p["price"], now, p["price"], existing[0])
                 )
                 updated += 1
             else:
