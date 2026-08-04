@@ -167,7 +167,7 @@ def _persist_receipt_items(username: str, items: list):
         return 0, 0
 
 
-def _render_photo_receipt(USERNAME: str, settings: dict):
+def _render_photo_receipt(USERNAME: str, settings: dict, compact: bool = False):
     """📱 휴대폰 영수증 사진 → AI 파싱 → 매입 장부 저장 → 엑셀(재고관리용).
 
     수집 항목: 구매일자 · 구매매장명(코스트코/트레이더스) · 구매수량 · 구매금액 ·
@@ -177,7 +177,10 @@ def _render_photo_receipt(USERNAME: str, settings: dict):
                     get_purchase_items_range, delete_purchase, STORE_TYPES)
     import ai_service
 
-    st.subheader("📱 영수증 사진 업로드 (휴대폰 촬영)")
+    if compact:
+        st.markdown("##### 📱 영수증 사진 촬영/업로드 (휴대폰)")
+    else:
+        st.subheader("📱 영수증 사진 업로드 (휴대폰 촬영)")
     st.caption("구매일자 · 매장(코스트코/트레이더스) · 구매수량 · 구매금액 · 할인금액 · "
                "카드 끝4자리 · 현금영수증 승인번호를 AI가 읽어 매입 장부에 저장합니다.")
 
@@ -341,6 +344,9 @@ def _render_photo_receipt(USERNAME: str, settings: dict):
                 st.rerun()
 
     # ── 매입 장부 (저장된 영수증) + 엑셀 ──
+    if compact:
+        st.caption("📒 매입 장부·엑셀은 좌측 '영수증' 탭에서 확인할 수 있습니다.")
+        return
     st.markdown("##### 📒 매입 영수증 장부")
     _t = datetime.now()
     _lc1, _lc2, _lc3 = st.columns([1, 1, 1.4])
@@ -405,6 +411,11 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict, embedded: bool = False
     if not embedded:
         st.header("🧾 코스트코 영수증 등록")
         _render_photo_receipt(USERNAME, settings)
+        st.divider()
+    else:
+        # 수익계산 안에서도 휴대폰 촬영이 되게 (예전엔 PDF만 떠서
+        #  폰으로 영수증을 올릴 방법이 없었다). 매입 장부 목록은 생략.
+        _render_photo_receipt(USERNAME, settings, compact=True)
         st.divider()
 
     st.subheader("📄 영수증 PDF 업로드 (여러 파일 동시 등록 가능)")
