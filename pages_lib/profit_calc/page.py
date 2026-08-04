@@ -232,9 +232,23 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         if '상품명' in df.columns and '수취인명' in df.columns:
             df = df.sort_values(['상품명', '수취인명'], kind='stable')
         receipt_items = st.session_state.get('receipt_items', [])
+        # 세션에 없으면 DB에서 로드 — 영수증은 등록한 세션에서만 살아 있어서,
+        # 페이지를 다시 들어오면 매칭이 통째로 빠지고 있었다.
+        if not receipt_items:
+            try:
+                receipt_items = get_recent_receipt_items(USERNAME, days=90) or []
+                if receipt_items:
+                    st.session_state['receipt_items'] = receipt_items
+            except Exception as _rle:
+                receipt_items = []
+                st.caption(f"⚠️ 영수증 불러오기 실패: {_rle}")
         # 영수증이 없어도 daily_orders 가 있으면 정산표 표시 (영수증 매칭 enrichment만 비활성)
         if not receipt_items:
-            st.caption("💡 영수증 PDF 업로드 시 영수증 매칭 기반 매입가 보정이 추가됩니다 (선택사항).")
+            st.caption("💡 영수증(사진·PDF)을 등록하면 영수증 실단가로 매입가가 보정됩니다 (선택사항).")
+        else:
+            _rc_dates = sorted({str(it.get('receipt_date', '') or '') for it in receipt_items if it.get('receipt_date')})
+            st.caption(f"🧾 영수증 {len(receipt_items)}품목 매칭 대상"
+                       + (f" (최근 {_rc_dates[-1]})" if _rc_dates else ""))
         unique_products = df['상품명'].unique().tolist()
 
         # ── 정산 저장 데이터 복원 (세션 첫 진입 시 profit_settlements → session_state) ──

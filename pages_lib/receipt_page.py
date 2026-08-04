@@ -148,6 +148,25 @@ def _receipt_ledger_excel(rows: list, items: list) -> bytes:
     return _buf.getvalue()
 
 
+def _persist_receipt_items(username: str, items: list):
+    """영수증 품목을 DB(receipt_items)에 저장 — 수익계산의 영수증 매칭 입력.
+
+    이 테이블이 비어 있으면 수익계산은 영수증을 하나도 못 쓴다
+    (compute는 receipt_by_pno/receipt_matches를 이 데이터로 만든다).
+    실패해도 화면 흐름은 끊지 않는다 — 저장은 부가 작업.
+    """
+    _rows = [it for it in (items or [])
+             if str(it.get('상품명', '') or '').strip()
+             and str(it.get('receipt_date', '') or '').strip()]
+    if not _rows:
+        return 0, 0
+    try:
+        return save_receipt_items(username, _rows)
+    except Exception as _e:
+        st.caption(f"⚠️ 영수증 DB 저장 실패(화면 표시는 정상): {_e}")
+        return 0, 0
+
+
 def _render_photo_receipt(USERNAME: str, settings: dict):
     """📱 휴대폰 영수증 사진 → AI 파싱 → 매입 장부 저장 → 엑셀(재고관리용).
 
@@ -309,6 +328,8 @@ def _render_photo_receipt(USERNAME: str, settings: dict):
                                 {"상품명": it['상품명'], "수량": it['수량'], "단가": it['단가'],
                                  "상품번호": it.get('상품번호', ''), "receipt_date": _date}
                                 for it in _items if it.get('단가')]
+                            # 사진 영수증도 수익계산이 쓸 수 있게 DB에 남긴다
+                            _persist_receipt_items(USERNAME, st.session_state['receipt_items'])
                         _cache[_sig] = {'_done': True, '_name': _d.get('_name', '')}
                         st.success(f"✅ {'저장' if _new else '갱신'} 완료 — {_date} {_stype} "
                                    f"{_amt:,}원 (품목 {len(_items)}종)")
@@ -451,6 +472,9 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict, embedded: bool = False
                  "상품번호": p.get('상품번호', ''), "receipt_date": p.get('receipt_date', '')}
                 for p in deduped
             ]
+            # 💾 DB에도 영속화 — 예전엔 세션에만 담아서, 페이지를 다시 들어오면
+            #    영수증이 사라지고 수익계산의 영수증 매칭이 통째로 안 됐다.
+            _persist_receipt_items(USERNAME, st.session_state['receipt_items'])
 
             # 🌐 관리자 업로드 → 영수증 가격을 공유DB에 자동 저장 (모든 사용자 수익계산에 반영).
             #    코스트코 상품번호 있는 항목만. 소분(번호 없음)은 각자 DB로 매칭되므로 제외.
