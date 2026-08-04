@@ -943,9 +943,10 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                 _online = int(p.get('unit_price') or 0)
                             else:
                                 _store = int(p.get('unit_price') or 0)
-                        # 온라인 가격이 있으면 매장가는 숨김 (사용자 요청: 온라인 등록 상품은 온라인 가격만)
-                        if _online > 0:
-                            _store = 0
+                        # ⚠️ 예전엔 온라인가가 있으면 매장가를 숨겼는데, 크롤러가 거의 모든 상품에
+                        #    온라인가를 채우면서 정작 '구입가격'(매장 실단가)이 화면에서 사라졌다.
+                        #    매장가는 수익계산·장보기·구매내역정산이 쓰는 원가라 항상 보여야 한다.
+                        #    (열은 매장가🔒 / 온라인가🔒 로 이미 분리돼 있어 나란히 표시된다)
                         store_disp  = (f"<span style='font-weight:600;color:#2e7d32'>{fmt(_store)}원</span>"
                                        if _store > 0 else "<span style='color:#ccc'>—</span>")
                         online_disp = (f"<span style='font-weight:600;color:#1565c0'>🌐 {fmt(_online)}원</span>"
