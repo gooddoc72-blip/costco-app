@@ -229,7 +229,8 @@ def _persist_receipt_items(username: str, items: list):
         return 0, 0
 
 
-def _render_photo_receipt(USERNAME: str, settings: dict, compact: bool = False):
+def _render_photo_receipt(USERNAME: str, settings: dict, compact: bool = False,
+                          is_admin: bool = False):
     """📱 휴대폰 영수증 사진 → AI 파싱 → 매입 장부 저장 → 엑셀(재고관리용).
 
     수집 항목: 구매일자 · 구매매장명(코스트코/트레이더스) · 구매수량 · 구매금액 ·
@@ -410,6 +411,34 @@ def _render_photo_receipt(USERNAME: str, settings: dict, compact: bool = False):
                                 for it in _items if it.get('단가')]
                             # 사진 영수증도 수익계산이 쓸 수 있게 DB에 남긴다
                             _persist_receipt_items(USERNAME, st.session_state['receipt_items'])
+                            # 🌐 관리자 영수증 = 실단가 최종권위 → 공유DB 매입가에 반영.
+                            #    이게 있어야 각 사용자의 '구매금액 정산'과 수익계산 구입가가
+                            #    영수증 실단가로 잡힌다. (예전엔 PDF 경로에만 있었다)
+                            if is_admin:
+                                _sh_ok, _sh_skip = 0, 0
+                                for _sit in _items:
+                                    _spno = str(_sit.get('상품번호', '') or '').strip()
+                                    try:
+                                        _spr = int(float(_sit.get('단가') or 0))
+                                    except (TypeError, ValueError):
+                                        _spr = 0
+                                    if not _spno or _spr <= 0:
+                                        _sh_skip += 1
+                                        continue
+                                    try:
+                                        upsert_shared_store_price(
+                                            costco_name=_sit.get('상품명', ''),
+                                            keyword=_sit.get('상품명', ''),
+                                            price=_spr, product_no=_spno,
+                                            updated_by=USERNAME, receipt_date=_date,
+                                            force_store=True)
+                                        _sh_ok += 1
+                                    except Exception:
+                                        _sh_skip += 1
+                                if _sh_ok:
+                                    st.info(f"🌐 공유DB 매입가 {_sh_ok}건 반영 — 각 사용자 구매금액 정산·"
+                                            f"수익계산에 이 실단가가 적용됩니다."
+                                            + (f" (상품번호 없어 제외 {_sh_skip}건)" if _sh_skip else ""))
                         _cache[_sig] = {'_done': True, '_name': _d.get('_name', '')}
                         st.success(f"✅ {'저장' if _new else '갱신'} 완료 — {_date} {_stype} "
                                    f"{_amt:,}원 (품목 {len(_items)}종)")
@@ -487,12 +516,12 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict, embedded: bool = False
 
     if not embedded:
         st.header("🧾 코스트코 영수증 등록")
-        _render_photo_receipt(USERNAME, settings)
+        _render_photo_receipt(USERNAME, settings, is_admin=IS_ADMIN)
         st.divider()
     else:
         # 수익계산 안에서도 휴대폰 촬영이 되게 (예전엔 PDF만 떠서
         #  폰으로 영수증을 올릴 방법이 없었다). 매입 장부 목록은 생략.
-        _render_photo_receipt(USERNAME, settings, compact=True)
+        _render_photo_receipt(USERNAME, settings, compact=True, is_admin=IS_ADMIN)
         st.divider()
 
     st.subheader("📄 영수증 PDF 업로드 (여러 파일 동시 등록 가능)")
