@@ -633,7 +633,14 @@ _RECEIPT_SYSTEM = (
     '"items":[{"product_no":"상품번호","name":"상품명","qty":정수,"unit_price":정수,'
     '"amount":정수,"discount":정수}]}\n'
     "규칙:\n"
-    "- purchase_date: 영수증의 거래일자. 2자리 연도는 20xx로. 안 보이면 ''.\n"
+    "- purchase_date: **영수증 하단/상단의 '거래일시'(결제한 날짜)**. 2자리 연도는 20xx로. 안 보이면 ''.\n"
+    "  ⚠️ 회원카드 만료일(유효기간·만료일·EXPIRE·MEMBER EXP 등)을 구매일자로 쓰면 절대 안 된다. "
+    "미래 날짜는 거래일자가 아니다. 거래일시와 만료일이 함께 보이면 **과거/오늘 날짜 쪽**을 쓴다.\n"
+    "- 할인 표기: 코스트코 영수증은 할인 줄이 금액 앞이나 뒤에 '-'(마이너스)로 찍힌다. "
+    "'-3,000' 또는 '3,000-'는 **3000원 할인**이라는 뜻이다. 부호를 반드시 인식할 것.\n"
+    "  · 할인 줄(쿠폰/즉시할인/DISCOUNT/세일)은 **items에 별도 품목으로 넣지 말고**, "
+    "바로 위 품목의 discount에 양수로 넣는다. 어느 품목인지 모르면 discount_amount에 합산한다.\n"
+    "  · 그래서 item_kinds(품목 종수)와 total_qty(총수량)에도 할인 줄은 세지 않는다.\n"
     "- store_type: 로고/상호에 COSTCO·코스트코면 '코스트코', TRADERS·트레이더스면 '트레이더스'. "
     "판단 불가면 ''.\n"
     "- store_name: '코스트코 상봉점'처럼 매장명+지점. 지점 안 보이면 매장명만.\n"
@@ -678,32 +685,54 @@ def _parse_receipt_json(txt):
     elif "코스트코" in _store or "COSTCO" in _store.upper():
         _store = "코스트코"
 
+    # 할인 줄을 품목으로 잘못 읽는 경우가 잦다(코스트코 영수증은 '-3,000' 형태).
+    #   → 품목에서 빼고 할인으로 돌린다. 안 그러면 품목합·수량·종수가 전부 부풀어
+    #     자가검증이 매번 불일치로 뜬다.
+    _DISCOUNT_WORDS = ('할인', '쿠폰', '세일', 'DISCOUNT', 'COUPON', 'SALE', 'SAVING', '즉시')
     _items = []
+    _extra_discount = 0
     for _it in (_d.get("items") or []):
         _name = str(_it.get("name", "") or "").strip()
         if not _name:
             continue
         _q = _num(_it.get("qty")) or 1
         _up = _num(_it.get("unit_price"))
+        _amt = _num(_it.get("amount")) or _q * _up
+        _upper = _name.upper()
+        _is_disc = (any(_w in _name or _w in _upper for _w in _DISCOUNT_WORDS)
+                    or _amt < 0 or _up < 0)
+        if _is_disc:
+            _extra_discount += abs(_amt) or abs(_up) * max(1, _q)
+            continue
         _items.append({
             "상품번호": "".join(ch for ch in str(_it.get("product_no", "") or "") if ch.isdigit()),
             "상품명": _name,
             "수량": _q,
             "단가": _up,
-            "금액": _num(_it.get("amount")) or _q * _up,
-            "할인": _num(_it.get("discount")),
+            "금액": _amt,
+            "할인": abs(_num(_it.get("discount"))),
         })
 
     _date = str(_d.get("purchase_date", "") or "").strip()[:10]
+    # 회원카드 만료일을 구매일자로 읽는 사고가 잦다(예: 2027-02-01).
+    #   구매일자는 미래일 수 없으므로 오늘로 바로잡고, 검증 경고로 알린다.
+    _date_note = ''
+    try:
+        if _date and datetime.strptime(_date, "%Y-%m-%d") > datetime.now() + timedelta(days=1):
+            _date_note = _date
+            _date = datetime.now().strftime("%Y-%m-%d")
+    except ValueError:
+        pass
     return {
         "purchase_date": _date,
+        "_date_fixed_from": _date_note,   # 만료일을 읽었던 원본값 (있으면 검증에서 알림)
         "purchase_time": str(_d.get("purchase_time", "") or "").strip()[:5],
         "store_type": _store,
         "store_name": str(_d.get("store_name", "") or "").strip(),
         "total_qty": _num(_d.get("total_qty")) or sum(i["수량"] for i in _items),
         "item_kinds": _num(_d.get("item_kinds")) or len(_items),
         "total_amount": _num(_d.get("total_amount")),
-        "discount_amount": abs(_num(_d.get("discount_amount"))),
+        "discount_amount": abs(_num(_d.get("discount_amount"))) + _extra_discount,
         "card_last4": "".join(ch for ch in str(_d.get("card_last4", "") or "")
                               if ch.isdigit())[-4:],
         "cash_receipt_no": "".join(ch for ch in str(_d.get("cash_receipt_no", "") or "")
@@ -763,6 +792,11 @@ def validate_receipt(data, tolerance=1):
         if _q and _u and _a and abs(_q * _u - _a) > tolerance:
             _issues.append(f"'{str(_i.get('상품명', ''))[:16]}' "
                            f"단가×수량({_q * _u:,}) ≠ 금액({_a:,})")
+
+    _fixed_from = str(data.get("_date_fixed_from") or "")
+    if _fixed_from:
+        _issues.append(f"구매일자를 미래({_fixed_from})로 읽어 오늘로 바로잡음 "
+                       f"— 회원카드 만료일을 읽었을 수 있으니 날짜를 확인하세요")
 
     _dt_s = str(data.get("purchase_date") or "")
     if not _re.match(r"^\d{4}-\d{2}-\d{2}$", _dt_s):
