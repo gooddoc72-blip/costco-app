@@ -228,22 +228,87 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             _tab_cam, _tab_scan = st.tabs(["📷 사진/카메라 판독", "⌨ 바코드/번호 입력"])
 
             with _tab_cam:
-                _pt_key = _gs('anthropic_api_key')
-                _pt_gkey = _gs('gemini_api_key')   # Gemini 우선 판독(비용↓) → 의심 시 Claude 재판독
+                import ai_service as _ai_pt
+                # AI 키는 공유 인프라 — 전역(공용) → 본인 → 타 계정 순 폴백
+                _pt_key, _pt_gkey = _ai_pt.get_ai_keys(settings)
                 if not (_pt_key or _pt_gkey):
                     st.info("사진 판독은 설정 탭 > 🤖 AI 설정에 Anthropic 또는 Gemini 키가 필요합니다.")
                 else:
-                    _pt_img = st.file_uploader("가격표 사진 (모바일은 파일선택 시 '촬영' 가능)", key="pt_up")
-                    if _pt_img is not None and st.button("🔎 가격표 판독", key="pt_read", type="primary"):
-                        import ai_service
-                        _b = _pt_img.getvalue(); _mt = getattr(_pt_img, 'type', None) or 'image/jpeg'
-                        with st.spinner("가격표 판독 중..."):
-                            _pinfo, _pe = ai_service.analyze_price_tag(_pt_key, _b, _mt,
-                                                                       gemini_key=_pt_gkey)
-                        st.session_state['_pt_read'] = None if _pe else _pinfo
-                        if _pe:
-                            st.error(f"판독 실패: {_pe}")
-                    _r = st.session_state.get('_pt_read')
+                    # 매장에서 가격표를 여러 장 연속으로 찍어 한 번에 올리는 흐름
+                    _ptc1, _ptc2 = st.columns(2)
+                    with _ptc1:
+                        _pt_shots = st.file_uploader(
+                            "📷 가격표 촬영 (누르면 카메라 · 여러 장)",
+                            type=['jpg', 'jpeg', 'png', 'webp', 'heic', 'heif'],
+                            key="pt_shot", accept_multiple_files=True)
+                    with _ptc2:
+                        _pt_files = st.file_uploader(
+                            "🖼 갤러리·파일에서 선택",
+                            type=['jpg', 'jpeg', 'png', 'webp', 'heic', 'heif'],
+                            key="pt_up", accept_multiple_files=True)
+                    from pages_lib.receipt_page import inject_native_camera as _inj_cam, _image_for_ai
+                    _inj_cam("가격표 촬영")
+                    st.caption("가격표의 **좌측 상단 상품번호**와 **최종가**가 선명하게 나오도록 가까이 찍어주세요.")
+
+                    _pt_ups = list(_pt_shots or []) + list(_pt_files or [])
+                    _pt_cache = st.session_state.setdefault('_pt_multi', {})
+                    _todo_pt = [u for u in _pt_ups
+                                if f"{getattr(u, 'name', '?')}|{getattr(u, 'size', 0)}" not in _pt_cache]
+                    if _todo_pt:
+                        _pbar = st.progress(0.0, text="가격표 판독 중...")
+                        for _i, _u in enumerate(_todo_pt, 1):
+                            _pbar.progress(_i / len(_todo_pt), text=f"가격표 판독 중... ({_i}/{len(_todo_pt)})")
+                            _sig = f"{getattr(_u, 'name', '?')}|{getattr(_u, 'size', 0)}"
+                            _img, _ierr = _image_for_ai(_u)
+                            if _ierr:
+                                _pt_cache[_sig] = {'_error': _ierr, '_name': getattr(_u, 'name', '사진')}
+                                continue
+                            _info, _perr = _ai_pt.analyze_price_tag(_pt_key, _img[0], _img[1],
+                                                                    gemini_key=_pt_gkey)
+                            _pt_cache[_sig] = ({'_error': _perr or '판독 실패',
+                                                '_name': getattr(_u, 'name', '사진')}
+                                               if (_perr or not _info)
+                                               else dict(_info, _name=getattr(_u, 'name', '사진')))
+                        _pbar.empty()
+
+                    _pt_done = [(k, v) for k, v in _pt_cache.items()
+                                if not v.get('_error') and not v.get('_saved')]
+                    _pt_bad = [(k, v) for k, v in _pt_cache.items() if v.get('_error')]
+                    for _bk, _bv in _pt_bad:
+                        _bc1, _bc2 = st.columns([4, 1])
+                        _bc1.error(f"⚠️ {_bv.get('_name', '사진')} — {_bv['_error']}")
+                        if _bc2.button("🔄 재시도", key=f"pt_retry_{abs(hash(_bk))}"):
+                            _pt_cache.pop(_bk, None); st.rerun()
+
+                    if len(_pt_done) > 1:
+                        # 여러 장 → 표로 한눈에 보고 일괄 저장
+                        _rows_pt = []
+                        for _k, _v in _pt_done:
+                            _sp0 = _sp_by_pno.get(_v.get('product_no', ''))
+                            _rows_pt.append({
+                                '상품번호': _v.get('product_no', '') or '—',
+                                '상품명': (_sp0 or {}).get('costco_name') or _v.get('product_name', ''),
+                                '현재 매입가': int((_sp0 or {}).get('unit_price') or 0),
+                                '판독 가격': int(_v.get('price') or 0),
+                                '구분': '수정' if _sp0 else ('신규' if _v.get('product_no') else '번호없음'),
+                            })
+                        st.dataframe(pd.DataFrame(_rows_pt), use_container_width=True, hide_index=True)
+                        _ok_pt = [(k, v) for k, v in _pt_done
+                                  if v.get('product_no') and int(v.get('price') or 0) > 0]
+                        if st.button(f"💾 {len(_ok_pt)}건 제품가격 DB에 일괄 저장",
+                                     key="pt_save_all", type="primary", use_container_width=True,
+                                     disabled=not _ok_pt):
+                            _n_pt = 0
+                            for _k, _v in _ok_pt:
+                                _save_price(_v['product_no'], _sp_by_pno.get(_v['product_no']),
+                                            int(_v['price']), name=_v.get('product_name', ''))
+                                _pt_cache[_k]['_saved'] = True
+                                _n_pt += 1
+                            st.success(f"✅ {_n_pt}건 저장 완료")
+                            st.rerun()
+
+                    # 1장이면 종전처럼 개별 확인·저장 (신규 등록 시 상품명 입력 필요)
+                    _r = _pt_done[0][1] if len(_pt_done) == 1 else None
                     if _r:
                         _pno = _r['product_no']; _sp = _sp_by_pno.get(_pno)
                         st.markdown(f"**판독 결과** — 상품번호 `{_pno or '?'}` · 가격 **{fmt(_r['price'])}원** · "
@@ -256,7 +321,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                             _np = st.number_input("새 매입가", value=int(_r['price']), min_value=0, step=100, key="pt_np")
                             if st.button("💾 매입가 수정", key="pt_save", type="primary"):
                                 _save_price(_pno, _sp, _np)
-                                st.session_state.pop('_pt_read', None)
+                                st.session_state['_pt_multi'] = {}
                                 st.success(f"✅ {str(_sp['costco_name'])[:20]} 매입가 → {fmt(_np)}원"); st.rerun()
                         else:
                             st.warning(f"공유DB에 상품번호 {_pno}가 없습니다 — 신규로 등록합니다.")
@@ -264,7 +329,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                             _np = st.number_input("매입가", value=int(_r['price']), min_value=0, step=100, key="pt_addprice")
                             if st.button("➕ 공유DB 신규 등록", key="pt_add", type="primary") and _np > 0:
                                 _save_price(_pno, None, _np, name=_nm)
-                                st.session_state.pop('_pt_read', None)
+                                st.session_state['_pt_multi'] = {}
                                 st.success(f"✅ {_pno} 신규 등록 {fmt(_np)}원"); st.rerun()
 
             with _tab_scan:
