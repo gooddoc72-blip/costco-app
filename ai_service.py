@@ -598,20 +598,31 @@ def analyze_price_tag(api_key, image_bytes, media_type, *, gemini_key=''):
     def _suspicious(d):
         return (not d) or d.get("price", 0) <= 0 or not (6 <= len(d.get("product_no", "")) <= 7)
 
-    _out = None
+    _out, _g_err = None, ''
     if gemini_key:
-        _t, _e = gemini_vision(gemini_key, image_bytes, media_type,
-                               _PRICETAG_SYSTEM, _PRICETAG_USER)
-        if _t:
-            _out = _parse_price_tag_json(_t)
-            if _out and not _suspicious(_out):
-                _out["_provider"] = "gemini"
-                return _out, None
+        # 가격표는 영수증보다 단순해 flash로 대부분 끝난다.
+        #   수상할 때만(번호 6~7자리 아님 / 가격 0) pro로 한 번 더 — Claude 없이도 자력 해결.
+        for _gm, _think in ((GEMINI_MODEL, False), (GEMINI_VISION_MODEL, True)):
+            _t, _e = gemini_vision(gemini_key, image_bytes, media_type,
+                                   _PRICETAG_SYSTEM, _PRICETAG_USER,
+                                   model=_gm, thinking=_think,
+                                   max_tokens=800 if _think else 600)
+            if not _t:
+                _g_err = _g_err or f"{_gm}: {_e}"
+                continue
+            _cand = _parse_price_tag_json(_t)
+            if not _cand:
+                _g_err = _g_err or f"{_gm}: 응답이 JSON이 아님"
+                continue
+            if not _suspicious(_cand):
+                _cand["_provider"] = "gemini"
+                return _cand, None
+            _out = _out or _cand          # 수상하지만 유일한 후보로 보관
         if not api_key:
             if _out:
                 _out["_provider"] = "gemini"
                 return _out, None
-            return None, _e or "판독 실패"
+            return None, _g_err or "판독 실패"
 
     _txt, _err = claude_vision(api_key, image_bytes, media_type,
                                _PRICETAG_SYSTEM, _PRICETAG_USER)
