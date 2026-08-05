@@ -70,6 +70,63 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         st.session_state.pop('rs_alloc', None)   # 새 업로드 → 이전 미리보기 초기화
         st.session_state.pop('rs_day', None)     # 새 영수증 → 정산일을 새 영수증 날짜로 재설정
 
+    # ── 1-b) 📱 영수증 사진 (휴대폰 촬영) — PDF가 없을 때 ──
+    #   코스트코에서 장 본 직후 종이 영수증을 찍어 바로 정산할 수 있게 한다.
+    #   판독 결과는 PDF와 같은 형태({상품번호,상품명,수량,단가})라 이후 배치 로직은 공용.
+    _ph = st.file_uploader(
+        "📷 또는 영수증 촬영 (누르면 카메라 · 여러 장 가능)",
+        type=['jpg', 'jpeg', 'png', 'webp', 'heic', 'heif'],
+        key="rs_photo", accept_multiple_files=True)
+    from pages_lib.receipt_page import inject_native_camera as _inject_cam
+    _inject_cam("영수증 촬영")   # 탭 → 폰 기본 카메라 → 촬영 → 자동 업로드
+    _pkey = tuple(sorted(f.name for f in _ph)) if _ph else ()
+    if _ph and st.session_state.get('_rs_pkey') != _pkey:
+        import ai_service
+        from pages_lib.receipt_page import _image_for_ai
+        _ak, _gk = ai_service.get_ai_keys(settings)
+        if not (_ak or _gk):
+            st.warning("⚠️ AI 키가 없어 사진 판독을 할 수 없습니다. 설정 탭 > 🤖 AI 설정에서 "
+                       "Gemini 또는 Claude 키를 등록하세요.")
+        else:
+            _pparsed, _pfails = [], []
+            _pbar = st.progress(0.0, text="영수증 사진 판독 중...")
+            for _pi, _pf in enumerate(_ph, 1):
+                _pbar.progress(_pi / len(_ph), text=f"영수증 사진 판독 중... ({_pi}/{len(_ph)})")
+                _img, _ierr = _image_for_ai(_pf)
+                if _ierr:
+                    _pfails.append((_pf.name, _ierr)); continue
+                _data, _perr = ai_service.parse_receipt_photo(
+                    _ak, _img[0], _img[1], gemini_key=_gk)
+                if _perr or not _data:
+                    _pfails.append((_pf.name, _perr or '판독 실패')); continue
+                _rdate = _data.get('purchase_date', '') or ''
+                for _it in (_data.get('items') or []):
+                    if not str(_it.get('상품명', '') or '').strip():
+                        continue
+                    _pparsed.append({
+                        '상품번호': str(_it.get('상품번호', '') or ''),
+                        '상품명': _it.get('상품명', ''),
+                        '수량': int(_it.get('수량') or 1),
+                        '단가': int(_it.get('단가') or 0),
+                        'receipt_date': _rdate,
+                    })
+                if not _data.get('_verified', True):
+                    _pfails.append((_pf.name,
+                                    "금액·수량 자가검증 불일치 — 아래 표에서 값을 확인하세요: "
+                                    + " / ".join((_data.get('_check') or [])[:2])))
+            _pbar.empty()
+            if _pparsed:
+                _merged_p = {_n(x.get('상품번호')) or _n(x.get('상품명')): x for x in _pparsed}
+                _prev = {_n(x.get('상품번호')) or _n(x.get('상품명')): x
+                         for x in (st.session_state.get('rs_receipt_items') or [])}
+                _prev.update(_merged_p)          # PDF로 올린 게 있으면 합친다
+                st.session_state['rs_receipt_items'] = list(_prev.values())
+                st.session_state.pop('rs_alloc', None)
+                st.session_state.pop('rs_day', None)
+                st.success(f"📱 사진 {len(_ph)}장에서 {len(_merged_p)}품목 인식")
+            st.session_state['_rs_pkey'] = _pkey
+            st.session_state['_rs_fails'] = (st.session_state.get('_rs_fails') or []) + _pfails
+
     for fn, em in st.session_state.get('_rs_fails', []):
         st.warning(f"⚠️ 자동 인식 실패: **{fn}** — {em}. 아래 표에 **직접 입력**해서 정산할 수 있습니다.")
 

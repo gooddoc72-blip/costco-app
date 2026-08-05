@@ -148,6 +148,46 @@ def _receipt_ledger_excel(rows: list, items: list) -> bytes:
     return _buf.getvalue()
 
 
+def inject_native_camera(marker: str):
+    """업로더의 <input type=file>에 capture 속성을 붙여 '누르면 폰 기본 카메라'가 열리게 한다.
+
+    Streamlit의 st.file_uploader는 capture 속성을 노출하지 않아, 폰에서 누르면
+    파일선택 메뉴가 먼저 뜨고 거기서 '사진 찍기'를 또 골라야 했다.
+    capture="environment"를 붙이면 탭 한 번에 후면 카메라가 바로 열리고,
+    촬영을 마치면 input change가 발생해 그대로 자동 업로드된다.
+    (st.camera_input은 웹캠 위젯이라 화질이 낮아 영수증 판독에 부적합)
+
+    marker: 그 업로더 라벨에 들어 있는 문구 — 이 문구를 가진 업로더에만 적용.
+    Streamlit이 리렌더할 때마다 DOM이 갈리므로 주기적으로 다시 적용한다.
+    """
+    import streamlit.components.v1 as _components
+    _components.html(
+        """
+<script>
+(function () {
+  var MARK = %s;
+  var doc = window.parent.document;
+  function apply() {
+    var boxes = doc.querySelectorAll('[data-testid="stFileUploader"]');
+    for (var i = 0; i < boxes.length; i++) {
+      var el = boxes[i];
+      if (!el.innerText || el.innerText.indexOf(MARK) === -1) continue;
+      var inp = el.querySelector('input[type=file]');
+      if (inp && inp.getAttribute('capture') !== 'environment') {
+        inp.setAttribute('capture', 'environment');
+        inp.setAttribute('accept', 'image/*');
+      }
+    }
+  }
+  apply();
+  setInterval(apply, 700);
+})();
+</script>
+""" % (repr(str(marker)),),
+        height=0,
+    )
+
+
 def _ai_error_hint(msg: str) -> str:
     """AI 판독 오류 → 사용자가 바로 조치할 수 있는 한국어 안내.
 
@@ -220,17 +260,24 @@ def _render_photo_receipt(USERNAME: str, settings: dict, compact: bool = False):
     elif _g_key:
         st.caption("🤖 판독: Gemini (Claude 키를 함께 넣으면 검증 실패 사진을 재판독합니다)")
 
-    _photos = st.file_uploader(
-        "영수증 사진 (여러 장 선택 가능)",
-        type=_IMG_TYPES, key="receipt_photo", accept_multiple_files=True)
-    st.caption("📱 휴대폰: 위 **Browse files**를 누르고 **‘사진 찍기’(Take Photo)** 를 선택하면 "
-               "폰 기본 카메라가 열립니다. 영수증이 화면에 꽉 차게, 세로로 곧게 찍어주세요.")
-    # ⚠️ st.camera_input(웹캠 위젯)은 폰에서 저해상도 웹 촬영이라 깨알글씨 판독률이 떨어진다.
-    #    파일선택 → '사진 찍기'가 기본 카메라를 열어 원본 해상도로 들어오므로 그쪽을 권장.
-    with st.expander("📷 웹 카메라로 찍기 (권장하지 않음 — 화질 낮음)", expanded=False):
-        st.caption("기본 카메라를 쓸 수 없을 때만 사용하세요. 글씨가 작으면 판독이 실패할 수 있습니다.")
+    _cc1, _cc2 = st.columns(2)
+    with _cc1:
+        _shots = st.file_uploader(
+            "📷 영수증 촬영 (누르면 카메라)",
+            type=_IMG_TYPES, key="receipt_shot", accept_multiple_files=True)
+    with _cc2:
+        _photos = st.file_uploader(
+            "🖼 갤러리·파일에서 선택",
+            type=_IMG_TYPES, key="receipt_photo", accept_multiple_files=True)
+    # 왼쪽 업로더만 '탭 → 기본 카메라 → 촬영 → 자동 업로드'가 되게 capture 부여
+    inject_native_camera("영수증 촬영")
+    st.caption("📱 왼쪽을 누르면 폰 **기본 카메라가 바로 열리고**, 촬영을 마치면 자동으로 올라갑니다. "
+               "영수증이 화면에 꽉 차게, 세로로 곧게 찍어주세요. (여러 장 가능)")
+    # 구형 브라우저 등 capture가 막힌 환경용 최후 수단 — 웹캠이라 화질이 낮다.
+    with st.expander("📷 웹 카메라로 찍기 (카메라가 안 열릴 때만)", expanded=False):
+        st.caption("화질이 낮아 깨알글씨 판독이 실패할 수 있습니다.")
         _cam = st.camera_input("영수증을 화면에 꽉 차게 찍어주세요", key="receipt_cam")
-    _uploads = list(_photos or [])
+    _uploads = list(_shots or []) + list(_photos or [])
     if _cam is not None:
         _uploads.append(_cam)
 
