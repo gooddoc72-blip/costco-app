@@ -55,6 +55,9 @@ def claude_complete(api_key: str, system: str, user_msg: str,
 # ── Gemini (Google) ────────────────────────────────────────
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 GEMINI_MODEL = "gemini-2.5-flash"   # 현행 flash. thinking 끄고 사용(아래).
+# 영수증처럼 깨알글씨·부호(-T)·검산이 필요한 판독은 flash가 자주 틀린다.
+# → pro로 먼저 읽고 실패 시 flash로 폴백. (pro는 느리고 비싸지만 여전히 Claude보다 저렴)
+GEMINI_VISION_MODEL = "gemini-2.5-pro"
 
 
 def gemini_complete(api_key: str, system: str, user_msg: str,
@@ -290,7 +293,7 @@ def claude_vision(api_key, image_bytes, media_type, system, user_text,
 
 
 def gemini_vision(api_key, image_bytes, media_type, system, user_text,
-                  max_tokens=600, model=GEMINI_MODEL, max_edge=1092):
+                  max_tokens=600, model=GEMINI_MODEL, max_edge=1092, thinking=False):
     """이미지 1장 + 텍스트 → Gemini 멀티모달 응답. 반환: (text, error).
 
     claude_vision과 동일한 시그니처 — ai_vision에서 서로 바꿔 끼울 수 있게 맞췄다.
@@ -307,13 +310,16 @@ def gemini_vision(api_key, image_bytes, media_type, system, user_text,
                 {"inline_data": {"mime_type": media_type, "data": _b64}},
                 {"text": user_text},
             ]}],
-            "generationConfig": {"maxOutputTokens": max_tokens, "temperature": 0,
-                                 "thinkingConfig": {"thinkingBudget": 0}},
+            "generationConfig": {"maxOutputTokens": max_tokens, "temperature": 0},
         }
+        # flash는 기본 thinking이 출력토큰을 다 먹어 빈 응답이 나므로 끈다.
+        # pro(영수증 판독)는 thinking이 부호·검산 정확도를 올리므로 켜둔다.
+        if not thinking:
+            body["generationConfig"]["thinkingConfig"] = {"thinkingBudget": 0}
         r = requests.post(
             GEMINI_URL.format(model=model),
             headers={"x-goog-api-key": api_key.strip(), "content-type": "application/json"},
-            json=body, timeout=90,
+            json=body, timeout=180 if thinking else 90,
         )
         if r.status_code != 200:
             try:
@@ -629,18 +635,30 @@ _RECEIPT_SYSTEM = (
     "출력 형식:\n"
     '{"purchase_date":"YYYY-MM-DD","purchase_time":"HH:MM","store_type":"코스트코|트레이더스",'
     '"store_name":"지점 포함 매장명","total_qty":정수,"item_kinds":정수,"total_amount":정수,'
-    '"discount_amount":정수,"card_last4":"1234","cash_receipt_no":"승인번호",'
+    '"discount_amount":정수,"coupon_total":정수,"card_last4":"1234","cash_receipt_no":"승인번호",'
     '"items":[{"product_no":"상품번호","name":"상품명","qty":정수,"unit_price":정수,'
     '"amount":정수,"discount":정수}]}\n'
     "규칙:\n"
     "- purchase_date: **영수증 하단/상단의 '거래일시'(결제한 날짜)**. 2자리 연도는 20xx로. 안 보이면 ''.\n"
     "  ⚠️ 회원카드 만료일(유효기간·만료일·EXPIRE·MEMBER EXP 등)을 구매일자로 쓰면 절대 안 된다. "
     "미래 날짜는 거래일자가 아니다. 거래일시와 만료일이 함께 보이면 **과거/오늘 날짜 쪽**을 쓴다.\n"
-    "- 할인 표기: 코스트코 영수증은 할인 줄이 금액 앞이나 뒤에 '-'(마이너스)로 찍힌다. "
-    "'-3,000' 또는 '3,000-'는 **3000원 할인**이라는 뜻이다. 부호를 반드시 인식할 것.\n"
-    "  · 할인 줄(쿠폰/즉시할인/DISCOUNT/세일)은 **items에 별도 품목으로 넣지 말고**, "
-    "바로 위 품목의 discount에 양수로 넣는다. 어느 품목인지 모르면 discount_amount에 합산한다.\n"
+    "  ⚠️ 코스트코 영수증 날짜는 **MM/DD/YYYY** 형식이다. 예 `08/05/2026` → 2026-08-05 "
+    "(8월 5일, 2026년). **연도 4자리를 그대로** 읽을 것 — 2026을 2023/2020 등으로 바꾸지 말 것.\n"
+    "- ⚠️ **할인 줄 판별 — 가장 중요**: 코스트코 영수증은 금액 끝에 과세표시 'T'가 붙는데, "
+    "**금액과 T 사이에 '-'가 있으면 그 줄은 할인**이다.\n"
+    "  · 정상 품목:  `488431  A&H베이킹소다  2x 15,490  30,980 T`\n"
+    "  · 할인 줄:    `1286    A&H베이킹소다IRC 2x 3,500   7,000-T`  ← 7,000원 할인\n"
+    "  · 할인 줄은 **바로 위 품목과 상품명이 거의 같다**(뒤에 IRC 등이 붙기도 함). "
+    "이름만 보고 새 품목으로 착각하지 말고 **금액 뒤의 '-' 부호로 판단**할 것.\n"
+    "  · 줄 근처에 'CPN'(쿠폰) 표시가 있으면 그것도 할인 줄이다.\n"
+    "  · 할인 줄은 **items에 넣지 말고** 바로 위 품목의 discount에 양수로 넣는다. "
+    "어느 품목인지 모르면 discount_amount에 합산한다.\n"
     "  · 그래서 item_kinds(품목 종수)와 total_qty(총수량)에도 할인 줄은 세지 않는다.\n"
+    "- coupon_total: 영수증 하단 'COUPON TOTAL' 옆의 **할인 합계 금액**(개수 아님). "
+    "예 `COUPON TOTAL  8  23,500` → 23500. 없으면 0.\n"
+    "- item_kinds: 영수증에 '총 품목 수 : 20'처럼 적혀 있으면 그 숫자를 그대로.\n"
+    "- 검산: (품목 금액 합계) − (할인 합계) = total_amount(합계/VAT 포함) 가 되어야 한다. "
+    "안 맞으면 할인 줄을 품목으로 잘못 센 것이니 다시 확인할 것.\n"
     "- store_type: 로고/상호에 COSTCO·코스트코면 '코스트코', TRADERS·트레이더스면 '트레이더스'. "
     "판단 불가면 ''.\n"
     "- store_name: '코스트코 상봉점'처럼 매장명+지점. 지점 안 보이면 매장명만.\n"
@@ -714,13 +732,29 @@ def _parse_receipt_json(txt):
         })
 
     _date = str(_d.get("purchase_date", "") or "").strip()[:10]
-    # 회원카드 만료일을 구매일자로 읽는 사고가 잦다(예: 2027-02-01).
-    #   구매일자는 미래일 수 없으므로 오늘로 바로잡고, 검증 경고로 알린다.
+    # 날짜 오독이 두 갈래로 나온다:
+    #   ① 회원카드 만료일을 구매일자로 (예: 2027-02-01) → 미래
+    #   ② 연도만 틀리게 (예: 08/05/2026을 2023-08-05로) → 아주 먼 과거
+    # 영수증 사진은 보통 당일~며칠 내라, 미래거나 400일 넘게 과거면 오독으로 본다.
+    # ②는 월·일은 맞는 경우가 대부분이라 **월·일은 두고 연도만** 가장 가까운 과거로 당긴다.
     _date_note = ''
     try:
-        if _date and datetime.strptime(_date, "%Y-%m-%d") > datetime.now() + timedelta(days=1):
-            _date_note = _date
-            _date = datetime.now().strftime("%Y-%m-%d")
+        if _date:
+            _dt = datetime.strptime(_date, "%Y-%m-%d")
+            _now = datetime.now()
+            if _dt > _now + timedelta(days=1):
+                _date_note = _date
+                _date = _now.strftime("%Y-%m-%d")
+            elif (_now - _dt).days > 400:
+                _date_note = _date
+                _y = _now.year
+                try:
+                    _cand = _dt.replace(year=_y)
+                except ValueError:            # 2/29 등
+                    _cand = _dt.replace(year=_y, day=28)
+                if _cand > _now + timedelta(days=1):
+                    _cand = _cand.replace(year=_y - 1)
+                _date = _cand.strftime("%Y-%m-%d")
     except ValueError:
         pass
     return {
@@ -830,18 +864,28 @@ def parse_receipt_photo(api_key, image_bytes, media_type, max_tokens=4000, *, ge
 
     _g_data, _g_err = None, ''
     if gemini_key:
-        _gt, _g_err = gemini_vision(gemini_key, image_bytes, media_type, _RECEIPT_SYSTEM,
-                                    _RECEIPT_USER, max_tokens=max_tokens, max_edge=1568)
-        if _gt:
-            _g_data = _parse_receipt_json(_gt)
-            if _g_data:
-                _gok, _giss = validate_receipt(_g_data)
-                if _gok:
-                    return _tag(_g_data, 'gemini', _giss, True), None
+        # pro(정확·thinking) → flash(빠름) 순으로 시도. 검산을 통과하면 거기서 끝낸다.
+        # 둘 다 검산을 못 넘기면 '경고가 더 적은 쪽'을 후보로 남긴다.
+        _g_iss = None
+        for _gm, _think in ((GEMINI_VISION_MODEL, True), (GEMINI_MODEL, False)):
+            _gt, _e = gemini_vision(gemini_key, image_bytes, media_type, _RECEIPT_SYSTEM,
+                                    _RECEIPT_USER, max_tokens=max_tokens, max_edge=1568,
+                                    model=_gm, thinking=_think)
+            if not _gt:
+                _g_err = _g_err or f"{_gm}: {_e}"
+                continue
+            _cand = _parse_receipt_json(_gt)
+            if not _cand:
+                _g_err = _g_err or f"{_gm}: 응답이 JSON이 아님"
+                continue
+            _cok, _ciss = validate_receipt(_cand)
+            if _cok:
+                return _tag(_cand, 'gemini', _ciss, True), None
+            if _g_data is None or len(_ciss) < len(_g_iss or []):
+                _g_data, _g_iss = _cand, _ciss
         if not api_key:
             if _g_data:
-                _gok, _giss = validate_receipt(_g_data)
-                return _tag(_g_data, 'gemini', _giss, _gok), None
+                return _tag(_g_data, 'gemini', _g_iss or [], False), None
             return None, _g_err or "판독 실패"
 
     if not api_key:
