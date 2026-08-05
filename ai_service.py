@@ -820,9 +820,12 @@ def parse_receipt_photo(api_key, image_bytes, media_type, max_tokens=4000, *, ge
         if _g_data is not None:   # Claude 실패 → 검증 못 넘긴 Gemini 결과라도 돌려준다
             _gok, _giss = validate_receipt(_g_data)
             return _tag(_g_data, 'gemini', _giss, _gok), None
-        if _err:
-            return None, _err
-        return None, (f"JSON 파싱 실패: {_txt[:200]}" if _txt else "빈 응답")
+        # Gemini도 실패했다면 두 오류를 함께 보여준다 — Claude 오류만 뜨면
+        # "Gemini 키를 넣었는데 왜 Claude 오류가?"를 진단할 수 없다.
+        _c_msg = _err or (f"JSON 파싱 실패: {_txt[:200]}" if _txt else "빈 응답")
+        if gemini_key and _g_err:
+            return None, f"Gemini 실패({_g_err}) · Claude 실패({_c_msg})"
+        return None, _c_msg
 
     _cok, _ciss = validate_receipt(_c_data)
     if _g_data is not None and not _cok:

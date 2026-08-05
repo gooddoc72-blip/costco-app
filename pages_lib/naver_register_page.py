@@ -320,6 +320,21 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     st.info("공용 AI 키 해제됨.")
                 st.rerun()
 
+            # Gemini 공용키 — 사진 판독은 Gemini 우선(비용 약 1/5)이라 여기에 넣어두면
+            #   Claude 크레딧과 무관하게 전 사용자 판독이 돌아간다.
+            _gg_cur = get_global_setting('gemini_api_key') or ''
+            _ggc1, _ggc2 = st.columns([3, 1])
+            _gg_in = _ggc1.text_input(
+                "Gemini API 키 (공용)", value=_gg_cur, type="password", key="nr_global_gkey",
+                placeholder="AIza...",
+                help="발급: aistudio.google.com/apikey (무료 등급 있음). "
+                     "사진 판독·상품명 생성에 Gemini를 우선 사용합니다.")
+            _ggc2.metric("Gemini 공용키", "✅ 설정됨" if _gg_cur else "미설정")
+            if _gg_in.strip() != _gg_cur:
+                set_global_setting('gemini_api_key', _gg_in.strip())
+                st.success("✅ 공용 Gemini 키 저장" if _gg_in.strip() else "공용 Gemini 키 해제됨")
+                st.rerun()
+
     if not (_ph_aikey or _ph_gkey):
         st.info("ℹ️ AI 사진 등록 메뉴는 Anthropic 또는 Gemini 키가 있어야 표시됩니다. "
                 + ("위 🔑 공용 AI 키에 내 키를 넣으면 모든 사용자에게 열립니다."

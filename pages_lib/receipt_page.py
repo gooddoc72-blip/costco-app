@@ -248,10 +248,10 @@ def _render_photo_receipt(USERNAME: str, settings: dict, compact: bool = False):
 
     # 판독 전략: Gemini로 먼저 읽고 영수증 내장 체크섬(합계·수량)으로 자가검증 →
     #            검증 실패한 사진만 Claude로 재판독. (ai_service.parse_receipt_photo)
-    _ai_key = (get_global_setting('anthropic_api_key')
-               or settings.get('anthropic_api_key') or '')
-    _g_key = (get_global_setting('gemini_api_key')
-              or settings.get('gemini_api_key') or '')
+    # AI 키는 공유 인프라 — 전역(공용) → 본인 → 타 계정 순으로 찾는다.
+    #   예전엔 전역/본인만 봐서, 다른 계정에만 Gemini 키가 있으면 판독이
+    #   크레딧 소진된 Claude로 넘어가 실패했다. (영수증 정산 화면은 이미 이 방식)
+    _ai_key, _g_key = ai_service.get_ai_keys(settings)
     if not (_ai_key or _g_key):
         st.warning("⚠️ AI 키가 없어 사진 판독을 할 수 없습니다. "
                    "설정 탭 > 🤖 AI 설정에서 Gemini 또는 Claude 키를 먼저 등록하세요.")
