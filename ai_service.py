@@ -57,7 +57,9 @@ GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:ge
 GEMINI_MODEL = "gemini-2.5-flash"   # 현행 flash. thinking 끄고 사용(아래).
 # 영수증처럼 깨알글씨·부호(-T)·검산이 필요한 판독은 flash가 자주 틀린다.
 # → pro로 먼저 읽고 실패 시 flash로 폴백. (pro는 느리고 비싸지만 여전히 Claude보다 저렴)
-GEMINI_VISION_MODEL = "gemini-2.5-pro"
+# ⚠️ 'gemini-2.5-pro'는 신규 사용자에게 404다. 버전이 바뀌어도 안 깨지도록 별칭을 쓴다.
+#    ('gemini-flash-latest' 별칭은 이 호출 형식에서 400이 나서 flash는 버전을 명시)
+GEMINI_VISION_MODEL = "gemini-pro-latest"
 
 
 def gemini_complete(api_key: str, system: str, user_msg: str,
