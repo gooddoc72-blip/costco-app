@@ -148,6 +148,28 @@ def _receipt_ledger_excel(rows: list, items: list) -> bytes:
     return _buf.getvalue()
 
 
+def _ai_error_hint(msg: str) -> str:
+    """AI 판독 오류 → 사용자가 바로 조치할 수 있는 한국어 안내.
+
+    영문 원문만 보여주면 뭘 해야 할지 알 수 없다. 특히 크레딧 소진은
+    사진을 다시 찍어도 절대 안 되므로 명확히 구분해 준다.
+    """
+    _m = str(msg or '')
+    _low = _m.lower()
+    if 'credit balance is too low' in _low or 'insufficient' in _low:
+        return ("💳 **Claude(Anthropic) 크레딧이 소진**됐습니다. 사진을 다시 찍어도 안 됩니다.\n\n"
+                "· 가장 빠른 해결: **설정 탭 > 🤖 AI 설정에 Gemini 키 등록** "
+                "(aistudio.google.com/apikey · 무료 등급 있음). 등록 즉시 판독이 다시 됩니다.\n"
+                "· 또는 console.anthropic.com > Plans & Billing에서 크레딧 충전.")
+    if 'rate limit' in _low or '429' in _m:
+        return "⏳ 요청이 몰렸습니다(rate limit). 30초쯤 뒤 **다시 판독**을 눌러주세요."
+    if 'api 키 미설정' in _m or 'AI 키 없음' in _m:
+        return "🔑 설정 탭 > 🤖 AI 설정에서 Gemini 또는 Claude 키를 등록하세요."
+    if 'timeout' in _low or 'timed out' in _low:
+        return "⏱ 판독이 시간 초과됐습니다. 사진 용량이 크면 조금 기다렸다 다시 시도해주세요."
+    return ""
+
+
 def _persist_receipt_items(username: str, items: list):
     """영수증 품목을 DB(receipt_items)에 저장 — 수익계산의 영수증 매칭 입력.
 
@@ -199,9 +221,14 @@ def _render_photo_receipt(USERNAME: str, settings: dict, compact: bool = False):
         st.caption("🤖 판독: Gemini (Claude 키를 함께 넣으면 검증 실패 사진을 재판독합니다)")
 
     _photos = st.file_uploader(
-        "영수증 사진 (여러 장 선택 가능 · 휴대폰에서는 '사진 찍기' 선택)",
+        "영수증 사진 (여러 장 선택 가능)",
         type=_IMG_TYPES, key="receipt_photo", accept_multiple_files=True)
-    with st.expander("📷 카메라로 바로 찍기", expanded=False):
+    st.caption("📱 휴대폰: 위 **Browse files**를 누르고 **‘사진 찍기’(Take Photo)** 를 선택하면 "
+               "폰 기본 카메라가 열립니다. 영수증이 화면에 꽉 차게, 세로로 곧게 찍어주세요.")
+    # ⚠️ st.camera_input(웹캠 위젯)은 폰에서 저해상도 웹 촬영이라 깨알글씨 판독률이 떨어진다.
+    #    파일선택 → '사진 찍기'가 기본 카메라를 열어 원본 해상도로 들어오므로 그쪽을 권장.
+    with st.expander("📷 웹 카메라로 찍기 (권장하지 않음 — 화질 낮음)", expanded=False):
+        st.caption("기본 카메라를 쓸 수 없을 때만 사용하세요. 글씨가 작으면 판독이 실패할 수 있습니다.")
         _cam = st.camera_input("영수증을 화면에 꽉 차게 찍어주세요", key="receipt_cam")
     _uploads = list(_photos or [])
     if _cam is not None:
@@ -242,6 +269,9 @@ def _render_photo_receipt(USERNAME: str, settings: dict, compact: bool = False):
     for _fi, (_sig, _d) in enumerate(_failed):
         _fc1, _fc2 = st.columns([4, 1])
         _fc1.error(f"⚠️ {_d.get('_name', '사진')} 판독 실패 — {_d['_error']}")
+        _hint = _ai_error_hint(_d['_error'])
+        if _hint:
+            _fc1.warning(_hint)
         if _fc2.button("🔄 다시 판독", key=f"rp_retry_{_fi}"):
             _cache.pop(_sig, None)
             st.rerun()
