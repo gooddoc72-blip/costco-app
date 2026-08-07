@@ -37,6 +37,7 @@ from db import (
     get_daily_ranks_in_month, get_yearly_rank_history, delete_trackings_bulk,
     get_rank_drops,
     submit_shopping_list, get_recent_shopping_submissions, delete_shopping_submission,
+    normalize_shopping_items,
     AUTH_DB,
 )
 from services import (
@@ -189,10 +190,12 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                             st.warning("항목이 비어있습니다.")
                             continue
                         _mc1, _mc2, _mc3 = st.columns(3)
-                        _mc1.metric("💰 구매금액 합계", f"{fmt(_sub_amt)}원")
+                        _mc1.metric("💰 매장금액 합계", f"{fmt(_sub_amt)}원")
                         _mc2.metric("🧾 정산금액 합계", f"{fmt(_sub_set)}원")
-                        _mc3.metric("차액(정산−구매)", f"{fmt(_sub_set - _sub_amt)}원")
-                        st.dataframe(pd.DataFrame(_its), use_container_width=True, hide_index=True)
+                        _mc3.metric("차액(정산−매장)", f"{fmt(_sub_set - _sub_amt)}원")
+                        # 팩단가·분리수량·묶음수량은 내부 계산용이라 화면엔 안 띄운다
+                        st.dataframe(pd.DataFrame(normalize_shopping_items(_its)),
+                                     use_container_width=True, hide_index=True)
                         _pr = []
                         for _it in _its:
                             _pno = str(_it.get('코스트코상품번호') or _it.get('상품번호') or '')
@@ -1382,8 +1385,6 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     "옵션정보": str(_r.get('옵션정보', '') or ''),
                     "주문건수": int(_r.get('주문건수', 1) or 1),
                     "주문수량": int(_r.get('주문수량', 0) or 0),
-                    "분리수량": int(_r.get('분리수량', 1) or 1),
-                    "묶음수량": int(_r.get('묶음수량', 1) or 1),
                     "코스트코구매수량": int(_r.get('코스트코구매수량', 0) or 0),
                     "매장금액": _est_v,
                     "정산금액": int(_r['정산금액']) if pd.notna(_r.get('정산금액')) else 0,
@@ -1568,8 +1569,6 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     "옵션정보": str(r.get('옵션정보', '') or ''),
                     "주문건수": int(r.get('주문건수', 1) or 1),
                     "주문수량": int(r.get('주문수량', 0) or 0),
-                    "분리수량": int(r.get('분리수량', 1) or 1),
-                    "묶음수량": int(r.get('묶음수량', 1) or 1),
                     "코스트코구매수량": int(r.get('코스트코구매수량', 0) or 0),
                     "매장금액": _est_v,
                     "정산금액": int(r['정산금액']) if pd.notna(r.get('정산금액')) else 0,
