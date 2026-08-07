@@ -808,9 +808,11 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         _tab_names = ["전체"] + _all_cats + (["(미분류)"] if _has_uncat else [])
         _db_tabs = st.tabs(_tab_names)
 
-        _HDR_DATA_LABELS = ['상품번호', '상품명(네이버/코스트코)', '매장가🔒', '온라인가🔒', '소분🔒',
-                            '판매가(네이버)✏️', '고객배송비✏️', '업데이트']
-        _HDR_DATA_WIDTHS = [130, 330, 95, 95, 60, 110, 100, 90]
+        # 기준은 코스트코 상품번호. 소분판매는 코스트코번호가 없어 네이버 상품번호로 식별한다.
+        # (코스트코 온라인몰가 열은 제거 — 매입 원가는 '매장가격'이고, 온라인가는 매일 바뀌어 혼동만 준다)
+        _HDR_DATA_LABELS = ['코스트코 상품번호', '네이버 상품번호', '상품명', '매장가격🔒', '소분🔒',
+                            '네이버 판매가격✏️', '고객배송비✏️', '업데이트']
+        _HDR_DATA_WIDTHS = [120, 120, 300, 100, 60, 115, 95, 85]
 
         for _ti, (_dtab, _tname) in enumerate(zip(_db_tabs, _tab_names)):
             with _dtab:
@@ -1066,32 +1068,36 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                             "title='가격 수정으로 분리된 행 — 코스트코 번호 매칭에서 제외됨'>🔒 가격분리</span>"
                         ) if _is_split else ""
 
-                        # 상품번호: 네이버 등록 필터에서는 네이버번호 + 코스트코번호 함께 표시
-                        if _is_filter_naver:
-                            _naver_no  = p.get('naver_product_no') or '-'
-                            _costco_no = _split_disp if _is_split else (p.get('product_no', '') or '-')
-                            _no_disp   = (
-                                f"{_naver_no}"
-                                f"<br><span style='color:#aaa;font-size:11px'>{_costco_no}</span>"
-                                f"{_split_badge}"
-                            )
+                        # ── 번호 2열 ── 기준=코스트코번호, 소분판매는 네이버번호로 식별
+                        _costco_no = _split_disp if _is_split else str(p.get('product_no', '') or '').strip()
+                        _nv_no = (str(p.get('naver_product_no') or '').strip()
+                                  or str(p.get('naver_channel_pno') or '').strip()
+                                  or str(p.get('naver_origin_pno') or '').strip())
+                        # 코스트코번호 칸에 11자리 이상(=네이버번호)이 들어간 오등록은 표시로 알린다.
+                        _cno_bad = _costco_no.isdigit() and len(_costco_no) >= 9
+                        if not _costco_no or _cno_bad:
+                            _c_txt = ("<span style='color:#e67e22;font-size:11px' "
+                                      "title='코스트코 상품번호는 6~7자리입니다. 네이버번호가 잘못 들어갔거나 미등록'>"
+                                      + ("⚠ " + _costco_no if _cno_bad else "—") + "</span>")
                         else:
-                            _costco_no = _split_disp if _is_split else (p.get('product_no', '') or '-')
-                            # 네이버번호(channel 우선) 있으면 코스트코번호 아래 함께 표시
-                            _nv_no = (p.get('naver_channel_pno') or p.get('naver_origin_pno') or '').strip()
-                            _nv_line = (f"<br><span style='color:#3498db;font-size:11px' title='네이버 스토어 상품번호'>🛍 {_nv_no}</span>"
-                                        if _nv_no else "")
-                            _no_disp = f"{_costco_no}{_nv_line}{_split_badge}"
+                            _c_txt = _costco_no
+                        _no_disp = f"{_c_txt}{_split_badge}"
+                        if _nv_no:
+                            _nv_disp = (f"<span style='color:#3498db' title='네이버 스토어 상품번호'>🛍 {_nv_no}</span>"
+                                        + ("<br><span style='color:#1565C0;font-size:10px;font-weight:600'>소분 기준</span>"
+                                           if sq_val > 1 else ""))
+                        else:
+                            _nv_disp = "<span style='color:#ccc'>—</span>"
 
                         # 행 표시(8개 셀)을 HTML 한 덩어리로 + 액션 3 버튼은 별도 컬럼
                         row_cell_style = "padding:6px 8px;border-bottom:1px solid #f5f5f5;font-size:14px;vertical-align:middle;overflow:hidden;text-overflow:ellipsis"
                         _row_html = (
                             f'<table style="width:100%;border-collapse:collapse;table-layout:fixed">'
                             f'<tr>'
-                            f'<td style="{row_cell_style};width:130px;color:#888">{_no_disp}</td>'
-                            f'<td style="{row_cell_style};width:380px;color:{_name_color}">{_img_html}{_display_name}{_badge}</td>'
-                            f'<td style="{row_cell_style};width:95px">{store_disp}</td>'
-                            f'<td style="{row_cell_style};width:95px">{online_disp}</td>'
+                            f'<td style="{row_cell_style};width:120px;color:#888">{_no_disp}</td>'
+                            f'<td style="{row_cell_style};width:120px;font-size:12px">{_nv_disp}</td>'
+                            f'<td style="{row_cell_style};width:340px;color:{_name_color}">{_img_html}{_display_name}{_badge}</td>'
+                            f'<td style="{row_cell_style};width:100px">{store_disp}</td>'
                             f'<td style="{row_cell_style};width:60px">{sq_disp}</td>'
                             f'<td style="{row_cell_style};width:110px">{sale_disp}</td>'
                             f'<td style="{row_cell_style};width:100px">{fee_disp}</td>'
