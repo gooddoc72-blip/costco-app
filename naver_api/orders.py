@@ -190,6 +190,69 @@ def get_last_status_dist():
     return dict(_last_status_dist)
 
 
+def resolve_product_order_ids(client_id, client_secret, ids):
+    """업로드된 번호가 '주문번호'면 '상품주문번호'로 변환.
+
+    네이버 발송처리 API는 상품주문번호만 받는다. 주문번호를 보내면
+    '처리 권한이 없는 상품 주문 번호'로 배치 전체가 거부되는데, 둘 다
+    16자리·끝자리 1이라 눈으로 구분되지 않는다. 택배사 파일 고객주문번호에
+    주문번호가 들어온 경우를 자동으로 흡수한다.
+
+    Returns:
+        (mapping, unresolved, err)
+        mapping: {입력값: [상품주문번호, ...]}  — 그대로 유효하면 [자기자신]
+        unresolved: 상품주문번호도 주문번호도 아닌 값 리스트
+    """
+    import requests
+
+    ids = [str(i).strip() for i in ids if str(i).strip()]
+    if not ids:
+        return {}, [], None
+    token, err = get_token(client_id, client_secret)
+    if not token:
+        return {}, ids, f"토큰 오류: {err}"
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
+    # 1) 먼저 통째로 상품주문번호로 조회 — 정상 케이스는 여기서 끝(추가 호출 0회)
+    try:
+        r = requests.post(
+            "https://api.commerce.naver.com/external/v1/pay-order/seller/product-orders/query",
+            headers=headers, json={"productOrderIds": ids}, timeout=30)
+        if r.status_code == 200:
+            return {i: [i] for i in ids}, [], None
+    except requests.exceptions.RequestException as e:
+        return {}, ids, f"네트워크 오류: {e}"
+
+    # 2) 한 건이라도 섞여 있으면 개별 판정 — 주문번호면 상품주문번호로 치환
+    mapping, unresolved = {}, []
+    for i in ids:
+        try:
+            rr = requests.get(
+                f"https://api.commerce.naver.com/external/v1/pay-order/seller/orders/{i}/product-order-ids",
+                headers=headers, timeout=30)
+        except requests.exceptions.RequestException:
+            unresolved.append(i)
+            continue
+        if rr.status_code == 200:
+            poids = [str(x) for x in (rr.json().get("data") or []) if str(x).strip()]
+            if poids:
+                mapping[i] = poids          # 주문번호였음 → 상품주문번호로 교체
+                continue
+        # 주문번호가 아니면 상품주문번호로 단건 검증
+        try:
+            r1 = requests.post(
+                "https://api.commerce.naver.com/external/v1/pay-order/seller/product-orders/query",
+                headers=headers, json={"productOrderIds": [i]}, timeout=30)
+        except requests.exceptions.RequestException:
+            unresolved.append(i)
+            continue
+        if r1.status_code == 200:
+            mapping[i] = [i]
+        else:
+            unresolved.append(i)
+    return mapping, unresolved, None
+
+
 def ship_orders(client_id, client_secret, ship_data):
     from datetime import datetime, timedelta, timezone
     import requests
@@ -281,9 +344,15 @@ def ship_orders(client_id, client_secret, ship_data):
                         total_fail += 1
                         continue  # 재시도
                 # 인덱스 파싱 불가 또는 반복 실패 → 전체 청크 실패 처리
+                #   어떤 번호가 거부됐는지 남긴다. '처리권한이 없는 상품주문번호'는
+                #   대부분 (a)다른 플랫폼 주문번호 (b)주문번호↔상품주문번호 혼동
+                #   (c)다른 스토어 API 키 — 실제 값을 봐야 구분이 된다.
+                _bad_ids = [str(x.get('productOrderId', '')) for x in remaining]
+                _bad_show = ", ".join(_bad_ids[:5]) + (" …" if len(_bad_ids) > 5 else "")
                 all_fail_details.append(
                     f"[오류 400] {err_msg} ({len(remaining)}건 전체 실패)"
                 )
+                all_fail_details.append(f"    └ 전송한 상품주문번호: {_bad_show}")
                 total_fail += len(remaining)
                 break
 

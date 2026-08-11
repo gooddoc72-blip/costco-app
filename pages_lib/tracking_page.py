@@ -213,7 +213,10 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     result_df = None  # 항상 초기화 — 아래 발송 섹션에서 None 체크
 
     if pidpic_files:
-        _order_kws = ['주문번호', '고객주문', 'ORDER', '주문 번호']
+        # 키워드 우선순위 순으로 탐색 — CJ 파일엔 '고객주문번호'(스토어 상품주문번호)와
+        #   CJ 자체 '주문번호'(접수번호)가 함께 있어, 컬럼 순서대로 잡으면 접수번호를
+        #   집어 네이버가 '처리권한이 없는 상품주문번호'로 전량 거부한다.
+        _order_kws = ['상품주문번호', '고객주문', '주문번호', '주문 번호', 'ORDER']
         _track_kws = ['운송장', '송장', 'TRACKING', '운송 장', '운송번호',
                       'waybill', 'WAYBILL', '운송No', '배송번호']
 
@@ -226,7 +229,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 _per_file_errors.append(f"❌ {_pf.name}: 읽기 실패 — {_perr}")
                 continue
             _cols = [str(c) for c in _pdf.columns]
-            _co = next((c for c in _cols if any(kw in c for kw in _order_kws)), None)
+            _co = next((c for kw in _order_kws for c in _cols if kw in c), None)
             _ct = next((c for c in _cols if any(kw in c for kw in _track_kws)), None)
             if not _co or not _ct or _co == _ct:
                 _per_file_errors.append(
@@ -356,16 +359,42 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
 
             if _p["id"] == "naver":
                 if _dc2.button("🚀 발송처리", key=f"btn_{_p['id']}", type="primary", use_container_width=True):
-                    _items = [{"productOrderId": str(r['상품주문번호']).split('.')[0].strip(),
-                                "택배사": _code_val,
-                                "trackingNumber": str(r['송장번호']).replace('-','').strip()}
-                               for _, r in result_df.iterrows()]
+                    _raw = [(str(r['상품주문번호']).split('.')[0].strip(),
+                             str(r['송장번호']).replace('-','').strip())
+                            for _, r in result_df.iterrows()]
+                    # 택배사 파일 고객주문번호에 '주문번호'가 들어온 경우 → 상품주문번호로 자동 변환.
+                    #   (둘 다 16자리·끝자리 1이라 육안 구분이 안 되고, 주문번호를 보내면
+                    #    네이버가 '처리 권한이 없는 상품 주문 번호'로 배치 전량을 거부한다)
+                    with st.spinner("상품주문번호 확인 중..."):
+                        _map, _unres, _rerr = naver_api.resolve_product_order_ids(
+                            api_id, api_secret, [o for o, _ in _raw])
+                    if _rerr:
+                        _dc3.warning(f"번호 확인 실패 — 원본 그대로 전송합니다: {_rerr}")
+                        _map, _unres = {o: [o] for o, _ in _raw}, []
+                    _conv = sum(1 for o, v in _map.items() if v != [o])
+                    if _conv:
+                        _dc3.info(f"🔄 주문번호 {_conv}건을 상품주문번호로 자동 변환했습니다.")
+                    if _unres:
+                        _dc3.error(
+                            f"⛔ 이 스토어 주문이 아니거나 조회 불가 {len(_unres)}건 — 전송 제외: "
+                            + ", ".join(_unres[:5]) + (" …" if len(_unres) > 5 else "")
+                        )
+                    _items = [{"productOrderId": _po, "택배사": _code_val, "trackingNumber": _tn}
+                              for _o, _tn in _raw for _po in _map.get(_o, [])]
+                    if not _items:
+                        _dc3.error("전송할 상품주문번호가 없습니다.")
+                        st.stop()
+                    # dispatch_log 매칭은 '변환된' 상품주문번호 기준이어야 한다
+                    _nv_df = result_df.copy()
+                    _nv_df['상품주문번호'] = _nv_df['상품주문번호'].apply(
+                        lambda v: _map.get(str(v).split('.')[0].strip(), [str(v)]))
+                    _nv_df = _nv_df.explode('상품주문번호').reset_index(drop=True)
                     with st.spinner(f"네이버에 {len(_items)}건 발송처리 중..."):
                         _res, _err = naver_api.ship_orders(api_id, api_secret, _items)
                     _show_dispatch_result(_dc3, _res, _err, len(_items))
                     if _res and _res.get('success_order_ids'):
                         # 발송처리 성공 시 dispatch_log에 자동 저장 (별도 저장버튼 불필요 → 홈 달력 즉시 반영)
-                        _drows = _prepare_dispatch_rows(USERNAME, result_df, _res['success_order_ids'])
+                        _drows = _prepare_dispatch_rows(USERNAME, _nv_df, _res['success_order_ids'])
                         _save_dispatch_rows(USERNAME, _drows, 'naver', _dc3)
 
             elif _p["id"] == "coupang":

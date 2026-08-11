@@ -8,6 +8,7 @@ from .orders import (
     get_new_orders,
     get_last_status_dist,
     ship_orders,
+    resolve_product_order_ids,
     get_settlement_history,
     get_daily_settlement,
     get_purchase_decisions,
