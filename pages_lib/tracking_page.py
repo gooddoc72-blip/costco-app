@@ -176,9 +176,11 @@ def _cleanup_undispatched(username, keep_nos, container):
     """발송 파일에 없는 활성 주문을 order_history에서 영구 삭제.
 
     플랫폼(네이버·쿠팡·카페24) 구분 없이 상품주문번호 기준으로 판단한다.
-    ⚠️ delete_orders_from_history는 excluded_orders에도 등록해 다음 수집에서도
-       다시 들어오지 않는다. 즉 오늘 못 보내고 내일 보낼 주문도 사라진다.
-       (사용자 확정 사양 — 일일 주문건 수집에는 '발송된 건만' 남긴다)
+
+    blocklist=False가 핵심이다. 미발송 주문은 네이버·쿠팡에 그대로 살아 있어서
+    다음날 수집하면 다시 들어온다. 기본값(blocklist=True)으로 지우면
+    excluded_orders에 등록돼 save_order_history가 재삽입을 막아버려서,
+    내일 보낼 주문이 영영 사라진다.
     """
     from db import get_active_orders, delete_orders_from_history
     # 과거에 한 번이라도 발송된 건은 지우지 않는다 — order_history가 사라지면
@@ -198,10 +200,10 @@ def _cleanup_undispatched(username, keep_nos, container):
     if not _drop:
         container.caption("🧹 발송 파일에 없는 미발송 주문 없음 — 정리할 것이 없습니다.")
         return 0
-    _n = delete_orders_from_history(username, _drop)
-    container.warning(
-        f"🧹 미발송 {_n}건을 일일 주문건 수집에서 삭제했습니다 — 발송된 건만 남습니다. "
-        f"다시 수집되지 않도록 제외 목록에도 등록됩니다."
+    _n = delete_orders_from_history(username, _drop, blocklist=False)
+    container.info(
+        f"🧹 미발송 {_n}건을 일일 주문건 수집에서 정리했습니다 — 발송된 건만 남습니다. "
+        f"네이버·쿠팡에 주문이 살아 있으므로 다음 수집 때 다시 들어옵니다."
     )
     with container.expander(f"삭제된 주문번호 {len(_drop)}건 보기", expanded=False):
         st.code(", ".join(_drop[:300]) + (" …" if len(_drop) > 300 else ""))
