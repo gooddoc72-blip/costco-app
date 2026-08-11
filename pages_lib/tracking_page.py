@@ -131,6 +131,83 @@ def _prepare_dispatch_rows(username, result_df, success_order_ids):
     return rows
 
 
+def _uploaded_order_nos(result_df, resolved_map=None):
+    """업로드한 발송 파일에 들어 있는 상품주문번호 전체 (네이버 변환분까지 포함).
+
+    이 집합이 '오늘 실제로 택배가 나간 주문'이다. 발송 성공/실패와 무관하게
+    파일에 있으면 물건은 나갔으므로 남긴다.
+    """
+    keep = set()
+    for _, r in result_df.iterrows():
+        v = str(r.get('상품주문번호', '') or '').split('.')[0].strip()
+        if not v:
+            continue
+        keep.add(v)
+        for _po in (resolved_map or {}).get(v, []):   # 주문번호 → 상품주문번호 변환분
+            if str(_po).strip():
+                keep.add(str(_po).strip())
+    return keep
+
+
+def _fetch_and_save_dispatched_details(username, api_id, api_secret, order_nos, container):
+    """발송건 상세를 네이버에서 받아 order_history에 저장.
+
+    수익계산은 dispatch_log ⋈ order_history라, 주문 수집을 안 돌린 상태로 발송하면
+    상품명·수량·정산예정금액이 전부 빈 채로 뜬다. 발송 직후 여기서 채워 둔다.
+    """
+    _ids = [str(x).strip() for x in (order_nos or []) if str(x).strip()]
+    if not (_ids and api_id and api_secret and HAS_NAVER_API):
+        return 0
+    try:
+        _rows, _err = naver_api.fetch_order_details_by_ids(api_id, api_secret, _ids)
+    except Exception as e:
+        container.warning(f"주문 상세 수집 실패 — 수익계산 금액이 빌 수 있습니다: {e}")
+        return 0
+    if not _rows:
+        if _err:
+            container.warning(f"주문 상세 수집 실패 — 수익계산 금액이 빌 수 있습니다: {_err}")
+        return 0
+    save_order_history(username, pd.DataFrame(_rows))
+    container.caption(f"📥 주문이력 {len(_rows)}건 자동 등록 — 수익계산에 바로 반영됩니다")
+    return len(_rows)
+
+
+def _cleanup_undispatched(username, keep_nos, container):
+    """발송 파일에 없는 활성 주문을 order_history에서 영구 삭제.
+
+    플랫폼(네이버·쿠팡·카페24) 구분 없이 상품주문번호 기준으로 판단한다.
+    ⚠️ delete_orders_from_history는 excluded_orders에도 등록해 다음 수집에서도
+       다시 들어오지 않는다. 즉 오늘 못 보내고 내일 보낼 주문도 사라진다.
+       (사용자 확정 사양 — 일일 주문건 수집에는 '발송된 건만' 남긴다)
+    """
+    from db import get_active_orders, delete_orders_from_history
+    # 과거에 한 번이라도 발송된 건은 지우지 않는다 — order_history가 사라지면
+    #   그 날짜 수익계산(dispatch_log ⋈ order_history)의 상품명·금액이 통째로 빈다.
+    #   (오늘 파일에 없다고 어제 발송분을 지우면 어제 정산이 깨진다)
+    _conn = get_user_db(username)
+    try:
+        _dispatched = {str(r[0]).strip() for r in
+                       _conn.execute("SELECT order_no FROM dispatch_log")}
+    except Exception:
+        _dispatched = set()
+    _conn.close()
+
+    _active = get_active_orders(username) or []
+    _drop = [str(o.get('order_no', '') or '').strip() for o in _active]
+    _drop = [o for o in _drop if o and o not in keep_nos and o not in _dispatched]
+    if not _drop:
+        container.caption("🧹 발송 파일에 없는 미발송 주문 없음 — 정리할 것이 없습니다.")
+        return 0
+    _n = delete_orders_from_history(username, _drop)
+    container.warning(
+        f"🧹 미발송 {_n}건을 일일 주문건 수집에서 삭제했습니다 — 발송된 건만 남습니다. "
+        f"다시 수집되지 않도록 제외 목록에도 등록됩니다."
+    )
+    with container.expander(f"삭제된 주문번호 {len(_drop)}건 보기", expanded=False):
+        st.code(", ".join(_drop[:300]) + (" …" if len(_drop) > 300 else ""))
+    return _n
+
+
 def _save_dispatch_rows(username, rows, platform, container):
     """대기 중인 row들을 dispatch_log에 실제 insert (수동 저장 버튼이 호출)."""
     from db import log_dispatch_success
@@ -393,9 +470,16 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         _res, _err = naver_api.ship_orders(api_id, api_secret, _items)
                     _show_dispatch_result(_dc3, _res, _err, len(_items))
                     if _res and _res.get('success_order_ids'):
-                        # 발송처리 성공 시 dispatch_log에 자동 저장 (별도 저장버튼 불필요 → 홈 달력 즉시 반영)
+                        # ① 발송건 상세를 먼저 주문이력에 채운다 — dispatch_log 저장 시
+                        #    정산예정금액을 여기서 읽어가고, 수익계산도 이 JOIN을 쓴다.
+                        _fetch_and_save_dispatched_details(
+                            USERNAME, api_id, api_secret, _res['success_order_ids'], _dc3)
+                        # ② 발송처리 성공 시 dispatch_log에 자동 저장 (홈 달력 즉시 반영)
                         _drows = _prepare_dispatch_rows(USERNAME, _nv_df, _res['success_order_ids'])
                         _save_dispatch_rows(USERNAME, _drows, 'naver', _dc3)
+                        # ③ 발송 파일에 없는 미발송 주문 정리 → 목록에 발송건만 남긴다
+                        _cleanup_undispatched(
+                            USERNAME, _uploaded_order_nos(result_df, _map), _dc3)
 
             elif _p["id"] == "coupang":
                 _dc3.caption("💡 쿠팡 상품주문번호 형식: `주문번호-아이템번호` — CJ 고객주문번호에 이 값 입력")
@@ -424,6 +508,11 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         # 발송처리 성공 시 dispatch_log에 자동 저장
                         _drows = _prepare_dispatch_rows(USERNAME, result_df, _res['success_order_ids'])
                         _save_dispatch_rows(USERNAME, _drows, 'coupang', _dc3)
+                        # 발송 파일에 없는 미발송 주문 정리 (플랫폼 무관, 상품주문번호 기준)
+                        #   쿠팡은 orderId만 올라온 경우 _resolve_cp가 만든 전체번호도 유지 대상.
+                        _cp_keep = _uploaded_order_nos(result_df)
+                        _cp_keep |= {_resolve_cp(r['상품주문번호']) for _, r in result_df.iterrows()}
+                        _cleanup_undispatched(USERNAME, _cp_keep, _dc3)
 
             # ── 저장 대기 (수동 저장 버튼) — 같은 플랫폼 카드 안에 표시 ──
             _pkey = f"dispatch_pending_{_p['id']}"
