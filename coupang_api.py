@@ -260,18 +260,50 @@ def _parse_order_and_excel(order: dict, seq_no: int) -> tuple:
     unified_rows = []
     excel_rows   = []
 
-    for idx, item in enumerate(items):
+    for item in items:
+        # 취소 아이템 제외: ordersheets orderItems는 cancelType이 아니라
+        #   canceled(bool) / cancelCount(int)로 취소를 표현한다.
+        if item.get("canceled") is True:
+            continue
         _cancel = str(item.get("cancelType") or "").strip().upper()
         if _cancel and _cancel != "NONE":
             continue
 
-        qty        = int(item.get("quantity") or 1)
-        unit_price = int(item.get("orderPrice") or 0)
+        # 옵션 주문수량: 쿠팡 응답 필드명은 shippingCount다.
+        #   quantity 키는 응답에 없어 항상 None → 예전엔 수량이 무조건 1로 들어갔다.
+        qty = int(item.get("shippingCount")
+                  or item.get("quantity")
+                  or item.get("orderCount")
+                  or 0) or 1
+        # 부분취소 수량이 shippingCount에 남아있는 응답 보정
+        _qty_ordered = qty                       # orderPrice가 대응하는 원래 수량
+        _cancel_cnt  = int(item.get("cancelCount") or 0)
+        if _cancel_cnt > 0:
+            if _cancel_cnt >= qty:
+                continue                         # 전량 취소
+            qty -= _cancel_cnt
+
+        # 단가/합계: salesPrice=개당 판매단가, orderPrice=주문금액(단가×수량).
+        #   계정/응답에 따라 orderPrice에 단가만 오는 경우가 있어 방어적으로 보정한다.
+        unit_sales  = int(item.get("salesPrice") or 0)
+        total_price = int(item.get("orderPrice") or 0)
+        if unit_sales > 0:
+            unit_price = unit_sales
+        elif total_price > 0:
+            # salesPrice가 없으면 orderPrice ÷ 원래수량으로 단가 역산
+            unit_price = int(round(total_price / _qty_ordered)) if _qty_ordered else total_price
+        else:
+            unit_price = 0
+        # 합계는 항상 (단가 × 실배송수량)으로 통일 — orderPrice에 단가만 오는 응답/부분취소 모두 대응
+        total_price = unit_price * qty
+
         # 쿠팡은 주문 API에 실제 정산예정금액을 주지 않는다
         # (shippingCountPriceWithCommission은 배송비 관련 값이라 판매가와 무관한 숫자가 찍힘).
         # → 판매금액에서 수수료율(기본 12%)을 공제해 정산금액으로 산정한다.
-        settlement = int(round(unit_price * qty * (1 - COUPANG_COMMISSION_RATE / 100.0)))
-        ship_fee   = order_ship if idx == 0 else 0
+        settlement = int(round(total_price * (1 - COUPANG_COMMISSION_RATE / 100.0)))
+        # 배송비는 주문당 1회만 — idx가 아니라 '실제로 담긴 첫 행' 기준
+        #   (첫 아이템이 취소건이면 idx==0 행이 사라져 배송비가 통째로 누락됐다)
+        ship_fee   = order_ship if not unified_rows else 0
 
         item_name   = item.get("vendorItemName") or ""
         option_name = item.get("vendorOptionName") or item.get("optionName") or ""
@@ -287,8 +319,8 @@ def _parse_order_and_excel(order: dict, seq_no: int) -> tuple:
             "상품명":       item_name,
             "옵션정보":     item.get("externalVendorSkuCode") or "",
             "수량":         qty,
-            "상품가격":     unit_price,   # 판매단가(orderPrice) — 네이버와 동일하게 수집
-            "최종 상품별 총 주문금액": unit_price * qty,
+            "상품가격":     unit_price,   # 판매단가(salesPrice) — 네이버 unitPrice와 동일 의미
+            "최종 상품별 총 주문금액": total_price,
             "배송비 합계":  ship_fee,
             "제주/도서 추가배송비": 0,
             "정산예정금액": settlement,
@@ -314,7 +346,7 @@ def _parse_order_and_excel(order: dict, seq_no: int) -> tuple:
             "최초등록등록상품명/옵션명": f"{item_name},{option_name}",
             "업체상품코드":              item.get("externalVendorSkuCode") or "",
             "바코드":                   item.get("barcode") or "",
-            "결제액":                   unit_price * qty,
+            "결제액":                   total_price,
             "배송비구분":               "무료" if ship_fee == 0 else "유료",
             "배송비":                   ship_fee,
             "도서산간 추가배송비":       0,
