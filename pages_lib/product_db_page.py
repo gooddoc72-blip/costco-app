@@ -80,6 +80,59 @@ def _set_cache_helpers(shared_fn, user_fn, merged_fn, invalidate_fn, **kwargs):
     invalidate_data_cache = invalidate_fn
 
 
+def _split_editor(key_prefix: str, sq_val: int, pack_price: int, product_no: str,
+                  naver_no: str = '', container=None) -> int:
+    """소분 판매 체크 + 소분수 + 낱개 원가 미리보기. → 저장할 split_qty 반환.
+
+    소분 판매는 지금까지 split_qty 대신 '낱개용 상품을 따로 만들고 단가를 직접
+    나눠 넣는' 방식으로 운영돼 왔다. 그러면 그 단가가 팩값인지 낱개값인지
+    데이터에 안 남고, 코스트코 팩 가격이 바뀔 때마다 낱개 행을 일일이 고쳐야 한다.
+    split_qty로 적으면 매입가는 팩 단가 하나만 유지하면 되고, 장보기 팩 수 올림·
+    재고 환산·[소분÷N] 배지·소분 필터가 전부 자동으로 붙는다.
+
+    ⚠️ 매칭 규약: 소분 상품은 **코스트코 상품번호를 비우고 네이버 상품번호로 매칭**한다.
+       (services.match_product_to_db의 0순위 경로. 코스트코 번호가 남아 있으면 공유DB의
+        팩 가격·이름이 이 행을 가로챈다.)
+    """
+    c = container if container is not None else st
+    c1, c2, c3 = c.columns([1.3, 1.0, 4.2])
+    on = c1.checkbox(
+        "🔵 소분 판매", value=sq_val > 1, key=f"{key_prefix}_on",
+        help="코스트코 팩을 나눠 낱개로 파는 상품입니다. 매입가에는 낱개값이 아니라 "
+             "**팩 단가(코스트코에서 실제로 사는 가격)** 를 넣으세요. "
+             "매칭은 코스트코 번호가 아니라 네이버 상품번호로 잡습니다.",
+    )
+    if not on:
+        c3.caption("매입가 = 코스트코에서 사는 가격 그대로 (나누지 않음)")
+        return 1
+    n = int(c2.number_input("몇 개로 나눔", value=max(2, int(sq_val or 1)),
+                            min_value=2, max_value=50, step=1, key=f"{key_prefix}_n"))
+    pack = int(pack_price or 0)
+    if pack > 0:
+        c3.markdown(
+            f"팩 **{fmt(pack)}원** ÷ {n} = 낱개 원가 "
+            f"<span style='color:#1565C0;font-weight:700'>{fmt(pack // n)}원</span>",
+            unsafe_allow_html=True,
+        )
+        # 지금까지는 낱개값을 매입가에 직접 넣어 왔다. 그 행에서 소분을 켜면
+        #   낱개값이 또 N으로 나뉘어 원가가 1/N로 깎인다(포카리 784와 같은 사고).
+        if int(sq_val or 1) <= 1:
+            c3.caption(f"❗ 지금 매입가 {fmt(pack)}원이 **낱개값**이라면 팩 단가 "
+                       f"**{fmt(pack * n)}원**으로 고쳐 넣으세요. 그대로 두면 원가가 "
+                       f"{fmt(pack // n)}원으로 또 깎입니다.")
+    else:
+        c3.caption("⚠️ 매입가(팩 단가)가 0원입니다 — 팩 가격을 넣어야 낱개 원가가 계산됩니다.")
+    if str(product_no or '').strip():
+        c3.caption("⚠️ 코스트코 상품번호가 남아 있습니다 — 소분 상품은 번호를 **비우고** "
+                   "네이버 상품번호로 매칭해야 공유DB 팩 가격이 이 행을 덮지 않습니다.")
+    elif not str(naver_no or '').strip():
+        c3.caption("⚠️ 네이버 상품번호가 없습니다 — 소분 상품은 이 번호로 매칭하므로 "
+                   "비어 있으면 주문과 연결되지 않습니다.")
+    else:
+        c3.caption(f"✅ 네이버 상품번호 {naver_no} 로 매칭됩니다 (코스트코 번호 없음 = 정상)")
+    return n
+
+
 def _render_pack_multiplier(USERNAME: str):
     """묶음배수 분류 — 상품명 "x N개"가 상품마다 뜻이 달라 명시 지정이 필요한 상품 목록."""
     from db import get_pack_ambiguous_products, set_pack_multiplier
@@ -810,7 +863,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
 
         # 기준은 코스트코 상품번호. 소분판매는 코스트코번호가 없어 네이버 상품번호로 식별한다.
         # (코스트코 온라인몰가 열은 제거 — 매입 원가는 '매장가격'이고, 온라인가는 매일 바뀌어 혼동만 준다)
-        _HDR_DATA_LABELS = ['코스트코 상품번호', '네이버 상품번호', '상품명', '매장가격🔒', '소분🔒',
+        # 소분은 ✏️ — 수정 버튼을 눌러 '🔵 소분 판매'를 켜면 낱개 원가가 자동 계산된다.
+        _HDR_DATA_LABELS = ['코스트코 상품번호', '네이버 상품번호', '상품명', '매장가격🔒', '소분✏️',
                             '네이버 판매가격✏️', '고객배송비✏️', '업데이트']
         _HDR_DATA_WIDTHS = [120, 120, 300, 100, 60, 115, 95, 85]
 
@@ -897,26 +951,28 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         )
                         if is_shared:
                             st.caption(f"🔗 공유 제품 — 매입가·상품명은 읽기전용 (관리자 탭에서 수정) | 소분·판매가·배송비는 직접 수정 가능")
-                            fc = st.columns([3.0, 1.0, 1.3, 1.3, 1.0, 0.8])
+                            fc = st.columns([3.0, 1.3, 1.3, 1.0, 0.8])
                             fc[0].markdown(
                                 f"**{p.get('naver_name') or p['costco_name']}**  "
                                 f"<span style='color:#888;font-size:13px'>({p.get('product_no','') or '-'})</span><br>"
-                                f"<span style='color:#888;font-size:12px'>매입가: {fmt(p.get('unit_price',0))}원</span>",
+                                f"<span style='color:#888;font-size:12px'>매입가(팩 단가): {fmt(p.get('unit_price',0))}원</span>",
                                 unsafe_allow_html=True
                             )
-                            e_sq   = fc[1].number_input("소분", value=sq_val, min_value=1, max_value=20,
-                                                        key=f"e_sq_t{_ti}_{kw}_{_uid}", label_visibility="visible")
-                            e_sale = fc[2].number_input("판매가(네이버)", value=sale_val, min_value=0, step=100,
+                            e_sale = fc[1].number_input("판매가(네이버)", value=sale_val, min_value=0, step=100,
                                                         key=f"e_sale_t{_ti}_{kw}_{_uid}", label_visibility="visible")
-                            e_fee  = fc[3].number_input("고객배송비 (0=무료)", value=fee_val, min_value=0, step=100,
+                            e_fee  = fc[2].number_input("고객배송비 (0=무료)", value=fee_val, min_value=0, step=100,
                                                         key=f"e_fee_t{_ti}_{kw}_{_uid}", label_visibility="visible")
+                            e_sq   = _split_editor(f"sp_t{_ti}_{kw}_{_uid}", sq_val,
+                                                   int(p.get('unit_price', 0) or 0),
+                                                   p.get('product_no', ''),
+                                                   p.get('naver_origin_pno') or p.get('naver_channel_pno') or '')
                             _cur_ncat = p.get('naver_category_id') or ''
                             e_ncat = st.text_input(
                                 "네이버 카테고리 ID (제품별 고정, 비워두면 카테고리 기본값 사용)",
                                 value=_cur_ncat, placeholder="예: 50000803",
                                 key=f"e_ncat_t{_ti}_{kw}_{_uid}",
                             )
-                            if fc[4].button("✅ 저장", key=f"e_save_t{_ti}_{kw}_{_uid}",
+                            if fc[3].button("✅ 저장", key=f"e_save_t{_ti}_{kw}_{_uid}",
                                             use_container_width=True, type="primary"):
                                 upsert_user_private(USERNAME, kw, p['costco_name'],
                                                     sale_price=e_sale, shipping_fee=e_fee,
@@ -931,7 +987,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                 st.session_state.pop('editing_product_kw', None)
                                 st.session_state.pop('editing_product_tab', None)
                                 st.rerun()
-                            if fc[5].button("✖ 취소", key=f"e_cancel_t{_ti}_{kw}_{_uid}",
+                            if fc[4].button("✖ 취소", key=f"e_cancel_t{_ti}_{kw}_{_uid}",
                                             use_container_width=True):
                                 st.session_state.pop('editing_product_kw', None)
                                 st.session_state.pop('editing_product_tab', None)
@@ -960,7 +1016,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                         st.session_state.pop('editing_product_tab', None)
                                         st.rerun()
 
-                            fc = st.columns([0.9, 4.6, 1.3, 0.8, 1.2, 1.1, 1.0, 0.8])
+                            fc = st.columns([0.9, 4.6, 1.3, 1.2, 1.1, 1.0, 0.8])
                             pid_legacy = p.get('private_id')
                             e_pno  = fc[0].text_input("상품번호", value=p.get('product_no', ''),
                                                       key=f"e_pno_t{_ti}_{kw}_{_uid}",
@@ -971,16 +1027,17 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                             e_price= fc[2].number_input("매입가", value=int(p.get('unit_price', 0) or 0),
                                                         step=100, key=f"e_price_t{_ti}_{kw}_{_uid}",
                                                         label_visibility="collapsed")
-                            e_sq   = fc[3].number_input("소분", value=sq_val, min_value=1, max_value=20,
-                                                        key=f"e_sq_t{_ti}_{kw}_{_uid}",
-                                                        label_visibility="collapsed")
-                            e_sale = fc[4].number_input("판매가", value=sale_val, min_value=0, step=100,
+                            e_sale = fc[3].number_input("판매가", value=sale_val, min_value=0, step=100,
                                                         key=f"e_sale2_t{_ti}_{kw}_{_uid}",
                                                         label_visibility="collapsed")
-                            e_fee  = fc[5].number_input("배송비", value=fee_val, min_value=0, step=100,
+                            e_fee  = fc[4].number_input("배송비", value=fee_val, min_value=0, step=100,
                                                         key=f"e_fee2_t{_ti}_{kw}_{_uid}",
                                                         label_visibility="collapsed")
-                            if fc[6].button("✅ 저장", key=f"e_save2_t{_ti}_{kw}_{_uid}",
+                            # 매입가·상품번호 위젯값이 확정된 뒤라 입력 즉시 낱개 원가가 반영된다
+                            e_sq   = _split_editor(f"pv_t{_ti}_{kw}_{_uid}", sq_val,
+                                                   int(e_price or 0), e_pno,
+                                                   p.get('naver_origin_pno') or p.get('naver_channel_pno') or '')
+                            if fc[5].button("✅ 저장", key=f"e_save2_t{_ti}_{kw}_{_uid}",
                                             use_container_width=True, type="primary"):
                                 if pid_legacy:
                                     conn_u = get_user_db(USERNAME)
@@ -994,7 +1051,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                 st.session_state.pop('editing_product_kw', None)
                                 st.session_state.pop('editing_product_tab', None)
                                 st.rerun()
-                            if fc[7].button("✖", key=f"e_cancel2_t{_ti}_{kw}_{_uid}",
+                            if fc[6].button("✖", key=f"e_cancel2_t{_ti}_{kw}_{_uid}",
                                             use_container_width=True):
                                 st.session_state.pop('editing_product_kw', None)
                                 st.session_state.pop('editing_product_tab', None)
@@ -1014,8 +1071,13 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         #    온라인가를 채우면서 정작 '구입가격'(매장 실단가)이 화면에서 사라졌다.
                         #    매장가는 수익계산·장보기·구매내역정산이 쓰는 원가라 항상 보여야 한다.
                         #    (열은 매장가🔒 / 온라인가🔒 로 이미 분리돼 있어 나란히 표시된다)
+                        # 소분 상품은 매장가(팩값) 밑에 실제 원가인 낱개값을 같이 보여준다.
+                        #   두 숫자가 따로 놀면 '팩 22,790인데 왜 11,395로 계산되나' 혼동이 난다.
                         store_disp  = (f"<span style='font-weight:600;color:#2e7d32'>{fmt(_store)}원</span>"
                                        if _store > 0 else "<span style='color:#ccc'>—</span>")
+                        if sq_val > 1 and _store > 0:
+                            store_disp += (f"<br><span style='color:#1565C0;font-size:11px'>"
+                                           f"낱개 {fmt(_store // sq_val)}원</span>")
                         online_disp = (f"<span style='font-weight:600;color:#1565c0'>🌐 {fmt(_online)}원</span>"
                                        if _online > 0 else "<span style='color:#ccc'>—</span>")
                         sq_disp     = (f"<span style='color:#1565C0;font-weight:bold'>÷{sq_val}</span>"

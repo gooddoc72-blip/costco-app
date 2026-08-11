@@ -686,7 +686,10 @@ def get_all_products_merged(username):
             'online_price': int(sp.get('online_price') or 0),
             'store_updated_at':  sp.get('store_updated_at') or '',
             'online_updated_at': sp.get('online_updated_at') or '',
-            'split_qty': int(sp.get('split_qty', 1) or 1),
+            # 소분 여부는 판매자마다 다르다(같은 팩을 누구는 통째로, 누구는 낱개로 판다).
+            #   개인DB 값이 있으면 그게 우선 — 공유값만 읽으면 가격DB에서 소분을 켜도
+            #   저장은 개인DB로 가고 화면은 공유값(1)을 다시 보여줘 설정이 안 먹는다.
+            'split_qty': int((up or {}).get('split_qty') or 0) or int(sp.get('split_qty', 1) or 1),
             'price_type': sp.get('price_type') or '매장',
             'image_url': sp.get('image_url', ''),
             'local_image': sp.get('local_image', ''),
