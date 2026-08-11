@@ -412,7 +412,7 @@ def run_rank_check():
 
 
 def run_settings():
-    settings_page.render(USERNAME, lambda k, d='': settings.get(k) or d)
+    settings_page.render(USERNAME, lambda k, d='': settings.get(k) or d, IS_ADMIN)
 
 
 def run_product_db():

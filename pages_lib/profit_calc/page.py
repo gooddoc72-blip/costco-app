@@ -677,6 +677,31 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         ):
             st.session_state['_show_naver_edit'] = True
 
+        # ── 발송비·박스비 일괄적용 ──
+        #   택배비 기본값은 관리자가 사용자별로 정하지만, 그날 실제 발송조건(합포장·
+        #   도서산간 등)은 날마다 달라서 정산표에서 한 번에 덮어쓸 수단이 필요하다.
+        #   선택 행이 있으면 그 행만, 없으면 이 날짜 전체 행에 적용한다.
+        _bulk_target = _checked_rows or _sk_list
+        _scope_txt = f"{len(_checked_rows)}개 선택행" if _checked_rows else f"전체 {len(_sk_list)}건"
+        _sb1, _sb2, _sb3, _sb4, _sb5 = st.columns([1.9, 1.4, 1.9, 1.4, 2.4])
+        _bulk_ship_val = _sb1.number_input(
+            "일괄 발송비", value=int(shipping_cost), min_value=0, step=100,
+            label_visibility="collapsed", key="bulk_ship_input",
+            help=f"각 행의 발송비를 이 값으로 덮어씁니다. 기본 {fmt(shipping_cost)}원(관리자 설정).",
+        )
+        _bulk_ship_apply = _sb2.button("🚚 발송비 적용", key="bulk_apply_ship",
+                                       disabled=not _bulk_target, use_container_width=True,
+                                       help=f"적용 대상: {_scope_txt}")
+        _bulk_box_val = _sb3.number_input(
+            "일괄 박스비", value=int(box_cost), min_value=0, step=100,
+            label_visibility="collapsed", key="bulk_box_input",
+            help=f"각 행의 박스비를 이 값으로 덮어씁니다. 기본 {fmt(box_cost)}원(관리자 설정).",
+        )
+        _bulk_box_apply = _sb4.button("📦 박스비 적용", key="bulk_apply_box",
+                                      disabled=not _bulk_target, use_container_width=True,
+                                      help=f"적용 대상: {_scope_txt}")
+        _sb5.caption(f"↑ 적용 대상: **{_scope_txt}** (행을 선택하지 않으면 전체)")
+
         # 헤더 — outer column: [전체선택][표시][구입가][발송비][박스비][🧾영수증]
         _TH = "text-align:{a};padding:3px 6px;font-size:12px;color:#444;background:#fafafa;border-bottom:1px solid #dee2e6"
         _h0, _h1, _h2, _h3, _h4, _h5 = st.columns([0.3, 7.5, 1.3, 1.0, 1.0, 0.6])
@@ -999,8 +1024,27 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 for _k in list(st.session_state.keys()):
                     if _k.startswith('sel_p_'):
                         st.session_state.pop(_k, None)
-                st.session_state['_profit_save_toast'] = f"✅ {len(_checked_rows)}개 항목에 {fmt(_apply_price)}원 일괄 적용 완료!"
+                st.session_state['_profit_save_toast'] = f"✅ {len(_checked_rows)}개 항목에 {fmt(_apply_unit)}원 일괄 적용 완료!"
                 st.rerun()
+
+        # ── 발송비·박스비 일괄 적용 처리 ──
+        #   위젯키(ship_/box_)는 이 시점에 이미 생성돼 직접 대입하면 Streamlit이 막는다.
+        #   → 영구버퍼(_ship_edits/_box_edits)에 쓰고 위젯키를 비워 재생성 때 반영시킨다.
+        for _flag, _val, _buf, _prefix, _label in (
+            (_bulk_ship_apply, _bulk_ship_val, '_ship_edits', 'ship_', '발송비'),
+            (_bulk_box_apply,  _bulk_box_val,  '_box_edits',  'box_',  '박스비'),
+        ):
+            if not (_flag and _bulk_target):
+                continue
+            _edits = st.session_state.setdefault(_buf, {})
+            for _sk in _bulk_target:
+                _edits[str(_sk)] = int(_val)
+                st.session_state.pop(f"{_prefix}{_sk}", None)
+            st.session_state['_profit_save_toast'] = (
+                f"✅ {len(_bulk_target)}건 {_label} {fmt(int(_val))}원 일괄 적용 "
+                f"(저장하려면 '정산저장'을 누르세요)"
+            )
+            st.rerun()
 
         if st.button("💾 제품가격 DB 저장", key="recalc", type="primary",
                      help="단가 수정사항을 제품가격 DB에 반영합니다"):
@@ -1013,12 +1057,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         with st.expander("🔗 소분·코스트코번호 없는 상품 — 네이버 상품번호로 제품가격 DB 저장",
                          expanded=False):
             from pages_lib.profit_calc.price_apply import build_row_updates
-            import re as _re_sf
-
-            def _sf_of(_nm):
-                _m = _re_sf.search(r'x\s*(\d+)\s*개', str(_nm or ''), _re_sf.IGNORECASE)
-                _v = int(_m.group(1)) if _m else 1
-                return _v if 1 < _v <= 50 else 1
+            from utils import extract_sell_factor as _sf_of
 
             _all_rows = df.to_dict('records')
             # 대상 = 코스트코번호가 없거나 소분(÷N) 상품

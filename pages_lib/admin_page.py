@@ -169,6 +169,32 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     st.success("✅ 카페24 메뉴 오픈됨" if _cmo_new else "🙈 카페24 메뉴 숨김 처리됨")
                     st.rerun()
 
+                # ── 📦 고정비용 (택배비·박스비) — 사용자는 수정 불가, 여기서만 설정 ──
+                st.markdown("<hr style='margin:6px 0'>", unsafe_allow_html=True)
+                st.caption("📦 고정비용 — 이 사용자의 수익계산 기본 택배비/박스비 "
+                           "(사용자 설정 화면에서는 읽기 전용)")
+                try:
+                    _ship_cur = int(get_setting(u['username'], 'shipping_cost') or 1800)
+                except (TypeError, ValueError):
+                    _ship_cur = 1800
+                try:
+                    _box_cur = int(get_setting(u['username'], 'box_cost') or 300)
+                except (TypeError, ValueError):
+                    _box_cur = 300
+                _fc1, _fc2, _fc3 = st.columns([1, 1, 1])
+                _ship_new = _fc1.number_input("택배비 (원)", value=_ship_cur, step=100,
+                                              min_value=0, key=f"adm_ship_{u['username']}")
+                _box_new = _fc2.number_input("박스비 (원)", value=_box_cur, step=50,
+                                             min_value=0, key=f"adm_box_{u['username']}")
+                _fc3.write(""); _fc3.write("")
+                if _fc3.button("💾 고정비용 저장", key=f"adm_cost_save_{u['username']}",
+                               use_container_width=True):
+                    set_setting(u['username'], 'shipping_cost', int(_ship_new))
+                    set_setting(u['username'], 'box_cost', int(_box_new))
+                    st.success(f"✅ {u['username']}: 택배비 {int(_ship_new):,}원 / "
+                               f"박스비 {int(_box_new):,}원 저장")
+                    st.rerun()
+
     st.divider()
     st.subheader("➕ 사용자 직접 추가")
     c1, c2, c3 = st.columns(3)

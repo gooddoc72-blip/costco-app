@@ -23,7 +23,7 @@ except ImportError:
     coupang_api = None
 
 
-def _render_settings_content(USERNAME: str, _gs):
+def _render_settings_content(USERNAME: str, _gs, IS_ADMIN: bool = False):
     # ── 엑셀 비밀번호 ─────────────────────────────────────
     st.subheader("🔓 엑셀 비밀번호")
     st.caption("네이버 스마트스토어에서 다운받은 엑셀 파일의 비밀번호를 저장하면 자동으로 해제됩니다.")
@@ -313,8 +313,14 @@ def _render_settings_content(USERNAME: str, _gs):
     st.divider()
     st.subheader("📦 고정 비용")
     c1, c2, c3 = st.columns(3)
-    new_ship = c1.number_input("택배비 (원)", value=int(_gs('shipping_cost') or 1800), step=100)
-    new_box = c2.number_input("박스비 (원)", value=int(_gs('box_cost') or 300), step=50)
+    # 택배비·박스비는 관리자가 사용자별로 정한다 (관리자 페이지 > 사용자 목록).
+    #   단가 협상 결과라 사용자가 임의로 바꾸면 정산·수익이 실제와 어긋난다.
+    new_ship = c1.number_input("택배비 (원)", value=int(_gs('shipping_cost') or 1800), step=100,
+                               disabled=not IS_ADMIN,
+                               help=None if IS_ADMIN else "관리자가 설정합니다. 변경이 필요하면 관리자에게 문의하세요.")
+    new_box = c2.number_input("박스비 (원)", value=int(_gs('box_cost') or 300), step=50,
+                              disabled=not IS_ADMIN,
+                              help=None if IS_ADMIN else "관리자가 설정합니다. 변경이 필요하면 관리자에게 문의하세요.")
     new_naver_ship_fee_rate = c3.number_input(
         "네이버 배송비 수수료율 (%)",
         value=float(_gs('naver_ship_fee_commission_rate') or 4.0),
@@ -322,13 +328,17 @@ def _render_settings_content(USERNAME: str, _gs):
         help="네이버가 고객결제 배송비에 부과하는 수수료율 (보통 3~5%). "
              "실정산 배송비 = 고객결제 배송비 × (1 - 수수료율) 로 수익계산에 반영"
     )
+    if not IS_ADMIN:
+        st.caption("🔒 택배비·박스비는 **관리자가 설정**합니다. 변경이 필요하면 관리자에게 문의하세요.")
     if st.button("비용 저장", key="save_cost"):
-        set_setting(USERNAME, 'shipping_cost', new_ship)
-        set_setting(USERNAME, 'box_cost', new_box)
+        if IS_ADMIN:
+            set_setting(USERNAME, 'shipping_cost', new_ship)
+            set_setting(USERNAME, 'box_cost', new_box)
         set_setting(USERNAME, 'naver_ship_fee_commission_rate', new_naver_ship_fee_rate)
         st.success(
-            f"✅ 택배비 {fmt(new_ship)}원, 박스비 {fmt(new_box)}원, "
-            f"배송비 수수료율 {new_naver_ship_fee_rate}% 저장"
+            (f"✅ 택배비 {fmt(new_ship)}원, 박스비 {fmt(new_box)}원, "
+             f"배송비 수수료율 {new_naver_ship_fee_rate}% 저장") if IS_ADMIN
+            else f"✅ 배송비 수수료율 {new_naver_ship_fee_rate}% 저장 (택배비·박스비는 관리자 설정)"
         )
 
     # ── 주문 마감시각 ─────────────────────────────────────
@@ -396,10 +406,10 @@ def _render_settings_content(USERNAME: str, _gs):
             st.error("비밀번호가 일치하지 않습니다.")
 
 
-def render(USERNAME: str, _gs):
+def render(USERNAME: str, _gs, IS_ADMIN: bool = False):
     st.header("⚙️ 설정")
     _tab_settings, _tab_guide = st.tabs(["⚙️ 설정", "📖 설정 가이드"])
     with _tab_settings:
-        _render_settings_content(USERNAME, _gs)
+        _render_settings_content(USERNAME, _gs, IS_ADMIN)
     with _tab_guide:
         guide_page.render(USERNAME)
