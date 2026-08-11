@@ -44,6 +44,36 @@ def extract_pack_qty(option_str, name_str=""):
     return 1
 
 
+# 용량·규격 단위 — 이 뒤에 오는 'x N개'는 상품 스펙이지 주문 수량이 아니다.
+_SPEC_UNIT_RE = re.compile(
+    r'(?:'
+    r'(?:g|kg|ml|l|ℓ|리터|그램|캡슐|정|매|포)'                  # 기존 규칙(맨단위 허용)
+    r'|\d\s*(?:mg|cc|oz|온스|밀리리터|장|알|입|ea|인분|cm|미터)'  # 확장(숫자 필요)
+    r')\s*$',
+    re.IGNORECASE)
+_SELL_FACTOR_RE = re.compile(r'[x×]\s*(\d+)\s*개', re.IGNORECASE)
+
+
+def extract_sell_factor(name_str, lo=2, hi=50):
+    """상품명의 'x N개'에서 1주문당 판매 개수(sell_factor) 추출. 없으면 1.
+
+    ⚠️ '340ml x 20개', '2.49kg x 144개'처럼 **용량·규격 바로 뒤**에 오는 'x N개'는
+    상품 스펙(한 통에 몇 개 들었나)이지 '1주문 = N개'가 아니다. 이걸 sell_factor로
+    잡으면 구입가가 N배로 부풀고, 그 값을 '단가 일괄적용'으로 되돌리면 반대로
+    단가가 1/N로 저장돼 정산이 통째로 망가진다. (예: 포카리 15,690 → 784)
+
+    extract_pack_qty가 상품명을 아예 안 보는 것과 같은 이유다. 상품 속성 ≠ 주문 수량.
+    """
+    text = str(name_str or '')
+    for m in _SELL_FACTOR_RE.finditer(text):
+        if _SPEC_UNIT_RE.search(text[:m.start()]):
+            continue                       # 용량 뒤 'x N개' → 스펙, 건너뜀
+        v = int(m.group(1))
+        if lo <= v <= hi:
+            return v
+    return 1
+
+
 def clean_name(name):
     import pandas as pd
     if pd.isna(name) or not isinstance(name, str):

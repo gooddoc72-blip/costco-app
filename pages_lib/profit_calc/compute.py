@@ -8,11 +8,8 @@ page.py의 거대한 렌더-중-계산 루프를 여기로 추출한다. 목적:
 match_fn(product_name, product_no) -> product dict | None
   : 제품 매칭 함수(services.match_product_to_db를 미리 로드된 상품으로 감싼 것). 주입식.
 """
-import re
-
 from services import resolve_pack_factor
-
-_PACK_RE = re.compile(r'x\s*(\d+)\s*개', re.IGNORECASE)
+from utils import extract_sell_factor
 
 
 def _int(v, d=0):
@@ -109,9 +106,9 @@ def compute_row(row, *, match_fn, receipt_by_pno, receipt_matches,
         rcpt_pno = str(item.get('상품번호', '') or '')
         rsq = max(1, _int((p or {}).get('split_qty', 1), 1))
         if rsq == 1:
-            m2 = _PACK_RE.search(str(item.get('상품명', '')))
-            if m2:
-                rsq = max(1, int(m2.group(1)))
+            # 영수증 상품명의 'x N개'로 소분수량 추정 — 단, '340ml x 20개'처럼
+            #   용량 뒤 표기는 스펙이라 제외한다 (15,690 → 784로 깎이던 원인).
+            rsq = max(1, extract_sell_factor(item.get('상품명', '')))
         sf = resolve_pack_factor(p, product)
         cost = (_int(item.get('단가')) // rsq) * qty * sf
         if rcpt_pno and p and p.get('match_keyword'):

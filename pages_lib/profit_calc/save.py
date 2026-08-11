@@ -16,7 +16,7 @@ def save_settlements(df, USERNAME, calc_date_str, shipping_cost, box_cost, _chec
     _cost_ov_s = st.session_state.get('cost_overrides', {}) or {}
     _kw_ov_s   = st.session_state.get('kw_overrides', {}) or {}
     _ids_save  = df['_sk'].values if '_sk' in df.columns else (df['id'].values if 'id' in df.columns else df.index.values)
-    import re as _re_ps
+    from utils import extract_sell_factor as _sf_from_name
     for _si, (_sidx, _sr) in enumerate(df.iterrows()):
         _ssk  = str(_ids_save[_si])
         _skey = f"{_sr['수취인명']}_{_sr['상품명']}_{_ssk}_{calc_date_str}"
@@ -29,8 +29,7 @@ def save_settlements(df, USERNAME, calc_date_str, shipping_cost, box_cost, _chec
         _ship_s   = int(_sr.get('배송비 합계', 0) or 0)
         _profit_s = (_settle_s + _ship_s) - (_cost + _per_ship + _per_box)
         # sell_factor (상품명 "x N개" 패턴)
-        _sm_ps = _re_ps.search(r'x\s*(\d+)\s*개', str(_sr.get('상품명', '') or ''), _re_ps.IGNORECASE)
-        _sf_ps = int(_sm_ps.group(1)) if _sm_ps and 1 < int(_sm_ps.group(1)) <= 50 else 1
+        _sf_ps = _sf_from_name(_sr.get('상품명', ''))
         _ps_save_rows.append({
             'order_no':           str(_sidx),
             'recipient':          str(_sr.get('수취인명', '') or ''),
@@ -83,7 +82,7 @@ def save_price_db(df, USERNAME, calc_date_str, shipping_cost, box_cost, _preload
     _ids_rc = df['_sk'].values if '_sk' in df.columns else (df['id'].values if 'id' in df.columns else df.index.values)
     _kw_ov_rc = st.session_state.get('kw_overrides', {}) or {}
     _co_rc = st.session_state.get('cost_overrides', {}) or {}
-    import re as _re_rc
+    from utils import extract_sell_factor as _sf_from_name
     for _rci, (_rcidx, _rcr) in enumerate(df.iterrows()):
         _rcsk   = str(_ids_rc[_rci])
         _rckey  = f"{_rcr['수취인명']}_{_rcr['상품명']}_{_rcsk}_{calc_date_str}"
@@ -93,8 +92,7 @@ def save_price_db(df, USERNAME, calc_date_str, shipping_cost, box_cost, _preload
         _rckw   = _kw_ov_rc.get(_rcsk) or str(_rcr.get('매칭제품', '') or '')
         _rcsettle = int(_rcr.get('정산예정금액', 0) or 0)
         _rcshipf  = int(_rcr.get('배송비 합계', 0) or 0)
-        _sm_rc  = _re_rc.search(r'x\s*(\d+)\s*개', str(_rcr.get('상품명', '') or ''), _re_rc.IGNORECASE)
-        _sf_rc  = int(_sm_rc.group(1)) if _sm_rc and 1 < int(_sm_rc.group(1)) <= 50 else 1
+        _sf_rc  = _sf_from_name(_rcr.get('상품명', ''))
         _ps_rc_rows.append({
             'order_no': str(_rcidx), 'recipient': str(_rcr.get('수취인명', '') or ''),
             'product_name': str(_rcr.get('상품명', '') or ''),
@@ -111,7 +109,7 @@ def save_price_db(df, USERNAME, calc_date_str, shipping_cost, box_cost, _preload
             'split_qty': int(_rcr.get('소분단위', 1) or 1), 'sell_factor': _sf_rc,
         })
     save_profit_settlements(USERNAME, calc_date_str, _ps_rc_rows)
-    import re as _re_save
+    from utils import extract_sell_factor as _sf_from_name
     _overrides = st.session_state.get('cost_overrides', {}) or {}
     for _idx_save, _r in df.iterrows():
         _pno = str(_r.get('매칭상품번호', '') or '').strip()
@@ -140,9 +138,7 @@ def save_price_db(df, USERNAME, calc_date_str, shipping_cost, box_cost, _preload
             # 매칭 공식: cost = (unit_price / sq) × (qty × sell_factor)
             # 저장 공식: unit_price = (cost × sq) / (qty × sell_factor)
             _prod_name = str(_r.get('상품명', '') or '')
-            _sm = _re_save.search(r'x\s*(\d+)\s*개', _prod_name, _re_save.IGNORECASE)
-            _sell_val = int(_sm.group(1)) if _sm else 1
-            _sell_factor = _sell_val if 1 < _sell_val <= 50 else 1
+            _sell_factor = _sf_from_name(_prod_name)
             _denom = max(1, _qty * _sell_factor)
             _new_unit = (_cost * _sq) // _denom
             # 식별된 레코드(채널 우선)에 정확히 반영 — origin칸에 channel 넣지 않음(오염 방지)
@@ -175,7 +171,7 @@ def save_all(df, USERNAME, calc_date_str, shipping_cost, box_cost, _preload_user
     _ids_all = df['_sk'].values if '_sk' in df.columns else (df['id'].values if 'id' in df.columns else df.index.values)
     _kw_ov_all = st.session_state.get('kw_overrides', {}) or {}
     _co_all = st.session_state.get('cost_overrides', {}) or {}
-    import re as _re_all
+    from utils import extract_sell_factor as _sf_from_name
     for _alli, (_allidx, _allr) in enumerate(df.iterrows()):
         _allsk  = str(_ids_all[_alli])
         _allkey = f"{_allr['수취인명']}_{_allr['상품명']}_{_allsk}_{calc_date_str}"
@@ -184,8 +180,7 @@ def save_all(df, USERNAME, calc_date_str, shipping_cost, box_cost, _preload_user
         _allbox  = int(st.session_state.get(f"box_{_allsk}", box_cost))
         _allkw   = _kw_ov_all.get(_allsk) or str(_allr.get('매칭제품', '') or '')
         _alls    = int(_allr.get('정산예정금액', 0) or 0)
-        _allsf_m = _re_all.search(r'x\s*(\d+)\s*개', str(_allr.get('상품명', '') or ''), _re_all.IGNORECASE)
-        _allsf   = int(_allsf_m.group(1)) if _allsf_m and 1 < int(_allsf_m.group(1)) <= 50 else 1
+        _allsf   = _sf_from_name(_allr.get('상품명', ''))
         _allshipf = int(_allr.get('배송비 합계', 0) or 0)
         _ps_all_rows.append({
             'order_no': str(_allidx), 'recipient': str(_allr.get('수취인명', '') or ''),
@@ -219,11 +214,9 @@ def save_all(df, USERNAME, calc_date_str, shipping_cost, box_cost, _preload_user
                         if (p.get('product_no') and p.get('product_no') == _pno)
                         or p.get('match_keyword') == _kw), None)
             _sq = max(1, int((_up or {}).get('split_qty') or 1))
-            import re as _re_s2
+            from utils import extract_sell_factor as _sf_s2
             _prod_name_s2 = str(_r.get('상품명', '') or '')
-            _sm_s2 = _re_s2.search(r'x\s*(\d+)\s*개', _prod_name_s2, _re_s2.IGNORECASE)
-            _sell_val_s2 = int(_sm_s2.group(1)) if _sm_s2 else 1
-            _sell_factor_s2 = _sell_val_s2 if 1 < _sell_val_s2 <= 50 else 1
+            _sell_factor_s2 = _sf_s2(_prod_name_s2)
             _denom_s2 = max(1, _qty * _sell_factor_s2)
             _new_unit = (_cost * _sq) // _denom_s2
             upsert_product(USERNAME, _kw or _pno, _kw or _pno, _new_unit,

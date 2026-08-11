@@ -9,7 +9,8 @@ from datetime import datetime
 
 import pandas as pd
 
-from utils import calc_match_score, MIN_MATCH_SCORE, extract_pack_qty, get_ngrams, ProductMatcher
+from utils import (calc_match_score, MIN_MATCH_SCORE, extract_pack_qty, get_ngrams,
+                   ProductMatcher, extract_sell_factor)
 from db import (
     get_shared_products, get_all_products, get_all_products_merged,
     upsert_user_private,
@@ -68,27 +69,12 @@ def _index_products(products: list) -> dict:
 
 
 # ── 묶음배수 해석 (단일 진실공급원) ────────────────────────
-_PACK_RE = re.compile(r'x\s*(\d+)\s*개', re.IGNORECASE)
 # "xN개" 바로 앞이 무게/용량 단위로 끝나면 = 내용물 개수(박스 구성) → 곱하지 않는다.
-#   예: "35g x 48개"(48개들이 1박스), "130g x 12개", "190ml x 2" → 배수 1
+#   예: "35g x 48개"(48개들이 1박스), "130g x 12개", "340ml x 20개" → 배수 1
 #   (소분 N개 '판매'로 곱해야 하는 경우는 products.pack_multiplier로 명시 지정)
-_UNIT_BEFORE_RE = re.compile(r'(?:g|kg|ml|l|ℓ|리터|그램|캡슐|정|매|포)\s*$', re.IGNORECASE)
-
-
-def pack_factor_from_name(product_name: str) -> int:
-    """상품명 "x N개" → 배수. 2~50만 인정(그 밖은 1).
-    단, xN개 앞이 무게/용량 단위(g/kg/ml 등)로 끝나면 '내용물 설명'으로 보고 1을 반환
-    (구입가가 x48·x12 등으로 과다계상되던 pack 버그 방지)."""
-    name = str(product_name or '')
-    m = _PACK_RE.search(name)
-    if not m:
-        return 1
-    v = int(m.group(1))
-    if not (1 < v <= 50):
-        return 1
-    if _UNIT_BEFORE_RE.search(name[:m.start()]):
-        return 1
-    return v
+# 판정 자체는 utils.extract_sell_factor 하나만 쓴다 — 수익계산 쪽에 같은 규칙이
+#   따로 구현돼 있다가 가드가 빠져 단가가 1/N로 저장되는 사고가 있었다.
+pack_factor_from_name = extract_sell_factor
 
 
 def resolve_pack_factor(product: dict, product_name: str) -> int:
