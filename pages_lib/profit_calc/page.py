@@ -608,6 +608,22 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
 
         st.caption(f"📅 {calc_date_str}")
 
+        # ── 페이지네이션 (표시부는 아래) ──
+        #   전체선택 버튼이 '현재 페이지 행'만 대상으로 잡으려면 액션바보다 먼저
+        #   페이지 범위를 알아야 해서 계산만 여기서 한다. df는 여기부터 안 바뀐다.
+        _PG_SIZE = 20
+        _total_rows = len(df)
+        _total_pages = max(1, (_total_rows + _PG_SIZE - 1) // _PG_SIZE)
+        if st.session_state.get('_profit_last_date') != calc_date_str:
+            st.session_state['profit_pg'] = 1
+            st.session_state['_profit_last_date'] = calc_date_str
+        if 'profit_pg' not in st.session_state:
+            st.session_state['profit_pg'] = 1
+        _cur_pg = max(1, min(int(st.session_state['profit_pg']), _total_pages))
+        _pg_start = (_cur_pg - 1) * _PG_SIZE
+        _pg_end   = min(_pg_start + _PG_SIZE, _total_rows)
+        _page_df  = df.iloc[_pg_start:_pg_end]
+
         # value_counts() 1회 호출로 5개 카운트 추출 (이전: df 5번 스캔 → ~5x 빠름)
         _src_counts = df['매칭출처'].value_counts().to_dict()
         c1, c2, c3, c4, c5 = st.columns(5)
@@ -634,6 +650,10 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         # ⚓ stable_key 기반 (DB id 우선)
         _ids_for_sel = df['_sk'].values
         _sk_list = [str(_v) for _v in _ids_for_sel]
+        # 헤더 전체선택은 '지금 보이는 페이지'만 대상 — 안 보이는 행까지 잡히면
+        #   126건이 통째로 선택돼 정산저장·삭제가 의도 밖으로 나간다.
+        _page_sk_list = [str(_v) for _v in _page_df['_sk'].values]
+        # 액션(정산저장·삭제·일괄적용)은 페이지를 넘겨가며 고른 선택을 살려야 하므로 전체 기준
         _checked_rows = [_sk for _sk in _sk_list if st.session_state.get(f"sel_p_{_sk}", False)]
         _hdr_sel_key = f'_hdr_sel_{calc_date_str}'
 
@@ -705,11 +725,13 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         # 헤더 — outer column: [전체선택][표시][구입가][발송비][박스비][🧾영수증]
         _TH = "text-align:{a};padding:3px 6px;font-size:12px;color:#444;background:#fafafa;border-bottom:1px solid #dee2e6"
         _h0, _h1, _h2, _h3, _h4, _h5 = st.columns([0.3, 7.5, 1.3, 1.0, 1.0, 0.6])
-        # 전체 선택 버튼
-        _all_sel = len(_checked_rows) == len(df) and len(df) > 0
-        if _h0.button("☑" if _all_sel else "☐", key=_hdr_sel_key, help="전체 선택/해제"):
+        # 전체 선택 버튼 — 현재 페이지 행만 토글
+        _all_sel = bool(_page_sk_list) and all(
+            st.session_state.get(f"sel_p_{_sk}", False) for _sk in _page_sk_list)
+        if _h0.button("☑" if _all_sel else "☐", key=_hdr_sel_key,
+                      help=f"이 페이지 {len(_page_sk_list)}건 전체 선택/해제"):
             _new_v = not _all_sel
-            for _sk in _sk_list:
+            for _sk in _page_sk_list:
                 st.session_state[f'sel_p_{_sk}'] = _new_v
             st.rerun()
         _h1.markdown(
@@ -750,19 +772,6 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         _CELL = "padding:5px 6px;font-size:13px;border-bottom:1px solid #f0f0f0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
         _CELL_NAME = "padding:5px 6px;font-size:13px;border-bottom:1px solid #f0f0f0;white-space:normal;word-break:break-all;line-height:1.4"
 
-        # ── 페이지네이션 ──
-        _PG_SIZE = 20
-        _total_rows = len(df)
-        _total_pages = max(1, (_total_rows + _PG_SIZE - 1) // _PG_SIZE)
-        if st.session_state.get('_profit_last_date') != calc_date_str:
-            st.session_state['profit_pg'] = 1
-            st.session_state['_profit_last_date'] = calc_date_str
-        if 'profit_pg' not in st.session_state:
-            st.session_state['profit_pg'] = 1
-        _cur_pg = max(1, min(int(st.session_state['profit_pg']), _total_pages))
-        _pg_start = (_cur_pg - 1) * _PG_SIZE
-        _pg_end   = min(_pg_start + _PG_SIZE, _total_rows)
-        _page_df  = df.iloc[_pg_start:_pg_end]
         if _total_pages > 1:
             st.caption(f"전체 {_total_rows}건 | {_cur_pg}/{_total_pages} 페이지 ({_pg_start+1}~{_pg_end}번째)")
 
