@@ -795,6 +795,20 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     # _orders_cleared: 지우기 버튼으로 명시적으로 초기화한 경우 — DB 재복원 건너뜀
     if st.session_state.get('orders') is None and not st.session_state.get('_orders_cleared'):
         _db_rows = get_active_orders(USERNAME)
+        if not _db_rows:
+            # 송장 업로드로 오늘 발송을 끝내면 미발송건은 정리되고 발송건은 상태가
+            #   '배송중'이 되어 활성 목록에서 빠진다. 그러면 새로고침 시 목록이 빈다.
+            #   → 오늘 발송한 건으로 복원해 '발송된 건만 남는' 상태를 유지한다.
+            try:
+                from db_core import get_user_db as _gudb
+                _c = _gudb(USERNAME)
+                _db_rows = [dict(r) for r in _c.execute(
+                    "SELECT oh.* FROM order_history oh "
+                    "JOIN dispatch_log dl ON dl.order_no = oh.order_no "
+                    "WHERE dl.dispatched_at = date('now','localtime')")]
+                _c.close()
+            except Exception:
+                _db_rows = []
         if _db_rows:
             _db_df = db_rows_to_orders_df(_db_rows)
             _db_df['플랫폼'] = _db_df['상품주문번호'].apply(

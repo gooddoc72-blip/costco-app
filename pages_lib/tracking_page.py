@@ -210,6 +210,48 @@ def _cleanup_undispatched(username, keep_nos, container):
     return _n
 
 
+def _refresh_daily_orders_session(username, keep_nos, container):
+    """일일 주문 수집 목록을 '이번에 업로드한 발송건'으로 교체.
+
+    그 목록은 order_history가 아니라 st.session_state['orders']로 그려진다
+    (order_upload_page는 세션이 비었을 때만 DB에서 복원한다). order_history만
+    지우면 화면은 그대로라 '삭제가 안 된 것'처럼 보인다.
+
+    발송 직후 네이버 주문 상태는 배송중으로 바뀌어 get_active_orders에서도
+    빠지므로, DB 복원에 맡기지 않고 발송건으로 직접 채운다.
+    """
+    from db import db_rows_to_orders_df
+    _nos = [str(x).strip() for x in (keep_nos or []) if str(x).strip()]
+    if not _nos:
+        return 0
+    _conn = get_user_db(username)
+    _rows = []
+    for i in range(0, len(_nos), 900):
+        _chunk = _nos[i:i + 900]
+        _ph = ",".join("?" * len(_chunk))
+        _rows += [dict(r) for r in _conn.execute(
+            f"SELECT * FROM order_history WHERE order_no IN ({_ph})", _chunk)]
+    _conn.close()
+    if not _rows:
+        return 0
+    _df = db_rows_to_orders_df(_rows)
+    if _df is None or _df.empty:
+        return 0
+    _df['플랫폼'] = _df['상품주문번호'].apply(
+        lambda x: '🟡 쿠팡' if '-' in str(x) else '🟢 네이버')
+    for _c in ['수량', '최종 상품별 총 주문금액', '배송비 합계',
+               '제주/도서 추가배송비', '정산예정금액']:
+        if _c in _df.columns:
+            _df[_c] = pd.to_numeric(_df[_c], errors='coerce').fillna(0).astype(int)
+    _df = _df.sort_values('상품명').reset_index(drop=True)
+    st.session_state['orders'] = _df
+    st.session_state['orders_unsaved'] = False
+    st.session_state.pop('_orders_cleared', None)
+    st.session_state.pop('_cutoff_deferred_n', None)
+    container.caption(f"📋 일일 주문 수집 목록을 발송건 {len(_df)}건으로 교체했습니다")
+    return len(_df)
+
+
 def _save_dispatch_rows(username, rows, platform, container):
     """대기 중인 row들을 dispatch_log에 실제 insert (수동 저장 버튼이 호출)."""
     from db import log_dispatch_success
@@ -480,8 +522,9 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         _drows = _prepare_dispatch_rows(USERNAME, _nv_df, _res['success_order_ids'])
                         _save_dispatch_rows(USERNAME, _drows, 'naver', _dc3)
                         # ③ 발송 파일에 없는 미발송 주문 정리 → 목록에 발송건만 남긴다
-                        _cleanup_undispatched(
-                            USERNAME, _uploaded_order_nos(result_df, _map), _dc3)
+                        _keep = _uploaded_order_nos(result_df, _map)
+                        _cleanup_undispatched(USERNAME, _keep, _dc3)
+                        _refresh_daily_orders_session(USERNAME, _keep, _dc3)
 
             elif _p["id"] == "coupang":
                 _dc3.caption("💡 쿠팡 상품주문번호 형식: `주문번호-아이템번호` — CJ 고객주문번호에 이 값 입력")
@@ -515,6 +558,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         _cp_keep = _uploaded_order_nos(result_df)
                         _cp_keep |= {_resolve_cp(r['상품주문번호']) for _, r in result_df.iterrows()}
                         _cleanup_undispatched(USERNAME, _cp_keep, _dc3)
+                        _refresh_daily_orders_session(USERNAME, _cp_keep, _dc3)
 
             # ── 저장 대기 (수동 저장 버튼) — 같은 플랫폼 카드 안에 표시 ──
             _pkey = f"dispatch_pending_{_p['id']}"
