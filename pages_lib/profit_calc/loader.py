@@ -61,7 +61,32 @@ def build_settlement_df(USERNAME, calc_date_str, _cached_daily_orders=None):
         if 'order_no' in df.columns:
             df.index = df['order_no'].astype(str)
             df.index.name = None
-        _src_label = f"✅ 정산완료 ({len(df)}건) — profit_settlements"
+
+        # ⚠️ 정산저장은 '선택한 행만' 저장한다. 저장분만 쓰면 그날 발송했는데
+        #    아직 정산저장 안 한 건이 화면에서 통째로 사라진다.
+        #    (8/11 예: 발송 25건인데 정산저장 16건 → 15건 증발)
+        #    → 저장분은 저장값 그대로 쓰고, 저장 안 된 발송건을 뒤에 이어붙인다.
+        _ps_extra = 0
+        if _dispatched_rows:
+            _saved_nos = set(df.index.astype(str))
+            _extra_rows = [r for r in _dispatched_rows
+                           if str(r.get('order_no', '')) not in _saved_nos]
+            if _extra_rows:
+                _ex = pd.DataFrame(_extra_rows).rename(columns=rename_map)
+                if 'order_no' in _ex.columns:
+                    _ex.index = _ex['order_no'].astype(str)
+                    _ex.index.name = None
+                df = pd.concat([df, _ex], axis=0)
+                _ps_extra = len(_ex)
+        # 병합으로 한쪽에만 있던 숫자 컬럼의 결측 보정
+        for _c in ('수량', '최종 상품별 총 주문금액', '배송비 합계',
+                   '제주/도서 추가배송비', '정산예정금액', '구입가격'):
+            if _c in df.columns:
+                df[_c] = pd.to_numeric(df[_c], errors='coerce').fillna(0).astype(int)
+
+        _src_label = (f"✅ 정산완료 {len(df) - _ps_extra}건 + 🚀 미정산 발송 {_ps_extra}건 "
+                      f"= {len(df)}건" if _ps_extra
+                      else f"✅ 정산완료 ({len(df)}건) — profit_settlements")
         _source_kind = 'ps'
 
     elif _dispatched_rows:
@@ -126,18 +151,29 @@ def load_settlement_df(USERNAME, calc_date_str, _cached_daily_orders=None):
                 st.session_state['cost_overrides'] = {}
             if 'kw_overrides' not in st.session_state:
                 st.session_state['kw_overrides'] = {}
+            def _saved_int(v):
+                """저장값만 복원. 미정산 발송건은 택배원가/박스원가 컬럼이 없어
+                NaN이 오는데, 그건 '저장된 적 없음'이라 전역 기본값을 써야 한다.
+                (int(NaN)은 ValueError라 그대로 두면 페이지가 죽는다)"""
+                try:
+                    if v is None or pd.isna(v):
+                        return None
+                    return int(v)
+                except (TypeError, ValueError):
+                    return None
+
             _ids_ps = df.index.values
             for _pi, (_pidx, _pr) in enumerate(df.iterrows()):
                 _psk = str(_ids_ps[_pi])
                 _pkey = f"{_pr.get('수취인명', '')}_{_pr.get('상품명', '')}_{_psk}_{calc_date_str}"
-                _pcp = int(_pr.get('구입가격', 0) or 0)
+                _pcp = _saved_int(_pr.get('구입가격')) or 0
                 if _pcp > 0:
                     st.session_state['cost_overrides'][_pkey] = _pcp
-                _pship = int(_pr.get('택배원가', 0) or 0)
-                if f"ship_{_psk}" not in st.session_state:
+                _pship = _saved_int(_pr.get('택배원가'))
+                if _pship is not None and f"ship_{_psk}" not in st.session_state:
                     st.session_state[f"ship_{_psk}"] = _pship
-                _pbox = int(_pr.get('박스원가', 0) or 0)
-                if f"box_{_psk}" not in st.session_state:
+                _pbox = _saved_int(_pr.get('박스원가'))
+                if _pbox is not None and f"box_{_psk}" not in st.session_state:
                     st.session_state[f"box_{_psk}"] = _pbox
                 _pkw = str(_pr.get('matched_keyword') or '')
                 if _pkw:
