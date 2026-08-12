@@ -40,64 +40,70 @@ def build_settlement_df(USERNAME, calc_date_str, _cached_daily_orders=None):
         'cost_price': '구입가격'
     }
 
-    # 0순위: profit_settlements (정산저장된 확정 데이터 — 최우선)
     _ps_rows_src = get_profit_settlements(USERNAME, calc_date_str)
-    if _ps_rows_src:
-        df = pd.DataFrame(_ps_rows_src)
-        _ps_col_map = {
-            'recipient': '수취인명', 'product_name': '상품명',
-            'option_info': '옵션정보', 'qty': '수량',
-            'order_amount': '최종 상품별 총 주문금액',
-            'shipping_fee': '배송비 합계',
-            'extra_shipping': '제주/도서 추가배송비',
-            'settlement_amount': '정산예정금액',
-            'cost_price': '구입가격',
-            'delivery_cost': '택배원가',
-            'box_cost': '박스원가',
-        }
-        df = df.rename(columns=_ps_col_map)
-        if 'id' in df.columns:
-            df = df.drop(columns=['id'])  # profit_settlements PK 제거 — order_no를 stable_key로 사용
+    _ps_col_map = {
+        'recipient': '수취인명', 'product_name': '상품명',
+        'option_info': '옵션정보', 'qty': '수량',
+        'order_amount': '최종 상품별 총 주문금액',
+        'shipping_fee': '배송비 합계',
+        'extra_shipping': '제주/도서 추가배송비',
+        'settlement_amount': '정산예정금액',
+        'cost_price': '구입가격',
+        'delivery_cost': '택배원가',
+        'box_cost': '박스원가',
+    }
+
+    if _dispatched_rows:
+        # ⭐ 행 집합은 '그날 송장이 찍힌 건'(dispatch_log)이 정한다.
+        #    정산저장(profit_settlements)은 행을 만들지 않고 저장값만 덮어쓴다.
+        #    - 정산저장은 '선택한 행만' 저장하므로 그것으로 행을 정하면
+        #      아직 저장 안 한 발송건이 통째로 사라진다.
+        #    - 반대로 발송 안 된 주문을 정산저장해 두면 그 날짜에 유령 행이 남는다.
+        #    송장 업로드 = 그날 실제로 나간 것 → 수익계산 대상도 그것과 일치해야 한다.
+        df = pd.DataFrame(_dispatched_rows).rename(columns=rename_map)
         if 'order_no' in df.columns:
             df.index = df['order_no'].astype(str)
             df.index.name = None
 
-        # ⚠️ 정산저장은 '선택한 행만' 저장한다. 저장분만 쓰면 그날 발송했는데
-        #    아직 정산저장 안 한 건이 화면에서 통째로 사라진다.
-        #    (8/11 예: 발송 25건인데 정산저장 16건 → 15건 증발)
-        #    → 저장분은 저장값 그대로 쓰고, 저장 안 된 발송건을 뒤에 이어붙인다.
-        _ps_extra = 0
-        if _dispatched_rows:
-            _saved_nos = set(df.index.astype(str))
-            _extra_rows = [r for r in _dispatched_rows
-                           if str(r.get('order_no', '')) not in _saved_nos]
-            if _extra_rows:
-                _ex = pd.DataFrame(_extra_rows).rename(columns=rename_map)
-                if 'order_no' in _ex.columns:
-                    _ex.index = _ex['order_no'].astype(str)
-                    _ex.index.name = None
-                df = pd.concat([df, _ex], axis=0)
-                _ps_extra = len(_ex)
-        # 병합으로 한쪽에만 있던 숫자 컬럼의 결측 보정
+        _saved = {str(r.get('order_no', '')): r for r in (_ps_rows_src or [])}
+        _hit = sum(1 for k in df.index.astype(str) if k in _saved)
+        if _hit:
+            _keys = list(df.index.astype(str))
+
+            def _from_saved(col):
+                """저장값만 채우고 없으면 None — 전역 기본값이 적용되게 둔다."""
+                return [(_saved[k].get(col) if k in _saved else None) for k in _keys]
+
+            df['택배원가'] = _from_saved('delivery_cost')
+            df['박스원가'] = _from_saved('box_cost')
+            df['matched_keyword'] = _from_saved('matched_keyword')
+            # 구입가격은 저장값 우선, 없으면 order_history 값 유지
+            _base_cost = df['구입가격'] if '구입가격' in df.columns else [0] * len(df)
+            df['구입가격'] = [
+                (_saved[k].get('cost_price') if k in _saved and _saved[k].get('cost_price')
+                 else _b)
+                for k, _b in zip(_keys, _base_cost)
+            ]
         for _c in ('수량', '최종 상품별 총 주문금액', '배송비 합계',
                    '제주/도서 추가배송비', '정산예정금액', '구입가격'):
             if _c in df.columns:
                 df[_c] = pd.to_numeric(df[_c], errors='coerce').fillna(0).astype(int)
 
-        _src_label = (f"✅ 정산완료 {len(df) - _ps_extra}건 + 🚀 미정산 발송 {_ps_extra}건 "
-                      f"= {len(df)}건" if _ps_extra
-                      else f"✅ 정산완료 ({len(df)}건) — profit_settlements")
-        _source_kind = 'ps'
+        _src_label = (f"🚀 발송 {len(df)}건 (송장 기준) — 정산저장 {_hit}건 반영"
+                      if _hit else f"🚀 발송 기준 ({len(df)}건) — dispatch_log")
+        # 저장값이 하나라도 있으면 session 복원 루프를 태워야 한다
+        _source_kind = 'ps' if _hit else 'dispatch'
 
-    elif _dispatched_rows:
-        df = pd.DataFrame(_dispatched_rows)
-        df = df.rename(columns=rename_map)
-        # order_no를 stable_key 로 사용 (dispatch_log UNIQUE)
+    elif _ps_rows_src:
+        # 발송기록이 없는 날짜 — 수동 정산 등 옛 데이터 보존용
+        df = pd.DataFrame(_ps_rows_src).rename(columns=_ps_col_map)
+        if 'id' in df.columns:
+            df = df.drop(columns=['id'])  # PK 제거 — order_no를 stable_key로 사용
         if 'order_no' in df.columns:
             df.index = df['order_no'].astype(str)
             df.index.name = None
-        _src_label = f"🚀 발송 기준 ({len(df)}건) — dispatch_log"
-        _source_kind = 'dispatch'
+        _src_label = f"✅ 정산완료 ({len(df)}건) — 발송기록 없음"
+        _source_kind = 'ps'
     else:
         # Fallback 1: order_history (결제일 기준) — 각 주문이 자기 날짜에 정확히 있어
         # '그 날짜 주문건'만 정확히 로드 (daily_orders 누적 오염 회피)
