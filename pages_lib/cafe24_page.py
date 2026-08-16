@@ -243,6 +243,15 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     if st.button(f"🚀 선택 {len(_ag_sel)}개 → '{_ag_tuser}' 스토어 등록", type="primary",
                                  key="ag_reg", disabled=not (_ag_sel and _ag_oc and _ag_os)):
                         _ag_rows = []; _agprog = st.progress(0.0)
+                        _ag_prog = _agprog                  # 완료 후 정리용
+                        _ag_live = st.empty()               # 진행 중 건별 결과 표시
+
+                        def _ag_tick(_idx, _label, _status):
+                            """건별 처리 결과를 진행 중에 바로 보여준다(마지막에 몰아 보지 않게)."""
+                            _n_ok = sum(1 for _r in _ag_rows if str(_r.get('상태', '')).startswith('✅'))
+                            _ag_live.markdown(
+                                f"`{_idx}/{len(_ag_sel)}` {_status} **{_label[:34]}** "
+                                f"— 누적 성공 {_n_ok} / 실패 {len(_ag_rows) - _n_ok}")
                         for _i, (_p, _npr) in enumerate(_ag_sel):
                             _agprog.progress((_i + 1) / len(_ag_sel))
                             _name = str(_p.get('product_name', ''))
@@ -252,10 +261,12 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                             _cf_name = _full.get('product_name') or _name
                             _rep = _full.get('detail_image') or _full.get('list_image') or ''
                             if not _rep:
-                                _ag_rows.append({'상품': _name[:24], '상태': '❌ 이미지 없음'}); continue
+                                _ag_rows.append({'상품': _name[:24], '상태': '❌ 이미지 없음'})
+                                _ag_tick(_i + 1, _name, '❌'); continue
                             _cdn, _ue = naver_api.upload_product_image(_ag_tid, _ag_tsecret, _rep)
                             if not _cdn:
-                                _ag_rows.append({'상품': _name[:24], '상태': '❌ 이미지업로드 실패'}); continue
+                                _ag_rows.append({'상품': _name[:24], '상태': '❌ 이미지업로드 실패'})
+                                _ag_tick(_i + 1, _name, '❌'); continue
                             # ① AI 제품사진 분석(비전) → 상품명·원산지·브랜드
                             _ai_photo = {}
                             if _ag_photo_ai and (_ag_ai or _ag_gai):
@@ -277,7 +288,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                 if _cr2:
                                     _cid, _cfull = _cr2[0].get('id'), _cr2[0].get('full_name')
                             if not _cid:
-                                _ag_rows.append({'상품': _base_name[:24], '상태': '❌ 카테고리 판단실패'}); continue
+                                _ag_rows.append({'상품': _base_name[:24], '상태': '❌ 카테고리 판단실패'})
+                                _ag_tick(_i + 1, _base_name, '❌'); continue
                             # ③ 최종 상품명: 연관키워드(저경쟁 100~300+대표어) 최적화 — 분석 상품명을 seed로
                             _final_name = _base_name
                             if _ad_creds:
@@ -321,9 +333,31 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                             })
                             _ag_rows.append({'상품': _final_name[:24], '카테고리': str(_cfull or '')[:20],
                                              '태그': len(_tags or []), '판매가': _npr,
-                                             '상태': '✅ 등록' if not _re2 else f'❌ {str(_re2)[:24]}'})
+                                             '상태': '✅ 등록' if not _re2 else f'❌ {str(_re2)[:120]}'})
+                            _ag_tick(_i + 1, _final_name, '✅' if not _re2 else '❌')
+                        _ag_prog.empty()
                         _ok = sum(1 for r in _ag_rows if str(r.get('상태', '')).startswith('✅'))
-                        st.success(f"🛒 '{_ag_tuser}' 스토어 대행 등록 — 성공 {_ok} / 전체 {len(_ag_rows)}건")
+                        _fail_rows = [r for r in _ag_rows if not str(r.get('상태', '')).startswith('✅')]
+                        _msg = (f"🛒 '{_ag_tuser}' 스토어 대행 등록 — "
+                                f"성공 {_ok}건 / 실패 {len(_fail_rows)}건 (전체 {len(_ag_rows)}건)")
+                        if not _fail_rows:
+                            st.success(_msg)
+                        elif _ok:
+                            st.warning(_msg)
+                        else:
+                            st.error(_msg)
+                        if _fail_rows:
+                            with st.expander(f"❌ 실패 {len(_fail_rows)}건 — 사유 보기", expanded=True):
+                                # 사유별로 묶어 원인 파악이 쉽도록 표시
+                                _by_reason = {}
+                                for _r in _fail_rows:
+                                    _by_reason.setdefault(str(_r.get('상태', '')), []).append(
+                                        str(_r.get('상품', '')))
+                                for _reason, _names in sorted(
+                                        _by_reason.items(), key=lambda kv: -len(kv[1])):
+                                    st.markdown(f"**{_reason}** — {len(_names)}건")
+                                    st.caption(" · ".join(_names[:20])
+                                               + (f" 외 {len(_names) - 20}건" if len(_names) > 20 else ""))
                         st.dataframe(pd.DataFrame(_ag_rows), use_container_width=True, hide_index=True)
 
     # ── 🔗 카페24 ↔ 코스트코 매칭 & 동기화 ──────────────────────────
