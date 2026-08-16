@@ -215,28 +215,11 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                     if _apr:
                                         _ai_photo = _apr
                             _base_name = str(_ai_photo.get('name') or '').strip() or _cf_name
-                            # ② 카테고리 자동판단 — 분석 상품명 기준(폴백: 카페24명, 그다음 AI category 키워드)
-                            _items, _ = naver_api.naver_shopping_search(_ag_oc, _ag_os, _base_name)
-                            _paths = [">".join([x for x in (it.get('category1'), it.get('category2'),
-                                                            it.get('category3'), it.get('category4')) if x])
-                                      for it in (_items or [])]
-                            _paths = [p for p in _paths if p]
-                            _cid = None; _cfull = ''
-                            if _paths:
-                                _ch, _ = ai_service.suggest_naver_category(_ag_ai, _base_name, _paths)
-                                _chosen = _ch or _paths[0]
-                                _cr, _ = naver_api.search_naver_categories(
-                                    _ag_tid, _ag_tsecret, str(_chosen).split('>')[-1].strip())
-                                if _cr:
-                                    _pt = set(str(_chosen).replace('>', ' ').split())
-                                    _best, _bs = None, -1
-                                    for _c in _cr:
-                                        _ct = set(str(_c.get('full_name', '')).replace('>', ' ').split())
-                                        _sc = len(_pt & _ct)
-                                        if _sc > _bs:
-                                            _bs, _best = _sc, _c
-                                    if _best:
-                                        _cid, _cfull = _best.get('id'), _best.get('full_name')
+                            # ② 카테고리 자동판단 — AI 검색어 추정 + 로컬 카테고리 캐시
+                            # (쇼핑검색 API 폐지로 유사상품 카테고리 수집 방식은 사용 불가)
+                            _cid, _cfull, _ = naver_api.suggest_category_for_name(
+                                _base_name, _ag_tid, _ag_tsecret, ai_key=_ag_ai,
+                                extra_terms=[_ai_photo.get('category') or ''])
                             if not _cid and _ai_photo.get('category'):
                                 _cr2, _ = naver_api.search_naver_categories(
                                     _ag_tid, _ag_tsecret, str(_ai_photo['category']).strip())

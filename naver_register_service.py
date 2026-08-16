@@ -327,30 +327,14 @@ def resolve_category(api_id, api_secret, product, cat_map=None, ai_key="", open_
         if mid:
             return mid, "", "mapping"
 
-    # ③ AI 자동 (쇼핑검색 → 카테고리 후보 → suggest → leaf resolve)
-    #    open_creds 없으면 쇼핑검색 불가 → 미해결.
-    if open_creds and all(open_creds):
-        try:
-            import ai_service
-        except Exception:
-            ai_service = None
-        name = product.get("costco_name") or ""
-        items, _ = naver_api.naver_shopping_search(open_creds[0], open_creds[1], name)
-        paths = [
-            ">".join([x for x in (it.get("category1"), it.get("category2"),
-                                  it.get("category3"), it.get("category4")) if x])
-            for it in (items or [])
-        ]
-        paths = [p for p in paths if p]
-        if paths:
-            chosen = paths[0]
-            if ai_service is not None:
-                # ai_key 비어도 suggest_naver_category는 다수결 경로 반환(무AI 폴백)
-                _c, _ = ai_service.suggest_naver_category(ai_key, name, paths)
-                chosen = _c or paths[0]
-            cat_id, cat_full = _resolve_leaf(api_id, api_secret, chosen)
-            if cat_id:
-                return cat_id, cat_full, "ai"
+    # ③ AI 자동 (AI 검색어 추정 → 로컬 카테고리 캐시 → 최종 선택)
+    #    쇼핑검색 API가 폐지돼 유사상품 카테고리 수집은 불가. Open API 키도 불필요.
+    name = product.get("costco_name") or ""
+    if name:
+        cat_id, cat_full, _ = naver_api.suggest_category_for_name(
+            name, api_id, api_secret, ai_key=ai_key)
+        if cat_id:
+            return cat_id, cat_full, "ai"
 
     return None, None, None
 

@@ -935,6 +935,30 @@ _CAT_SYSTEM = (
 )
 
 
+_CAT_TERM_SYSTEM = (
+    "너는 네이버 쇼핑 카테고리 분류 전문가다. 상품명을 보고 네이버 쇼핑 카테고리 트리에서 "
+    "그 상품이 속할 만한 **카테고리 이름 후보**를 3개까지 추정한다.\n"
+    "규칙: 브랜드·용량·수량은 무시하고 품목의 일반명으로 답한다. "
+    "네이버 카테고리에 실제로 쓰이는 일반적인 단어를 쓴다(예: 참치액→액젓, 소갈비찜→갈비, "
+    "프레스앤씰→랩, 콩국→두유/콩국). 쉼표로 구분해 한 줄만 출력하고 다른 텍스트는 붙이지 않는다."
+)
+
+
+def suggest_category_terms(product_name, api_key=None, *, gemini_key=None):
+    """상품명 → 네이버 카테고리 검색어 후보(최대 3개). 반환: ([term], err).
+    쇼핑검색 API 폐지 후 카테고리 후보를 만들기 위한 1단계."""
+    _gk = resolve_gemini_key(gemini_key)
+    if not (api_key or _gk):
+        return [], "AI 키 없음"
+    _txt, _err, _ = ai_complete(_CAT_TERM_SYSTEM, f"상품명: {product_name}",
+                                gemini_key=_gk, anthropic_key=api_key, max_tokens=60)
+    if _err or not _txt:
+        return [], _err or "응답 없음"
+    line = _txt.strip().splitlines()[0]
+    terms = [t.strip().strip('"').strip() for t in line.split(",")]
+    return [t for t in terms if 1 < len(t) <= 20][:3], None
+
+
 def suggest_naver_category(api_key, product_name, candidate_paths, *, gemini_key=None):
     """상품명 + 쇼핑검색 후보 카테고리 경로들 → 최적 경로 1개 선택.
     키 없거나 실패 시 최빈(majority) 경로로 폴백. 반환: (path, err)."""

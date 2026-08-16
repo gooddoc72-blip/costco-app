@@ -66,6 +66,98 @@ def search_naver_categories(client_id, client_secret, keyword):
 
 
 
+_CAT_STOP = {"개입", "개", "입", "팩", "박스", "세트", "증량", "특가", "행사", "무료배송",
+             "국내산", "수입산", "대용량", "리필", "묶음", "낱개", "정품", "신상품"}
+
+
+def _category_terms(name):
+    """상품명에서 카테고리 검색어 후보 추출 (한글 2자 이상, 숫자·단위·브랜드성 토큰 제외).
+    뒤쪽 토큰일수록 품목명일 확률이 높아 뒤에서부터 우선순위를 준다."""
+    import re as _re
+    toks = []
+    for t in _re.split(r"[\s/·,()\[\]]+", str(name or "")):
+        t = t.strip()
+        if not t or t in _CAT_STOP:
+            continue
+        if not _re.search(r"[가-힣]{2,}", t):        # 숫자·영문·단위 토큰 제외
+            continue
+        t = _re.sub(r"[0-9]+.*$", "", t).strip()     # '950mL', '17%' 등 꼬리 제거
+        if len(t) >= 2 and t not in toks:
+            toks.append(t)
+    return list(reversed(toks))[:4]                  # 뒤쪽(품목명) 우선
+
+
+def suggest_category_for_name(name, client_id, client_secret,
+                              ai_key=None, gemini_key=None, extra_terms=None):
+    """상품명으로 네이버 카테고리를 추정한다. 반환: (category_id, full_name, error)
+
+    기존에는 쇼핑검색 API(shop.json)로 유사 상품의 category1~4를 모아 후보로 썼으나,
+    네이버가 해당 API를 폐지(404 SE05)해 동작하지 않는다. 대신
+      ① AI로 카테고리 검색어 추정 → ② 로컬 카테고리 캐시 검색 → ③ AI로 최종 경로 선택
+    순서로 후보를 만든다. AI 키가 없으면 토큰 겹침 점수로 고른다.
+    """
+    _name = str(name or "").strip()
+    if not _name:
+        return None, "", "상품명 없음"
+
+    terms = [t for t in (extra_terms or []) if t]
+    try:
+        import ai_service
+        _ai_terms, _ = ai_service.suggest_category_terms(
+            _name, api_key=ai_key, gemini_key=gemini_key)
+        terms += [t for t in (_ai_terms or []) if t]
+    except Exception:
+        pass
+    terms += _category_terms(_name)
+
+    # AI가 '랩/호일/비닐팩' 처럼 묶어서 답하면 통째로는 캐시에 안 걸리므로 조각도 함께 시도
+    import re as _re2
+    expanded, _s = [], set()
+    for t in terms:
+        for part in [t] + _re2.split(r"[/>,·]", str(t)):
+            part = part.strip()
+            if len(part) >= 2 and part not in _s:
+                _s.add(part)
+                expanded.append(part)
+    terms = expanded
+
+    # 후보 카테고리 수집 (로컬 캐시 검색 — 쇼핑검색 API 불필요)
+    cands, seen = [], set()
+    for t in terms:
+        rows, _ = search_naver_categories(client_id, client_secret, t)
+        for c in (rows or [])[:8]:
+            fn = c.get("full_name") or ""
+            if fn and fn not in seen:
+                seen.add(fn)
+                cands.append(c)
+        if len(cands) >= 40:
+            break
+    if not cands:
+        return None, "", "카테고리 후보 없음"
+
+    # 최종 선택 — AI 우선, 실패 시 토큰 겹침 점수
+    paths = [c["full_name"] for c in cands]
+    chosen = None
+    if ai_key or gemini_key:
+        try:
+            import ai_service
+            chosen, _ = ai_service.suggest_naver_category(
+                ai_key, _name, paths, gemini_key=gemini_key)
+        except Exception:
+            chosen = None
+    if chosen:
+        for c in cands:
+            if c["full_name"] == chosen:
+                return c.get("id"), c["full_name"], None
+    _nt = set(_category_terms(_name))
+    best, bs = cands[0], -1
+    for c in cands:
+        sc = len(_nt & set(str(c["full_name"]).replace(">", " ").split()))
+        if sc > bs:
+            bs, best = sc, c
+    return best.get("id"), best.get("full_name"), None
+
+
 def _square_canvas(im, size=1000, bg=(255, 255, 255)):
     """PIL 이미지를 '가운데 기준 정사각 크롭'으로 size×size 로 변환 (흰 여백 없음).
     짧은 변을 한 변으로 하는 정사각을 이미지 중앙에서 잘라냄:

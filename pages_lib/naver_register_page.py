@@ -385,15 +385,11 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     _cost = int(_i2.get('price') or 0)
                     _sale = int(round(_cost * (1 + _ph_margin / 100.0) / 0.945 / 10) * 10) if _cost > 0 else 0
                     _cid = None; _cfull = ''
-                    if _ph_oc and _ph_os and _nm:
-                        _its, _ = naver_api.naver_shopping_search(_ph_oc, _ph_os, _nm)
-                        _pth = [">".join([x for x in (it.get('category1'), it.get('category2'),
-                                                      it.get('category3'), it.get('category4')) if x])
-                                for it in (_its or [])]
-                        _pth = [p for p in _pth if p]
-                        if _pth:
-                            _ch, _ = ai_service.suggest_naver_category(_ph_aikey, _nm, _pth)
-                            _cid, _cfull = _nr_resolve_leaf(_ch or _pth[0])
+                    if _nm:
+                        # 쇼핑검색 API 폐지 → AI 검색어 추정 + 로컬 카테고리 캐시로 대체
+                        _cid, _cfull, _ = naver_api.suggest_category_for_name(
+                            _nm, api_id, api_secret, ai_key=_ph_aikey,
+                            extra_terms=[_i1.get('category') or ''])
                     if not _cid and _i1.get('category'):
                         _cr2, _ = naver_api.search_naver_categories(api_id, api_secret, _i1['category'])
                         if _cr2:
@@ -1011,17 +1007,12 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                             _prog.progress((_i + 1) / len(_targets))
                             _name = str(_p['product_name']); _cfprice = int(_p['price'])
                             _sale = int(round(_cfprice * (1 + _margin / 100.0) / 0.945 / 10) * 10)
-                            _items, _serr = naver_api.naver_shopping_search(_oc, _os, _name)
-                            _paths = [">".join([x for x in (it.get('category1'), it.get('category2'),
-                                                            it.get('category3'), it.get('category4')) if x])
-                                      for it in (_items or [])]
-                            _paths = [p for p in _paths if p]
-                            if not _paths:
-                                _rows.append({'상품': _name[:26], '상태': '❌ 쇼핑검색 카테고리 없음'}); continue
-                            _chosen, _ = ai_service.suggest_naver_category(_ai_key, _name, _paths)
-                            _cat_id, _cat_full = _cf2n_resolve_leaf(_chosen or _paths[0])
+                            # 쇼핑검색 API 폐지 → AI 검색어 추정 + 로컬 카테고리 캐시로 대체
+                            _cat_id, _cat_full, _cerr2 = naver_api.suggest_category_for_name(
+                                _name, api_id, api_secret, ai_key=_ai_key)
                             if not _cat_id:
-                                _rows.append({'상품': _name[:26], '카테고리': _chosen or '', '상태': '❌ 카테고리ID 변환실패'}); continue
+                                _rows.append({'상품': _name[:26],
+                                              '상태': f'❌ 카테고리 판단실패 ({_cerr2 or ""})'}); continue
                             _full, _fe = cafe24_api.get_product(_cf_creds, _p['product_no'], save_tokens=_cf_save)
                             _rep = (_full or {}).get('detail_image') or (_full or {}).get('list_image') or ''
                             if not _rep:

@@ -27,6 +27,7 @@ from .products import (
     _get_category_cache_path,
     load_naver_category_cache,
     search_naver_categories,
+    suggest_category_for_name,
     upload_product_image,
     upload_images_batch,
     resize_square_bytes,
