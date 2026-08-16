@@ -5,6 +5,68 @@ from .core import get_token
 
 _last_match_info = [""]
 
+# ── 데이터랩 호출 경로 (2026-06 네이버 API 플랫폼 이관) ──────────
+# 개발자센터(openapi.naver.com) 키와 NAVER API HUB(NCP) 키는 도메인·헤더가 서로 다르다.
+# 어느 쪽 키가 등록돼 있든 동작하도록 첫 호출에서 판별 후 client_id별로 캐시한다.
+_HUB_BASE = "https://naverapihub.apigw.ntruss.com"
+_LEGACY_BASE = "https://openapi.naver.com"
+_DATALAB_PATHS = {           # 종류: (API HUB 경로, 개발자센터 경로)
+    "search":      ("/search-trend/v1/search",             "/v1/datalab/search"),
+    "shop_kw":     ("/shopping/v1/category/keywords",       "/v1/datalab/shopping/category/keywords"),
+    "shop_gender": ("/shopping/v1/category/keyword/gender", "/v1/datalab/shopping/category/keyword/gender"),
+    "shop_age":    ("/shopping/v1/category/keyword/age",    "/v1/datalab/shopping/category/keyword/age"),
+}
+_api_platform = {}           # client_id -> "hub" | "legacy"
+
+
+def _api_err_msg(resp):
+    """네이버 API 오류 메시지 추출 — 3가지 응답 포맷 대응.
+    API HUB 게이트웨이 {"error":{"message":..}} / 검색 API {"errorMessage":..} /
+    데이터랩 {"errMsg":..}. 파싱 실패 시 본문 앞부분."""
+    try:
+        j = resp.json()
+    except Exception:
+        return (resp.text or "")[:200]
+    if isinstance(j.get("error"), dict):
+        _e = j["error"]
+        return _e.get("message") or _e.get("details") or str(_e)[:200]
+    return j.get("errorMessage") or j.get("errMsg") or (resp.text or "")[:200]
+
+
+def _datalab_post(client_id, client_secret, kind, body, timeout=15):
+    """데이터랩 계열 POST 공통 호출. 반환: (json_dict, error_msg).
+    API HUB → 개발자센터 순으로 시도하고, 성공한 플랫폼을 키별로 기억한다."""
+    _hub_path, _leg_path = _DATALAB_PATHS[kind]
+    _cid, _csec = str(client_id), str(client_secret)
+    _order = ["hub", "legacy"]
+    _known = _api_platform.get(_cid)
+    if _known:
+        _order = [_known]                      # 판별 완료 → 한 번만 호출
+    _err = None
+    for _plat in _order:
+        if _plat == "hub":
+            _url = _HUB_BASE + _hub_path
+            _hdr = {"X-NCP-APIGW-API-KEY-ID": _cid, "X-NCP-APIGW-API-KEY": _csec}
+        else:
+            _url = _LEGACY_BASE + _leg_path
+            _hdr = {"X-Naver-Client-Id": _cid, "X-Naver-Client-Secret": _csec}
+        _hdr["Content-Type"] = "application/json"
+        try:
+            r = requests.post(_url, headers=_hdr, data=json.dumps(body), timeout=timeout)
+        except Exception as e:
+            _err = str(e)
+            continue
+        if r.status_code == 200:
+            _api_platform[_cid] = _plat        # 판별 성공 → 캐시
+            try:
+                return r.json(), None
+            except Exception as e:
+                return None, f"응답 파싱 실패: {e}"
+        _err = f"[{r.status_code}] {_api_err_msg(r)}"
+        if r.status_code not in (401, 403, 404):
+            break                              # 인증/경로 문제가 아니면 폴백 무의미
+    return None, _err
+
 
 def get_last_match_info():
     return _last_match_info[0]
@@ -539,11 +601,6 @@ def datalab_search_trend(client_id, client_secret, keyword, pc_now=0, mo_now=0):
     while _sm <= 0:
         _sm += 12; _sy -= 1
     _start = _date(_sy, _sm, 1)
-    _hdr = {
-        "X-Naver-Client-Id": str(client_id),
-        "X-Naver-Client-Secret": str(client_secret),
-        "Content-Type": "application/json",
-    }
 
     def _fetch(device):
         body = {
@@ -554,20 +611,12 @@ def datalab_search_trend(client_id, client_secret, keyword, pc_now=0, mo_now=0):
         }
         if device:
             body["device"] = device
-        try:
-            r = requests.post("https://openapi.naver.com/v1/datalab/search",
-                              headers=_hdr, data=_json.dumps(body), timeout=15)
-            if r.status_code != 200:
-                try:
-                    _m2 = r.json().get("errorMessage") or r.text[:200]
-                except Exception:
-                    _m2 = r.text[:200]
-                return None, f"[{r.status_code}] {_m2}"
-            _res = r.json().get("results") or []
-            _data = _res[0].get("data", []) if _res else []
-            return {d["period"][:7]: float(d.get("ratio") or 0) for d in _data}, None
-        except Exception as e:
-            return None, str(e)
+        _j, _err = _datalab_post(client_id, client_secret, "search", body)
+        if _err:
+            return None, _err
+        _res = _j.get("results") or []
+        _data = _res[0].get("data", []) if _res else []
+        return {d["period"][:7]: float(d.get("ratio") or 0) for d in _data}, None
 
     _pc_r, _e1 = _fetch("pc")
     if _e1:
@@ -611,29 +660,44 @@ _SHOP_CAT_IDS = {
 }
 
 
+_cat_cache = {}      # keyword -> (cat_id, cat_name)
+
+
 def _detect_shop_category(client_id, client_secret, keyword):
-    """쇼핑검색 상위 10개 결과의 category1 다수결로 최상위 카테고리 탐지."""
-    try:
-        r = requests.get(
-            "https://openapi.naver.com/v1/search/shop.json",
-            headers={"X-Naver-Client-Id": str(client_id),
-                     "X-Naver-Client-Secret": str(client_secret)},
-            params={"query": keyword, "display": 10},
-            timeout=10,
-        )
-        if r.status_code != 200:
-            return None, None
-        _cnt = {}
-        for it in (r.json().get("items") or []):
-            c1 = (it.get("category1") or "").strip()
-            if c1 in _SHOP_CAT_IDS:
-                _cnt[c1] = _cnt.get(c1, 0) + 1
-        if not _cnt:
-            return None, None
-        _name = max(_cnt, key=_cnt.get)
-        return _SHOP_CAT_IDS[_name], _name
-    except Exception:
+    """키워드가 속한 쇼핑 최상위 카테고리 탐지.
+
+    기존에는 쇼핑검색 API(shop.json) 결과의 category1 다수결을 썼으나 해당 API가
+    폐지(404 SE05)돼, 데이터랩 쇼핑인사이트에 12개 카테고리를 순차 조회해
+    데이터가 잡히는 카테고리(데이터 포인트 수 → 비율합 순)로 판정한다."""
+    _kw = str(keyword or "").strip()
+    if not _kw:
         return None, None
+    if _kw in _cat_cache:
+        return _cat_cache[_kw]
+    from datetime import date as _d, timedelta as _t
+    _end = _d.today().replace(day=1) - _t(days=1)
+    _sy, _sm = _end.year, _end.month - 2
+    while _sm <= 0:
+        _sm += 12; _sy -= 1
+    _base = {"startDate": _d(_sy, _sm, 1).strftime("%Y-%m-%d"),
+             "endDate": _end.strftime("%Y-%m-%d"), "timeUnit": "month"}
+    _best = None                          # (점수 pts, 비율합, cat_id, cat_name)
+    for _name, _cid2 in _SHOP_CAT_IDS.items():
+        _body = dict(_base, category=_cid2, keyword=[{"name": _kw, "param": [_kw]}])
+        _j, _err = _datalab_post(client_id, client_secret, "shop_kw", _body, timeout=10)
+        if _err or not _j:
+            continue
+        _res = _j.get("results") or []
+        _data = _res[0].get("data", []) if _res else []
+        if not _data:
+            continue
+        _sum = sum(float(d.get("ratio") or 0) for d in _data)
+        _cand = (len(_data), _sum, _cid2, _name)
+        if _best is None or _cand[:2] > _best[:2]:
+            _best = _cand
+    _out = (_best[2], _best[3]) if _best else (None, None)
+    _cat_cache[_kw] = _out
+    return _out
 
 
 def datalab_keyword_gender_age(client_id, client_secret, keyword):
@@ -655,37 +719,25 @@ def datalab_keyword_gender_age(client_id, client_secret, keyword):
     _sy, _sm = _end.year, _end.month - 11
     while _sm <= 0:
         _sm += 12; _sy -= 1
-    _hdr = {"X-Naver-Client-Id": str(client_id),
-            "X-Naver-Client-Secret": str(client_secret),
-            "Content-Type": "application/json"}
     _body = {"startDate": _date(_sy, _sm, 1).strftime("%Y-%m-%d"),
              "endDate": _end.strftime("%Y-%m-%d"),
              "timeUnit": "month", "category": _cat, "keyword": _kw}
 
     def _fetch(kind):
-        try:
-            r = requests.post(
-                f"https://openapi.naver.com/v1/datalab/shopping/category/keyword/{kind}",
-                headers=_hdr, data=_json.dumps(_body), timeout=15)
-            if r.status_code != 200:
-                try:
-                    _m2 = r.json().get("errorMessage") or r.text[:200]
-                except Exception:
-                    _m2 = r.text[:200]
-                return None, f"[{r.status_code}] {_m2}"
-            _res = r.json().get("results") or []
-            _sum = {}
-            for d in (_res[0].get("data", []) if _res else []):
-                g = str(d.get("group") or "")
-                _sum[g] = _sum.get(g, 0.0) + float(d.get("ratio") or 0)
-            return _sum, None
-        except Exception as e:
-            return None, str(e)
+        _j, _err = _datalab_post(client_id, client_secret, kind, _body)
+        if _err:
+            return None, _err
+        _res = _j.get("results") or []
+        _sum = {}
+        for d in (_res[0].get("data", []) if _res else []):
+            g = str(d.get("group") or "")
+            _sum[g] = _sum.get(g, 0.0) + float(d.get("ratio") or 0)
+        return _sum, None
 
-    _g, _e1 = _fetch("gender")
+    _g, _e1 = _fetch("shop_gender")
     if _e1:
         return None, _e1
-    _a, _e2 = _fetch("age")
+    _a, _e2 = _fetch("shop_age")
     if _e2:
         return None, _e2
     _gt = sum(_g.values()) or 1.0
