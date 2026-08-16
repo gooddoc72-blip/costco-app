@@ -42,7 +42,7 @@ from db import (
     get_user_info, create_session, get_session_user, delete_session,
     init_user_db, get_all_settings, get_setting, get_shared_products, get_all_products,
     get_all_products_merged, get_saved_dates, get_daily_orders,
-    set_setting,
+    set_setting, set_global_setting,
 )
 from utils import fmt
 
@@ -190,7 +190,18 @@ if _cf_code and _cf_state:
                 set_setting(_cf_user, 'cafe24_access_token', _tok.get('access_token', ''))
                 set_setting(_cf_user, 'cafe24_refresh_token', _tok.get('refresh_token', ''))
                 set_setting(_cf_user, 'cafe24_token_expires_at', _tok.get('expires_at', ''))
-                st.session_state['_cafe24_auth_msg'] = "✅ 카페24 인증 완료 — 주문 수집·가격 수정 사용 가능"
+                # 공용(대행등록) 자격증명이 같은 몰·앱이면 전역 토큰도 함께 갱신.
+                # 전역은 최초 1회만 승격되므로, 이걸 안 하면 재인증해도 대행등록은
+                # 옛 토큰을 계속 써서 권한 추가가 반영되지 않는다.
+                _same_mall = (get_global_setting('cafe24_mall_id') or '') == _cf_set.get('cafe24_mall_id', '')
+                _same_app = (get_global_setting('cafe24_client_id') or '') == _cf_set.get('cafe24_client_id', '')
+                if _same_mall and _same_app:
+                    set_global_setting('cafe24_access_token', _tok.get('access_token', ''))
+                    set_global_setting('cafe24_refresh_token', _tok.get('refresh_token', ''))
+                    set_global_setting('cafe24_token_expires_at', _tok.get('expires_at', ''))
+                st.session_state['_cafe24_auth_msg'] = (
+                    "✅ 카페24 인증 완료 — 주문 수집·가격 수정 사용 가능"
+                    + (" (공용 대행등록 자격증명도 갱신됨)" if (_same_mall and _same_app) else ""))
             else:
                 st.session_state['_cafe24_auth_msg'] = f"❌ 카페24 인증 실패: {_terr}"
         _clear_qparams()
