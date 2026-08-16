@@ -167,16 +167,20 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 _ag_q, _ag_cat_no = "", None
                 if _ag_mode == "카테고리":
                     _cats = st.session_state.get('_ag_cats')
-                    if _cats is None:
+                    if not _cats:                      # 실패는 캐시하지 않음(재인증 후 바로 반영)
                         with st.spinner("카페24 분류 불러오는 중..."):
                             _cats, _cerr = cafe24_api.list_categories(_ag_creds, save_tokens=_ag_save)
                         if _cerr:
                             st.warning(f"분류 목록을 못 불러왔습니다: {_cerr}")
                             if 'insufficient_scope' in str(_cerr) or '403' in str(_cerr):
                                 st.caption("→ 설정 탭에서 **카페24 인증**을 다시 하면 분류 조회 권한이 추가됩니다. "
-                                           "(카페24 개발자센터 앱 권한에 '상품분류 조회'도 체크되어 있어야 합니다)")
+                                           "(카페24 개발자센터 앱 권한에 '상품분류(Category) 읽기'가 추가되어 있어야 합니다)")
                             _cats = []
-                        st.session_state['_ag_cats'] = _cats
+                        else:
+                            st.session_state['_ag_cats'] = _cats
+                    elif st.button("🔄 분류 목록 새로고침", key="ag_cat_reload"):
+                        st.session_state.pop('_ag_cats', None)
+                        st.rerun()
                     if _cats:
                         _cmap = {f"{c['name']} (#{c['category_no']})": c['category_no'] for c in _cats}
                         _cpick = st.selectbox("카페24 분류", list(_cmap.keys()), key="ag_cat")
