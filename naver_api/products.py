@@ -799,6 +799,9 @@ def get_product_list(client_id, client_secret, channel_seller_id=""):
                     "deliveryFee": _extract_delivery_fee(item, cp),
                     "status": actual_status,
                     "wholeCategoryName": _whole_cat,
+                    # 판매자상품코드(자체상품코드) — 중복 등록 방지 대조용
+                    "sellerManagementCode": str(
+                        cp.get("sellerManagementCode") or item.get("sellerManagementCode") or ""),
                 })
             total = data.get("totalElements") or data.get("total")
             if total is not None and sum(1 for r in result if r["status"] == status_filter or actual_status == status_filter) >= total:

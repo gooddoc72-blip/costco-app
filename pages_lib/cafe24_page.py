@@ -252,6 +252,29 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                             _ag_live.markdown(
                                 f"`{_idx}/{len(_ag_sel)}` {_status} **{_label[:34]}** "
                                 f"— 누적 성공 {_n_ok} / 실패 {len(_ag_rows) - _n_ok}")
+
+                        # 중복 등록 방지 — 대상 스토어의 기존 상품을 1회 조회해
+                        # 판매자상품코드(코스트코 번호)와 상품명을 대조한다.
+                        _ag_have_code, _ag_have_name = set(), set()
+                        with st.spinner(f"'{_ag_tuser}' 스토어 기존 상품 확인 중..."):
+                            _exist, _eerr = naver_api.get_product_list(_ag_tid, _ag_tsecret)
+                        if _eerr:
+                            st.warning(f"기존 상품 조회 실패 — 중복 검사 없이 진행합니다: {str(_eerr)[:80]}")
+                        else:
+                            for _e in (_exist or []):
+                                _sc = str(_e.get('sellerManagementCode') or '').strip()
+                                if _sc:
+                                    _ag_have_code.add(_sc)
+                                _nm2 = str(_e.get('productName') or '').strip()
+                                if _nm2:
+                                    _ag_have_name.add(_nm2)
+                            st.caption(f"기존 상품 {len(_exist or [])}개 확인 — 중복은 건너뜁니다.")
+                        # 판매자상품코드에 넣을 코스트코 번호 — 카페24 자체상품코드가 1순위.
+                        # 비어 있으면 상품명 매칭으로 찾되, 오매칭이 원가 계산까지 오염시키므로
+                        # 고득점(_AG_MATCH_MIN 이상)만 채택하고 나머지는 카페24 번호를 쓴다.
+                        _AG_MATCH_MIN = 60
+                        _ag_shared = get_shared_products() or []
+
                         for _i, (_p, _npr) in enumerate(_ag_sel):
                             _agprog.progress((_i + 1) / len(_ag_sel))
                             _name = str(_p.get('product_name', ''))
@@ -259,6 +282,33 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                             _full, _fe = cafe24_api.get_product(_ag_creds, _p['product_no'], save_tokens=_ag_save)
                             _full = _full or {}
                             _cf_name = _full.get('product_name') or _name
+                            # 판매자상품코드 = 코스트코 번호. 우선순위:
+                            #   ① 카페24 자체상품코드(매칭·동기화가 기록한 코스트코 번호)
+                            #   ② 상품명 매칭(공용 코스트코 DB, 매칭 화면과 같은 기준)
+                            #   ③ 카페24 상품번호(코스트코 매칭 실패 시 폴백)
+                            _costco_code = str(_full.get('custom_product_code') or '').strip()
+                            _code_src = '자체코드'
+                            if not _costco_code:
+                                _bs2, _bp2 = 0, None
+                                for _s2 in _ag_shared:
+                                    _sc2 = calc_match_score(_cf_name, _s2['costco_name'])
+                                    if _sc2 > _bs2:
+                                        _bs2, _bp2 = _sc2, _s2
+                                # 매칭 화면 기준(>=2)은 사람이 검토하는 표 용도라 자동 적용엔
+                                # 위험하다(무관한 상품이 같은 번호로 붙음). 고득점만 채택.
+                                if _bp2 and _bs2 >= _AG_MATCH_MIN:
+                                    _costco_code = str(_bp2['product_no'] or '').strip()
+                                    _code_src = f'매칭({_bs2})'
+                            _seller_code = _costco_code or str(_p['product_no'])
+                            if not _costco_code:
+                                _code_src = '카페24번호'
+                            # 중복 등록 방지 — 코스트코 번호·카페24 번호·상품명 중 하나라도
+                            # 기존 등록분과 겹치면 건너뛴다(두 코드 체계가 섞여 있어 둘 다 확인).
+                            _cand_codes = {c for c in (_costco_code, str(_p['product_no'])) if c}
+                            if (_cand_codes & _ag_have_code) or _cf_name in _ag_have_name:
+                                _ag_rows.append({'상품': _cf_name[:24], '코드': _seller_code,
+                                                 '코드출처': _code_src, '상태': '⏭ 이미 등록됨'})
+                                _ag_tick(_i + 1, _cf_name, '⏭'); continue
                             _rep = _full.get('detail_image') or _full.get('list_image') or ''
                             if not _rep:
                                 _ag_rows.append({'상품': _name[:24], '상태': '❌ 이미지 없음'})
@@ -329,9 +379,15 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                 "shipping_fee": 0, "origin_code": "03", "after_service_tel": _ag_tas,
                                 "seller_tags": _tags, "manufacturer": _manuf or None,
                                 "model_name": _model or None, "origin_content": _origin or None,
-                                "seller_code": str(_p['product_no']),
+                                "seller_code": _seller_code,
                             })
-                            _ag_rows.append({'상품': _final_name[:24], '카테고리': str(_cfull or '')[:20],
+                            if not _re2:      # 같은 배치 안에서의 중복도 차단
+                                _ag_have_code |= _cand_codes
+                                _ag_have_name.add(_final_name)
+                                _ag_have_name.add(_cf_name)
+                            _ag_rows.append({'상품': _final_name[:24], '코드': _seller_code,
+                                             '코드출처': _code_src,
+                                             '카테고리': str(_cfull or '')[:20],
                                              '태그': len(_tags or []), '판매가': _npr,
                                              '상태': '✅ 등록' if not _re2 else f'❌ {str(_re2)[:120]}'})
                             _ag_tick(_i + 1, _final_name, '✅' if not _re2 else '❌')
