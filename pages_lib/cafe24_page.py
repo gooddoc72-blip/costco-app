@@ -161,20 +161,67 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     disabled=not (_ag_ai or _ag_gai),
                     help="대표 제품이미지를 AI 비전(Gemini 우선·Claude 폴백)으로 분석해 상품명·원산지·브랜드를 뽑고, "
                          "그 상품명으로 카테고리 판단·연관키워드 최적화까지 진행합니다.")
-                _agq1, _agq2 = st.columns([3, 1])
-                _ag_q = _agq1.text_input("카페24 상품명 검색(비우면 최근)", key="ag_q",
-                                         label_visibility="collapsed", placeholder="카페24 상품명 일부")
-                if _agq2.button("🔎 카페24 조회", key="ag_search", use_container_width=True):
+                # 조회 방식: 상품명 검색 / 카테고리 (카페24 분류)
+                _ag_mode = st.radio("조회 방식", ["상품명 검색", "카테고리"], horizontal=True,
+                                    key="ag_mode", label_visibility="collapsed")
+                _ag_q, _ag_cat_no = "", None
+                if _ag_mode == "카테고리":
+                    _cats = st.session_state.get('_ag_cats')
+                    if _cats is None:
+                        with st.spinner("카페24 분류 불러오는 중..."):
+                            _cats, _cerr = cafe24_api.list_categories(_ag_creds, save_tokens=_ag_save)
+                        if _cerr:
+                            st.warning(f"분류 목록을 못 불러왔습니다: {_cerr}")
+                            if 'insufficient_scope' in str(_cerr) or '403' in str(_cerr):
+                                st.caption("→ 설정 탭에서 **카페24 인증**을 다시 하면 분류 조회 권한이 추가됩니다. "
+                                           "(카페24 개발자센터 앱 권한에 '상품분류 조회'도 체크되어 있어야 합니다)")
+                            _cats = []
+                        st.session_state['_ag_cats'] = _cats
+                    if _cats:
+                        _cmap = {f"{c['name']} (#{c['category_no']})": c['category_no'] for c in _cats}
+                        _cpick = st.selectbox("카페24 분류", list(_cmap.keys()), key="ag_cat")
+                        _ag_cat_no = _cmap.get(_cpick)
+                    else:
+                        _ag_cat_no = st.number_input("분류 번호(직접 입력)", min_value=0, step=1,
+                                                     key="ag_cat_no") or None
+                else:
+                    _ag_q = st.text_input("카페24 상품명 검색(비우면 최근)", key="ag_q",
+                                          label_visibility="collapsed",
+                                          placeholder="카페24 상품명 일부 — 예: 콩국, 소갈비찜")
+
+                if st.button("🔎 카페24 조회", key="ag_search"):
                     set_global_setting('cafe24_naver_margin', str(int(_ag_margin)))
                     with st.spinner("카페24 상품 조회 중..."):
-                        _prods, _perr = cafe24_api.search_products(_ag_creds, _ag_q, save_tokens=_ag_save)
+                        _prods, _perr = cafe24_api.search_products(
+                            _ag_creds, _ag_q, limit=100, save_tokens=_ag_save,
+                            category_no=_ag_cat_no)
+                        _tot, _ = cafe24_api.count_products(_ag_creds, save_tokens=_ag_save,
+                                                            category_no=_ag_cat_no)
                     st.session_state['_ag_prods'] = [] if _perr else (_prods or [])
+                    st.session_state['_ag_total'] = _tot
+                    st.session_state['_ag_last_q'] = (_ag_q, _ag_cat_no)
                     if _perr:
                         st.error(f"조회 실패: {_perr}")
                 _ag_list = st.session_state.get('_ag_prods') or []
                 if _ag_list:
-                    _ag_show = _ag_list[:30]
-                    st.caption(f"{len(_ag_list)}개 조회 — 체크 후 아래 버튼으로 '{_ag_tuser}' 스토어에 등록")
+                    _ag_show = _ag_list[:100]
+                    _tot_n = st.session_state.get('_ag_total')
+                    st.caption(f"{len(_ag_list)}개 표시"
+                               + (f" / 조건에 맞는 전체 {_tot_n}개" if _tot_n else "")
+                               + f" — 체크 후 아래 버튼으로 '{_ag_tuser}' 스토어에 등록")
+                    if _tot_n and len(_ag_list) < _tot_n:
+                        if st.button(f"⬇️ 다음 100개 더 불러오기 ({len(_ag_list)}/{_tot_n})",
+                                     key="ag_more"):
+                            _lq, _lc = st.session_state.get('_ag_last_q', ("", None))
+                            with st.spinner("추가 조회 중..."):
+                                _more, _merr = cafe24_api.search_products(
+                                    _ag_creds, _lq, limit=100, save_tokens=_ag_save,
+                                    category_no=_lc, offset=len(_ag_list))
+                            if _merr:
+                                st.error(f"추가 조회 실패: {_merr}")
+                            else:
+                                st.session_state['_ag_prods'] = _ag_list + (_more or [])
+                                st.rerun()
                     # 전체 선택 토글 — 변화 감지 시 개별 체크박스 일괄 설정(위젯 생성 전에 세팅)
                     _ag_all = st.checkbox(f"✅ 전체 선택 ({len(_ag_show)}개)", key="ag_all_toggle")
                     if _ag_all != st.session_state.get('_ag_all_prev'):

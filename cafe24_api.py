@@ -19,7 +19,8 @@ API_VERSION = "2026-03-01"   # 앱 기본 버전 (cocostor 앱 기준)
 # 앱이 /app 서브경로로 이동 → 카페24 개발자센터 redirect_uri 화이트리스트도 /app/ 로 갱신 필요
 REDIRECT_URI = "https://cocobiz.shop/app/"
 # 주문 읽기 + 상품 읽기/쓰기(가격수정) + 앱 읽기
-SCOPES = "mall.read_order,mall.read_product,mall.write_product,mall.read_application"
+SCOPES = ("mall.read_order,mall.read_product,mall.write_product,mall.read_application,"
+          "mall.read_category")
 
 
 def _base(mall_id):
@@ -368,14 +369,60 @@ def get_product(creds, product_no, save_tokens=None):
     return (data or {}).get("product", {}), None
 
 
-def search_products(creds, keyword="", limit=50, save_tokens=None):
-    """상품 검색(상품명 부분일치) 또는 최근 상품 목록. 반환: (products, err).
+def list_categories(creds, save_tokens=None, page_size=100, max_pages=5):
+    """상품 분류(카테고리) 목록. 반환: ([{category_no, name, depth}], err).
+    name은 'A > B > C' 전체 경로. mall.read_category 권한이 필요하다."""
+    out = []
+    for page in range(max_pages):
+        data, err = _admin_request(creds, "GET", "/api/v2/admin/categories", save_tokens,
+                                   params={"limit": page_size, "offset": page * page_size})
+        if err:
+            return (out, None) if out else (None, err)
+        rows = (data or {}).get("categories", []) or []
+        for c in rows:
+            _fn = c.get("full_category_name")
+            if isinstance(_fn, dict):
+                _parts = [_fn.get(str(i)) for i in range(1, 5)]
+                _name = " > ".join([p for p in _parts if p])
+            else:
+                _name = c.get("category_name") or ""
+            out.append({
+                "category_no": c.get("category_no"),
+                "name": _name or str(c.get("category_no")),
+                "depth": c.get("category_depth"),
+            })
+        if len(rows) < page_size:
+            break
+    return out, None
+
+
+def count_products(creds, save_tokens=None, category_no=None):
+    """전체(또는 카테고리) 상품 수. 반환: (int, err)."""
+    params = {}
+    if category_no:
+        params["category"] = category_no
+    data, err = _admin_request(creds, "GET", "/api/v2/admin/products/count", save_tokens,
+                               params=params or None)
+    if err:
+        return None, err
+    try:
+        return int((data or {}).get("count") or 0), None
+    except (TypeError, ValueError):
+        return 0, None
+
+
+def search_products(creds, keyword="", limit=50, save_tokens=None,
+                    category_no=None, offset=0):
+    """상품 검색. 반환: (products, err).
+    keyword: 상품명 부분일치 / category_no: 카페24 분류번호 / offset: 페이징
     각 항목: {product_no, product_name, price, selling(판매여부)}
     """
-    params = {"limit": min(100, limit), "offset": 0}
+    params = {"limit": min(100, limit), "offset": max(0, int(offset or 0))}
     kw = str(keyword or "").strip()
     if kw:
         params["product_name"] = kw          # 상품명 부분검색
+    if category_no:
+        params["category"] = category_no     # 분류 필터 (상품 권한만으로 동작)
     data, err = _admin_request(creds, "GET", "/api/v2/admin/products", save_tokens,
                                params=params)
     if err:
