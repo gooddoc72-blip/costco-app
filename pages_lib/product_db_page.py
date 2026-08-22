@@ -201,34 +201,49 @@ def _render_delivery_section(USERNAME):
 
         _cur = naver_api.merge_delivery(_load_preset(USERNAME, 'naver_delivery_preset'))
 
+        _types = list(naver_api.FEE_TYPES)
         _d1, _d2 = st.columns(2)
-        _free = _d1.radio(
-            "배송비 유형", ["무료배송", "유료배송"], horizontal=True,
-            index=0 if _cur['fee_type'] == 'FREE' else 1, key="dv_type",
-            help="무료배송은 노출·전환에 유리해 기본값입니다. 대신 택배비를 "
-                 "판매가에 녹여야 손해가 안 납니다(아래 항목).")
-        _fee_type = 'FREE' if _free == "무료배송" else 'CHARGE'
+        _fee_type = _d1.selectbox(
+            "배송비 유형", _types,
+            index=_types.index(_cur['fee_type']) if _cur['fee_type'] in _types else 0,
+            format_func=lambda t: naver_api.FEE_TYPE_LABELS.get(t, t), key="dv_type",
+            help="무료배송은 노출·전환에 유리하지만 택배비를 판매가에 녹여야 손해가 "
+                 "없습니다. 수량별은 정해진 수량마다 배송비를 다시 부과합니다.")
 
         _comp_codes = list(naver_api.DELIVERY_COMPANIES.keys())
         _comp = _d2.selectbox(
             "택배사", _comp_codes,
             index=_comp_codes.index(_cur['company']) if _cur['company'] in _comp_codes else 0,
-            format_func=lambda c: f"{naver_api.DELIVERY_COMPANIES[c]} ({c})",
-            key="dv_comp")
+            format_func=lambda c: f"{naver_api.DELIVERY_COMPANIES[c]} ({c})", key="dv_comp")
 
-        _e1, _e2, _e3 = st.columns(3)
+        _ship_cost, _base_fee = 0, 0
+        _repeat_qty = int(_cur['repeat_quantity'])
+        _free_amt = int(_cur['free_conditional_amount'])
+        _f1, _f2 = st.columns(2)
         if _fee_type == 'FREE':
-            _ship_cost = _e1.number_input(
+            _ship_cost = _f1.number_input(
                 "택배비 (판매가에 포함)", min_value=0, max_value=50000, step=500,
                 value=int(_cur['ship_cost']), key="dv_ship",
                 help="무료배송으로 등록하는 대신 이 금액을 판매가에 더합니다. "
-                     "0으로 두면 배송비를 회수하지 못해 건당 그만큼 손해입니다.")
-            _base_fee = 0
+                     "카페24 가격에 이미 배송비가 반영돼 있다면 0으로 두세요.")
         else:
-            _base_fee = _e1.number_input(
-                "구매자 부담 배송비", min_value=0, max_value=50000, step=500,
-                value=int(_cur['base_fee'] or 3000), key="dv_base")
-            _ship_cost = 0
+            _base_fee = _f1.number_input(
+                "구매자 부담 배송비", min_value=10, max_value=50000, step=500,
+                value=max(10, int(_cur['base_fee'] or 3000)), key="dv_base",
+                help="네이버 최소 10원")
+            if _fee_type == 'UNIT_QUANTITY_PAID':
+                _repeat_qty = _f2.number_input(
+                    "반복부과 수량", min_value=1, max_value=1000, step=1,
+                    value=max(1, _repeat_qty), key="dv_rep",
+                    help="이 수량마다 배송비를 다시 부과합니다. "
+                         "예: 2 → 1~2개 3,000원 / 3~4개 6,000원")
+            elif _fee_type == 'CONDITIONAL_FREE':
+                _free_amt = _f2.number_input(
+                    "무료 조건금액", min_value=0, max_value=10000000, step=1000,
+                    value=int(_free_amt or 50000), key="dv_free",
+                    help="주문금액이 이 금액 이상이면 배송비 무료")
+
+        _e2, _e3 = st.columns(2)
         _return_fee = _e2.number_input(
             "반품 배송비", min_value=0, max_value=50000, step=500,
             value=int(_cur['return_fee']), key="dv_ret")
@@ -237,7 +252,9 @@ def _render_delivery_section(USERNAME):
             value=int(_cur['exchange_fee']), key="dv_exc")
 
         _new = {'ship_cost': int(_ship_cost), 'fee_type': _fee_type,
-                'base_fee': int(_base_fee), 'return_fee': int(_return_fee),
+                'base_fee': int(_base_fee), 'repeat_quantity': int(_repeat_qty),
+                'free_conditional_amount': int(_free_amt),
+                'return_fee': int(_return_fee),
                 'exchange_fee': int(_exchange_fee), 'company': _comp}
 
         if _fee_type == 'FREE' and int(_ship_cost) == 0:
@@ -250,10 +267,18 @@ def _render_delivery_section(USERNAME):
             _mg = st.number_input("미리보기 마진율 %", min_value=0, max_value=300, step=5,
                                   value=10, key="dv_prev_margin")
             _ex = _c24.calc_sale_price(10000, _mg, _ship_cost if _fee_type == 'FREE' else 0)
-            st.caption(
-                f"예시 — 원가 10,000원 · 마진 {_mg}% · "
-                f"{'무료배송(택배비 판매가 포함)' if _fee_type == 'FREE' else f'유료배송 {_base_fee:,}원'} "
-                f"→ 판매가 **{_ex:,}원**")
+            _lbl = naver_api.FEE_TYPE_LABELS.get(_fee_type, _fee_type)
+            if _fee_type == 'FREE':
+                _lbl += " (택배비 %s원 판매가 포함)" % format(_ship_cost, ',')
+            elif _fee_type == 'UNIT_QUANTITY_PAID':
+                _lbl += " %s원 / %d개마다" % (format(_base_fee, ','), _repeat_qty)
+            elif _fee_type == 'CONDITIONAL_FREE':
+                _lbl += " %s원 (%s원 이상 무료)" % (format(_base_fee, ','),
+                                                 format(_free_amt, ','))
+            else:
+                _lbl += " %s원" % format(_base_fee, ',')
+            st.caption("예시 — 원가 10,000원 · 마진 %d%% · %s → 판매가 **%s원**"
+                       % (_mg, _lbl, format(_ex, ',')))
         except Exception:
             pass
 

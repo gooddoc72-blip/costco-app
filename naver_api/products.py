@@ -418,13 +418,10 @@ def register_product(client_id, client_secret, product_info):
 
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
-    # 배송비 — delivery 프리셋이 있으면 그쪽 우선(등록 일괄 적용용)
-    _dv = product_info.get("delivery") or {}
-    if _dv.get("fee_type") == "CHARGE":
-        shipping_fee = int(_dv.get("base_fee") or 0)
-    else:
-        shipping_fee = int(product_info.get("shipping_fee", 0) or 0)
-    fee_type = "FREE" if shipping_fee <= 0 else "CHARGE"
+    # 배송비 — deliveryInfo는 _build_delivery_info가 프리셋을 보고 만든다.
+    # 여기 두 값은 프리셋이 없을 때의 폴백 경로에서만 쓰인다.
+    shipping_fee = int(product_info.get("shipping_fee", 0) or 0)
+    fee_type = "FREE" if shipping_fee <= 0 else "PAID"
     # 상품명 하드가드: 같은 키워드 2회 이상 반복 제거 (모든 등록 경로가 지나는 최종 지점)
     from .keywords import dedup_product_name
     name = dedup_product_name(product_info.get("name") or "")[:100]
@@ -1264,22 +1261,43 @@ BENEFIT_LABELS = {
 #   base_fee   : 유료일 때 구매자에게 부과할 배송비
 #   return_fee : 반품 배송비 / exchange_fee : 교환 배송비
 #   company    : 택배사 코드 (CJGLS, HANJIN, LOTTE, POST, LOGEN ...)
+# deliveryFeeType 허용값은 실측으로 확인했다(잘못된 값을 PUT해 검증 응답을 읽음).
+#   FREE / PAID / UNIT_QUANTITY_PAID / CONDITIONAL_FREE / RANGE_QUANTITY_PAID
+#   ※ 'CHARGE'는 허용값이 아니다 — 예전 코드가 이걸 보내고 있어서, 유료배송으로
+#      등록하는 순간 전부 거부됐을 것이다(그동안 전 상품이 무료라 안 드러났다).
+# 유형별 필수 필드(역시 실측):
+#   PAID               : baseFee(10원 이상), deliveryFeePayType
+#   UNIT_QUANTITY_PAID : baseFee, repeatQuantity, deliveryFeePayType
+#   CONDITIONAL_FREE   : baseFee, freeConditionalAmount, deliveryFeePayType
+FEE_TYPES = ('FREE', 'PAID', 'UNIT_QUANTITY_PAID', 'CONDITIONAL_FREE')
+
+FEE_TYPE_LABELS = {
+    'FREE':               '무료배송',
+    'PAID':               '유료배송',
+    'UNIT_QUANTITY_PAID': '수량별 배송비',
+    'CONDITIONAL_FREE':   '조건부 무료배송',
+}
+
 DELIVERY_DEFAULTS = {
     'ship_cost': 3000,
     'fee_type': 'FREE',
     'base_fee': 0,
+    'repeat_quantity': 1,             # 수량별: 이 수량마다 배송비를 반복 부과
+    'free_conditional_amount': 0,     # 조건부무료: 이 금액 이상이면 무료
     'return_fee': 5000,
     'exchange_fee': 5000,
     'company': 'CJGLS',
 }
 
 DELIVERY_LABELS = {
-    'ship_cost':    '택배비(판매가에 포함)',
-    'fee_type':     '배송비 유형',
-    'base_fee':     '구매자 부담 배송비',
-    'return_fee':   '반품 배송비',
-    'exchange_fee': '교환 배송비',
-    'company':      '택배사',
+    'ship_cost':               '택배비(판매가에 포함)',
+    'fee_type':                '배송비 유형',
+    'base_fee':                '구매자 부담 배송비',
+    'repeat_quantity':         '반복부과 수량',
+    'free_conditional_amount': '무료 조건금액',
+    'return_fee':              '반품 배송비',
+    'exchange_fee':            '교환 배송비',
+    'company':                 '택배사',
 }
 
 # 네이버 커머스 API 택배사 코드 (자주 쓰는 것만)
@@ -1296,31 +1314,58 @@ def merge_delivery(preset):
     for _k, _v in (preset or {}).items():
         if _k in out and _v not in (None, ''):
             out[_k] = _v
-    for _k in ('ship_cost', 'base_fee', 'return_fee', 'exchange_fee'):
+    for _k in ('ship_cost', 'base_fee', 'repeat_quantity',
+               'free_conditional_amount', 'return_fee', 'exchange_fee'):
         try:
             out[_k] = max(0, int(out[_k] or 0))
         except (TypeError, ValueError):
             out[_k] = DELIVERY_DEFAULTS[_k]
-    if str(out.get('fee_type')).upper() not in ('FREE', 'CHARGE'):
-        out['fee_type'] = 'FREE'
-    else:
-        out['fee_type'] = str(out['fee_type']).upper()
+    _ft = str(out.get('fee_type') or '').upper()
+    if _ft == 'CHARGE':          # 옛 저장값 호환 — 네이버 허용값이 아니다
+        _ft = 'PAID'
+    out['fee_type'] = _ft if _ft in FEE_TYPES else 'FREE'
+    if out['fee_type'] != 'FREE':
+        out['base_fee'] = max(10, out['base_fee'])       # 네이버 최소 10원
+    if out['fee_type'] == 'UNIT_QUANTITY_PAID':
+        out['repeat_quantity'] = max(1, out['repeat_quantity'])
     return out
 
 
+def build_delivery_fee(d):
+    """배송 프리셋 → deliveryFee 객체. 유형별 필수 필드를 채운다."""
+    _t = d['fee_type']
+    if _t == 'FREE':
+        return {"deliveryFeeType": "FREE", "baseFee": 0}
+    _fee = {
+        "deliveryFeeType": _t,
+        "baseFee": d['base_fee'],
+        "deliveryFeePayType": "PREPAID",   # 선불(주문 시 결제)
+    }
+    if _t == 'UNIT_QUANTITY_PAID':
+        # N개마다 배송비를 다시 부과 (예: 2 → 2개당 3000원)
+        _fee["repeatQuantity"] = d['repeat_quantity']
+    elif _t == 'CONDITIONAL_FREE':
+        _fee["freeConditionalAmount"] = d['free_conditional_amount']
+    return _fee
+
+
 def _build_delivery_info(product_info, fee_type, shipping_fee):
-    """등록 payload의 deliveryInfo. delivery 프리셋이 있으면 반영한다."""
+    """등록 payload의 deliveryInfo. delivery 프리셋이 있으면 반영한다.
+    프리셋이 없으면 예전처럼 shipping_fee로 무료/유료만 판단한다(무회귀)."""
     _d = merge_delivery(product_info.get("delivery"))
     _company = (product_info.get("delivery_company") or _d['company'] or 'CJGLS')
+    if product_info.get("delivery"):
+        _fee = build_delivery_fee(_d)
+    elif shipping_fee > 0:
+        _fee = {"deliveryFeeType": "PAID", "baseFee": max(10, shipping_fee),
+                "deliveryFeePayType": "PREPAID"}
+    else:
+        _fee = {"deliveryFeeType": "FREE", "baseFee": 0}
     return {
         "deliveryType": "DELIVERY",
         "deliveryAttributeType": "NORMAL",
         "deliveryCompany": _company,
-        "deliveryFee": {
-            "deliveryFeeType": fee_type,
-            "baseFee": shipping_fee,
-            "deliveryFeePayType": "PREPAID",
-        },
+        "deliveryFee": _fee,
         "claimDeliveryInfo": {
             "returnDeliveryFee": _d['return_fee'],
             "exchangeDeliveryFee": _d['exchange_fee'],

@@ -1327,8 +1327,11 @@ def run_cafe24_register_task(username="admin"):
 
     # 상세페이지 방식 — 기본 'html'(카페24 원본 그대로). 'image'면 이미지 스택.
     _dmode = get_global_setting('cafe24_register_detail_mode', 'html') or 'html'
+    # 판매가 방식 — 'asis'면 카페24 가격 그대로(마진·택배비 미적용)
+    _pmode = get_global_setting('cafe24_price_mode', 'calc') or 'calc'
     opts = {
         'detail_mode': _dmode,
+        'price_mode': _pmode,
         'photo_ai':   get_global_setting('cafe24_register_photo_ai', '0') == '1',
         'gen_tags':   get_global_setting('cafe24_register_gen_tags', '1') == '1',
         'opt_name':   get_global_setting('cafe24_register_opt_name', '1') == '1',
@@ -1336,7 +1339,7 @@ def run_cafe24_register_task(username="admin"):
     }
     # 공통 상단/하단 고정 이미지 폴백 — 대상 사용자에게 없으면 실행 계정(관리자) 것
     _admin_ts = get_user_settings(username) or {}
-    log(f"  상세방식 {_dmode} · 회당 최대 {_max}건 · 마진 {_margin:g}% · "
+    log(f"  상세방식 {_dmode} · 판매가 {_pmode} · 회당 최대 {_max}건 · 마진 {_margin:g}% · "
         f"카테고리 {'ON' if (_ai or _gai) else 'OFF'} · "
         f"상품명 {'ON' if (_ad_creds and opts['opt_name']) else 'OFF'} · "
         f"태그 {'ON' if opts['gen_tags'] else 'OFF'} · "

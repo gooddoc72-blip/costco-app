@@ -226,8 +226,11 @@ def build_image_detail(full, tid, tsecret, limit=DETAIL_IMG_LIMIT, mall_id=''):
         for _u in _cdns)
 
 
-def calc_sale_price(cafe24_price, margin_pct, shipping_cost=None):
-    """카페24 판매가 + 택배비 + 마진% → 네이버 판매가.
+def calc_sale_price(cafe24_price, margin_pct, shipping_cost=None, mode='calc'):
+    """카페24 판매가 → 네이버 판매가.
+
+    mode='asis' : 카페24 가격 그대로 (마진·수수료·택배비 미적용)
+    mode='calc' : 아래 공식 적용
 
     공식: (카페24가 + 택배비) × (1+마진%) ÷ 0.945 → 10원 반올림.
     코스트코 경로(pricing.compute_sale_price)와 같은 공식이다.
@@ -243,6 +246,10 @@ def calc_sale_price(cafe24_price, margin_pct, shipping_cost=None):
         _pr = 0
     if _pr <= 0:
         return 0
+    if mode == 'asis':
+        # 카페24 판매가를 그대로 쓴다. 카페24 가격에 이미 마진·배송비가
+        # 반영돼 있는 몰이면 이쪽이 맞다(중복으로 얹지 않는다).
+        return _pr
     if shipping_cost is None:
         try:
             from pricing import DEFAULT_IMPORT_SHIPPING
@@ -280,8 +287,8 @@ def register_one(creds, save_tokens, product, margin, target, opts,
     product : {'product_no', 'product_name', 'price'} (카페24 목록 항목)
     target  : {'api_id', 'api_secret', 'as_tel'}
     opts    : {'detail_mode'('html'|'image'), 'top_img', 'bottom_img',
-               'delivery'(배송 프리셋), 'benefits'(구매/리뷰 포인트),
-               'photo_ai', 'gen_tags', 'opt_name',
+               'price_mode'('asis'|'calc'), 'delivery'(배송 프리셋),
+               'benefits'(구매/리뷰 포인트), 'photo_ai', 'gen_tags', 'opt_name',
                'ai_key', 'gemini_key', 'ad_creds'}
     have_code/have_name : 호출측이 유지하는 중복 방지 집합(성공 시 여기에 채워 넣는다)
     shared  : get_shared_products() 결과 — 코스트코 번호 매칭용
@@ -301,8 +308,10 @@ def register_one(creds, save_tokens, product, margin, target, opts,
     _pno = product.get('product_no')
     # 유료배송이면 배송비를 구매자가 내므로 판매가에 녹이지 않는다
     _dv = naver_api.merge_delivery(opts.get('delivery'))
-    _ship_in_price = 0 if _dv['fee_type'] == 'CHARGE' else _dv['ship_cost']
-    sale = calc_sale_price(product.get('price'), margin, _ship_in_price)
+    # 무료배송일 때만 택배비를 판매가에 녹인다(유료면 구매자가 낸다)
+    _ship_in_price = _dv['ship_cost'] if _dv['fee_type'] == 'FREE' else 0
+    sale = calc_sale_price(product.get('price'), margin, _ship_in_price,
+                           mode=opts.get('price_mode', 'calc'))
 
     def _r(status, detail, reason='', **kw):
         _out = {'status': status, 'name': _name, 'code': '', 'code_src': '',

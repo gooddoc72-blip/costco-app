@@ -77,9 +77,19 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 f"🎯 등록 대상 사용자 (커머스API 보유 {_n_ready}/{len(_ag_meta)}명)",
                 _ag_opts, key="ag_target",
                 help="✅ = 네이버 커머스 API 등록됨(대행등록 가능). ⚠️ = 키 없음(그 사용자 설정 탭에서 입력 필요).")
-            _ag_margin = _agc2.number_input("마진율 %", min_value=0, max_value=300, step=5,
-                                            value=int(get_global_setting('cafe24_naver_margin') or 10),
-                                            key="ag_margin")
+            # 가격 방식 — 카페24 가격에 이미 마진·배송비가 반영된 몰이면
+            # 그대로 쓰는 게 맞다(중복으로 얹지 않는다).
+            _ag_pmode_lbl = _agc2.radio(
+                "판매가", ["카페24 가격 그대로", "마진 계산"], horizontal=True,
+                index=0 if (get_global_setting('cafe24_price_mode') or 'asis') == 'asis' else 1,
+                key="ag_pmode")
+            _ag_price_mode = 'asis' if _ag_pmode_lbl == "카페24 가격 그대로" else 'calc'
+            _ag_margin = 0
+            if _ag_price_mode == 'calc':
+                _ag_margin = _agc2.number_input(
+                    "마진율 %", min_value=0, max_value=300, step=5,
+                    value=int(get_global_setting('cafe24_naver_margin') or 10),
+                    key="ag_margin")
             _ag_tuser, _ag_ts = _ag_labelmap[_ag_pick]
             _ag_tid = _ag_ts.get('api_client_id', ''); _ag_tsecret = _ag_ts.get('api_client_secret', '')
             _ag_tas = _ag_ts.get('naver_as_tel') or '1588-1234'
@@ -144,8 +154,16 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         break
                 _ag_dv = naver_api.merge_delivery(_ag_delivery)
                 _ag_ship_in_price = 0 if _ag_dv['fee_type'] == 'CHARGE' else _ag_dv['ship_cost']
-                _dv_kind = ("무료배송" if _ag_dv['fee_type'] == 'FREE'
-                            else "유료배송 %s원" % format(_ag_dv['base_fee'], ','))
+                _dv_kind = naver_api.FEE_TYPE_LABELS.get(_ag_dv['fee_type'], _ag_dv['fee_type'])
+                if _ag_dv['fee_type'] == 'UNIT_QUANTITY_PAID':
+                    _dv_kind += " %s원/%d개마다" % (format(_ag_dv['base_fee'], ','),
+                                                  _ag_dv['repeat_quantity'])
+                elif _ag_dv['fee_type'] == 'CONDITIONAL_FREE':
+                    _dv_kind += " %s원(%s원↑무료)" % (
+                        format(_ag_dv['base_fee'], ','),
+                        format(_ag_dv['free_conditional_amount'], ','))
+                elif _ag_dv['fee_type'] == 'PAID':
+                    _dv_kind += " %s원" % format(_ag_dv['base_fee'], ',')
                 _dv_comp = naver_api.DELIVERY_COMPANIES.get(_ag_dv['company'], _ag_dv['company'])
                 st.caption(
                     "🚚 배송 — %s · 택배비 판매가 포함 %s원 · 반품 %s / 교환 %s · %s%s" % (
@@ -153,8 +171,10 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         format(_ag_dv['return_fee'], ','),
                         format(_ag_dv['exchange_fee'], ','), _dv_comp,
                         "" if _ag_delivery else "  (기본값 — ‘제품 DB’ 탭 › 배송 설정에서 변경)"))
-                if _ag_ship_in_price == 0 and _ag_dv['fee_type'] == 'FREE':
-                    st.warning("⚠️ 무료배송인데 택배비가 판매가에 안 들어갑니다 — 건당 배송비만큼 손해입니다.")
+                if (_ag_price_mode == 'calc' and _ag_ship_in_price == 0
+                        and _ag_dv['fee_type'] == 'FREE'):
+                    st.warning("⚠️ 무료배송인데 택배비가 판매가에 안 들어갑니다 — "
+                               "건당 배송비만큼 손해입니다.")
                 if _ag_benefits:
                     _bl = ", ".join(
                         f"{naver_api.BENEFIT_LABELS.get(_k, _k)} {_v}"
@@ -259,6 +279,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         set_global_setting('cafe24_register_enabled', '1' if _q_on else '0')
                         set_global_setting('cafe24_register_max', str(int(_q_max)))
                         set_global_setting('cafe24_naver_margin', str(int(_ag_margin)))
+                        set_global_setting('cafe24_price_mode', _ag_price_mode)
                         set_global_setting('cafe24_register_detail_mode', _ag_detail_mode)
                         set_global_setting('cafe24_register_photo_ai',
                                            '1' if _ag_photo_ai else '0')
@@ -448,7 +469,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     # 현재 페이지만 체크박스를 그린다
                     for _p in _ag_show:
                         _pno = _p['product_no']; _pr = int(_p.get('price') or 0)
-                        _npr = c24reg.calc_sale_price(_pr, _ag_margin, _ag_ship_in_price)
+                        _npr = c24reg.calc_sale_price(_pr, _ag_margin, _ag_ship_in_price,
+                                                     mode=_ag_price_mode)
                         st.checkbox(
                             f"{str(_p.get('product_name', ''))[:42]} · 카페24 {fmt(_pr)}원 → 네이버 {fmt(_npr)}원",
                             key=f"ag_ck_{_pno}")
@@ -459,7 +481,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         if st.session_state.get(f"ag_ck_{_p['product_no']}"):
                             _ag_sel.append(
                                 (_p, c24reg.calc_sale_price(int(_p.get('price') or 0),
-                                                           _ag_margin, _ag_ship_in_price)))
+                                                           _ag_margin, _ag_ship_in_price,
+                                                           mode=_ag_price_mode)))
                     if _npages > 1:
                         st.caption(f"페이지 {int(_pg)}/{_npages} 표시 중 · "
                                    f"전체 선택 {len(_ag_sel)}개")
@@ -500,6 +523,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                             'detail_mode': _ag_detail_mode,
                             'top_img': _ag_top, 'bottom_img': _ag_bot,
                             'delivery': _ag_delivery,
+                            'price_mode': _ag_price_mode,
                             'benefits': _ag_benefits,
                             'photo_ai': _ag_photo_ai,
                             'gen_tags': True, 'opt_name': True,
