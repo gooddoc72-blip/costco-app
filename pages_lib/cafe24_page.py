@@ -60,7 +60,8 @@ def _build_image_detail(full, tid, tsecret, limit=20):
     업로드 성공분이 없으면 '' 반환(호출측에서 기존 HTML 폴백)."""
     _cdns = []
     for _iu in _cafe24_detail_images(full)[:limit]:
-        _dc, _de = naver_api.upload_product_image(tid, tsecret, _iu)
+        # square=False: 상세이미지는 세로로 길다 → 정사각 크롭하면 위·아래가 잘린다.
+        _dc, _de = naver_api.upload_product_image(tid, tsecret, _iu, square=False)
         if _dc:
             _cdns.append(_dc)
     if not _cdns:

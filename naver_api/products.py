@@ -174,6 +174,30 @@ def _square_canvas(im, size=1000, bg=(255, 255, 255)):
     return im.resize((size, size), Image.LANCZOS)
 
 
+def _resize_fit(src_path, max_w=1000, max_h=12000):
+    """비율을 유지한 채 최대 크기 안으로 '축소만' 한다 (크롭 없음).
+    세로로 긴 상세페이지 이미지가 정사각 크롭으로 위·아래가 잘리는 것을 막기 위한 용도.
+    축소가 필요 없으면 None 반환 → 원본 파일 그대로 업로드."""
+    try:
+        from PIL import Image
+        import tempfile, os as _os
+        with Image.open(src_path) as _im0:
+            _w, _h = _im0.size
+            if _w <= 0 or _h <= 0:
+                return None
+            _r = min(max_w / _w, max_h / _h, 1.0)
+            if _r >= 1.0:
+                return None                      # 이미 작음 → 원본 그대로
+            _im = _im0.convert("RGB").resize(
+                (max(1, int(_w * _r)), max(1, int(_h * _r))), Image.LANCZOS)
+        _fd, _out = tempfile.mkstemp(suffix=".jpg")
+        _os.close(_fd)
+        _im.save(_out, "JPEG", quality=90)
+        return _out
+    except Exception:
+        return None
+
+
 def _resize_square(src_path, size=1000, bg=(255, 255, 255)):
     """이미지 파일을 1000×1000 정사각 JPEG로 변환 (네이버 업로드용).
     반환: 변환된 임시파일 경로 (실패 시 None → 원본 그대로 업로드)."""
@@ -207,10 +231,12 @@ def resize_square_bytes(img_bytes, size=1000, bg=(255, 255, 255)):
         return None
 
 
-def upload_product_image(client_id, client_secret, image_source):
+def upload_product_image(client_id, client_secret, image_source, square=True):
     """
     이미지(로컬 파일 경로 또는 URL)를 네이버 CDN에 업로드.
-    업로드 전 1000×1000 정사각형(가운데 크롭)으로 자동 변환.
+    square=True  : 1000×1000 정사각형(가운데 크롭) — 대표/추가 이미지용(네이버 권장 규격).
+    square=False : 비율 유지 축소만(크롭 없음) — 상세페이지 이미지·상단/하단 배너용.
+                   세로로 긴 카페24 상세이미지가 위·아래 잘리는 것을 막는다.
     반환: (naver_cdn_url, error_msg)
     """
     token, err = get_token(client_id, client_secret)
@@ -253,17 +279,21 @@ def upload_product_image(client_id, client_secret, image_source):
         else:
             src_path = image_source
 
-        # 네이버 권장 1000×1000 정사각형으로 리사이징 (실패 시 원본 업로드)
-        resized_path = _resize_square(src_path)
+        # 대표/추가 이미지는 네이버 권장 1000×1000 정사각, 상세이미지는 비율 유지
+        # (실패하거나 축소 불필요하면 원본 그대로 업로드)
+        resized_path = _resize_square(src_path) if square else _resize_fit(src_path)
         upload_path = resized_path or src_path
 
         import os as _os
         fname = _os.path.basename(upload_path)
+        _mt = {".png": "image/png", ".webp": "image/webp",
+               ".gif": "image/gif"}.get(_os.path.splitext(upload_path)[-1].lower(),
+                                        "image/jpeg")
         with open(upload_path, "rb") as f:
             resp = requests.post(
                 "https://api.commerce.naver.com/external/v1/product-images/upload",
                 headers=headers,
-                files={"imageFiles": (fname, f, "image/jpeg")},
+                files={"imageFiles": (fname, f, _mt)},
                 timeout=30,
             )
 

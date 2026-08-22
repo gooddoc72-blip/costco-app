@@ -170,7 +170,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         _fd, _tp = tempfile.mkstemp(suffix=_ex); _oscd.close(_fd)
         with open(_tp, 'wb') as _w:
             _w.write(_f.getvalue())
-        _u, _ = naver_api.upload_product_image(api_id, api_secret, _tp)
+        # 공통 상단/하단 배너 — 가로로 긴 이미지라 크롭 금지(비율 유지).
+        _u, _ = naver_api.upload_product_image(api_id, api_secret, _tp, square=False)
         try: _oscd.remove(_tp)
         except Exception: pass
         return _u
@@ -258,7 +259,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             _s = _s.strip()
             if not _s.startswith('http'):
                 continue
-            _u, _ = naver_api.upload_product_image(api_id, api_secret, _s)
+            # 카페24 상세이미지 — 비율 유지(정사각 크롭 시 상하 잘림).
+            _u, _ = naver_api.upload_product_image(api_id, api_secret, _s, square=False)
             if _u:
                 _out.append(_u)
         return _out
