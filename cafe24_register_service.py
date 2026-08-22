@@ -258,7 +258,9 @@ def calc_sale_price(cafe24_price, margin_pct, shipping_cost=None, mode='calc'):
     if mode == 'asis':
         # 카페24 판매가를 그대로 쓴다. 카페24 가격에 이미 마진·배송비가
         # 반영돼 있는 몰이면 이쪽이 맞다(중복으로 얹지 않는다).
-        return _pr
+        # 단, 네이버는 '판매가 10원 단위'를 강제한다 — 카페24가 25,289원 같은
+        # 값이면 그대로 보내면 거부된다. 올림해서 손해가 안 나게 맞춘다.
+        return ((_pr + 9) // 10) * 10
     if shipping_cost is None:
         try:
             from pricing import DEFAULT_IMPORT_SHIPPING
