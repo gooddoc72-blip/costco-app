@@ -16,6 +16,14 @@ except ImportError:
     naver_api = None
 
 
+def _disp_name(username):
+    """사용자명 → 표시 이름(없으면 사용자명 그대로)."""
+    for u in (get_all_users() or []):
+        if u.get('username') == username:
+            return u.get('display_name') or username
+    return username
+
+
 def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     st.title("🛒 카페24")
     # 관리자 또는 관리자가 이 사용자에게 '카페24 메뉴'를 오픈한 경우만.
@@ -263,6 +271,32 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     _qm3.metric("중복스킵", _qc['skipped'])
                     _qm4.metric("실패", _qc['failed'])
 
+                    # ── 처리 대상 지정 — 여러 계정에 대기열이 남아 있을 때
+                    #    엉뚱한 스토어에 등록되는 걸 막는다.
+                    _q_all = _c24q.all_counts() or []
+                    if _q_all:
+                        st.caption("현재 대기열이 있는 계정 — "
+                                   + ", ".join(f"**{u}**({n}건)" for u, n in _q_all))
+                    _tgt_cur = str(get_global_setting('cafe24_register_target') or '').strip()
+                    _tgt_opts = [_ag_tuser] + [u for u, _ in _q_all if u != _ag_tuser]
+                    _tgt_labels = {u: f"{_disp_name(u)} ({u})" for u in _tgt_opts}
+                    _ALL = "⚠️ 전체 — 대기열 있는 모든 계정"
+                    _pick_opts = [_tgt_labels[u] for u in _tgt_opts] + [_ALL]
+                    _cur_lbl = _tgt_labels.get(_tgt_cur) or (_ALL if not _tgt_cur
+                                                             else _tgt_labels[_tgt_opts[0]])
+                    _q_target_lbl = st.selectbox(
+                        "🎯 배치 처리 대상 (이 계정만 등록)", _pick_opts,
+                        index=_pick_opts.index(_cur_lbl) if _cur_lbl in _pick_opts else 0,
+                        key="ag_q_target",
+                        help="지정한 계정의 대기열만 등록합니다. 다른 계정에 대기열이 "
+                             "남아 있어도 건드리지 않습니다. '전체'는 대기열이 있는 모든 "
+                             "계정을 처리하므로 의도한 경우에만 쓰세요.")
+                    _q_target = '' if _q_target_lbl == _ALL else \
+                        next(u for u, l in _tgt_labels.items() if l == _q_target_lbl)
+                    if not _q_target:
+                        st.warning("⚠️ '전체'로 두면 대기열이 있는 계정 전부에 등록됩니다 — "
+                                   f"현재 {len(_q_all)}개 계정.")
+
                     _q_on = st.checkbox(
                         "🟢 자동 배치 등록 켜기 (크론이 매시간 대기열을 소화)",
                         value=get_global_setting('cafe24_register_enabled') == '1',
@@ -277,6 +311,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                              "매시간 30건이면 300건을 약 10시간에 소화합니다.")
                     if st.button("💾 배치 설정 저장", key="ag_q_save"):
                         set_global_setting('cafe24_register_enabled', '1' if _q_on else '0')
+                        set_global_setting('cafe24_register_target', _q_target)
                         set_global_setting('cafe24_register_max', str(int(_q_max)))
                         set_global_setting('cafe24_naver_margin', str(int(_ag_margin)))
                         set_global_setting('cafe24_price_mode', _ag_price_mode)

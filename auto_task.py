@@ -1350,6 +1350,20 @@ def run_cafe24_register_task(username="admin"):
     if not _pending:
         log("⏭ 대기열이 비어 있음 — 할 일 없음")
         return True
+
+    # 처리 대상 지정 — 비어 있으면 대기열이 있는 전 사용자.
+    # 여러 계정에 대기열이 남아 있을 때 의도치 않은 스토어에 등록되는 걸 막는다.
+    _only = str(get_global_setting('cafe24_register_target') or '').strip()
+    if _only:
+        _all_names = [u for u, _ in _pending]
+        _pending = [(u, n) for u, n in _pending if u == _only]
+        if not _pending:
+            log(f"⏭ 지정 대상 '{_only}'의 대기열이 비어 있음 "
+                f"(대기 중인 다른 계정: {', '.join(_all_names) or '없음'}) — 건너뜀")
+            return True
+        log(f"  🎯 지정 대상 '{_only}'만 처리 (다른 계정 대기열은 건드리지 않음)")
+    else:
+        log("  ⚠️ 처리 대상 미지정 — 대기열이 있는 전 계정을 처리합니다")
     log("  대기 중인 대상: " + ", ".join(f"{u}({n})" for u, n in _pending))
 
     from db import get_shared_products
