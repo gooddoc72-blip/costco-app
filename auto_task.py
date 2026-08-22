@@ -1394,13 +1394,13 @@ def run_cafe24_register_task(username="admin"):
                 import traceback
                 log(f"    ❌ {str(_row['product_name'])[:24]} — 예외: {e}")
                 log(traceback.format_exc(limit=3))
-                q.mark(_row['id'], 'failed', f'예외: {e}')
+                q.mark(_row['id'], 'failed', f'예외: {e}', reason='EXCEPTION')
                 _fail += 1
                 _budget -= 1
                 continue
             _st = _res['status']
             q.mark(_row['id'], {'ok': 'done', 'skip': 'skipped'}.get(_st, 'failed'),
-                   _res['detail'])
+                   _res['detail'], reason=_res.get('reason', ''))
             if _st == 'ok':
                 _ok += 1
                 log(f"    ✅ {_res['name'][:28]} · {_res['category'][:20]} · {_res['price']}원")
@@ -1408,7 +1408,8 @@ def run_cafe24_register_task(username="admin"):
                 _skip += 1
             else:
                 _fail += 1
-                log(f"    ❌ {_res['name'][:28]} — {_res['detail'][:80]}")
+                log(f"    ❌ [{_res.get('reason') or 'UNKNOWN'}] {_res['name'][:26]} "
+                    f"— {_res['detail'][:70]}")
             _budget -= 1
 
         _c = q.counts(_tuser)
@@ -1423,6 +1424,15 @@ def run_cafe24_register_task(username="admin"):
                     f"✅ 등록 {_ok}건 / ⏭ 중복 {_skip}건 / ❌ 실패 {_fail}건\n"
                     f"남은 대기 {_c['pending']}건 · 누적 실패 {_c['failed']}건")
             if _c['failed']:
+                # 실패가 왜 났는지 사유별로 알려준다 — '실패 12건'만으로는 조치를 못 한다.
+                try:
+                    from cafe24_register_service import reason_label
+                    _rc = q.fail_reason_counts(_tuser)[:4]
+                    if _rc:
+                        _msg += "\n사유: " + ", ".join(
+                            f"{reason_label(_c2)} {_n2}건" for _c2, _n2 in _rc)
+                except Exception:
+                    pass
                 _msg += "\n※ 실패 건은 카페24 탭 대기열에서 확인·재시도하세요."
             send_notification(_ts, _msg, _tuser)
 

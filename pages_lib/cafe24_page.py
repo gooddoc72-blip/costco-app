@@ -249,8 +249,42 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                            f"/ 이미 대기열에 있음 {_ns}건")
                                 st.rerun()
 
+                    # ── 실패 사유별 분류 — '실패 12건'만으로는 조치를 못 한다 ──
+                    if _qc['failed']:
+                        st.markdown("**❌ 실패 사유별 분류**")
+                        _rc = _c24q.fail_reason_counts(_ag_tuser)
+                        st.dataframe(pd.DataFrame([
+                            {'사유': c24reg.reason_label(_code), '건수': _n,
+                             '조치': c24reg.reason_hint(_code)}
+                            for _code, _n in _rc]),
+                            use_container_width=True, hide_index=True)
+                        _rmap = {f"{c24reg.reason_label(c)} ({n}건)": c for c, n in _rc}
+                        _rpick = st.selectbox("사유 선택 — 목록 보기 / 그 사유만 재시도",
+                                              list(_rmap.keys()), key="ag_q_reason")
+                        _rcode = _rmap.get(_rpick)
+                        _rr1, _rr2 = st.columns(2)
+                        if _rr1.button(f"🔁 이 사유만 다시 대기로", key="ag_q_retry_one"):
+                            _n = _c24q.requeue_failed(_ag_tuser, reason=_rcode)
+                            st.success(f"{_n}건을 대기 상태로 되돌렸습니다."); st.rerun()
+                        _frows = _c24q.list_rows(_ag_tuser, 'failed', limit=500,
+                                                 reason=_rcode)
+                        if _frows:
+                            _fdf = pd.DataFrame([
+                                {'상품번호': r['product_no'],
+                                 '상품명': r['product_name'],
+                                 '사유': (r['detail'] or ''), '갱신': r['updated_at']}
+                                for r in _frows])
+                            st.dataframe(_fdf, use_container_width=True, hide_index=True)
+                            _rr2.download_button(
+                                "⬇️ 이 목록 CSV", _fdf.to_csv(index=False).encode('utf-8-sig'),
+                                file_name=f"실패_{_rcode}_{_ag_tuser}.csv",
+                                mime="text/csv", key="ag_q_csv")
+                        else:
+                            st.caption("사유 코드가 없는 과거 기록입니다 — 아래 '대기열 보기'에서 확인하세요.")
+                        st.divider()
+
                     _qb1, _qb2, _qb3 = st.columns(3)
-                    if _qb1.button(f"🔁 실패 {_qc['failed']}건 다시 대기로", key="ag_q_retry",
+                    if _qb1.button(f"🔁 실패 {_qc['failed']}건 전부 다시 대기로", key="ag_q_retry",
                                    disabled=not _qc['failed']):
                         _n = _c24q.requeue_failed(_ag_tuser)
                         st.success(f"{_n}건을 대기 상태로 되돌렸습니다."); st.rerun()
@@ -272,6 +306,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     if _qrows:
                         st.dataframe(pd.DataFrame([
                             {'상품번호': r['product_no'], '상품명': r['product_name'][:40],
+                             '분류': c24reg.reason_label(r.get('reason')) if r.get('reason') else '',
                              '사유': (r['detail'] or '')[:70], '갱신': r['updated_at']}
                             for r in _qrows]), use_container_width=True, hide_index=True)
                     else:

@@ -20,6 +20,68 @@ MATCH_MIN = 60
 DETAIL_IMG_LIMIT = 20
 
 
+# 실패 사유 코드 — 조치 방법이 서로 다른 것만 나눈다.
+# (같은 조치로 해결되는 걸 쪼개면 목록만 늘고 판단은 안 쉬워진다)
+FAIL_REASONS = {
+    'NO_CATEGORY':  ('카테고리 판단실패', '상품명이 모호합니다. 카페24 상품명을 다듬거나 AI 키를 확인하세요.'),
+    'NO_IMAGE':     ('대표이미지 없음', '카페24 상품에 이미지가 없습니다. 카페24에서 등록 후 재시도하세요.'),
+    'IMAGE_UPLOAD': ('이미지 업로드 실패', '이미지 용량·형식 또는 원본 URL 접근 문제입니다. 재시도로 풀리는 경우가 많습니다.'),
+    'CAFE24_FETCH': ('카페24 조회 실패', '상품이 삭제됐거나 카페24 권한·토큰 문제입니다.'),
+    'AUTH':         ('인증/토큰 오류', '카페24 또는 네이버 재인증이 필요합니다. 설정 탭에서 다시 연결하세요.'),
+    'RATE_LIMIT':   ('호출 한도 초과', '잠시 후 재시도하면 됩니다. 회당 등록 건수를 줄이는 것도 방법입니다.'),
+    'PRICE':        ('판매가 거부', '네이버 최소/최대 판매가 범위를 벗어났습니다. 마진율을 확인하세요.'),
+    'NAME':         ('상품명 거부', '금지어·길이 문제입니다. 상품명을 수정하세요.'),
+    'TAG':          ('태그 거부', '태그가 거부됐습니다(등록 자체는 태그 없이 재시도됩니다).'),
+    'NAVER_REJECT': ('네이버 등록 거부', '네이버가 지목한 필드를 사유에서 확인하세요.'),
+    'EXCEPTION':    ('처리 중 예외', '예상 못 한 오류입니다. 자동화 로그를 확인하세요.'),
+    'UNKNOWN':      ('기타', '사유 문구를 확인하세요.'),
+}
+
+
+def reason_label(code):
+    return FAIL_REASONS.get(str(code or ''), FAIL_REASONS['UNKNOWN'])[0]
+
+
+def reason_hint(code):
+    return FAIL_REASONS.get(str(code or ''), FAIL_REASONS['UNKNOWN'])[1]
+
+
+def _classify_naver_error(msg):
+    """네이버 등록 거부 메시지 → 사유 코드. 메시지가 '[field] 설명' 형태다."""
+    _m = str(msg or '').lower()
+    if any(k in _m for k in ('unauthorized', '401', 'invalid_token', '인증')):
+        return 'AUTH'
+    if any(k in _m for k in ('429', 'too many', 'rate limit', '한도')):
+        return 'RATE_LIMIT'
+    if any(k in _m for k in ('saleprice', 'price', '판매가', '가격')):
+        return 'PRICE'
+    if any(k in _m for k in ('productname', '상품명', '금지어')):
+        return 'NAME'
+    if any(k in _m for k in ('seoinfo', 'sellertags', '태그')):
+        return 'TAG'
+    return 'NAVER_REJECT'
+
+
+def classify_failure(detail):
+    """실패 사유 문구 → 코드. reason이 비어 있는 과거 기록을 위한 폴백이다.
+    새로 쌓이는 건 register_one이 코드를 직접 붙인다."""
+    _d = str(detail or '')
+    _l = _d.lower()
+    if '카테고리 판단실패' in _d:
+        return 'NO_CATEGORY'
+    if '이미지 없음' in _d:
+        return 'NO_IMAGE'
+    if '이미지업로드 실패' in _d or '이미지 업로드 실패' in _d:
+        return 'IMAGE_UPLOAD'
+    if '카페24 상세조회 실패' in _d:
+        return 'CAFE24_FETCH'
+    if _d.startswith('예외:'):
+        return 'EXCEPTION'
+    if not _d.strip():
+        return 'UNKNOWN'
+    return _classify_naver_error(_d)
+
+
 def fetch_image_bytes(url, timeout=15):
     """이미지 URL → (bytes, media_type). 실패 시 (None, None)."""
     import requests as _rq
@@ -217,16 +279,18 @@ def register_one(creds, save_tokens, product, margin, target, opts,
     _pno = product.get('product_no')
     sale = calc_sale_price(product.get('price'), margin)
 
-    def _r(status, detail, **kw):
+    def _r(status, detail, reason='', **kw):
         _out = {'status': status, 'name': _name, 'code': '', 'code_src': '',
-                'category': '', 'tags': 0, 'price': sale, 'detail': detail}
+                'category': '', 'tags': 0, 'price': sale, 'detail': detail,
+                'reason': reason if status == 'fail' else ''}
         _out.update(kw)
         return _out
 
     # 0) 카페24 상세 조회
     _full, _fe = cafe24_api.get_product(creds, _pno, save_tokens=save_tokens)
     if _fe and not _full:
-        return _r('fail', '카페24 상세조회 실패: %s' % str(_fe)[:120])
+        return _r('fail', '카페24 상세조회 실패: %s' % str(_fe)[:120],
+                  reason='AUTH' if 'token' in str(_fe).lower() else 'CAFE24_FETCH')
     _full = _full or {}
     _cf_name = _full.get('product_name') or _name
     _name = _cf_name
@@ -259,11 +323,12 @@ def register_one(creds, save_tokens, product, margin, target, opts,
     # 대표 이미지
     _rep = _full.get('detail_image') or _full.get('list_image') or ''
     if not _rep:
-        return _r('fail', '이미지 없음', code=_seller_code, code_src=_code_src)
+        return _r('fail', '이미지 없음', reason='NO_IMAGE',
+                  code=_seller_code, code_src=_code_src)
     _cdn, _ue = naver_api.upload_product_image(tid, tsecret, _rep)
     if not _cdn:
         return _r('fail', '이미지업로드 실패: %s' % str(_ue or '')[:100],
-                  code=_seller_code, code_src=_code_src)
+                  reason='IMAGE_UPLOAD', code=_seller_code, code_src=_code_src)
 
     # ① AI 제품사진 분석(비전) → 상품명·원산지·브랜드 (opt-in)
     _ai_photo = {}
@@ -291,7 +356,8 @@ def register_one(creds, save_tokens, product, margin, target, opts,
             _cid, _cfull = _cr2[0].get('id'), _cr2[0].get('full_name')
     if not _cid:
         _name = _base_name
-        return _r('fail', '카테고리 판단실패', code=_seller_code, code_src=_code_src)
+        return _r('fail', '카테고리 판단실패', reason='NO_CATEGORY',
+                  code=_seller_code, code_src=_code_src)
 
     # ③ 최종 상품명: 연관키워드(저경쟁 100~300+대표어) 최적화 — 분석 상품명을 seed로
     _final_name = _base_name
@@ -339,7 +405,8 @@ def register_one(creds, save_tokens, product, margin, target, opts,
         "seller_code": _seller_code,
     })
     if _e2:
-        return _r('fail', str(_e2)[:200], code=_seller_code, code_src=_code_src,
+        return _r('fail', str(_e2)[:200], reason=_classify_naver_error(_e2),
+                  code=_seller_code, code_src=_code_src,
                   category=str(_cfull or ''), tags=len(_tags or []))
 
     # 같은 배치 안에서의 중복도 차단

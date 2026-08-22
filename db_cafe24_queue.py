@@ -33,6 +33,7 @@ def init_queue():
                 price        INTEGER DEFAULT 0,
                 status       TEXT DEFAULT 'pending',
                 detail       TEXT DEFAULT '',
+                reason       TEXT DEFAULT '',
                 attempts     INTEGER DEFAULT 0,
                 created_at   TEXT DEFAULT '',
                 updated_at   TEXT DEFAULT '',
@@ -41,6 +42,11 @@ def init_queue():
         # 크론이 매번 '이 사용자의 pending'을 뽑으므로 복합 인덱스.
         conn.execute("CREATE INDEX IF NOT EXISTS idx_c24q_user_status "
                      "ON cafe24_reg_queue(target_user, status)")
+        # 이미 만들어진 테이블에 reason이 없으면 추가(구버전에서 올라온 경우)
+        _cols = {r[1] for r in conn.execute(
+            "PRAGMA table_info(cafe24_reg_queue)").fetchall()}
+        if 'reason' not in _cols:
+            conn.execute("ALTER TABLE cafe24_reg_queue ADD COLUMN reason TEXT DEFAULT ''")
         conn.commit()
     finally:
         conn.close()
@@ -55,7 +61,7 @@ def enqueue(target_user, products):
     init_queue()
     rows = [(str(target_user), str(p.get('product_no')),
              str(p.get('product_name') or ''), int(p.get('price') or 0),
-             'pending', '', 0, _now(), _now())
+             'pending', '', '', 0, _now(), _now())
             for p in (products or []) if p.get('product_no')]
     if not rows:
         return 0, 0
@@ -69,7 +75,8 @@ def enqueue(target_user, products):
             conn.executemany(
                 "INSERT OR IGNORE INTO cafe24_reg_queue "
                 "(target_user, product_no, product_name, price, status, detail, "
-                " attempts, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?)", rows)
+                " reason, attempts, created_at, updated_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?)", rows)
             conn.commit()
             _after = conn.execute(
                 "SELECT COUNT(*) FROM cafe24_reg_queue WHERE target_user=?",
@@ -94,23 +101,48 @@ def next_pending(target_user, limit=30):
         conn.close()
 
 
-def mark(qid, status, detail=''):
-    """처리 결과 기록. status는 STATUSES 중 하나."""
+def mark(qid, status, detail='', reason=''):
+    """처리 결과 기록. status는 STATUSES 중 하나.
+    reason은 실패 사유 코드(cafe24_register_service.FAIL_REASONS) — 실패에만 의미가 있다."""
     if status not in STATUSES:
         raise ValueError("알 수 없는 상태: %s" % status)
+    _rs = str(reason or '')[:32] if status == 'failed' else ''
 
     def _do():
         conn = get_auth_db()
         try:
             conn.execute(
-                "UPDATE cafe24_reg_queue SET status=?, detail=?, "
+                "UPDATE cafe24_reg_queue SET status=?, detail=?, reason=?, "
                 "attempts=attempts+1, updated_at=? WHERE id=?",
-                (status, str(detail or '')[:400], _now(), int(qid)))
+                (status, str(detail or '')[:400], _rs, _now(), int(qid)))
             conn.commit()
         finally:
             conn.close()
 
     return retry_on_lock(_do)
+
+
+def fail_reason_counts(target_user):
+    """실패 건을 사유 코드별로 집계. 반환: [(reason_code, 건수)] 많은 순.
+
+    사유가 비어 있는 과거 기록은 문구로 분류해 채운다(구버전 호환)."""
+    init_queue()
+    conn = get_auth_db()
+    try:
+        rows = conn.execute(
+            "SELECT reason, detail FROM cafe24_reg_queue "
+            "WHERE target_user=? AND status='failed'", (str(target_user),)).fetchall()
+    finally:
+        conn.close()
+    try:
+        from cafe24_register_service import classify_failure
+    except Exception:
+        classify_failure = lambda d: 'UNKNOWN'
+    agg = {}
+    for _rs, _dt in rows:
+        _code = str(_rs or '').strip() or classify_failure(_dt)
+        agg[_code] = agg.get(_code, 0) + 1
+    return sorted(agg.items(), key=lambda kv: -kv[1])
 
 
 def counts(target_user):
@@ -144,12 +176,17 @@ def all_counts():
         conn.close()
 
 
-def list_rows(target_user, status=None, limit=500):
-    """대기열 조회 (UI 표시용). status=None이면 전체."""
+def list_rows(target_user, status=None, limit=500, reason=None):
+    """대기열 조회 (UI 표시용). status=None이면 전체. reason으로 실패 사유 필터."""
     init_queue()
     conn = get_auth_db(row=True)
     try:
-        if status:
+        if status and reason:
+            rows = conn.execute(
+                "SELECT * FROM cafe24_reg_queue WHERE target_user=? AND status=? "
+                "AND reason=? ORDER BY id LIMIT ?",
+                (str(target_user), status, str(reason), int(limit))).fetchall()
+        elif status:
             rows = conn.execute(
                 "SELECT * FROM cafe24_reg_queue WHERE target_user=? AND status=? "
                 "ORDER BY id LIMIT ?",
@@ -163,15 +200,22 @@ def list_rows(target_user, status=None, limit=500):
         conn.close()
 
 
-def requeue_failed(target_user):
-    """실패 건을 다시 대기 상태로. 반환: 되돌린 건수.
-    원인을 고친 뒤(예: 카테고리 매핑 추가) 사람이 눌러서 재시도하는 용도."""
+def requeue_failed(target_user, reason=None):
+    """실패 건을 다시 대기 상태로. reason을 주면 그 사유만. 반환: 되돌린 건수.
+    원인을 고친 뒤(예: 상품명 수정, 카페24 이미지 등록) 사람이 눌러 재시도하는 용도."""
     def _do():
         conn = get_auth_db()
         try:
-            cur = conn.execute(
-                "UPDATE cafe24_reg_queue SET status='pending', detail='', updated_at=? "
-                "WHERE target_user=? AND status='failed'", (_now(), str(target_user)))
+            if reason:
+                cur = conn.execute(
+                    "UPDATE cafe24_reg_queue SET status='pending', detail='', reason='', "
+                    "updated_at=? WHERE target_user=? AND status='failed' AND reason=?",
+                    (_now(), str(target_user), str(reason)))
+            else:
+                cur = conn.execute(
+                    "UPDATE cafe24_reg_queue SET status='pending', detail='', reason='', "
+                    "updated_at=? WHERE target_user=? AND status='failed'",
+                    (_now(), str(target_user)))
             conn.commit()
             return cur.rowcount
         finally:
