@@ -336,6 +336,44 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         key="ag_q_max",
                         help="한 번에 몰아치면 네이버 API 한도와 서버 메모리에 걸립니다. "
                              "매시간 30건이면 300건을 약 10시간에 소화합니다.")
+                    # ── 지금 실행 — 크론(:30)을 기다리지 않고 바로 돌린다 ──
+                    st.markdown("**지금 실행**")
+                    _rn_user = _q_target or _ag_tuser
+                    _rn1, _rn2 = st.columns([1, 2])
+                    _rn_cnt = _rn1.number_input(
+                        "시험 건수", min_value=1, max_value=20, step=1, value=3,
+                        key="ag_run_n",
+                        help="처음엔 적게 돌려 스마트스토어에서 결과를 확인하고 늘리세요. "
+                             "건당 20~60초 걸립니다.")
+                    if _rn2.button(f"▶ 지금 '{_rn_user}' {int(_rn_cnt)}건 시험 등록",
+                                   key="ag_run_now", type="primary"):
+                        import subprocess as _sp, sys as _sys, os as _os
+                        _py = _sys.executable
+                        _sc = _os.path.join(
+                            _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))),
+                            'auto_task.py')
+                        with st.spinner(f"'{_rn_user}' {int(_rn_cnt)}건 등록 중... "
+                                        f"(최대 {int(_rn_cnt) * 60}초)"):
+                            _r = _sp.run(
+                                [_py, _sc, '--task', 'cafe24reg', '--user', USERNAME,
+                                 '--target', _rn_user, '--limit', str(int(_rn_cnt)),
+                                 '--force'],
+                                capture_output=True, text=True, encoding='utf-8',
+                                errors='replace', timeout=max(180, int(_rn_cnt) * 90))
+                        _out = ((_r.stdout or '') + (_r.stderr or '')).strip()
+                        _lines = [l for l in _out.splitlines()
+                                  if any(k in l for k in ('✅', '❌', '⏭', '처리', '완료'))]
+                        if _r.returncode == 0:
+                            st.success("실행 완료 — 아래 결과와 위 카운터를 확인하세요.")
+                        else:
+                            st.error(f"실행 오류(코드 {_r.returncode})")
+                        if _lines:
+                            st.code("\n".join(_lines[-14:]), language=None)
+                        st.rerun()
+                    st.caption("⏰ 자동 실행은 **매시 30분**입니다. 위 버튼은 그와 별개로 "
+                               "지금 1회만 돌립니다(자동 스위치가 꺼져 있어도 실행됩니다).")
+                    st.divider()
+
                     if st.button("💾 배치 설정 저장", key="ag_q_save"):
                         set_global_setting('cafe24_register_enabled', '1' if _q_on else '0')
                         set_global_setting('cafe24_register_target', _q_target)

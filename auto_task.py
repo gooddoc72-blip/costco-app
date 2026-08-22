@@ -1267,7 +1267,8 @@ def run_cafe24_sync_task(username="admin"):
 
 
 # ── Task 10: 카페24 대기열 → 네이버 대행 등록 (배치) ──
-def run_cafe24_register_task(username="admin"):
+def run_cafe24_register_task(username="admin", limit=None, target=None,
+                             force=False):
     """cafe24_reg_queue에 쌓인 상품을 대상 사용자 스마트스토어에 나눠 등록한다.
 
     300건을 한 번에 돌리면 몇 시간이 걸리고, 중간에 죽으면 어디까지 했는지 모른다.
@@ -1281,9 +1282,12 @@ def run_cafe24_register_task(username="admin"):
     log("=" * 50)
     log(f"[Task 10] 카페24 대행등록 배치 시작 (실행 계정: {username})")
 
-    if get_global_setting('cafe24_register_enabled') != '1':
+    # force는 화면에서 '지금 N건 시험 등록'을 누른 경우다(사람이 명시적으로 지시).
+    if not force and get_global_setting('cafe24_register_enabled') != '1':
         log("⏭ cafe24_register_enabled 미설정 — 건너뜀 (카페24 탭에서 활성화 필요)")
         return True
+    if force:
+        log("▶ 수동 실행 — 자동 배치 스위치와 무관하게 이번 1회만 진행합니다")
 
     try:
         import cafe24_register_service as c24reg
@@ -1312,6 +1316,8 @@ def run_cafe24_register_task(username="admin"):
         _max = int(get_global_setting('cafe24_register_max') or 30)
     except Exception:
         _max = 30
+    if limit:                      # 수동 실행에서 건수를 직접 지정한 경우
+        _max = max(1, int(limit))
     try:
         _margin = float(get_global_setting('cafe24_naver_margin') or 10)
     except Exception:
@@ -1353,7 +1359,7 @@ def run_cafe24_register_task(username="admin"):
 
     # 처리 대상 지정 — 비어 있으면 대기열이 있는 전 사용자.
     # 여러 계정에 대기열이 남아 있을 때 의도치 않은 스토어에 등록되는 걸 막는다.
-    _only = str(get_global_setting('cafe24_register_target') or '').strip()
+    _only = str(target or get_global_setting('cafe24_register_target') or '').strip()
     if _only:
         _all_names = [u for u, _ in _pending]
         _pending = [(u, n) for u, n in _pending if u == _only]
@@ -1682,7 +1688,11 @@ if __name__ == "__main__":
                         default="admin",
                         help="실행 대상 사용자명 (기본: admin)")
     parser.add_argument("--force", action="store_true",
-                        help="opt-in 게이트 무시(수동 실행용, 현재 naverstock에서 사용)")
+                        help="opt-in 게이트 무시(수동 실행용: naverstock, cafe24reg)")
+    parser.add_argument("--limit", type=int, default=None,
+                        help="cafe24reg: 이번 실행에서 처리할 건수(회당 설정값 대신)")
+    parser.add_argument("--target", default=None,
+                        help="cafe24reg: 처리할 대상 계정(설정값 대신)")
     args = parser.parse_args()
     # 이 실행의 모든 로그를 해당 사용자 전용 로그에도 기록 (타 사용자 로그 노출 방지)
     set_log_user(args.user)
@@ -1704,7 +1714,8 @@ if __name__ == "__main__":
     elif args.task == "cafe24sync":
         run_cafe24_sync_task(args.user)
     elif args.task == "cafe24reg":
-        run_cafe24_register_task(args.user)
+        run_cafe24_register_task(args.user, limit=args.limit, target=args.target,
+                                 force=args.force)
     elif args.task == "naverstock":
         run_naver_stock_sync_task(args.user, force=args.force)
     elif args.task == "hiresimg":
