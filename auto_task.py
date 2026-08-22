@@ -1371,6 +1371,20 @@ def run_cafe24_register_task(username="admin"):
                            or str(_admin_ts.get('naver_detail_top_img') or '').strip())
         opts['bottom_img'] = (str(_ts.get('naver_detail_bottom_img') or '').strip()
                               or str(_admin_ts.get('naver_detail_bottom_img') or '').strip())
+        # 구매/리뷰 혜택도 등록 시점에 건다. 안 걸면 나중에 상품 수만큼
+        # '혜택 일괄 적용'을 다시 돌려야 한다(건당 API 2회).
+        opts['benefits'] = {}
+        for _bsrc in (_ts, _admin_ts):
+            try:
+                _bp = json.loads(str(_bsrc.get('naver_benefit_preset') or '') or '{}')
+            except Exception:
+                _bp = {}
+            if any((_bp or {}).values()):
+                opts['benefits'] = _bp
+                break
+        if opts['benefits']:
+            log(f"  '{_tuser}' 혜택 프리셋 적용: "
+                + ", ".join(f"{_k}={_v}" for _k, _v in opts['benefits'].items() if _v))
 
         # 중복 등록 방지 — 대상 스토어 기존 상품을 회차당 1회만 조회한다.
         _have_code, _have_name, _eerr = c24reg.load_existing(_tid, _tsecret)

@@ -481,6 +481,14 @@ def register_one(username, api_id, api_secret, product, cat_id, opts=None):
     _dp.append('</div>')
     detail_html = "\n".join(_dp)
 
+    # 구매/리뷰 혜택 — 사용자가 저장해 둔 프리셋을 등록 시점에 함께 건다.
+    try:
+        import json as _json_bn
+        _benefits = _json_bn.loads(
+            str(get_setting(username, "naver_benefit_preset") or "") or "{}")
+    except Exception:
+        _benefits = {}
+
     # AI 연관태그 (opt-in) — 네이버 태그사전 검증된 것만 (최대 10개)
     seller_tags = []
     if _ai and opts.get("gen_tags"):
@@ -503,6 +511,7 @@ def register_one(username, api_id, api_secret, product, cat_id, opts=None):
         "seller_code":       str(product.get("product_no") or "").strip(),
         "seller_tags":       seller_tags,
         "manufacturer":      _manufacturer,
+        "benefits":          _benefits or None,
     })
     if e2 or not res:
         return None, e2 or "등록 실패"

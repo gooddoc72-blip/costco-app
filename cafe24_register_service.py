@@ -259,8 +259,8 @@ def register_one(creds, save_tokens, product, margin, target, opts,
     product : {'product_no', 'product_name', 'price'} (카페24 목록 항목)
     target  : {'api_id', 'api_secret', 'as_tel'}
     opts    : {'detail_mode'('html'|'image'), 'top_img', 'bottom_img',
-               'photo_ai', 'gen_tags', 'opt_name',
-               'ai_key', 'gemini_key', 'ad_creds'}
+               'benefits'(구매/리뷰 포인트 dict), 'photo_ai', 'gen_tags',
+               'opt_name', 'ai_key', 'gemini_key', 'ad_creds'}
     have_code/have_name : 호출측이 유지하는 중복 방지 집합(성공 시 여기에 채워 넣는다)
     shared  : get_shared_products() 결과 — 코스트코 번호 매칭용
 
@@ -403,6 +403,9 @@ def register_one(creds, save_tokens, product, margin, target, opts,
         "seller_tags": _tags, "manufacturer": _manuf or None,
         "model_name": _model or None, "origin_content": _origin or None,
         "seller_code": _seller_code,
+        # 구매/리뷰 포인트 — 등록 시점에 같이 건다. 안 넣으면 나중에
+        # '혜택 일괄 적용'을 상품 수만큼 다시 돌려야 한다(건당 API 2회).
+        "benefits": opts.get('benefits') or None,
     })
     if _e2:
         return _r('fail', str(_e2)[:200], reason=_classify_naver_error(_e2),

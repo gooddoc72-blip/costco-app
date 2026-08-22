@@ -120,6 +120,27 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     f"하단 고정이미지 {'✅' if _ag_bot else '— 없음'}"
                     + ("" if (_ag_top or _ag_bot) else
                        "  (‘네이버 등록’ 탭 › 공통 이미지에서 등록하면 여기에도 적용됩니다)"))
+                # 구매/리뷰 혜택 — 대상 사용자 프리셋 우선, 없으면 관리자 것.
+                # 등록 시점에 같이 걸어야 나중에 일괄 적용을 다시 안 돌린다.
+                import json as _json_bn
+                _ag_benefits = {}
+                for _src in (_ag_ts, settings):
+                    try:
+                        _bp = _json_bn.loads(str(_src.get('naver_benefit_preset') or '') or '{}')
+                    except Exception:
+                        _bp = {}
+                    if any((_bp or {}).values()):
+                        _ag_benefits = _bp
+                        break
+                if _ag_benefits:
+                    _bl = ", ".join(
+                        f"{naver_api.BENEFIT_LABELS.get(_k, _k)} {_v}"
+                        for _k, _v in _ag_benefits.items() if _v)
+                    st.caption(f"🎁 구매/리뷰 혜택 — {_bl}")
+                else:
+                    st.caption("🎁 구매/리뷰 혜택 — 설정 없음 "
+                               "(‘제품 DB’ 탭 › 혜택 일괄 적용에서 값을 저장하면 "
+                               "등록 시 자동으로 함께 걸립니다)")
                 _ag_photo_ai = st.checkbox(
                     "📷 AI 제품사진 분석으로 상품명·속성 생성 (제품사진 등록 방식)",
                     value=bool(_ag_ai or _ag_gai), key="ag_photoai",
@@ -454,6 +475,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         _ag_opts = {
                             'detail_mode': _ag_detail_mode,
                             'top_img': _ag_top, 'bottom_img': _ag_bot,
+                            'benefits': _ag_benefits,
                             'photo_ai': _ag_photo_ai,
                             'gen_tags': True, 'opt_name': True,
                             'ai_key': _ag_ai, 'gemini_key': _ag_gai,
