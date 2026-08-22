@@ -8,13 +8,15 @@ import pandas as pd
 from services import parse_costco_receipt_pdf
 from receipt_settle import (
     allocate_receipt_to_orders, apply_receipt_settlement, cleanup_orphan_settlements,
-    build_manual_rows, ai_match_receipt_orders, _summarize,
+    build_manual_rows, ai_match_receipt_orders, _summarize, compute_leftovers,
 )
 from db_receipt_settle import (
     save_settlement_batch, list_settlement_batches, get_settlement_items,
     get_user_settlement_summary, delete_settlement_batch,
 )
-from db import get_all_users, get_all_settings
+from db import (
+    get_all_users, get_all_settings, add_lot_units, find_lots_by_memo,
+)
 from utils import fmt
 
 invalidate_data_cache = None
@@ -237,6 +239,9 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     # ── 3.5) 미매칭 수동/AI 매칭 ──
     _render_match_section(alloc, dmap, settings, USERNAME)
 
+    # ── 3.7) 남은 재고 확인·입고 ──
+    _render_leftover_section(receipt_items, alloc, dmap, d_day, USERNAME)
+
     # ── 4) 적용 ──
     if rows:
         st.divider()
@@ -259,6 +264,118 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             st.rerun()
 
     _render_history(dmap)
+
+
+def _render_leftover_section(receipt_items, alloc, dmap, d_day, USERNAME):
+    """영수증 구매수량 중 판매되지 않고 남은 분을 재고로 잡는다 — 관리자 확인 필수.
+
+    자동 입고하지 않는 이유: 영수증 수량 인식이 틀리거나 주문 매칭이 덜 되면
+    있지도 않은 재고가 생기고, 그 유령 재고가 나중에 남의 판매에서 차감되며
+    교차정산 웃돈까지 발생시킨다. 되돌리기 어려운 방향의 오류라 사람이 본다.
+    """
+    st.divider()
+    st.subheader("📦 남은 재고 확인")
+
+    lefts = compute_leftovers(receipt_items, alloc.get('rows') or [])
+    if not lefts:
+        st.success("남은 수량이 없습니다 — 영수증 구매분이 모두 주문에 배치됐습니다.")
+        return
+
+    _memo_tag = f"영수증정산 {d_day}"
+    _already = {str(l.get('product_no') or '')
+                for l in (find_lots_by_memo(_memo_tag, received_at=str(d_day)) or [])}
+    if _already:
+        st.warning(f"⚠️ 이 날짜({d_day})로 이미 입고된 품목이 {len(_already)}종 있습니다. "
+                   "중복 입고를 막기 위해 아래 표에서 '입고됨'으로 표시합니다.")
+
+    st.caption(
+        f"영수증 구매수량에서 **배치된 주문 소비량**을 뺀 잔량입니다. "
+        f"수량은 재고원장과 같은 **소분 단위**입니다(소분 상품은 1팩 = split개). "
+        f"보유자를 지정하고 체크한 행만 입고됩니다.")
+
+    _opts = sorted(dmap.keys(), key=lambda u: dmap.get(u, u))
+    _labels = [dmap.get(u, u) for u in _opts]
+    _lbl2user = {dmap.get(u, u): u for u in _opts}
+    _def_lbl = dmap.get(USERNAME, USERNAME)
+    if _def_lbl not in _labels:            # 관리자가 목록에 없으면(비활성 등) 첫 사용자
+        _def_lbl = _labels[0] if _labels else _def_lbl
+
+    _bulk = st.selectbox(
+        "일괄 보유자 (실제로 물건을 산 사람 — 표에서 행별로 바꿀 수 있습니다)",
+        _labels, index=_labels.index(_def_lbl) if _def_lbl in _labels else 0,
+        key="rs_lf_bulk",
+        help="여기 지정한 사람의 재고로 잡힙니다. 나중에 다른 사용자가 이 재고로 팔면 "
+             "기존 교차정산(소분 1개당 웃돈)이 자동으로 걸립니다.")
+
+    _rows = []
+    for l in lefts:
+        _dup = l['costco_no'] in _already
+        _rows.append({
+            '입고': not _dup,
+            '상품번호': l['costco_no'],
+            '상품명': l['name'][:34],
+            '영수증수량(팩)': l['qty_receipt'],
+            '판매소비(소분)': l['units_used'],
+            '남은수량(소분)': l['units_left'],
+            '남은(팩)': round(l['packs_left'], 2),
+            '팩단가': l['unit_price'],
+            '재고금액': int(l['unit_price'] / max(1, l['split_qty']) * l['units_left']),
+            '보유자': _bulk,
+            '상태': '이미 입고됨' if _dup else '',
+        })
+
+    _ed = st.data_editor(
+        pd.DataFrame(_rows), use_container_width=True, hide_index=True,
+        key=f"rs_leftover_editor_{d_day}",
+        disabled=['상품번호', '상품명', '영수증수량(팩)', '판매소비(소분)',
+                  '남은수량(소분)', '남은(팩)', '팩단가', '재고금액', '상태'],
+        column_config={
+            '입고': st.column_config.CheckboxColumn('입고', help='체크한 행만 재고로 잡습니다'),
+            '보유자': st.column_config.SelectboxColumn('보유자', options=_labels, required=True),
+            '팩단가': st.column_config.NumberColumn('팩단가', format='%d'),
+            '재고금액': st.column_config.NumberColumn('재고금액', format='%d'),
+        },
+    )
+
+    _picked = [r for r in _ed.to_dict('records') if r.get('입고')]
+    _amt = sum(int(r.get('재고금액') or 0) for r in _picked)
+    st.markdown(f"선택 **{len(_picked)}종** · 재고금액 합계 **{fmt(_amt)}원**")
+
+    if not _picked:
+        st.caption("입고할 행을 체크하세요.")
+        return
+
+    if st.button(f"📦 확인한 {len(_picked)}종 재고 입고", type="primary", key="rs_lf_apply"):
+        _by_cno = {l['costco_no']: l for l in lefts}
+        _ok, _skip, _fail = 0, 0, []
+        for r in _picked:
+            _cno = str(r.get('상품번호') or '')
+            _l = _by_cno.get(_cno)
+            if not _l:
+                continue
+            if _cno in _already:
+                _skip += 1
+                continue
+            _owner = _lbl2user.get(str(r.get('보유자') or ''), USERNAME)
+            try:
+                _lid = add_lot_units(
+                    product_no=_cno, product_name=_l['name'], owner=_owner,
+                    pack_unit_cost=_l['unit_price'], qty_units=_l['units_left'],
+                    split_qty=_l['split_qty'], received_at=str(d_day),
+                    memo=f"{_memo_tag} · 영수증잔량")
+                if _lid:
+                    _ok += 1
+                else:
+                    _fail.append(f"{_l['name'][:20]} (수량 0)")
+            except Exception as e:
+                _fail.append(f"{_l['name'][:20]} — {str(e)[:60]}")
+        _msg = f"✅ 재고 입고 {_ok}종"
+        if _skip:
+            _msg += f" · ⏭ 중복 {_skip}종"
+        if _fail:
+            st.error("❌ 실패: " + " / ".join(_fail))
+        st.success(_msg + " — '재고 관리' 탭에서 확인하세요.")
+        st.rerun()
 
 
 def _merge_matches(alloc, new_rows, matched_order_indices):

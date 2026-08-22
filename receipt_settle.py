@@ -33,8 +33,8 @@ def _naver_to_product_map(username):
     return m
 
 
-def _order_cost(receipt_unit, qty, product):
-    """수익계산과 동일한 매입가 공식 적용."""
+def _split_pack(product):
+    """(소분수 split_qty, 묶음배수 pack) — 수익계산과 동일 기준."""
     split, pack = 1, 1
     if product:
         try:
@@ -43,7 +43,13 @@ def _order_cost(receipt_unit, qty, product):
             split = 1
         name = product.get('store_product_name') or product.get('costco_name') or ''
         pack = resolve_pack_factor(product, name)
-    return (int(receipt_unit) // split) * int(qty) * int(pack)
+    return split, int(pack)
+
+
+def _order_cost(receipt_unit, qty, product):
+    """수익계산과 동일한 매입가 공식 적용."""
+    split, pack = _split_pack(product)
+    return (int(receipt_unit) // split) * int(qty) * pack
 
 
 def allocate_receipt_to_orders(receipt_items, date_from, date_to, users=None):
@@ -121,6 +127,7 @@ def allocate_receipt_to_orders(receipt_items, date_from, date_to, users=None):
                 continue
             up = price_by_costco[costco_no]
             qty = int(o['qty'] or 1)
+            _sq, _pk = _split_pack(prod)
             rows.append({
                 'username': uname,
                 'order_no': _norm(o['order_no']),
@@ -133,6 +140,9 @@ def allocate_receipt_to_orders(receipt_items, date_from, date_to, users=None):
                 'amount': _order_cost(up, qty, prod),
                 'prev_cost': int(o['cost_price'] or 0),
                 'via': via,
+                # 남은 재고 계산용 — 소비량 = qty × pack (소분 단위)
+                'split_qty': _sq,
+                'pack': _pk,
             })
             matched_costco.add(costco_no)
 
@@ -143,6 +153,67 @@ def allocate_receipt_to_orders(receipt_items, date_from, date_to, users=None):
     return {'rows': rows, 'unmatched_receipt': unmatched,
             'unmatched_orders': unmatched_orders,
             'user_summary': _summarize(rows)}
+
+
+def compute_leftovers(receipt_items, rows):
+    """영수증 구매수량에서 배치된 주문 소비량을 빼 '남은 수량'을 낸다.
+
+    단위는 재고원장(db_inventory)과 같은 **소분 단위**:
+      입고 units = 영수증 수량(팩) × split_qty
+      소비 units = Σ(주문 qty × pack)
+    둘 다 정수라 잔량도 정수로 떨어진다. 팩의 배수가 아닐 수 있다
+    (1팩을 4소분해 2개만 팔면 2소분 = 0.5팩 잔량).
+
+    반환: [{costco_no, name, unit_price, qty_receipt, split_qty,
+            units_in, units_used, units_left, packs_left}]  (남은 게 있는 품목만)
+    """
+    used_by, split_by = {}, {}
+    for r in rows or []:
+        c = _norm(r.get('costco_no'))
+        if not c:
+            continue
+        used_by[c] = used_by.get(c, 0) + int(r.get('qty') or 0) * int(r.get('pack') or 1)
+        # 같은 상품인데 사용자마다 소분 수가 다르면 큰 값을 기준으로 잡는다.
+        # 작게 잡으면 입고량이 과소계산돼 있지도 않은 부족분이 생긴다.
+        split_by[c] = max(split_by.get(c, 1), int(r.get('split_qty') or 1))
+
+    # 같은 상품번호가 표에 여러 줄로 들어올 수 있어 먼저 합산한다.
+    agg = {}
+    for it in receipt_items or []:
+        c = _norm(it.get('상품번호'))
+        if not c:
+            continue
+        try:
+            up = int(float(it.get('단가') or 0))
+        except (TypeError, ValueError):
+            up = 0
+        try:
+            qn = int(it.get('수량') or 0)
+        except (TypeError, ValueError):
+            qn = 0
+        if qn <= 0 or up <= 0:
+            continue
+        a = agg.setdefault(c, {'name': _norm(it.get('상품명')), 'unit_price': up, 'qty': 0})
+        a['qty'] += qn
+        if not a['name']:
+            a['name'] = _norm(it.get('상품명'))
+
+    out = []
+    for c, a in agg.items():
+        sq = split_by.get(c, 1)
+        units_in = a['qty'] * sq
+        units_used = used_by.get(c, 0)
+        units_left = units_in - units_used
+        if units_left <= 0:
+            continue
+        out.append({
+            'costco_no': c, 'name': a['name'], 'unit_price': a['unit_price'],
+            'qty_receipt': a['qty'], 'split_qty': sq,
+            'units_in': units_in, 'units_used': units_used, 'units_left': units_left,
+            'packs_left': units_left / sq,
+        })
+    out.sort(key=lambda x: -x['units_left'] * x['unit_price'])
+    return out
 
 
 def _summarize(rows):
@@ -170,6 +241,9 @@ def build_manual_rows(pairs):
             'naver_no': o.get('naver_no', ''), 'product_name': o.get('product_name', ''),
             'qty': qty, 'unit_price': up, 'amount': (up // split) * qty,
             'prev_cost': int(o.get('prev_cost', 0) or 0), 'via': pr.get('via', 'manual'),
+            # 수동 매칭 경로는 묶음배수를 모른다 → 1로 둔다(남은수량이 과대추정되지
+            # 않는 쪽. 과소추정하면 없는 재고를 잡는다).
+            'split_qty': split, 'pack': 1,
         })
     return out
 

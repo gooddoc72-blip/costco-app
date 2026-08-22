@@ -340,6 +340,49 @@ def add_lot(product_no: str, product_name: str, owner: str, unit_cost: int,
     return int(lot_id or 0)
 
 
+def add_lot_units(product_no: str, product_name: str, owner: str,
+                  pack_unit_cost: int, qty_units: int, split_qty: int = 1,
+                  received_at: str = '', memo: str = '') -> int:
+    """소분 단위 수량으로 직접 입고 (영수증 정산의 '남은 재고'용).
+
+    add_lot은 팩 수를 받아 units = 팩수 x split_qty로 환산하는데, 영수증에서
+    남는 양은 팩의 배수가 아닐 수 있다(1팩을 4소분해 2개만 팔면 2소분 잔량).
+    그래서 소분 단위를 그대로 받는 경로를 둔다.
+    pack_unit_cost는 팩 단가 — 여기서 소분 단가로 나눈다(add_lot과 동일).
+    """
+    sq = max(1, int(split_qty or 1))
+    units = int(qty_units or 0)
+    if units <= 0:
+        return 0
+    conn = _conn()
+    _ensure_tables(conn)
+    cur = conn.execute("""INSERT INTO inventory_lots
+        (deal_id, product_no, product_name, owner, unit_cost, split_qty,
+         qty_in, qty_left, received_at, status, memo, created_at)
+        VALUES (?,?,?,?,?,?,?,?,?, 'ACTIVE', ?, ?)""",
+        (0, str(product_no or ''), str(product_name or ''), str(owner),
+         int(pack_unit_cost or 0) // sq, sq, units, units,
+         received_at or _today(), str(memo or ''), _now()))
+    lot_id = cur.lastrowid
+    conn.commit()
+    conn.close()
+    return int(lot_id or 0)
+
+
+def find_lots_by_memo(memo_prefix: str, received_at: str = '') -> list:
+    """memo 접두어(+입고일)로 기존 lot 조회 — 같은 영수증을 두 번 입고하는 사고 방지."""
+    conn = _conn()
+    _ensure_tables(conn)
+    sql = "SELECT * FROM inventory_lots WHERE memo LIKE ?"
+    args = [str(memo_prefix or '') + '%']
+    if received_at:
+        sql += " AND received_at=?"
+        args.append(str(received_at))
+    rows = conn.execute(sql, args).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
 def get_inventory_lots(owner: str = None, product_no: str = None,
                        only_active: bool = True) -> list:
     conn = _conn()
