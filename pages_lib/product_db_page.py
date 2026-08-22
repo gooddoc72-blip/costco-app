@@ -188,6 +188,129 @@ def _render_pack_multiplier(USERNAME: str):
                     st.rerun()
 
 
+def _render_benefit_section(USERNAME, api_id, api_secret):
+    """스마트스토어 상품의 구매/리뷰 포인트를 한 번에 설정한다.
+
+    스마트스토어 관리자에서 상품마다 손으로 넣던 '혜택 등록'을 API로 일괄 처리.
+    상품 1건당 GET+PUT 2회라 수백 건이면 몇 분 걸린다 — 진행률을 보여준다."""
+    if not (api_id and api_secret):
+        return
+    with st.expander("🎁 구매/리뷰 혜택 일괄 적용 (스마트스토어 포인트)", expanded=False):
+        st.caption(
+            "리뷰 작성·구매 시 지급할 포인트를 **기존 상품 전체에 한 번에** 설정합니다. "
+            "0으로 두면 그 항목은 지급하지 않습니다. "
+            "즉시할인·복수구매할인 등 다른 혜택은 건드리지 않습니다.")
+
+        _defaults = {}
+        try:
+            _defaults = json.loads(_gs_benefit(USERNAME) or "{}")
+        except Exception:
+            _defaults = {}
+
+        _c1, _c2, _c3 = st.columns(3)
+        _vals = {}
+        _vals['text_review'] = _c1.number_input(
+            "텍스트 리뷰", min_value=0, max_value=100000, step=10,
+            value=int(_defaults.get('text_review', 50)), key="bn_text")
+        _vals['photo_review'] = _c2.number_input(
+            "포토/동영상 리뷰", min_value=0, max_value=100000, step=10,
+            value=int(_defaults.get('photo_review', 100)), key="bn_photo")
+        _vals['store_member_review'] = _c3.number_input(
+            "스토어찜 고객 리뷰 추가", min_value=0, max_value=100000, step=10,
+            value=int(_defaults.get('store_member_review', 0)), key="bn_member")
+        _c4, _c5, _c6 = st.columns(3)
+        _vals['after_text_review'] = _c4.number_input(
+            "한달사용 텍스트 리뷰", min_value=0, max_value=100000, step=10,
+            value=int(_defaults.get('after_text_review', 100)), key="bn_atext")
+        _vals['after_photo_review'] = _c5.number_input(
+            "한달사용 포토/동영상", min_value=0, max_value=100000, step=10,
+            value=int(_defaults.get('after_photo_review', 100)), key="bn_aphoto")
+        _vals['purchase_point'] = _c6.number_input(
+            "구매 시 지급 포인트", min_value=0, max_value=100000, step=10,
+            value=int(_defaults.get('purchase_point', 0)), key="bn_purchase")
+
+        if not any(_vals.values()):
+            st.info("모든 값이 0입니다 — 적용하면 기존 리뷰/구매 포인트가 **제거**됩니다.")
+
+        # 대상 상품 — 스토어에서 직접 읽는다(로컬 DB 동기화 상태와 무관하게 정확)
+        if st.button("🔎 대상 상품 불러오기", key="bn_load"):
+            with st.spinner("스마트스토어 상품 목록 조회 중..."):
+                _lst, _lerr = naver_api.get_product_list(api_id, api_secret)
+            if _lerr:
+                st.error(f"조회 실패: {_lerr}")
+            else:
+                st.session_state['_bn_list'] = _lst or []
+            st.rerun()
+
+        _blist = st.session_state.get('_bn_list')
+        if _blist is None:
+            st.caption("먼저 '대상 상품 불러오기'를 누르세요.")
+            return
+        st.markdown(f"대상 상품 **{len(_blist)}개**")
+
+        _only_sale = st.checkbox("판매중 상품만", value=True, key="bn_onsale")
+        _targets = [b for b in _blist
+                    if (not _only_sale) or str(b.get('status', '')).upper() == 'SALE']
+        _limit = st.number_input(
+            "이번에 적용할 최대 건수", min_value=1, max_value=2000, step=10,
+            value=min(50, max(1, len(_targets))), key="bn_limit",
+            help="상품 1건당 API 2회(조회+수정)라 수백 건이면 몇 분 걸립니다. "
+                 "처음엔 적게 걸어 결과를 확인하고 늘리세요.")
+        _targets = _targets[:int(_limit)]
+        st.caption(f"적용 대상 {len(_targets)}개 "
+                   f"(전체 {len(_blist)}개 중 필터·상한 적용)")
+
+        if st.button(f"🎁 {len(_targets)}개에 혜택 적용", type="primary",
+                     key="bn_apply", disabled=not _targets):
+            _prog = st.progress(0.0)
+            _live = st.empty()
+            _ok, _rows = 0, []
+            for _i, _b in enumerate(_targets):
+                _prog.progress((_i + 1) / len(_targets))
+                _pno = (_b.get('originProductNo') or _b.get('productNo')
+                        or _b.get('id') or '')
+                _nm = str(_b.get('productName') or '')[:30]
+                if not _pno:
+                    _rows.append({'상품': _nm, '결과': '❌ 상품번호 없음'})
+                    continue
+                _r, _e, _used = naver_api.update_product_benefits(
+                    api_id, api_secret, _pno, _vals)
+                if _r:
+                    _ok += 1
+                else:
+                    _rows.append({'상품': _nm, '결과': f'❌ {str(_e)[:110]}'})
+                _live.markdown(f"`{_i + 1}/{len(_targets)}` 성공 {_ok} / 실패 {len(_rows)}")
+            _prog.empty()
+            _set_benefit(USERNAME, json.dumps(_vals))
+            if _rows:
+                st.warning(f"완료 — 성공 {_ok}건 / 실패 {len(_rows)}건")
+                st.dataframe(pd.DataFrame(_rows), use_container_width=True,
+                             hide_index=True)
+            else:
+                st.success(f"✅ {_ok}건 모두 적용했습니다.")
+
+        # 적용 확인 — 한 건만 읽어서 실제로 들어갔는지 본다
+        if _targets and st.button("🔬 첫 상품 혜택 확인(적용 검증)", key="bn_verify"):
+            _pno = (_targets[0].get('originProductNo')
+                    or _targets[0].get('productNo') or '')
+            _cb, _ce = naver_api.get_product_benefits(api_id, api_secret, _pno)
+            if _ce:
+                st.error(_ce)
+            else:
+                st.write(f"상품 {_pno} 현재 혜택:")
+                st.json(_cb or {"(비어 있음)": "혜택 미설정"})
+
+
+def _gs_benefit(username):
+    from db import get_setting
+    return get_setting(username, 'naver_benefit_preset')
+
+
+def _set_benefit(username, val):
+    from db import set_setting
+    set_setting(username, 'naver_benefit_preset', val)
+
+
 def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     """📦 제품 DB 탭 렌더링."""
     def _gs(k, default=""):
@@ -642,6 +765,9 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
 
     # ── 네이버 스마트스토어 상품 가져오기 ─────────────────────────
     render_naver_import_section(USERNAME, api_id, api_secret, channel_seller_id, invalidate_data_cache)
+
+    # ── 구매/리뷰 혜택 일괄 적용 ──────────────────────────────────
+    _render_benefit_section(USERNAME, api_id, api_secret)
 
     # ── 기존 네이버 상품 카테고리 일괄 적용 ───────────────────────
     _all_prods_for_cat = cached_merged(USERNAME)

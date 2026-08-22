@@ -432,7 +432,16 @@ def register_product(client_id, client_secret, product_info):
     as_tel = product_info.get("after_service_tel") or "1588-1234"
     origin = product_info.get("origin_code") or "03"
 
-    rp = product_info.get("review_points") or {}
+    # 혜택(리뷰/구매 포인트) — benefits 없으면 review_points(구형 키)도 받아준다
+    if not product_info.get("benefits") and product_info.get("review_points"):
+        _rp = product_info.get("review_points") or {}
+        product_info = dict(product_info)
+        product_info["benefits"] = {
+            "text_review": _rp.get("text", 50),
+            "photo_review": _rp.get("photo", 100),
+            "after_text_review": _rp.get("after_text", 100),
+            "after_photo_review": _rp.get("after_photo", 100),
+        }
 
     # 추가이미지: 이미 네이버 CDN URL 목록이어야 함
     extra_image_urls = product_info.get("extra_image_urls") or []
@@ -465,14 +474,11 @@ def register_product(client_id, client_secret, product_info):
                     "exchangeDeliveryFee": 5000,
                 },
             },
-            "benefitInfo": {
-                "reviewPointPolicy": {
-                    "textReviewPoint":              rp.get("text", 50),
-                    "photoVideoReviewPoint":        rp.get("photo", 100),
-                    "afterUseTextReviewPoint":      rp.get("after_text", 100),
-                    "afterUsePhotoVideoReviewPoint": rp.get("after_photo", 100),
-                }
-            },
+            # ⚠️ 키 이름은 'customerBenefit'이다. 예전엔 'benefitInfo'로 보내고 있었는데
+            #    네이버가 모르는 필드를 조용히 버려서, 리뷰포인트가 한 건도 적용되지
+            #    않았다(등록은 성공하니 아무도 몰랐다). GET origin-products 응답도
+            #    customerBenefit으로 돌아온다.
+            "customerBenefit": build_customer_benefit(product_info.get("benefits")),
             "detailAttribute": {
                 "minorPurchasable": True,   # 미성년자 구매가능
                 "unitCapacity": {"unitPriceYn": False},  # 가격표시제 대상(화장지 등) 필수
@@ -1240,6 +1246,137 @@ def update_product_name(client_id, client_secret, product_no, new_name):
         return False, f"상품명 수정 실패({put_resp.status_code}: {_format_naver_err(put_resp)})", None
     except Exception as e:
         return False, f"상품명 수정 예외: {e}", None
+
+
+# ── 구매/리뷰 혜택 (customerBenefit) ───────────────────────────
+# 스마트스토어 '혜택 등록' 화면의 포인트 지급 설정에 해당한다.
+#   텍스트 리뷰 / 포토·동영상 리뷰 / 한달사용 텍스트 / 한달사용 포토·동영상
+#   + 스토어찜 고객 리뷰 추가 / 구매 시 지급 포인트
+BENEFIT_KEYS = ('text_review', 'photo_review', 'after_text_review',
+                'after_photo_review', 'store_member_review', 'purchase_point')
+
+BENEFIT_LABELS = {
+    'text_review':         '텍스트 리뷰',
+    'photo_review':        '포토/동영상 리뷰',
+    'after_text_review':   '한달사용 텍스트 리뷰',
+    'after_photo_review':  '한달사용 포토/동영상 리뷰',
+    'store_member_review': '스토어찜 고객 리뷰 추가',
+    'purchase_point':      '구매 시 지급 포인트',
+}
+
+
+def build_customer_benefit(benefits):
+    """혜택 dict → 네이버 customerBenefit 구조. 값이 0/없으면 그 항목은 넣지 않는다.
+
+    네이버는 0을 '지급 안 함'으로 받지만, 정책 객체 자체를 빈 값으로 보내면
+    거부하는 경우가 있어 유효한 항목만 추린다."""
+    b = benefits or {}
+
+    def _i(k):
+        try:
+            return max(0, int(b.get(k) or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    out = {}
+    _rp = {}
+    for _k, _naver in (('text_review', 'textReviewPoint'),
+                       ('photo_review', 'photoVideoReviewPoint'),
+                       ('after_text_review', 'afterUseTextReviewPoint'),
+                       ('after_photo_review', 'afterUsePhotoVideoReviewPoint'),
+                       ('store_member_review', 'storeMemberReviewPoint')):
+        _v = _i(_k)
+        if _v > 0:
+            _rp[_naver] = _v
+    if _rp:
+        out['reviewPointPolicy'] = _rp
+
+    _pp = _i('purchase_point')
+    if _pp > 0:
+        out['purchasePointPolicy'] = {'value': _pp}
+    return out
+
+
+def update_product_benefits(client_id, client_secret, product_no, benefits):
+    """기존 상품의 구매/리뷰 혜택(customerBenefit) 설정.
+    update_product_tags와 동일한 GET→sanitize→PUT 구조.
+    benefits: {text_review, photo_review, after_text_review, after_photo_review,
+               store_member_review, purchase_point} — 0/생략은 미지급.
+    반환: (ok, err, used_origin_no)."""
+    _cb = build_customer_benefit(benefits)
+
+    token, err = get_token(client_id, client_secret)
+    if not token:
+        return False, err, None
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    pno = str(product_no).strip()
+    if not pno:
+        return False, "상품번호가 비어 있습니다.", None
+
+    def _get(p):
+        return requests.get(
+            f"https://api.commerce.naver.com/external/v2/products/origin-products/{p}",
+            headers=headers, timeout=15)
+
+    try:
+        g = _get(pno)
+        if g.status_code in (403, 404):
+            new_origin, rerr = resolve_origin_product_no(client_id, client_secret, pno)
+            if new_origin and new_origin != pno:
+                pno = new_origin
+                g = _get(pno)
+            elif g.status_code == 403:
+                return False, ("접근 권한 없음(403) — 이 상품은 현재 커머스 API 키의 "
+                               "스토어 소속이 아닙니다."), None
+            else:
+                return False, f"원상품번호를 찾지 못했습니다(404). {rerr or ''}".strip(), None
+        if g.status_code != 200:
+            return False, f"상품 조회 실패({g.status_code}: {_format_naver_err(g)})", None
+
+        data = g.json()
+        origin_product = data.get('originProduct') or {}
+        if not origin_product:
+            return False, f"GET 응답에 originProduct 없음: {str(data)[:200]}", None
+
+        origin_product = _sanitize_for_put(dict(origin_product))
+        # 기존 혜택 중 우리가 안 건드리는 항목(즉시할인·복수구매할인 등)은 보존한다.
+        _cur = origin_product.get('customerBenefit')
+        _cur = dict(_cur) if isinstance(_cur, dict) else {}
+        _cur.pop('reviewPointPolicy', None)
+        _cur.pop('purchasePointPolicy', None)
+        _cur.update(_cb)
+        if _cur:
+            origin_product['customerBenefit'] = _cur
+        else:
+            origin_product.pop('customerBenefit', None)
+
+        put_body = {"originProduct": origin_product}
+        smartstore = data.get('smartstoreChannelProduct')
+        if smartstore:
+            put_body["smartstoreChannelProduct"] = _sanitize_for_put(dict(smartstore))
+
+        put_resp = requests.put(
+            f"https://api.commerce.naver.com/external/v2/products/origin-products/{pno}",
+            headers=headers, json=put_body, timeout=20)
+        if put_resp.status_code == 200:
+            return True, None, pno
+        return False, f"혜택 수정 실패({put_resp.status_code}: {_format_naver_err(put_resp)})", None
+    except Exception as e:
+        return False, f"혜택 수정 예외: {e}", None
+
+
+def get_product_benefits(client_id, client_secret, product_no):
+    """현재 설정된 혜택 조회 (적용 확인용). 반환: (customerBenefit dict, err)."""
+    token, err = get_token(client_id, client_secret)
+    if not token:
+        return None, err
+    r = requests.get(
+        f"https://api.commerce.naver.com/external/v2/products/origin-products/"
+        f"{str(product_no).strip()}",
+        headers={"Authorization": f"Bearer {token}"}, timeout=15)
+    if r.status_code != 200:
+        return None, f"조회 실패({r.status_code}: {_format_naver_err(r)})"
+    return (r.json().get('originProduct') or {}).get('customerBenefit') or {}, None
 
 
 def update_product_tags(client_id, client_secret, product_no, tags):
