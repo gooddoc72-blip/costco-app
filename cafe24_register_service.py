@@ -28,6 +28,7 @@ FAIL_REASONS = {
     'IMAGE_UPLOAD': ('이미지 업로드 실패', '이미지 용량·형식 또는 원본 URL 접근 문제입니다. 재시도로 풀리는 경우가 많습니다.'),
     'CAFE24_FETCH': ('카페24 조회 실패', '상품이 삭제됐거나 카페24 권한·토큰 문제입니다.'),
     'AUTH':         ('인증/토큰 오류', '카페24 또는 네이버 재인증이 필요합니다. 설정 탭에서 다시 연결하세요.'),
+    'CERT':         ('상품인증 정보 필요', 'KC·어린이제품 인증 대상입니다. 인증정보와 카탈로그(모델명)가 있어야 등록됩니다 — 스마트스토어에서 수동 등록하세요.'),
     'RATE_LIMIT':   ('호출 한도 초과', '잠시 후 재시도하면 됩니다. 회당 등록 건수를 줄이는 것도 방법입니다.'),
     'PRICE':        ('판매가 거부', '네이버 최소/최대 판매가 범위를 벗어났습니다. 마진율을 확인하세요.'),
     'NAME':         ('상품명 거부', '금지어·길이 문제입니다. 상품명을 수정하세요.'),
@@ -49,7 +50,15 @@ def reason_hint(code):
 def _classify_naver_error(msg):
     """네이버 등록 거부 메시지 → 사유 코드. 메시지가 '[field] 설명' 형태다."""
     _m = str(msg or '').lower()
-    if any(k in _m for k in ('unauthorized', '401', 'invalid_token', '인증')):
+    # 상품인증(KC·어린이제품)을 먼저 본다. 아래 AUTH 판정이 '인증'이라는
+    # 단어만 보고 로그인 인증 오류로 잘못 분류하던 실제 사고가 있었다
+    # ('어린이인증 대상 카테고리 상품은 카탈로그 입력이 필수입니다' → AUTH).
+    if any(k in _m for k in ('certification', '인증 대상', '어린이인증',
+                             'kc인증', '인증정보', '인증 정보')):
+        return 'CERT'
+    # 로그인/토큰 인증 — '인증' 단어 단독으로는 판정하지 않는다
+    if any(k in _m for k in ('unauthorized', '401', 'invalid_token',
+                             'access token', '토큰')):
         return 'AUTH'
     if any(k in _m for k in ('429', 'too many', 'rate limit', '한도')):
         return 'RATE_LIMIT'
