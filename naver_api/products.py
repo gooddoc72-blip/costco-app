@@ -1,5 +1,6 @@
 """네이버 API — 상품 조회/등록·카테고리·이미지·가격 수정"""
 import time, json, requests, bcrypt, pybase64, math
+import re as _re_mod
 from datetime import datetime, timedelta, timezone
 from .core import get_token
 
@@ -231,12 +232,34 @@ def resize_square_bytes(img_bytes, size=1000, bg=(255, 255, 255)):
         return None
 
 
+def _post_image(headers, path):
+    """이미지 파일 1개를 네이버 CDN에 업로드. 반환: (url, err)."""
+    import os as _os
+    _mt = {".png": "image/png", ".webp": "image/webp",
+           ".gif": "image/gif"}.get(_os.path.splitext(path)[-1].lower(), "image/jpeg")
+    try:
+        with open(path, "rb") as f:
+            resp = requests.post(
+                "https://api.commerce.naver.com/external/v1/product-images/upload",
+                headers=headers,
+                files={"imageFiles": (_os.path.basename(path), f, _mt)},
+                timeout=60,
+            )
+    except Exception as e:
+        return None, str(e)
+    if resp.status_code == 200:
+        imgs = resp.json().get("images", [])
+        if imgs:
+            return imgs[0].get("url"), None
+    return None, f"이미지 업로드 실패({resp.status_code}): {resp.text[:300]}"
+
+
 def upload_product_image(client_id, client_secret, image_source, square=True):
     """
     이미지(로컬 파일 경로 또는 URL)를 네이버 CDN에 업로드.
     square=True  : 1000×1000 정사각형(가운데 크롭) — 대표/추가 이미지용(네이버 권장 규격).
-    square=False : 비율 유지 축소만(크롭 없음) — 상세페이지 이미지·상단/하단 배너용.
-                   세로로 긴 카페24 상세이미지가 위·아래 잘리는 것을 막는다.
+    square=False : 원본 그대로 업로드(리사이즈·재인코딩 없음) — 상세페이지·배너용.
+                   네이버가 원본을 거부할 때만 비율 유지 축소로 1회 재시도한다.
     반환: (naver_cdn_url, error_msg)
     """
     token, err = get_token(client_id, client_secret)
@@ -279,29 +302,27 @@ def upload_product_image(client_id, client_secret, image_source, square=True):
         else:
             src_path = image_source
 
-        # 대표/추가 이미지는 네이버 권장 1000×1000 정사각, 상세이미지는 비율 유지
-        # (실패하거나 축소 불필요하면 원본 그대로 업로드)
-        resized_path = _resize_square(src_path) if square else _resize_fit(src_path)
-        upload_path = resized_path or src_path
+        if square:
+            # 대표/추가 이미지 — 네이버 권장 1000×1000 정사각(가운데 크롭)
+            resized_path = _resize_square(src_path)
+            _u, _e = _post_image(headers, resized_path or src_path)
+            return _u, _e
 
-        import os as _os
-        fname = _os.path.basename(upload_path)
-        _mt = {".png": "image/png", ".webp": "image/webp",
-               ".gif": "image/gif"}.get(_os.path.splitext(upload_path)[-1].lower(),
-                                        "image/jpeg")
-        with open(upload_path, "rb") as f:
-            resp = requests.post(
-                "https://api.commerce.naver.com/external/v1/product-images/upload",
-                headers=headers,
-                files={"imageFiles": (fname, f, _mt)},
-                timeout=30,
-            )
-
-        if resp.status_code == 200:
-            imgs = resp.json().get("images", [])
-            if imgs:
-                return imgs[0].get("url"), None
-        return None, f"이미지 업로드 실패({resp.status_code}): {resp.text[:300]}"
+        # 상세이미지 — 원본 그대로 올린다. 리사이즈·재인코딩하면 텍스트가
+        # 뭉개지고 색이 바뀌어 판매자가 만든 상세페이지가 훼손된다.
+        _u, _e = _post_image(headers, src_path)
+        if _u:
+            return _u, None
+        # 원본이 네이버 한도(용량/해상도)를 넘어 거부된 경우에만 축소해 재시도.
+        # 여기서도 실패하면 그 이미지는 상세페이지에서 통째로 빠지므로,
+        # 훼손을 감수하더라도 올리는 쪽이 낫다.
+        resized_path = _resize_fit(src_path)
+        if not resized_path:
+            return None, _e
+        _u2, _e2 = _post_image(headers, resized_path)
+        if _u2:
+            return _u2, None
+        return None, _e2 or _e
 
     except Exception as e:
         return None, str(e)
@@ -533,18 +554,47 @@ def register_product(client_id, client_secret, product_info):
 
     try:
         _res, _err = _do_post(payload)
-        # 실패 시 안전 베이스라인으로 1회 재시도: 태그 제거 + 식품고시→ETC 복원
-        if _err and (_has_tags or _has_food):
-            _da = payload["originProduct"]["detailAttribute"]
-            _dropped = []
-            if _has_tags and _da.pop("seoInfo", None) is not None:
+        if not _err:
+            return _res, None
+        if not (_has_tags or _has_food):
+            return _res, _err
+
+        # 재시도 — 예전엔 실패하면 무조건 태그를 통째로 버렸다. 그래서 태그와
+        # 무관한 오류(가격·카테고리 등)에도 태그가 사라졌다.
+        # 이제는 네이버가 지목한 필드를 보고 원인만 뺀다.
+        _le = str(_err).lower()
+        _tag_blamed = any(k in _le for k in ('seoinfo', 'sellertags', 'tag', '태그'))
+        _food_blamed = any(k in _le for k in
+                           ('productinfoprovidednotice', 'notice', '고시', '상품정보제공'))
+        # _format_naver_err가 '[field] message' 형태로 필드를 실어준다.
+        # 다른 필드를 콕 집어 지목했다면 태그·고시는 죄가 없다 → 그대로 둔다.
+        _named = [f.lower() for f in _re_mod.findall(r'\[([^\]]+)\]', str(_err))]
+        _blames_other = bool(_named) and not (_tag_blamed or _food_blamed)
+        if _blames_other:
+            return _res, _err
+
+        _da = payload["originProduct"]["detailAttribute"]
+        _dropped = []
+        # 지목된 게 없으면(오류 메시지가 불투명) 최후수단으로 둘 다 빼고 1회 시도.
+        _opaque = not (_tag_blamed or _food_blamed)
+        if _has_tags and (_tag_blamed or _opaque):
+            if _da.pop("seoInfo", None) is not None:
                 _dropped.append("태그")
-            if _has_food:
-                _da["productInfoProvidedNotice"] = _etc_notice
-                _dropped.append("식품고시")
-            _res2, _err2 = _do_post(payload)
-            if not _err2:
-                return _res2, f"⚠️ {'·'.join(_dropped)} 거부되어 제외하고 등록했습니다. (원인: {_err})"
+        if _has_food and (_food_blamed or _opaque):
+            _da["productInfoProvidedNotice"] = _etc_notice
+            _dropped.append("식품고시")
+        if not _dropped:
+            return _res, _err
+
+        _res2, _err2 = _do_post(payload)
+        if not _err2:
+            # 등록은 성공했다 — err로 돌려주면 호출측이 실패로 처리해 큐가
+            # 'failed'가 되고, 이미 올라간 상품을 다시 올리려 든다.
+            # 경고는 결과에 담아 보낸다.
+            _res2 = dict(_res2 or {})
+            _res2['warning'] = ("%s 거부되어 제외하고 등록했습니다. (원인: %s)"
+                                % ('·'.join(_dropped), str(_err)[:200]))
+            return _res2, None
         return _res, _err
     except Exception as e:
         return None, str(e)

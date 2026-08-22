@@ -101,9 +101,25 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 _kwmark = "✅ 연관키워드 상품명(저경쟁 100~300+대표어)" if _ad_creds else \
                     "⚠️ 연관키워드 상품명 OFF — 검색광고 API 키 미설정(설정 탭). 카페24 원본명으로 등록"
                 st.caption(f"등록 시 자동 적용: {_kwmark} · ✅ 태그ID 자동 · ✅ 카페24 속성(제조사/모델/원산지)")
-                _ag_img_detail = st.checkbox(
-                    "🖼 상세페이지를 이미지로 등록 (HTML 대신 카페24 상세이미지를 네이버 CDN 업로드)",
-                    value=True, key="ag_imgdetail")
+                # 상세페이지 방식 — 기본은 '카페24 원본 그대로'.
+                # 이미지 스택은 원본 레이아웃(텍스트·표·순서)을 잃는다.
+                _ag_dmode = st.radio(
+                    "🖼 상세페이지 방식", ["카페24 원본 그대로", "이미지만 쌓기"],
+                    horizontal=True, key="ag_dmode",
+                    help="원본 그대로: 카페24 상세 HTML의 구조·텍스트를 유지하고 이미지만 "
+                         "네이버 CDN으로 옮깁니다(이미지는 리사이즈 없이 원본 업로드). "
+                         "이미지만 쌓기: 상세이미지를 순서대로 나열합니다(편집은 쉽지만 원본 레이아웃 손실).")
+                _ag_detail_mode = 'html' if _ag_dmode == "카페24 원본 그대로" else 'image'
+                # 공통 상단/하단 고정 이미지 — 대상 사용자 설정 우선, 없으면 관리자 것
+                _ag_top = (str(_ag_ts.get('naver_detail_top_img') or '').strip()
+                           or str(settings.get('naver_detail_top_img') or '').strip())
+                _ag_bot = (str(_ag_ts.get('naver_detail_bottom_img') or '').strip()
+                           or str(settings.get('naver_detail_bottom_img') or '').strip())
+                st.caption(
+                    f"상단 고정이미지 {'✅' if _ag_top else '— 없음'} · "
+                    f"하단 고정이미지 {'✅' if _ag_bot else '— 없음'}"
+                    + ("" if (_ag_top or _ag_bot) else
+                       "  (‘네이버 등록’ 탭 › 공통 이미지에서 등록하면 여기에도 적용됩니다)"))
                 _ag_photo_ai = st.checkbox(
                     "📷 AI 제품사진 분석으로 상품명·속성 생성 (제품사진 등록 방식)",
                     value=bool(_ag_ai or _ag_gai), key="ag_photoai",
@@ -169,8 +185,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         set_global_setting('cafe24_register_enabled', '1' if _q_on else '0')
                         set_global_setting('cafe24_register_max', str(int(_q_max)))
                         set_global_setting('cafe24_naver_margin', str(int(_ag_margin)))
-                        set_global_setting('cafe24_register_img_detail',
-                                           '1' if _ag_img_detail else '0')
+                        set_global_setting('cafe24_register_detail_mode', _ag_detail_mode)
                         set_global_setting('cafe24_register_photo_ai',
                                            '1' if _ag_photo_ai else '0')
                         st.success("저장했습니다. 마진·상세이미지·AI사진분석은 위 설정을 따릅니다.")
@@ -304,7 +319,9 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         _ag_shared = get_shared_products() or []
 
                         _ag_opts = {
-                            'img_detail': _ag_img_detail, 'photo_ai': _ag_photo_ai,
+                            'detail_mode': _ag_detail_mode,
+                            'top_img': _ag_top, 'bottom_img': _ag_bot,
+                            'photo_ai': _ag_photo_ai,
                             'gen_tags': True, 'opt_name': True,
                             'ai_key': _ag_ai, 'gemini_key': _ag_gai,
                             'ad_creds': _ad_creds,

@@ -1325,14 +1325,18 @@ def run_cafe24_register_task(username="admin"):
     _ad_cust = get_global_setting('naver_ad_customer_id') or ''
     _ad_creds = (_ad_key, _ad_sec, _ad_cust) if all((_ad_key, _ad_sec, _ad_cust)) else None
 
+    # 상세페이지 방식 — 기본 'html'(카페24 원본 그대로). 'image'면 이미지 스택.
+    _dmode = get_global_setting('cafe24_register_detail_mode', 'html') or 'html'
     opts = {
-        'img_detail': get_global_setting('cafe24_register_img_detail', '1') == '1',
+        'detail_mode': _dmode,
         'photo_ai':   get_global_setting('cafe24_register_photo_ai', '0') == '1',
         'gen_tags':   get_global_setting('cafe24_register_gen_tags', '1') == '1',
         'opt_name':   get_global_setting('cafe24_register_opt_name', '1') == '1',
         'ai_key': _ai, 'gemini_key': _gai, 'ad_creds': _ad_creds,
     }
-    log(f"  회당 최대 {_max}건 · 마진 {_margin:g}% · "
+    # 공통 상단/하단 고정 이미지 폴백 — 대상 사용자에게 없으면 실행 계정(관리자) 것
+    _admin_ts = get_user_settings(username) or {}
+    log(f"  상세방식 {_dmode} · 회당 최대 {_max}건 · 마진 {_margin:g}% · "
         f"카테고리 {'ON' if (_ai or _gai) else 'OFF'} · "
         f"상품명 {'ON' if (_ad_creds and opts['opt_name']) else 'OFF'} · "
         f"태그 {'ON' if opts['gen_tags'] else 'OFF'} · "
@@ -1362,6 +1366,11 @@ def run_cafe24_register_task(username="admin"):
             continue
         target = {'api_id': _tid, 'api_secret': _tsecret,
                   'as_tel': _ts.get('naver_as_tel') or '1588-1234'}
+        # 고정 이미지는 대상 사용자 스토어의 브랜딩이므로 그쪽 설정이 우선.
+        opts['top_img'] = (str(_ts.get('naver_detail_top_img') or '').strip()
+                           or str(_admin_ts.get('naver_detail_top_img') or '').strip())
+        opts['bottom_img'] = (str(_ts.get('naver_detail_bottom_img') or '').strip()
+                              or str(_admin_ts.get('naver_detail_bottom_img') or '').strip())
 
         # 중복 등록 방지 — 대상 스토어 기존 상품을 회차당 1회만 조회한다.
         _have_code, _have_name, _eerr = c24reg.load_existing(_tid, _tsecret)

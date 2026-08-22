@@ -37,6 +37,93 @@ def fetch_image_bytes(url, timeout=15):
         return None, None
 
 
+def _abs_url(u, mall_id=''):
+    """카페24 이미지 경로 → 절대 URL. 못 만들면 ''.
+    '//cdn/...' 프로토콜 상대와 '/web/upload/...' 루트 상대를 모두 처리한다."""
+    u = str(u or '').strip()
+    if not u:
+        return ''
+    if u.startswith('//'):
+        return 'https:' + u
+    if u.startswith('/') and mall_id:
+        return 'https://%s.cafe24.com' % str(mall_id).strip() + u
+    return u if u.startswith('http') else ''
+
+
+_IMG_SRC_RE = _re.compile(r'(<img\b[^>]*?\bsrc\s*=\s*)(["\'])(.*?)\2', _re.I | _re.S)
+_SCRIPT_RE = _re.compile(r'<script\b.*?</script\s*>', _re.I | _re.S)
+
+
+def rewrite_detail_images(html, tid, tsecret, mall_id='', limit=DETAIL_IMG_LIMIT):
+    """카페24 상세 HTML의 <img src>만 네이버 CDN URL로 교체한다.
+
+    구조·텍스트·순서는 건드리지 않는다 — 판매자가 만든 상세페이지를 그대로
+    옮기는 게 목적이다. 이미지는 원본 그대로 업로드된다(upload_product_image의
+    square=False 경로).
+    업로드에 실패한 이미지는 카페24 원본 URL을 그대로 남긴다. 지우면 그 자리가
+    비어버리는데, 핫링크라도 되는 편이 낫다.
+
+    반환: (html, 교체 성공수, 실패수)
+    """
+    _html_in = _SCRIPT_RE.sub('', str(html or ''))   # <script>는 네이버가 어차피 거부
+    cache, stat = {}, {'ok': 0, 'fail': 0, 'n': 0}
+
+    def _sub(m):
+        pre, q, url = m.group(1), m.group(2), m.group(3)
+        u = _abs_url(url, mall_id)
+        if not u:
+            return m.group(0)
+        if u in cache:
+            return pre + q + cache[u] + q
+        if stat['n'] >= limit:
+            return m.group(0)
+        stat['n'] += 1
+        cdn, _e = naver_api.upload_product_image(tid, tsecret, u, square=False)
+        if not cdn:
+            stat['fail'] += 1
+            return m.group(0)
+        cache[u] = cdn
+        stat['ok'] += 1
+        return pre + q + cdn + q
+
+    return _IMG_SRC_RE.sub(_sub, _html_in), stat['ok'], stat['fail']
+
+
+def build_detail_html(full, name, tid, tsecret, mall_id='', mode='html',
+                      top_img='', bottom_img='', limit=DETAIL_IMG_LIMIT):
+    """상세페이지 조립: [상단 고정] + 상품명 + [본문] + [하단 고정].
+
+    mode='html'  : 카페24 상세 HTML 그대로(이미지만 네이버 CDN으로 교체) — 기본
+    mode='image' : 카페24 상세이미지만 순서대로 쌓기(편집이 쉬운 대신 원본 레이아웃 손실)
+    """
+    _nm = _html.escape(str(name or ''))
+    _parts = ['<div style="text-align:center">']
+    if top_img:
+        _parts.append('<img src="%s" style="display:block;max-width:100%%;'
+                      'margin:0 auto">' % top_img)
+    _parts.append('<div style="font-size:22px;font-weight:800;padding:18px 12px;'
+                  'color:#222;line-height:1.45">%s</div>' % _nm)
+
+    _body = ''
+    if mode == 'image':
+        _body = build_image_detail(full, tid, tsecret, limit=limit, mall_id=mall_id)
+    else:
+        _raw = str((full or {}).get('description') or '')
+        if _raw.strip():
+            _body, _ok, _fail = rewrite_detail_images(
+                _raw, tid, tsecret, mall_id=mall_id, limit=limit)
+        # 카페24 상세가 비어 있으면 이미지 스택으로 폴백(빈 상세페이지 방지)
+        if not str(_body).strip():
+            _body = build_image_detail(full, tid, tsecret, limit=limit, mall_id=mall_id)
+    _parts.append(_body or '<p>%s</p>' % _nm)
+
+    if bottom_img:
+        _parts.append('<img src="%s" style="display:block;max-width:100%%;'
+                      'margin:24px auto 0">' % bottom_img)
+    _parts.append('</div>')
+    return '\n'.join(_parts)
+
+
 def cafe24_detail_images(full, mall_id=''):
     """카페24 상품 상세 HTML/이미지에서 상세페이지 이미지 URL 목록 추출(순서 유지·절대경로).
     설명(description) 안의 <img>들 + 대표 상세이미지.
@@ -52,15 +139,10 @@ def cafe24_detail_images(full, mall_id=''):
         u = (full or {}).get(k)
         if u:
             urls.append(u)
-    _base = ('https://%s.cafe24.com' % str(mall_id).strip()) if mall_id else ''
     seen, out = set(), []
     for u in urls:
-        u = str(u).strip()
-        if u.startswith('//'):
-            u = 'https:' + u
-        elif u.startswith('/') and _base:
-            u = _base + u              # 루트상대 → 몰 도메인 기준 절대경로
-        if u and u.startswith('http') and u not in seen:
+        u = _abs_url(u, mall_id)
+        if u and u not in seen:
             seen.add(u)
             out.append(u)
     return out
@@ -114,7 +196,8 @@ def register_one(creds, save_tokens, product, margin, target, opts,
 
     product : {'product_no', 'product_name', 'price'} (카페24 목록 항목)
     target  : {'api_id', 'api_secret', 'as_tel'}
-    opts    : {'img_detail', 'photo_ai', 'gen_tags', 'opt_name',
+    opts    : {'detail_mode'('html'|'image'), 'top_img', 'bottom_img',
+               'photo_ai', 'gen_tags', 'opt_name',
                'ai_key', 'gemini_key', 'ad_creds'}
     have_code/have_name : 호출측이 유지하는 중복 방지 집합(성공 시 여기에 채워 넣는다)
     shared  : get_shared_products() 결과 — 코스트코 번호 매칭용
@@ -238,19 +321,12 @@ def register_one(creds, save_tokens, product, margin, target, opts,
     _origin = (str(_ai_photo.get('origin') or '').strip()
                or str(_full.get('origin_place_value') or '').strip())
 
-    # ⑥ 상세페이지: 상단에 상품명 + (옵션) 카페24 상세이미지 스택
-    _name_block = (
-        '<div style="text-align:center;font-size:22px;font-weight:800;'
-        'padding:18px 12px;color:#222;line-height:1.45">'
-        + _html.escape(str(_final_name)) + '</div>')
-    _body_html = _desc_txt or ''
-    if opts.get('img_detail'):
-        _img_html = build_image_detail(_full, tid, tsecret,
-                                       mall_id=(creds or {}).get('mall_id', ''))
-        if _img_html:
-            _body_html = _img_html
-    _detail_html = _name_block + (
-        _body_html or '<p>%s</p>' % _html.escape(str(_final_name)))
+    # ⑥ 상세페이지: [상단 고정] + 상품명 + 카페24 상세 원본 + [하단 고정]
+    _detail_html = build_detail_html(
+        _full, _final_name, tid, tsecret,
+        mall_id=(creds or {}).get('mall_id', ''),
+        mode=opts.get('detail_mode', 'html'),
+        top_img=opts.get('top_img', ''), bottom_img=opts.get('bottom_img', ''))
 
     _res, _e2 = naver_api.register_product(tid, tsecret, {
         "name": _final_name, "sale_price": sale,
@@ -270,5 +346,7 @@ def register_one(creds, save_tokens, product, margin, target, opts,
     have_code |= _cands
     have_name.add(_final_name)
     have_name.add(_cf_name)
-    return _r('ok', '등록', code=_seller_code, code_src=_code_src,
+    _warn = str((_res or {}).get('warning') or '')
+    return _r('ok', ('등록 (⚠️ %s)' % _warn[:120]) if _warn else '등록',
+              code=_seller_code, code_src=_code_src,
               category=str(_cfull or ''), tags=len(_tags or []))
