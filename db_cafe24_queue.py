@@ -176,6 +176,35 @@ def all_counts():
         conn.close()
 
 
+def all_queue_users():
+    """대기열이 하나라도 있는 전 계정의 상태별 집계.
+    반환: [{'user', 'pending', 'done', 'skipped', 'failed', 'total'}] 총건수 많은 순.
+
+    all_counts()는 pending>0만 돌려주므로 '처리가 끝나 pending이 0인 계정'이
+    목록에서 사라진다. 그런 계정의 기록도 지울 수 있어야 해서 따로 둔다."""
+    init_queue()
+    conn = get_auth_db()
+    try:
+        rows = conn.execute(
+            "SELECT target_user, status, COUNT(*) FROM cafe24_reg_queue "
+            "GROUP BY target_user, status").fetchall()
+    finally:
+        conn.close()
+    agg = {}
+    for _u, _st, _n in rows:
+        _e = agg.setdefault(_u, dict((k, 0) for k in STATUSES))
+        if _st in _e:
+            _e[_st] = _n
+    out = []
+    for _u, _e in agg.items():
+        _e = dict(_e)
+        _e['user'] = _u
+        _e['total'] = sum(_e[k] for k in STATUSES)
+        out.append(_e)
+    out.sort(key=lambda r: -r['total'])
+    return out
+
+
 def list_rows(target_user, status=None, limit=500, reason=None):
     """대기열 조회 (UI 표시용). status=None이면 전체. reason으로 실패 사유 필터."""
     init_queue()

@@ -274,9 +274,36 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     # ── 처리 대상 지정 — 여러 계정에 대기열이 남아 있을 때
                     #    엉뚱한 스토어에 등록되는 걸 막는다.
                     _q_all = _c24q.all_counts() or []
-                    if _q_all:
-                        st.caption("현재 대기열이 있는 계정 — "
-                                   + ", ".join(f"**{u}**({n}건)" for u, n in _q_all))
+                    # ── 계정별 대기열 현황·삭제 ──
+                    # 삭제를 '등록 대상 사용자' 드롭다운에만 묶어두면, 그 목록에 없는
+                    # 계정의 대기열은 지울 수가 없다. 여기서 계정 단위로 정리한다.
+                    _q_users = _c24q.all_queue_users() or []
+                    if _q_users:
+                        st.markdown("**계정별 대기열**")
+                        st.dataframe(pd.DataFrame([
+                            {'계정': r['user'], '이름': _disp_name(r['user']),
+                             '대기': r['pending'], '완료': r['done'],
+                             '중복스킵': r['skipped'], '실패': r['failed'],
+                             '합계': r['total']} for r in _q_users]),
+                            use_container_width=True, hide_index=True)
+                        _du1, _du2 = st.columns([2, 1])
+                        _dmapq = {f"{r['user']} · {_disp_name(r['user'])} "
+                                  f"(합계 {r['total']}건)": r['user'] for r in _q_users}
+                        _dpick = _du1.selectbox("정리할 계정", list(_dmapq.keys()),
+                                                key="ag_q_del_user")
+                        _duser = _dmapq.get(_dpick)
+                        _dcnt = next((r['total'] for r in _q_users if r['user'] == _duser), 0)
+                        _dok = _du2.checkbox(f"삭제 확인 ({_dcnt}건)", key="ag_q_del_ok")
+                        if _du2.button(f"🗑 '{_duser}' 대기열 삭제", key="ag_q_del_btn",
+                                       disabled=not (_dcnt and _dok)):
+                            _n = _c24q.clear(_duser)
+                            # 지운 계정이 처리 대상으로 지정돼 있었다면 지정도 해제한다
+                            if (get_global_setting('cafe24_register_target') or '') == _duser:
+                                set_global_setting('cafe24_register_target', '')
+                                st.info(f"'{_duser}'가 처리 대상이었어서 지정도 해제했습니다.")
+                            st.warning(f"'{_duser}' 대기열 {_n}건을 삭제했습니다.")
+                            st.rerun()
+                        st.divider()
                     _tgt_cur = str(get_global_setting('cafe24_register_target') or '').strip()
                     _tgt_opts = [_ag_tuser] + [u for u, _ in _q_all if u != _ag_tuser]
                     _tgt_labels = {u: f"{_disp_name(u)} ({u})" for u in _tgt_opts}
