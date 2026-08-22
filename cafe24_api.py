@@ -515,11 +515,17 @@ def search_all_products(creds, keyword="", category_no=None, save_tokens=None,
     return out, None
 
 
-def count_products(creds, save_tokens=None, category_no=None):
-    """전체(또는 카테고리) 상품 수. 반환: (int, err)."""
+def count_products(creds, save_tokens=None, category_no=None, keyword=""):
+    """조건에 맞는 상품 수. 반환: (int, err).
+
+    keyword를 안 넘기면 몰 전체 수가 나온다 — 검색 결과 건수로 오해하기 쉬우니
+    검색 화면에서는 반드시 같이 넘길 것."""
     params = {}
     if category_no:
         params["category"] = category_no
+    _kw = str(keyword or "").strip()
+    if _kw:
+        params["product_name"] = _kw
     data, err = _admin_request(creds, "GET", "/api/v2/admin/products/count", save_tokens,
                                params=params or None)
     if err:

@@ -325,7 +325,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                 _ag_creds, _ag_q, limit=100, save_tokens=_ag_save,
                                 category_no=_ag_cat_no)
                             _tot, _ = cafe24_api.count_products(
-                                _ag_creds, save_tokens=_ag_save, category_no=_ag_cat_no)
+                                _ag_creds, save_tokens=_ag_save,
+                                category_no=_ag_cat_no, keyword=_ag_q)
                     st.session_state['_ag_prods'] = [] if _perr else (_prods or [])
                     st.session_state['_ag_total'] = _tot
                     st.session_state['_ag_last_q'] = (_ag_q, _ag_cat_no)
@@ -333,15 +334,17 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         st.error(f"조회 실패: {_perr}")
                 _ag_list = st.session_state.get('_ag_prods') or []
                 if _ag_list:
-                    _ag_show = _ag_list[:100]
                     _tot_n = st.session_state.get('_ag_total')
-                    st.caption(f"{len(_ag_list)}개 표시"
+                    st.caption(f"{len(_ag_list)}개 불러옴"
                                + (f" / 조건에 맞는 전체 {_tot_n}개" if _tot_n else "")
                                + f" — 체크 후 아래 버튼으로 '{_ag_tuser}' 스토어에 등록")
+
+                    # ── 추가 로딩 — 카페24 API는 1회 100개가 상한이라 offset으로 이어 받는다
                     if _ag_mode != "메인 진열" and _tot_n and len(_ag_list) < _tot_n:
-                        if st.button(f"⬇️ 다음 100개 더 불러오기 ({len(_ag_list)}/{_tot_n})",
-                                     key="ag_more"):
-                            _lq, _lc = st.session_state.get('_ag_last_q', ("", None))
+                        _ld1, _ld2 = st.columns(2)
+                        _lq, _lc = st.session_state.get('_ag_last_q', ("", None))
+                        if _ld1.button(f"⬇️ 다음 100개 ({len(_ag_list)}/{_tot_n})",
+                                       key="ag_more"):
                             with st.spinner("추가 조회 중..."):
                                 _more, _merr = cafe24_api.search_products(
                                     _ag_creds, _lq, limit=100, save_tokens=_ag_save,
@@ -351,20 +354,70 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                             else:
                                 st.session_state['_ag_prods'] = _ag_list + (_more or [])
                                 st.rerun()
+                        if _ld2.button(f"⏬ 전체 {_tot_n}개 한 번에 불러오기", key="ag_all_load"):
+                            with st.spinner(f"전체 {_tot_n}개 조회 중... (100개씩 나눠 받습니다)"):
+                                _allp, _aerr = cafe24_api.search_all_products(
+                                    _ag_creds, _lq, category_no=_lc,
+                                    save_tokens=_ag_save, max_total=int(_tot_n))
+                            if _aerr:
+                                st.error(f"전체 조회 실패: {_aerr}")
+                            else:
+                                st.session_state['_ag_prods'] = _allp or []
+                                st.rerun()
+
+                    # ── 표시 페이지네이션 — 불러온 건 전부 선택 가능해야 한다.
+                    # 예전엔 _ag_list[:100]으로 잘라 그려서 101번째부터는 체크박스가
+                    # 아예 없었다(더 불러와도 선택이 안 됐다). 다만 한 화면에 수백 개
+                    # 체크박스를 그리면 Streamlit이 느려져 페이지로 나눈다.
+                    _PAGE = 100
+                    _npages = max(1, (len(_ag_list) + _PAGE - 1) // _PAGE)
+                    _pg = 1
+                    if _npages > 1:
+                        _pg = st.number_input(
+                            f"페이지 (1~{_npages}, 한 쪽 {_PAGE}개)",
+                            min_value=1, max_value=_npages, step=1, value=1,
+                            key="ag_page",
+                            help="선택은 페이지를 넘겨도 유지됩니다. "
+                                 "아래 등록 버튼은 전체 페이지의 선택을 모두 반영합니다.")
+                    _start = (int(_pg) - 1) * _PAGE
+                    _ag_show = _ag_list[_start:_start + _PAGE]
+
                     # 전체 선택 토글 — 변화 감지 시 개별 체크박스 일괄 설정(위젯 생성 전에 세팅)
-                    _ag_all = st.checkbox(f"✅ 전체 선택 ({len(_ag_show)}개)", key="ag_all_toggle")
+                    _sc1, _sc2 = st.columns([1, 1])
+                    _ag_all = _sc1.checkbox(f"✅ 이 페이지 전체 선택 ({len(_ag_show)}개)",
+                                            key="ag_all_toggle")
                     if _ag_all != st.session_state.get('_ag_all_prev'):
                         for _p in _ag_show:
                             st.session_state[f"ag_ck_{_p['product_no']}"] = _ag_all
                         st.session_state['_ag_all_prev'] = _ag_all
-                    _ag_sel = []
+                    if _npages > 1:
+                        if _sc2.button(f"☑️ 불러온 {len(_ag_list)}개 모두 선택", key="ag_all_pages"):
+                            for _p in _ag_list:
+                                st.session_state[f"ag_ck_{_p['product_no']}"] = True
+                            st.rerun()
+                        if _sc2.button("◻️ 선택 모두 해제", key="ag_none_pages"):
+                            for _p in _ag_list:
+                                st.session_state[f"ag_ck_{_p['product_no']}"] = False
+                            st.session_state['_ag_all_prev'] = False
+                            st.rerun()
+
+                    # 현재 페이지만 체크박스를 그린다
                     for _p in _ag_show:
                         _pno = _p['product_no']; _pr = int(_p.get('price') or 0)
                         _npr = c24reg.calc_sale_price(_pr, _ag_margin)
-                        if st.checkbox(
-                                f"{str(_p.get('product_name', ''))[:42]} · 카페24 {fmt(_pr)}원 → 네이버 {fmt(_npr)}원",
-                                key=f"ag_ck_{_pno}"):
-                            _ag_sel.append((_p, _npr))
+                        st.checkbox(
+                            f"{str(_p.get('product_name', ''))[:42]} · 카페24 {fmt(_pr)}원 → 네이버 {fmt(_npr)}원",
+                            key=f"ag_ck_{_pno}")
+
+                    # 선택분은 '전체 목록'에서 모은다 — 다른 페이지 선택이 빠지면 안 된다
+                    _ag_sel = []
+                    for _p in _ag_list:
+                        if st.session_state.get(f"ag_ck_{_p['product_no']}"):
+                            _ag_sel.append(
+                                (_p, c24reg.calc_sale_price(int(_p.get('price') or 0), _ag_margin)))
+                    if _npages > 1:
+                        st.caption(f"페이지 {int(_pg)}/{_npages} 표시 중 · "
+                                   f"전체 선택 {len(_ag_sel)}개")
                     if st.button(f"🚀 선택 {len(_ag_sel)}개 → '{_ag_tuser}' 스토어 등록", type="primary",
                                  key="ag_reg", disabled=not (_ag_sel and _ag_oc and _ag_os)):
                         _ag_rows = []; _agprog = st.progress(0.0)
