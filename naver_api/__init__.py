@@ -31,6 +31,7 @@ from .products import (
     upload_product_image,
     update_product_benefits, get_product_benefits,
     build_customer_benefit, BENEFIT_KEYS, BENEFIT_LABELS,
+    merge_delivery, DELIVERY_DEFAULTS, DELIVERY_LABELS, DELIVERY_COMPANIES,
     upload_images_batch,
     resize_square_bytes,
     register_product,

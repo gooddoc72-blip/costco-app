@@ -418,8 +418,13 @@ def register_product(client_id, client_secret, product_info):
 
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
-    shipping_fee = int(product_info.get("shipping_fee", 0))
-    fee_type = "FREE" if shipping_fee == 0 else "CHARGE"
+    # 배송비 — delivery 프리셋이 있으면 그쪽 우선(등록 일괄 적용용)
+    _dv = product_info.get("delivery") or {}
+    if _dv.get("fee_type") == "CHARGE":
+        shipping_fee = int(_dv.get("base_fee") or 0)
+    else:
+        shipping_fee = int(product_info.get("shipping_fee", 0) or 0)
+    fee_type = "FREE" if shipping_fee <= 0 else "CHARGE"
     # 상품명 하드가드: 같은 키워드 2회 이상 반복 제거 (모든 등록 경로가 지나는 최종 지점)
     from .keywords import dedup_product_name
     name = dedup_product_name(product_info.get("name") or "")[:100]
@@ -460,20 +465,7 @@ def register_product(client_id, client_secret, product_info):
             },
             "salePrice": int(product_info["sale_price"]),
             "stockQuantity": int(product_info.get("stock", 100)),
-            "deliveryInfo": {
-                "deliveryType": "DELIVERY",
-                "deliveryAttributeType": "NORMAL",
-                "deliveryCompany": product_info.get("delivery_company") or "CJGLS",
-                "deliveryFee": {
-                    "deliveryFeeType": fee_type,
-                    "baseFee": shipping_fee,
-                    "deliveryFeePayType": "PREPAID",
-                },
-                "claimDeliveryInfo": {
-                    "returnDeliveryFee": 5000,
-                    "exchangeDeliveryFee": 5000,
-                },
-            },
+            "deliveryInfo": _build_delivery_info(product_info, fee_type, shipping_fee),
             # ⚠️ 키 이름은 'customerBenefit'이다. 예전엔 'benefitInfo'로 보내고 있었는데
             #    네이버가 모르는 필드를 조용히 버려서, 리뷰포인트가 한 건도 적용되지
             #    않았다(등록은 성공하니 아무도 몰랐다). GET origin-products 응답도
@@ -1263,6 +1255,77 @@ BENEFIT_LABELS = {
     'store_member_review': '스토어찜 고객 리뷰 추가',
     'purchase_point':      '구매 시 지급 포인트',
 }
+
+
+# ── 배송 설정 (deliveryInfo) ───────────────────────────────────
+# 등록 시 상품마다 손대지 않고 한 번에 적용하기 위한 프리셋.
+#   ship_cost  : 무료배송으로 등록할 때 판매가에 녹일 택배비(등록 payload엔 안 들어감)
+#   fee_type   : FREE(무료) | CHARGE(유료)
+#   base_fee   : 유료일 때 구매자에게 부과할 배송비
+#   return_fee : 반품 배송비 / exchange_fee : 교환 배송비
+#   company    : 택배사 코드 (CJGLS, HANJIN, LOTTE, POST, LOGEN ...)
+DELIVERY_DEFAULTS = {
+    'ship_cost': 3000,
+    'fee_type': 'FREE',
+    'base_fee': 0,
+    'return_fee': 5000,
+    'exchange_fee': 5000,
+    'company': 'CJGLS',
+}
+
+DELIVERY_LABELS = {
+    'ship_cost':    '택배비(판매가에 포함)',
+    'fee_type':     '배송비 유형',
+    'base_fee':     '구매자 부담 배송비',
+    'return_fee':   '반품 배송비',
+    'exchange_fee': '교환 배송비',
+    'company':      '택배사',
+}
+
+# 네이버 커머스 API 택배사 코드 (자주 쓰는 것만)
+DELIVERY_COMPANIES = {
+    'CJGLS': 'CJ대한통운', 'HANJIN': '한진택배', 'LOTTE': '롯데택배',
+    'POST': '우체국택배', 'LOGEN': '로젠택배', 'KDEXP': '경동택배',
+    'CVSNET': 'GS Postbox', 'CUPARCEL': 'CU편의점택배',
+}
+
+
+def merge_delivery(preset):
+    """프리셋 dict → 기본값이 채워진 배송 설정."""
+    out = dict(DELIVERY_DEFAULTS)
+    for _k, _v in (preset or {}).items():
+        if _k in out and _v not in (None, ''):
+            out[_k] = _v
+    for _k in ('ship_cost', 'base_fee', 'return_fee', 'exchange_fee'):
+        try:
+            out[_k] = max(0, int(out[_k] or 0))
+        except (TypeError, ValueError):
+            out[_k] = DELIVERY_DEFAULTS[_k]
+    if str(out.get('fee_type')).upper() not in ('FREE', 'CHARGE'):
+        out['fee_type'] = 'FREE'
+    else:
+        out['fee_type'] = str(out['fee_type']).upper()
+    return out
+
+
+def _build_delivery_info(product_info, fee_type, shipping_fee):
+    """등록 payload의 deliveryInfo. delivery 프리셋이 있으면 반영한다."""
+    _d = merge_delivery(product_info.get("delivery"))
+    _company = (product_info.get("delivery_company") or _d['company'] or 'CJGLS')
+    return {
+        "deliveryType": "DELIVERY",
+        "deliveryAttributeType": "NORMAL",
+        "deliveryCompany": _company,
+        "deliveryFee": {
+            "deliveryFeeType": fee_type,
+            "baseFee": shipping_fee,
+            "deliveryFeePayType": "PREPAID",
+        },
+        "claimDeliveryInfo": {
+            "returnDeliveryFee": _d['return_fee'],
+            "exchangeDeliveryFee": _d['exchange_fee'],
+        },
+    }
 
 
 def build_customer_benefit(benefits):

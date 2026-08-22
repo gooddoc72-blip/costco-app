@@ -188,6 +188,94 @@ def _render_pack_multiplier(USERNAME: str):
                     st.rerun()
 
 
+def _render_delivery_section(USERNAME):
+    """등록되는 모든 상품에 같은 배송 조건을 걸기 위한 프리셋.
+
+    예전엔 반품/교환배송비 5000원과 택배사 CJ가 코드에 박혀 있었고,
+    카페24 경로는 무료배송으로 등록하면서 택배비를 판매가에 넣지 않아
+    배송비만큼 그대로 손해였다."""
+    with st.expander("🚚 배송 설정 (등록 시 일괄 적용)", expanded=False):
+        st.caption(
+            "여기 저장한 값이 **앞으로 등록되는 모든 상품**에 그대로 적용됩니다. "
+            "(카페24 대행등록·배치, 코스트코 자동등록 공통)")
+
+        _cur = naver_api.merge_delivery(_load_preset(USERNAME, 'naver_delivery_preset'))
+
+        _d1, _d2 = st.columns(2)
+        _free = _d1.radio(
+            "배송비 유형", ["무료배송", "유료배송"], horizontal=True,
+            index=0 if _cur['fee_type'] == 'FREE' else 1, key="dv_type",
+            help="무료배송은 노출·전환에 유리해 기본값입니다. 대신 택배비를 "
+                 "판매가에 녹여야 손해가 안 납니다(아래 항목).")
+        _fee_type = 'FREE' if _free == "무료배송" else 'CHARGE'
+
+        _comp_codes = list(naver_api.DELIVERY_COMPANIES.keys())
+        _comp = _d2.selectbox(
+            "택배사", _comp_codes,
+            index=_comp_codes.index(_cur['company']) if _cur['company'] in _comp_codes else 0,
+            format_func=lambda c: f"{naver_api.DELIVERY_COMPANIES[c]} ({c})",
+            key="dv_comp")
+
+        _e1, _e2, _e3 = st.columns(3)
+        if _fee_type == 'FREE':
+            _ship_cost = _e1.number_input(
+                "택배비 (판매가에 포함)", min_value=0, max_value=50000, step=500,
+                value=int(_cur['ship_cost']), key="dv_ship",
+                help="무료배송으로 등록하는 대신 이 금액을 판매가에 더합니다. "
+                     "0으로 두면 배송비를 회수하지 못해 건당 그만큼 손해입니다.")
+            _base_fee = 0
+        else:
+            _base_fee = _e1.number_input(
+                "구매자 부담 배송비", min_value=0, max_value=50000, step=500,
+                value=int(_cur['base_fee'] or 3000), key="dv_base")
+            _ship_cost = 0
+        _return_fee = _e2.number_input(
+            "반품 배송비", min_value=0, max_value=50000, step=500,
+            value=int(_cur['return_fee']), key="dv_ret")
+        _exchange_fee = _e3.number_input(
+            "교환 배송비", min_value=0, max_value=50000, step=500,
+            value=int(_cur['exchange_fee']), key="dv_exc")
+
+        _new = {'ship_cost': int(_ship_cost), 'fee_type': _fee_type,
+                'base_fee': int(_base_fee), 'return_fee': int(_return_fee),
+                'exchange_fee': int(_exchange_fee), 'company': _comp}
+
+        if _fee_type == 'FREE' and int(_ship_cost) == 0:
+            st.warning("⚠️ 무료배송인데 택배비가 0입니다 — 배송비를 회수하지 못해 "
+                       "판매 건마다 실제 택배비만큼 손해입니다.")
+
+        # 판매가 영향 미리보기 — 숫자로 보여줘야 감이 온다
+        try:
+            import cafe24_register_service as _c24
+            _mg = st.number_input("미리보기 마진율 %", min_value=0, max_value=300, step=5,
+                                  value=10, key="dv_prev_margin")
+            _ex = _c24.calc_sale_price(10000, _mg, _ship_cost if _fee_type == 'FREE' else 0)
+            st.caption(
+                f"예시 — 원가 10,000원 · 마진 {_mg}% · "
+                f"{'무료배송(택배비 판매가 포함)' if _fee_type == 'FREE' else f'유료배송 {_base_fee:,}원'} "
+                f"→ 판매가 **{_ex:,}원**")
+        except Exception:
+            pass
+
+        if st.button("💾 배송 설정 저장", type="primary", key="dv_save"):
+            _save_preset(USERNAME, 'naver_delivery_preset', _new)
+            st.success("✅ 저장했습니다 — 이후 등록되는 상품에 적용됩니다.")
+            st.rerun()
+
+
+def _load_preset(username, key):
+    from db import get_setting
+    try:
+        return json.loads(get_setting(username, key) or "{}")
+    except Exception:
+        return {}
+
+
+def _save_preset(username, key, val):
+    from db import set_setting
+    set_setting(username, key, json.dumps(val))
+
+
 def _render_benefit_section(USERNAME, api_id, api_secret):
     """스마트스토어 상품의 구매/리뷰 포인트를 한 번에 설정한다.
 
@@ -201,11 +289,7 @@ def _render_benefit_section(USERNAME, api_id, api_secret):
             "0으로 두면 그 항목은 지급하지 않습니다. "
             "즉시할인·복수구매할인 등 다른 혜택은 건드리지 않습니다.")
 
-        _defaults = {}
-        try:
-            _defaults = json.loads(_gs_benefit(USERNAME) or "{}")
-        except Exception:
-            _defaults = {}
+        _defaults = _load_preset(USERNAME, 'naver_benefit_preset')
 
         _c1, _c2, _c3 = st.columns(3)
         _vals = {}
@@ -281,7 +365,7 @@ def _render_benefit_section(USERNAME, api_id, api_secret):
                     _rows.append({'상품': _nm, '결과': f'❌ {str(_e)[:110]}'})
                 _live.markdown(f"`{_i + 1}/{len(_targets)}` 성공 {_ok} / 실패 {len(_rows)}")
             _prog.empty()
-            _set_benefit(USERNAME, json.dumps(_vals))
+            _save_preset(USERNAME, 'naver_benefit_preset', _vals)
             if _rows:
                 st.warning(f"완료 — 성공 {_ok}건 / 실패 {len(_rows)}건")
                 st.dataframe(pd.DataFrame(_rows), use_container_width=True,
@@ -299,16 +383,6 @@ def _render_benefit_section(USERNAME, api_id, api_secret):
             else:
                 st.write(f"상품 {_pno} 현재 혜택:")
                 st.json(_cb or {"(비어 있음)": "혜택 미설정"})
-
-
-def _gs_benefit(username):
-    from db import get_setting
-    return get_setting(username, 'naver_benefit_preset')
-
-
-def _set_benefit(username, val):
-    from db import set_setting
-    set_setting(username, 'naver_benefit_preset', val)
 
 
 def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
@@ -765,6 +839,9 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
 
     # ── 네이버 스마트스토어 상품 가져오기 ─────────────────────────
     render_naver_import_section(USERNAME, api_id, api_secret, channel_seller_id, invalidate_data_cache)
+
+    # ── 배송 설정 (등록 시 일괄 적용) ─────────────────────────────
+    _render_delivery_section(USERNAME)
 
     # ── 구매/리뷰 혜택 일괄 적용 ──────────────────────────────────
     _render_benefit_section(USERNAME, api_id, api_secret)

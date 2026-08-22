@@ -226,13 +226,34 @@ def build_image_detail(full, tid, tsecret, limit=DETAIL_IMG_LIMIT, mall_id=''):
         for _u in _cdns)
 
 
-def calc_sale_price(cafe24_price, margin_pct):
-    """카페24 판매가 + 마진% → 네이버 판매가(수수료 5.5% 보정, 10원 단위 반올림)."""
+def calc_sale_price(cafe24_price, margin_pct, shipping_cost=None):
+    """카페24 판매가 + 택배비 + 마진% → 네이버 판매가.
+
+    공식: (카페24가 + 택배비) × (1+마진%) ÷ 0.945 → 10원 반올림.
+    코스트코 경로(pricing.compute_sale_price)와 같은 공식이다.
+
+    택배비를 더하는 이유: 네이버에 **무료배송으로 등록**하므로, 판매가에
+    녹이지 않으면 배송비가 그대로 손실이다. 카페24는 상품별 배송비를 쓰지
+    않아(shipping_fee_by_product='F', 몰 단위 정책) 상품에서 가져올 수 없다.
+    유료배송(fee_type=CHARGE)으로 등록할 거면 0을 넘긴다.
+    """
     try:
         _pr = int(float(cafe24_price or 0))
     except Exception:
         _pr = 0
-    return int(round(_pr * (1 + float(margin_pct) / 100.0) / 0.945 / 10) * 10)
+    if _pr <= 0:
+        return 0
+    if shipping_cost is None:
+        try:
+            from pricing import DEFAULT_IMPORT_SHIPPING
+            shipping_cost = DEFAULT_IMPORT_SHIPPING
+        except Exception:
+            shipping_cost = 3000
+    try:
+        _sh = max(0, int(shipping_cost or 0))
+    except (TypeError, ValueError):
+        _sh = 0
+    return int(round((_pr + _sh) * (1 + float(margin_pct) / 100.0) / 0.945 / 10) * 10)
 
 
 def load_existing(tid, tsecret):
@@ -259,8 +280,9 @@ def register_one(creds, save_tokens, product, margin, target, opts,
     product : {'product_no', 'product_name', 'price'} (카페24 목록 항목)
     target  : {'api_id', 'api_secret', 'as_tel'}
     opts    : {'detail_mode'('html'|'image'), 'top_img', 'bottom_img',
-               'benefits'(구매/리뷰 포인트 dict), 'photo_ai', 'gen_tags',
-               'opt_name', 'ai_key', 'gemini_key', 'ad_creds'}
+               'delivery'(배송 프리셋), 'benefits'(구매/리뷰 포인트),
+               'photo_ai', 'gen_tags', 'opt_name',
+               'ai_key', 'gemini_key', 'ad_creds'}
     have_code/have_name : 호출측이 유지하는 중복 방지 집합(성공 시 여기에 채워 넣는다)
     shared  : get_shared_products() 결과 — 코스트코 번호 매칭용
 
@@ -277,7 +299,10 @@ def register_one(creds, save_tokens, product, margin, target, opts,
 
     _name = str(product.get('product_name', ''))
     _pno = product.get('product_no')
-    sale = calc_sale_price(product.get('price'), margin)
+    # 유료배송이면 배송비를 구매자가 내므로 판매가에 녹이지 않는다
+    _dv = naver_api.merge_delivery(opts.get('delivery'))
+    _ship_in_price = 0 if _dv['fee_type'] == 'CHARGE' else _dv['ship_cost']
+    sale = calc_sale_price(product.get('price'), margin, _ship_in_price)
 
     def _r(status, detail, reason='', **kw):
         _out = {'status': status, 'name': _name, 'code': '', 'code_src': '',
@@ -399,6 +424,7 @@ def register_one(creds, save_tokens, product, margin, target, opts,
         "image_url": _cdn, "category_id": _cid,
         "detail_html": _detail_html,
         "shipping_fee": 0, "origin_code": "03",
+        "delivery": _dv,          # 배송비 유형·반품/교환비·택배사 (프리셋 일괄 적용)
         "after_service_tel": target.get('as_tel') or '1588-1234',
         "seller_tags": _tags, "manufacturer": _manuf or None,
         "model_name": _model or None, "origin_content": _origin or None,

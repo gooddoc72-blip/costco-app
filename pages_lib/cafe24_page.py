@@ -132,6 +132,29 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     if any((_bp or {}).values()):
                         _ag_benefits = _bp
                         break
+                # 배송 프리셋 — 대상 사용자 우선, 없으면 관리자 것
+                _ag_delivery = {}
+                for _src in (_ag_ts, settings):
+                    try:
+                        _dp = _json_bn.loads(str(_src.get('naver_delivery_preset') or '') or '{}')
+                    except Exception:
+                        _dp = {}
+                    if _dp:
+                        _ag_delivery = _dp
+                        break
+                _ag_dv = naver_api.merge_delivery(_ag_delivery)
+                _ag_ship_in_price = 0 if _ag_dv['fee_type'] == 'CHARGE' else _ag_dv['ship_cost']
+                _dv_kind = ("무료배송" if _ag_dv['fee_type'] == 'FREE'
+                            else "유료배송 %s원" % format(_ag_dv['base_fee'], ','))
+                _dv_comp = naver_api.DELIVERY_COMPANIES.get(_ag_dv['company'], _ag_dv['company'])
+                st.caption(
+                    "🚚 배송 — %s · 택배비 판매가 포함 %s원 · 반품 %s / 교환 %s · %s%s" % (
+                        _dv_kind, format(_ag_ship_in_price, ','),
+                        format(_ag_dv['return_fee'], ','),
+                        format(_ag_dv['exchange_fee'], ','), _dv_comp,
+                        "" if _ag_delivery else "  (기본값 — ‘제품 DB’ 탭 › 배송 설정에서 변경)"))
+                if _ag_ship_in_price == 0 and _ag_dv['fee_type'] == 'FREE':
+                    st.warning("⚠️ 무료배송인데 택배비가 판매가에 안 들어갑니다 — 건당 배송비만큼 손해입니다.")
                 if _ag_benefits:
                     _bl = ", ".join(
                         f"{naver_api.BENEFIT_LABELS.get(_k, _k)} {_v}"
@@ -425,7 +448,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     # 현재 페이지만 체크박스를 그린다
                     for _p in _ag_show:
                         _pno = _p['product_no']; _pr = int(_p.get('price') or 0)
-                        _npr = c24reg.calc_sale_price(_pr, _ag_margin)
+                        _npr = c24reg.calc_sale_price(_pr, _ag_margin, _ag_ship_in_price)
                         st.checkbox(
                             f"{str(_p.get('product_name', ''))[:42]} · 카페24 {fmt(_pr)}원 → 네이버 {fmt(_npr)}원",
                             key=f"ag_ck_{_pno}")
@@ -435,7 +458,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     for _p in _ag_list:
                         if st.session_state.get(f"ag_ck_{_p['product_no']}"):
                             _ag_sel.append(
-                                (_p, c24reg.calc_sale_price(int(_p.get('price') or 0), _ag_margin)))
+                                (_p, c24reg.calc_sale_price(int(_p.get('price') or 0),
+                                                           _ag_margin, _ag_ship_in_price)))
                     if _npages > 1:
                         st.caption(f"페이지 {int(_pg)}/{_npages} 표시 중 · "
                                    f"전체 선택 {len(_ag_sel)}개")
@@ -475,6 +499,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         _ag_opts = {
                             'detail_mode': _ag_detail_mode,
                             'top_img': _ag_top, 'bottom_img': _ag_bot,
+                            'delivery': _ag_delivery,
                             'benefits': _ag_benefits,
                             'photo_ai': _ag_photo_ai,
                             'gen_tags': True, 'opt_name': True,

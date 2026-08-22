@@ -488,6 +488,12 @@ def register_one(username, api_id, api_secret, product, cat_id, opts=None):
             str(get_setting(username, "naver_benefit_preset") or "") or "{}")
     except Exception:
         _benefits = {}
+    # 배송 설정 프리셋 (반품/교환배송비·택배사·무료/유료)
+    try:
+        _delivery = _json_bn.loads(
+            str(get_setting(username, "naver_delivery_preset") or "") or "{}")
+    except Exception:
+        _delivery = {}
 
     # AI 연관태그 (opt-in) — 네이버 태그사전 검증된 것만 (최대 10개)
     seller_tags = []
@@ -512,6 +518,7 @@ def register_one(username, api_id, api_secret, product, cat_id, opts=None):
         "seller_tags":       seller_tags,
         "manufacturer":      _manufacturer,
         "benefits":          _benefits or None,
+        "delivery":          _delivery or None,
     })
     if e2 or not res:
         return None, e2 or "등록 실패"

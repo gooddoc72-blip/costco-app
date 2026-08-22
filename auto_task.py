@@ -1382,6 +1382,21 @@ def run_cafe24_register_task(username="admin"):
             if any((_bp or {}).values()):
                 opts['benefits'] = _bp
                 break
+        # 배송 설정(무료/유료·반품/교환비·택배사 + 판매가에 녹일 택배비)
+        opts['delivery'] = {}
+        for _dsrc in (_ts, _admin_ts):
+            try:
+                _dp = json.loads(str(_dsrc.get('naver_delivery_preset') or '') or '{}')
+            except Exception:
+                _dp = {}
+            if _dp:
+                opts['delivery'] = _dp
+                break
+        _dvm = naver_api.merge_delivery(opts['delivery'])
+        log(f"  '{_tuser}' 배송: {_dvm['fee_type']} · 판매가포함택배비 {_dvm['ship_cost']} · "
+            f"반품 {_dvm['return_fee']} / 교환 {_dvm['exchange_fee']} · {_dvm['company']}")
+        if _dvm['fee_type'] == 'FREE' and _dvm['ship_cost'] == 0:
+            log("  ⚠️ 무료배송인데 택배비가 판매가에 포함되지 않습니다 — 건당 배송비만큼 손해입니다.")
         if opts['benefits']:
             log(f"  '{_tuser}' 혜택 프리셋 적용: "
                 + ", ".join(f"{_k}={_v}" for _k, _v in opts['benefits'].items() if _v))
