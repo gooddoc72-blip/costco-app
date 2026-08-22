@@ -127,10 +127,40 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     help="대표 제품이미지를 AI 비전(Gemini 우선·Claude 폴백)으로 분석해 상품명·원산지·브랜드를 뽑고, "
                          "그 상품명으로 카테고리 판단·연관키워드 최적화까지 진행합니다.")
                 # 조회 방식: 상품명 검색 / 카테고리 (카페24 분류)
-                _ag_mode = st.radio("조회 방식", ["상품명 검색", "카테고리"], horizontal=True,
+                _ag_mode = st.radio("조회 방식",
+                                    ["상품명 검색", "카테고리", "메인 진열"],
+                                    horizontal=True,
                                     key="ag_mode", label_visibility="collapsed")
-                _ag_q, _ag_cat_no = "", None
-                if _ag_mode == "카테고리":
+                _ag_q, _ag_cat_no, _ag_disp_no = "", None, None
+                if _ag_mode == "메인 진열":
+                    # 쇼핑몰 메인의 진열 영역(신상품·MD추천·베스트 등).
+                    # 몰마다 이름·번호가 달라 하드코딩하지 않고 실제 목록을 읽어 고르게 한다.
+                    _disps = st.session_state.get('_ag_disps')
+                    if _disps is None:
+                        with st.spinner("카페24 메인 진열 목록 불러오는 중..."):
+                            _disps, _derr = cafe24_api.list_main_displays(
+                                _ag_creds, save_tokens=_ag_save)
+                        if _derr:
+                            st.warning(f"진열 목록을 못 불러왔습니다: {_derr}")
+                            _disps = []
+                        st.session_state['_ag_disps'] = _disps
+                    _dc1, _dc2 = st.columns([4, 1])
+                    if _disps:
+                        _dmap = {f"{d['name']} (#{d['display_group']})": d['display_group']
+                                 for d in _disps}
+                        _dpick = _dc1.selectbox("메인 진열 영역", list(_dmap.keys()),
+                                                key="ag_disp")
+                        _ag_disp_no = _dmap.get(_dpick)
+                    else:
+                        _ag_disp_no = _dc1.number_input("진열그룹 번호(직접 입력)",
+                                                        min_value=0, step=1,
+                                                        key="ag_disp_no") or None
+                    if _dc2.button("🔄 새로고침", key="ag_disp_reload"):
+                        st.session_state.pop('_ag_disps', None)
+                        st.rerun()
+                    st.caption("⚠️ 이름이 비슷한 영역이 여럿일 수 있습니다(예: '신상품'과 "
+                               "'이번주 신상품'). 조회해서 건수를 보고 고르세요.")
+                elif _ag_mode == "카테고리":
                     _cats = st.session_state.get('_ag_cats')
                     if not _cats:                      # 실패는 캐시하지 않음(재인증 후 바로 반영)
                         with st.spinner("카페24 분류 불러오는 중..."):
@@ -190,18 +220,27 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                            '1' if _ag_photo_ai else '0')
                         st.success("저장했습니다. 마진·상세이미지·AI사진분석은 위 설정을 따릅니다.")
 
-                    st.markdown("**분류 통째로 대기열에 담기**")
-                    if _ag_mode != "카테고리":
-                        st.caption("↑ 조회 방식을 '카테고리'로 바꾸면 그 분류 전체를 한 번에 담을 수 있습니다.")
+                    st.markdown("**통째로 대기열에 담기**")
+                    if _ag_mode == "상품명 검색":
+                        st.caption("↑ 조회 방식을 '카테고리' 또는 '메인 진열'로 바꾸면 "
+                                   "그 묶음 전체를 한 번에 담을 수 있습니다.")
                     else:
+                        _is_disp = (_ag_mode == "메인 진열")
                         _qcap = st.number_input("최대 담을 건수", min_value=10, max_value=3000,
                                                 step=50, value=300, key="ag_q_cap")
-                        if st.button(f"➕ 이 분류 전체를 '{_ag_tuser}' 대기열에 담기",
-                                     key="ag_q_fill", disabled=not _ag_cat_no):
-                            with st.spinner("카페24 분류 상품 전체 조회 중..."):
-                                _qp, _qerr = cafe24_api.search_all_products(
-                                    _ag_creds, category_no=_ag_cat_no,
-                                    save_tokens=_ag_save, max_total=int(_qcap))
+                        _qlabel = ("➕ 이 진열영역 전체를" if _is_disp else "➕ 이 분류 전체를")
+                        if st.button(f"{_qlabel} '{_ag_tuser}' 대기열에 담기",
+                                     key="ag_q_fill",
+                                     disabled=not (_ag_disp_no if _is_disp else _ag_cat_no)):
+                            with st.spinner("카페24 상품 조회 중..."):
+                                if _is_disp:
+                                    _qp, _qerr = cafe24_api.get_main_display_products(
+                                        _ag_creds, _ag_disp_no, save_tokens=_ag_save,
+                                        max_total=int(_qcap))
+                                else:
+                                    _qp, _qerr = cafe24_api.search_all_products(
+                                        _ag_creds, category_no=_ag_cat_no,
+                                        save_tokens=_ag_save, max_total=int(_qcap))
                             if _qerr:
                                 st.error(f"조회 실패: {_qerr}")
                             else:
@@ -241,11 +280,17 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 if st.button("🔎 카페24 조회", key="ag_search"):
                     set_global_setting('cafe24_naver_margin', str(int(_ag_margin)))
                     with st.spinner("카페24 상품 조회 중..."):
-                        _prods, _perr = cafe24_api.search_products(
-                            _ag_creds, _ag_q, limit=100, save_tokens=_ag_save,
-                            category_no=_ag_cat_no)
-                        _tot, _ = cafe24_api.count_products(_ag_creds, save_tokens=_ag_save,
-                                                            category_no=_ag_cat_no)
+                        if _ag_mode == "메인 진열":
+                            # 진열 영역은 페이징이 없다 — 그 영역 전부를 한 번에 받는다.
+                            _prods, _perr = cafe24_api.get_main_display_products(
+                                _ag_creds, _ag_disp_no, save_tokens=_ag_save)
+                            _tot = len(_prods or [])
+                        else:
+                            _prods, _perr = cafe24_api.search_products(
+                                _ag_creds, _ag_q, limit=100, save_tokens=_ag_save,
+                                category_no=_ag_cat_no)
+                            _tot, _ = cafe24_api.count_products(
+                                _ag_creds, save_tokens=_ag_save, category_no=_ag_cat_no)
                     st.session_state['_ag_prods'] = [] if _perr else (_prods or [])
                     st.session_state['_ag_total'] = _tot
                     st.session_state['_ag_last_q'] = (_ag_q, _ag_cat_no)
@@ -258,7 +303,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     st.caption(f"{len(_ag_list)}개 표시"
                                + (f" / 조건에 맞는 전체 {_tot_n}개" if _tot_n else "")
                                + f" — 체크 후 아래 버튼으로 '{_ag_tuser}' 스토어에 등록")
-                    if _tot_n and len(_ag_list) < _tot_n:
+                    if _ag_mode != "메인 진열" and _tot_n and len(_ag_list) < _tot_n:
                         if st.button(f"⬇️ 다음 100개 더 불러오기 ({len(_ag_list)}/{_tot_n})",
                                      key="ag_more"):
                             _lq, _lc = st.session_state.get('_ag_last_q', ("", None))

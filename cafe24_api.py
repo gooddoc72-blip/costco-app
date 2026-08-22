@@ -104,6 +104,25 @@ def _is_expired(expires_at):
         return True
 
 
+def _apply_tokens(creds, tok):
+    """갱신된 토큰을 creds 딕셔너리에도 즉시 반영한다.
+
+    카페24 refresh_token은 1회용(사용하면 새 것으로 교체)이다. DB에만 저장하고
+    creds를 그대로 두면, 같은 creds로 하는 다음 호출이 이미 소모된
+    refresh_token으로 갱신을 시도해 'Invalid refresh_token'이 난다.
+    한 creds로 수십 번 호출하는 경로(배치 등록, 전체 상품 페이징, 진열 조회)에서
+    토큰이 중간에 만료되면 반드시 터진다.
+    """
+    if not isinstance(creds, dict) or not tok:
+        return
+    for _k, _tk in (('access_token', 'access_token'),
+                    ('refresh_token', 'refresh_token'),
+                    ('expires_at', 'expires_at')):
+        _v = tok.get(_tk)
+        if _v:
+            creds[_k] = _v
+
+
 def get_valid_token(creds: dict, save_tokens=None):
     """유효한 access_token 확보 (만료 시 refresh 후 save_tokens 콜백으로 저장).
     creds: {mall_id, client_id, client_secret, access_token, refresh_token, expires_at}
@@ -121,6 +140,7 @@ def get_valid_token(creds: dict, save_tokens=None):
                                     creds.get("client_secret"), rt)
     if err or not tok:
         return None, f"토큰 갱신 실패: {err} (재인증 필요할 수 있음)"
+    _apply_tokens(creds, tok)          # 같은 creds로 하는 다음 호출을 위해 필수
     if save_tokens:
         try:
             save_tokens(tok)
@@ -152,6 +172,7 @@ def _admin_request(creds, method, path, save_tokens=None, params=None, json_body
                                             creds.get("client_secret"),
                                             creds.get("refresh_token", ""))
             if tok2 and not e2:
+                _apply_tokens(creds, tok2)
                 if save_tokens:
                     try: save_tokens(tok2)
                     except Exception: pass
@@ -393,6 +414,82 @@ def list_categories(creds, save_tokens=None, page_size=100, max_pages=5):
             })
         if len(rows) < page_size:
             break
+    return out, None
+
+
+def _strip_tags(v):
+    """진열 그룹명에 <span> 같은 마크업이 섞여 오는 몰이 있어 태그를 벗긴다."""
+    import re as _re
+    return _re.sub(r"\s+", " ", _re.sub(r"<[^>]+>", " ", str(v or ""))).strip()
+
+
+def list_main_displays(creds, save_tokens=None):
+    """메인 진열 그룹 목록(신상품·MD추천·베스트 등). 반환: ([{display_group, name}], err).
+
+    쇼핑몰 메인에 노출되는 진열 영역이다. 몰마다 이름과 번호가 제각각이고
+    비슷한 이름이 여럿 있을 수 있어(예: '신상품'과 '이번주 신상품'), 고르는 건
+    사람 몫이다. 여기서는 있는 그대로 돌려준다."""
+    data, err = _admin_request(creds, "GET", "/api/v2/admin/mains", save_tokens)
+    if err:
+        return None, err
+    out = []
+    for g in (data or {}).get("mains", []) or []:
+        _no = g.get("display_group")
+        if _no is None:
+            continue
+        _nm = _strip_tags(g.get("group_name") or g.get("display_group_name") or "")
+        out.append({"display_group": _no, "name": _nm or f"진열그룹 {_no}"})
+    return out, None
+
+
+def get_main_display_products(creds, display_group, save_tokens=None, max_total=1000):
+    """메인 진열 그룹의 상품을 search_products와 같은 형태로 반환. (products, err)
+
+    메인 진열 API는 {product_no, product_name}만 주고 가격이 없다. 대기열·등록에
+    판매가가 필요하므로 상품 API의 product_no 필터로 나눠 조회해 채운다.
+    진열 순서(노출 순서)는 그대로 유지한다."""
+    data, err = _admin_request(
+        creds, "GET", f"/api/v2/admin/mains/{str(display_group).strip()}/products",
+        save_tokens)
+    if err:
+        return None, err
+    _rows = (data or {}).get("products", []) or []
+    _nos = []
+    for r in _rows:
+        _n = str(r.get("product_no") or "").strip()
+        if _n and _n not in _nos:
+            _nos.append(_n)
+        if len(_nos) >= max_total:
+            break
+    if not _nos:
+        return [], None
+
+    # product_no 콤마 필터로 100개씩 상세 조회 (가격·판매여부 보충)
+    _detail = {}
+    for _i in range(0, len(_nos), 100):
+        _chunk = _nos[_i:_i + 100]
+        _d, _e = _admin_request(creds, "GET", "/api/v2/admin/products", save_tokens,
+                                params={"product_no": ",".join(_chunk), "limit": 100})
+        if _e:
+            return (None, _e) if not _detail else (None, _e)
+        for _p in (_d or {}).get("products", []) or []:
+            _detail[str(_p.get("product_no"))] = _p
+
+    out = []
+    for _n in _nos:                      # 진열 순서 보존
+        _p = _detail.get(_n)
+        if not _p:                       # 상세를 못 가져온 건(삭제 등) 건너뜀
+            continue
+        try:
+            _pr = int(float(_p.get("price", 0) or 0))
+        except (TypeError, ValueError):
+            _pr = 0
+        out.append({
+            "product_no": _p.get("product_no"),
+            "product_name": _p.get("product_name", ""),
+            "price": _pr,
+            "selling": _p.get("selling", ""),
+        })
     return out, None
 
 
