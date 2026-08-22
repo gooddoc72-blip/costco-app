@@ -396,6 +396,28 @@ def list_categories(creds, save_tokens=None, page_size=100, max_pages=5):
     return out, None
 
 
+def search_all_products(creds, keyword="", category_no=None, save_tokens=None,
+                        max_total=1000):
+    """search_products를 페이징해 조건에 맞는 상품을 전부 모은다. 반환: (products, err).
+
+    UI 조회(search_products)는 한 번에 100개가 상한이라 300건 규모 대기열을
+    채우려면 offset을 돌려야 한다. 그 반복을 여기로 모았다."""
+    out, offset = [], 0
+    while len(out) < max_total:
+        _lim = min(100, max_total - len(out))
+        rows, err = search_products(creds, keyword, limit=_lim, save_tokens=save_tokens,
+                                    category_no=category_no, offset=offset)
+        if err:
+            return (out or None), err
+        if not rows:
+            break
+        out.extend(rows)
+        if len(rows) < _lim:      # 마지막 페이지
+            break
+        offset += len(rows)
+    return out, None
+
+
 def count_products(creds, save_tokens=None, category_no=None):
     """전체(또는 카테고리) 상품 수. 반환: (int, err)."""
     params = {}

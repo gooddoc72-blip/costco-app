@@ -1,5 +1,4 @@
 """🛒 카페24 — 대행 등록 + 코스트코 매칭·동기화 (관리자 전용)."""
-import re as _re
 import streamlit as st
 import pandas as pd
 
@@ -15,59 +14,6 @@ try:
 except ImportError:
     HAS_NAVER_API = False
     naver_api = None
-
-
-def _fetch_image_bytes(url, timeout=15):
-    """이미지 URL → (bytes, media_type). 실패 시 (None, None)."""
-    import requests as _rq
-    try:
-        r = _rq.get(url, timeout=timeout)
-        if r.status_code != 200 or not r.content:
-            return None, None
-        ct = (r.headers.get('Content-Type') or '').split(';')[0].strip().lower()
-        if ct not in ('image/jpeg', 'image/png', 'image/webp', 'image/gif'):
-            _u = str(url).lower()
-            ct = ('image/png' if '.png' in _u else
-                  'image/webp' if '.webp' in _u else 'image/jpeg')
-        return r.content, ct
-    except Exception:
-        return None, None
-
-
-def _cafe24_detail_images(full):
-    """카페24 상품 상세 HTML/이미지에서 상세페이지 이미지 URL 목록 추출(순서 유지·절대경로).
-    설명(description) 안의 <img>들 + 대표 상세이미지."""
-    urls = []
-    desc = str((full or {}).get('description') or '')
-    for m in _re.finditer(r'<img[^>]+src=["\']([^"\']+)["\']', desc, _re.I):
-        urls.append(m.group(1))
-    for k in ('detail_image', 'list_image'):
-        u = (full or {}).get(k)
-        if u:
-            urls.append(u)
-    seen, out = set(), []
-    for u in urls:
-        u = str(u).strip()
-        if u.startswith('//'):
-            u = 'https:' + u
-        if u and u.startswith('http') and u not in seen:
-            seen.add(u); out.append(u)
-    return out
-
-
-def _build_image_detail(full, tid, tsecret, limit=20):
-    """카페24 상세이미지들을 네이버 CDN에 업로드 → <img> 스택 HTML 반환.
-    업로드 성공분이 없으면 '' 반환(호출측에서 기존 HTML 폴백)."""
-    _cdns = []
-    for _iu in _cafe24_detail_images(full)[:limit]:
-        # square=False: 상세이미지는 세로로 길다 → 정사각 크롭하면 위·아래가 잘린다.
-        _dc, _de = naver_api.upload_product_image(tid, tsecret, _iu, square=False)
-        if _dc:
-            _cdns.append(_dc)
-    if not _cdns:
-        return ''
-    return ''.join(
-        f'<img src="{_u}" style="display:block;max-width:100%;margin:0 auto">' for _u in _cdns)
 
 
 def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
@@ -90,7 +36,9 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     elif not HAS_NAVER_API:
         st.error("naver_api 없음 — 관리자에게 문의하세요.")
     else:
-        import cafe24_api, ai_service
+        import cafe24_api
+        import cafe24_register_service as c24reg
+        import db_cafe24_queue as _c24q
         _ag_creds = {'mall_id': _ag_cf['mall_id'], 'client_id': _ag_cf['client_id'],
                      'client_secret': _ag_cf['client_secret'], 'access_token': _ag_cf['access_token'],
                      'refresh_token': _ag_cf['refresh_token'], 'expires_at': _ag_cf['token_expires_at']}
@@ -194,6 +142,87 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                           label_visibility="collapsed",
                                           placeholder="카페24 상품명 일부 — 예: 콩국, 소갈비찜")
 
+                # ── 📦 배치 대기열 — 300건 규모는 여기로 ──────────────
+                # UI 루프는 브라우저를 켜둬야 진행되고 건당 15~60초라
+                # 수백 건엔 못 쓴다. 분류째로 대기열에 담아 크론이 나눠 소화한다.
+                with st.expander("📦 대기열 배치 등록 (수백 건은 이쪽)", expanded=False):
+                    _qc = _c24q.counts(_ag_tuser)
+                    _qm1, _qm2, _qm3, _qm4 = st.columns(4)
+                    _qm1.metric("대기", _qc['pending'])
+                    _qm2.metric("등록완료", _qc['done'])
+                    _qm3.metric("중복스킵", _qc['skipped'])
+                    _qm4.metric("실패", _qc['failed'])
+
+                    _q_on = st.checkbox(
+                        "🟢 자동 배치 등록 켜기 (크론이 매시간 대기열을 소화)",
+                        value=get_global_setting('cafe24_register_enabled') == '1',
+                        key="ag_q_on",
+                        help="꺼두면 대기열에 담아만 두고 등록은 진행되지 않습니다. "
+                             "실제 스토어에 상품이 올라가므로 기본은 꺼짐입니다.")
+                    _q_max = st.number_input(
+                        "회당 최대 등록 건수", min_value=5, max_value=200, step=5,
+                        value=int(get_global_setting('cafe24_register_max') or 30),
+                        key="ag_q_max",
+                        help="한 번에 몰아치면 네이버 API 한도와 서버 메모리에 걸립니다. "
+                             "매시간 30건이면 300건을 약 10시간에 소화합니다.")
+                    if st.button("💾 배치 설정 저장", key="ag_q_save"):
+                        set_global_setting('cafe24_register_enabled', '1' if _q_on else '0')
+                        set_global_setting('cafe24_register_max', str(int(_q_max)))
+                        set_global_setting('cafe24_naver_margin', str(int(_ag_margin)))
+                        set_global_setting('cafe24_register_img_detail',
+                                           '1' if _ag_img_detail else '0')
+                        set_global_setting('cafe24_register_photo_ai',
+                                           '1' if _ag_photo_ai else '0')
+                        st.success("저장했습니다. 마진·상세이미지·AI사진분석은 위 설정을 따릅니다.")
+
+                    st.markdown("**분류 통째로 대기열에 담기**")
+                    if _ag_mode != "카테고리":
+                        st.caption("↑ 조회 방식을 '카테고리'로 바꾸면 그 분류 전체를 한 번에 담을 수 있습니다.")
+                    else:
+                        _qcap = st.number_input("최대 담을 건수", min_value=10, max_value=3000,
+                                                step=50, value=300, key="ag_q_cap")
+                        if st.button(f"➕ 이 분류 전체를 '{_ag_tuser}' 대기열에 담기",
+                                     key="ag_q_fill", disabled=not _ag_cat_no):
+                            with st.spinner("카페24 분류 상품 전체 조회 중..."):
+                                _qp, _qerr = cafe24_api.search_all_products(
+                                    _ag_creds, category_no=_ag_cat_no,
+                                    save_tokens=_ag_save, max_total=int(_qcap))
+                            if _qerr:
+                                st.error(f"조회 실패: {_qerr}")
+                            else:
+                                _na, _ns = _c24q.enqueue(_ag_tuser, _qp or [])
+                                st.success(f"조회 {len(_qp or [])}개 → 새로 담음 {_na}건 "
+                                           f"/ 이미 대기열에 있음 {_ns}건")
+                                st.rerun()
+
+                    _qb1, _qb2, _qb3 = st.columns(3)
+                    if _qb1.button(f"🔁 실패 {_qc['failed']}건 다시 대기로", key="ag_q_retry",
+                                   disabled=not _qc['failed']):
+                        _n = _c24q.requeue_failed(_ag_tuser)
+                        st.success(f"{_n}건을 대기 상태로 되돌렸습니다."); st.rerun()
+                    if _qb2.button("🧹 처리완료분 비우기", key="ag_q_clean",
+                                   disabled=not (_qc['done'] or _qc['skipped'])):
+                        _n = _c24q.clear(_ag_tuser, 'done') + _c24q.clear(_ag_tuser, 'skipped')
+                        st.success(f"{_n}건 삭제했습니다."); st.rerun()
+                    if _qb3.button("🗑 대기열 전체 삭제", key="ag_q_wipe",
+                                   disabled=not _qc['total']):
+                        _n = _c24q.clear(_ag_tuser)
+                        st.warning(f"{_n}건 삭제했습니다."); st.rerun()
+
+                    _qview = st.selectbox("대기열 보기", ["failed", "pending", "done", "skipped"],
+                                          key="ag_q_view",
+                                          format_func=lambda v: {
+                                              'failed': '❌ 실패', 'pending': '⏳ 대기',
+                                              'done': '✅ 완료', 'skipped': '⏭ 중복스킵'}[v])
+                    _qrows = _c24q.list_rows(_ag_tuser, _qview, limit=300)
+                    if _qrows:
+                        st.dataframe(pd.DataFrame([
+                            {'상품번호': r['product_no'], '상품명': r['product_name'][:40],
+                             '사유': (r['detail'] or '')[:70], '갱신': r['updated_at']}
+                            for r in _qrows]), use_container_width=True, hide_index=True)
+                    else:
+                        st.caption("해당 상태의 건이 없습니다.")
+
                 if st.button("🔎 카페24 조회", key="ag_search"):
                     set_global_setting('cafe24_naver_margin', str(int(_ag_margin)))
                     with st.spinner("카페24 상품 조회 중..."):
@@ -236,7 +265,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     _ag_sel = []
                     for _p in _ag_show:
                         _pno = _p['product_no']; _pr = int(_p.get('price') or 0)
-                        _npr = int(round(_pr * (1 + _ag_margin / 100.0) / 0.945 / 10) * 10)
+                        _npr = c24reg.calc_sale_price(_pr, _ag_margin)
                         if st.checkbox(
                                 f"{str(_p.get('product_name', ''))[:42]} · 카페24 {fmt(_pr)}원 → 네이버 {fmt(_npr)}원",
                                 key=f"ag_ck_{_pno}"):
@@ -270,128 +299,32 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                 if _nm2:
                                     _ag_have_name.add(_nm2)
                             st.caption(f"기존 상품 {len(_exist or [])}개 확인 — 중복은 건너뜁니다.")
-                        # 판매자상품코드에 넣을 코스트코 번호 — 카페24 자체상품코드가 1순위.
-                        # 비어 있으면 상품명 매칭으로 찾되, 오매칭이 원가 계산까지 오염시키므로
-                        # 고득점(_AG_MATCH_MIN 이상)만 채택하고 나머지는 카페24 번호를 쓴다.
-                        _AG_MATCH_MIN = 60
+                        # 판매자상품코드(코스트코 번호) 결정은 register_one이 한다.
+                        # 상품명 매칭에 쓸 공용 코스트코 DB만 여기서 1회 읽어 넘긴다.
                         _ag_shared = get_shared_products() or []
 
+                        _ag_opts = {
+                            'img_detail': _ag_img_detail, 'photo_ai': _ag_photo_ai,
+                            'gen_tags': True, 'opt_name': True,
+                            'ai_key': _ag_ai, 'gemini_key': _ag_gai,
+                            'ad_creds': _ad_creds,
+                        }
+                        _ag_target = {'api_id': _ag_tid, 'api_secret': _ag_tsecret,
+                                      'as_tel': _ag_tas}
                         for _i, (_p, _npr) in enumerate(_ag_sel):
                             _agprog.progress((_i + 1) / len(_ag_sel))
-                            _name = str(_p.get('product_name', ''))
-                            # 0) 카페24 상세 조회 + 대표 이미지
-                            _full, _fe = cafe24_api.get_product(_ag_creds, _p['product_no'], save_tokens=_ag_save)
-                            _full = _full or {}
-                            _cf_name = _full.get('product_name') or _name
-                            # 판매자상품코드 = 코스트코 번호. 우선순위:
-                            #   ① 카페24 자체상품코드(매칭·동기화가 기록한 코스트코 번호)
-                            #   ② 상품명 매칭(공용 코스트코 DB, 매칭 화면과 같은 기준)
-                            #   ③ 카페24 상품번호(코스트코 매칭 실패 시 폴백)
-                            _costco_code = str(_full.get('custom_product_code') or '').strip()
-                            _code_src = '자체코드'
-                            if not _costco_code:
-                                _bs2, _bp2 = 0, None
-                                for _s2 in _ag_shared:
-                                    _sc2 = calc_match_score(_cf_name, _s2['costco_name'])
-                                    if _sc2 > _bs2:
-                                        _bs2, _bp2 = _sc2, _s2
-                                # 매칭 화면 기준(>=2)은 사람이 검토하는 표 용도라 자동 적용엔
-                                # 위험하다(무관한 상품이 같은 번호로 붙음). 고득점만 채택.
-                                if _bp2 and _bs2 >= _AG_MATCH_MIN:
-                                    _costco_code = str(_bp2['product_no'] or '').strip()
-                                    _code_src = f'매칭({_bs2})'
-                            _seller_code = _costco_code or str(_p['product_no'])
-                            if not _costco_code:
-                                _code_src = '카페24번호'
-                            # 중복 등록 방지 — 코스트코 번호·카페24 번호·상품명 중 하나라도
-                            # 기존 등록분과 겹치면 건너뛴다(두 코드 체계가 섞여 있어 둘 다 확인).
-                            _cand_codes = {c for c in (_costco_code, str(_p['product_no'])) if c}
-                            if (_cand_codes & _ag_have_code) or _cf_name in _ag_have_name:
-                                _ag_rows.append({'상품': _cf_name[:24], '코드': _seller_code,
-                                                 '코드출처': _code_src, '상태': '⏭ 이미 등록됨'})
-                                _ag_tick(_i + 1, _cf_name, '⏭'); continue
-                            _rep = _full.get('detail_image') or _full.get('list_image') or ''
-                            if not _rep:
-                                _ag_rows.append({'상품': _name[:24], '상태': '❌ 이미지 없음'})
-                                _ag_tick(_i + 1, _name, '❌'); continue
-                            _cdn, _ue = naver_api.upload_product_image(_ag_tid, _ag_tsecret, _rep)
-                            if not _cdn:
-                                _ag_rows.append({'상품': _name[:24], '상태': '❌ 이미지업로드 실패'})
-                                _ag_tick(_i + 1, _name, '❌'); continue
-                            # ① AI 제품사진 분석(비전) → 상품명·원산지·브랜드
-                            _ai_photo = {}
-                            if _ag_photo_ai and (_ag_ai or _ag_gai):
-                                _imgb, _mt = _fetch_image_bytes(_rep)
-                                if _imgb:
-                                    _apr, _ape = ai_service.analyze_product_photo(
-                                        _ag_ai, _imgb, _mt, gemini_key=_ag_gai)
-                                    if _apr:
-                                        _ai_photo = _apr
-                            _base_name = str(_ai_photo.get('name') or '').strip() or _cf_name
-                            # ② 카테고리 자동판단 — AI 검색어 추정 + 로컬 카테고리 캐시
-                            # (쇼핑검색 API 폐지로 유사상품 카테고리 수집 방식은 사용 불가)
-                            _cid, _cfull, _ = naver_api.suggest_category_for_name(
-                                _base_name, _ag_tid, _ag_tsecret, ai_key=_ag_ai,
-                                extra_terms=[_ai_photo.get('category') or ''])
-                            if not _cid and _ai_photo.get('category'):
-                                _cr2, _ = naver_api.search_naver_categories(
-                                    _ag_tid, _ag_tsecret, str(_ai_photo['category']).strip())
-                                if _cr2:
-                                    _cid, _cfull = _cr2[0].get('id'), _cr2[0].get('full_name')
-                            if not _cid:
-                                _ag_rows.append({'상품': _base_name[:24], '상태': '❌ 카테고리 판단실패'})
-                                _ag_tick(_i + 1, _base_name, '❌'); continue
-                            # ③ 최종 상품명: 연관키워드(저경쟁 100~300+대표어) 최적화 — 분석 상품명을 seed로
-                            _final_name = _base_name
-                            if _ad_creds:
-                                _kn, _ki = naver_api.keyword_optimized_name(
-                                    _ad_key, _ad_sec, _ad_cust, _base_name, ai_key=_ag_ai, category=_cfull)
-                                if _kn and len(_kn) >= 4:
-                                    _final_name = _kn
-                            # 안전장치: 상품명 절대 비우지 않음
-                            if not str(_final_name or '').strip():
-                                _final_name = _cf_name or _name or _base_name
-                            # ④ 태그ID(검색 반영되는 사전등록 태그만)
-                            _desc_txt = str(_full.get('description') or '')
-                            _tags, _ = naver_api.build_seller_tags(
-                                _ag_tid, _ag_tsecret, _ag_ai, _final_name, _cfull, _desc_txt, _ad_creds)
-                            # ⑤ 속성: AI 분석값 우선, 없으면 카페24 값
-                            _manuf = (str(_ai_photo.get('brand') or '').strip()
-                                      or str(_full.get('manufacturer_name') or _full.get('brand_name') or '').strip())
-                            _model = str(_full.get('model_name') or '').strip()
-                            _origin = (str(_ai_photo.get('origin') or '').strip()
-                                       or str(_full.get('origin_place_value') or '').strip())
-                            # ⑥ 상세페이지: 상단에 상품명 + (이미지 등록 옵션) 카페24 상세이미지 스택
-                            import html as _html
-                            _name_block = (
-                                '<div style="text-align:center;font-size:22px;font-weight:800;'
-                                'padding:18px 12px;color:#222;line-height:1.45">'
-                                + _html.escape(str(_final_name)) + '</div>')
-                            _body_html = _desc_txt or ''
-                            if _ag_img_detail:
-                                _img_html = _build_image_detail(_full, _ag_tid, _ag_tsecret)
-                                if _img_html:
-                                    _body_html = _img_html
-                            _detail_html = _name_block + (_body_html or f"<p>{_html.escape(str(_final_name))}</p>")
-                            _res, _re2 = naver_api.register_product(_ag_tid, _ag_tsecret, {
-                                "name": _final_name, "sale_price": _npr,
-                                "image_url": _cdn, "category_id": _cid,
-                                "detail_html": _detail_html,
-                                "shipping_fee": 0, "origin_code": "03", "after_service_tel": _ag_tas,
-                                "seller_tags": _tags, "manufacturer": _manuf or None,
-                                "model_name": _model or None, "origin_content": _origin or None,
-                                "seller_code": _seller_code,
-                            })
-                            if not _re2:      # 같은 배치 안에서의 중복도 차단
-                                _ag_have_code |= _cand_codes
-                                _ag_have_name.add(_final_name)
-                                _ag_have_name.add(_cf_name)
-                            _ag_rows.append({'상품': _final_name[:24], '코드': _seller_code,
-                                             '코드출처': _code_src,
-                                             '카테고리': str(_cfull or '')[:20],
-                                             '태그': len(_tags or []), '판매가': _npr,
-                                             '상태': '✅ 등록' if not _re2 else f'❌ {str(_re2)[:120]}'})
-                            _ag_tick(_i + 1, _final_name, '✅' if not _re2 else '❌')
+                            _res = c24reg.register_one(
+                                _ag_creds, _ag_save, _p, _ag_margin, _ag_target, _ag_opts,
+                                have_code=_ag_have_code, have_name=_ag_have_name,
+                                shared=_ag_shared)
+                            _icon = {'ok': '✅', 'skip': '⏭'}.get(_res['status'], '❌')
+                            _ag_rows.append({
+                                '상품': _res['name'][:24], '코드': _res['code'],
+                                '코드출처': _res['code_src'],
+                                '카테고리': _res['category'][:20], '태그': _res['tags'],
+                                '판매가': _res['price'],
+                                '상태': f"{_icon} {_res['detail'][:120]}"})
+                            _ag_tick(_i + 1, _res['name'], _icon)
                         _ag_prog.empty()
                         _ok = sum(1 for r in _ag_rows if str(r.get('상태', '')).startswith('✅'))
                         _fail_rows = [r for r in _ag_rows if not str(r.get('상태', '')).startswith('✅')]

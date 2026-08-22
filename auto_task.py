@@ -1266,6 +1266,161 @@ def run_cafe24_sync_task(username="admin"):
     return True
 
 
+# ── Task 10: 카페24 대기열 → 네이버 대행 등록 (배치) ──
+def run_cafe24_register_task(username="admin"):
+    """cafe24_reg_queue에 쌓인 상품을 대상 사용자 스마트스토어에 나눠 등록한다.
+
+    300건을 한 번에 돌리면 몇 시간이 걸리고, 중간에 죽으면 어디까지 했는지 모른다.
+    그래서 회당 N건씩만 처리하고 결과를 건별로 대기열에 기록한다(크론 매시간).
+    라이브 등록이므로 cafe24_register_enabled='1'일 때만 진행(안전 opt-in).
+
+    전역 설정: cafe24_register_enabled / cafe24_register_max / cafe24_naver_margin
+              cafe24_register_img_detail / cafe24_register_photo_ai
+              cafe24_register_gen_tags / cafe24_register_opt_name
+    """
+    log("=" * 50)
+    log(f"[Task 10] 카페24 대행등록 배치 시작 (실행 계정: {username})")
+
+    if get_global_setting('cafe24_register_enabled') != '1':
+        log("⏭ cafe24_register_enabled 미설정 — 건너뜀 (카페24 탭에서 활성화 필요)")
+        return True
+
+    try:
+        import cafe24_register_service as c24reg
+        import db_cafe24_queue as q
+    except Exception as e:
+        log(f"❌ 모듈 로드 실패: {e}")
+        return False
+
+    _cf = {k: (get_global_setting('cafe24_' + k) or '') for k in
+           ('mall_id', 'client_id', 'client_secret', 'access_token',
+            'refresh_token', 'token_expires_at')}
+    if not (_cf['mall_id'] and _cf['client_id'] and _cf['access_token']):
+        log("❌ 공용 카페24 자격증명 없음 → 건너뜀")
+        return False
+    creds = {'mall_id': _cf['mall_id'], 'client_id': _cf['client_id'],
+             'client_secret': _cf['client_secret'], 'access_token': _cf['access_token'],
+             'refresh_token': _cf['refresh_token'], 'expires_at': _cf['token_expires_at']}
+
+    def _save(t):
+        for k, v in (('cafe24_access_token', t.get('access_token', '')),
+                     ('cafe24_refresh_token', t.get('refresh_token', '')),
+                     ('cafe24_token_expires_at', t.get('expires_at', ''))):
+            set_global_setting(k, v)
+
+    try:
+        _max = int(get_global_setting('cafe24_register_max') or 30)
+    except Exception:
+        _max = 30
+    try:
+        _margin = float(get_global_setting('cafe24_naver_margin') or 10)
+    except Exception:
+        _margin = 10.0
+
+    # AI 키 — Gemini 우선(무료 티어), Anthropic은 폴백. 둘 다 전역(관리자) 키.
+    _ai = get_global_setting('anthropic_api_key') or ''
+    _gai = get_global_setting('gemini_api_key') or ''
+    _ad_key = get_global_setting('naver_ad_api_key') or ''
+    _ad_sec = get_global_setting('naver_ad_secret') or ''
+    _ad_cust = get_global_setting('naver_ad_customer_id') or ''
+    _ad_creds = (_ad_key, _ad_sec, _ad_cust) if all((_ad_key, _ad_sec, _ad_cust)) else None
+
+    opts = {
+        'img_detail': get_global_setting('cafe24_register_img_detail', '1') == '1',
+        'photo_ai':   get_global_setting('cafe24_register_photo_ai', '0') == '1',
+        'gen_tags':   get_global_setting('cafe24_register_gen_tags', '1') == '1',
+        'opt_name':   get_global_setting('cafe24_register_opt_name', '1') == '1',
+        'ai_key': _ai, 'gemini_key': _gai, 'ad_creds': _ad_creds,
+    }
+    log(f"  회당 최대 {_max}건 · 마진 {_margin:g}% · "
+        f"카테고리 {'ON' if (_ai or _gai) else 'OFF'} · "
+        f"상품명 {'ON' if (_ad_creds and opts['opt_name']) else 'OFF'} · "
+        f"태그 {'ON' if opts['gen_tags'] else 'OFF'} · "
+        f"비전 {'ON' if opts['photo_ai'] else 'OFF'} · "
+        f"엔진 {'Gemini우선' if _gai else ('Claude' if _ai else '없음')}")
+
+    _pending = q.all_counts()
+    if not _pending:
+        log("⏭ 대기열이 비어 있음 — 할 일 없음")
+        return True
+    log("  대기 중인 대상: " + ", ".join(f"{u}({n})" for u, n in _pending))
+
+    from db import get_shared_products
+    _shared = get_shared_products() or []
+    _budget = _max                  # 이번 실행 전체 예산(대상 사용자들이 나눠 쓴다)
+    _grand = {'ok': 0, 'skip': 0, 'fail': 0}
+
+    for _tuser, _n_pend in _pending:
+        if _budget <= 0:
+            log(f"⏭ '{_tuser}' — 이번 회차 예산 소진, 다음 실행에서 계속")
+            break
+        _ts = get_user_settings(_tuser) or {}
+        _tid = _ts.get('api_client_id', '')
+        _tsecret = _ts.get('api_client_secret', '')
+        if not (_tid and _tsecret):
+            log(f"⚠️ '{_tuser}' 네이버 커머스 API 키 없음 — 건너뜀(대기열은 유지)")
+            continue
+        target = {'api_id': _tid, 'api_secret': _tsecret,
+                  'as_tel': _ts.get('naver_as_tel') or '1588-1234'}
+
+        # 중복 등록 방지 — 대상 스토어 기존 상품을 회차당 1회만 조회한다.
+        _have_code, _have_name, _eerr = c24reg.load_existing(_tid, _tsecret)
+        if _eerr:
+            log(f"⚠️ '{_tuser}' 기존 상품 조회 실패 — 중복 검사 없이 진행: {str(_eerr)[:80]}")
+        else:
+            log(f"  '{_tuser}' 기존 상품 {len(_have_name)}개 확인")
+
+        _rows = q.next_pending(_tuser, limit=_budget)
+        _ok = _skip = _fail = 0
+        for _row in _rows:
+            try:
+                _res = c24reg.register_one(
+                    creds, _save,
+                    {'product_no': _row['product_no'],
+                     'product_name': _row['product_name'],
+                     'price': _row['price']},
+                    _margin, target, opts,
+                    have_code=_have_code, have_name=_have_name, shared=_shared)
+            except Exception as e:
+                import traceback
+                log(f"    ❌ {str(_row['product_name'])[:24]} — 예외: {e}")
+                log(traceback.format_exc(limit=3))
+                q.mark(_row['id'], 'failed', f'예외: {e}')
+                _fail += 1
+                _budget -= 1
+                continue
+            _st = _res['status']
+            q.mark(_row['id'], {'ok': 'done', 'skip': 'skipped'}.get(_st, 'failed'),
+                   _res['detail'])
+            if _st == 'ok':
+                _ok += 1
+                log(f"    ✅ {_res['name'][:28]} · {_res['category'][:20]} · {_res['price']}원")
+            elif _st == 'skip':
+                _skip += 1
+            else:
+                _fail += 1
+                log(f"    ❌ {_res['name'][:28]} — {_res['detail'][:80]}")
+            _budget -= 1
+
+        _c = q.counts(_tuser)
+        log(f"  '{_tuser}' 처리 {len(_rows)}건 → ✅{_ok} ⏭{_skip} ❌{_fail} "
+            f"(남은 대기 {_c['pending']}건)")
+        _grand['ok'] += _ok
+        _grand['skip'] += _skip
+        _grand['fail'] += _fail
+
+        if _ok or _fail:
+            _msg = (f"🛒 카페24 대행등록 ({datetime.now().strftime('%m/%d %H:%M')})\n"
+                    f"✅ 등록 {_ok}건 / ⏭ 중복 {_skip}건 / ❌ 실패 {_fail}건\n"
+                    f"남은 대기 {_c['pending']}건 · 누적 실패 {_c['failed']}건")
+            if _c['failed']:
+                _msg += "\n※ 실패 건은 카페24 탭 대기열에서 확인·재시도하세요."
+            send_notification(_ts, _msg, _tuser)
+
+    log(f"[Task 10] 완료 — ✅{_grand['ok']} ⏭{_grand['skip']} ❌{_grand['fail']}")
+    return True
+
+
 # ── Task 9: 재고 반품 대상 알림 ───────────────────
 RETURN_DAYS = 30
 
@@ -1454,7 +1609,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="코스트코핫딜 자동화 실행")
     parser.add_argument("--task",
                         choices=["shopping", "shipping", "crawl", "rank", "orders",
-                                 "products", "register", "cafe24sync", "naverstock",
+                                 "products", "register", "cafe24sync", "cafe24reg", "naverstock",
                                  "hiresimg", "invreturn", "all"],
                         default="all",
                         help="실행할 작업 (기본: all)")
@@ -1483,6 +1638,8 @@ if __name__ == "__main__":
         run_naver_register_task(args.user)
     elif args.task == "cafe24sync":
         run_cafe24_sync_task(args.user)
+    elif args.task == "cafe24reg":
+        run_cafe24_register_task(args.user)
     elif args.task == "naverstock":
         run_naver_stock_sync_task(args.user, force=args.force)
     elif args.task == "hiresimg":
