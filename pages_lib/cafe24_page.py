@@ -383,19 +383,32 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                             st.caption("사유 코드가 없는 과거 기록입니다 — 아래 '대기열 보기'에서 확인하세요.")
                         st.divider()
 
-                    _qb1, _qb2, _qb3 = st.columns(3)
-                    if _qb1.button(f"🔁 실패 {_qc['failed']}건 전부 다시 대기로", key="ag_q_retry",
-                                   disabled=not _qc['failed']):
+                    # 삭제·되돌리기는 모두 '등록 대상 사용자'(_ag_tuser) 기준이다.
+                    # 라벨에 계정명을 박아둔다 — 어느 계정이 지워지는지 모르고 누르면
+                    # 되돌릴 수 없다(대기열을 다시 담아야 한다).
+                    st.markdown(f"**대기열 정리 — 대상: `{_ag_tuser}`**")
+                    _qb1, _qb2 = st.columns(2)
+                    if _qb1.button(f"🔁 '{_ag_tuser}' 실패 {_qc['failed']}건 다시 대기로",
+                                   key="ag_q_retry", disabled=not _qc['failed']):
                         _n = _c24q.requeue_failed(_ag_tuser)
                         st.success(f"{_n}건을 대기 상태로 되돌렸습니다."); st.rerun()
-                    if _qb2.button("🧹 처리완료분 비우기", key="ag_q_clean",
-                                   disabled=not (_qc['done'] or _qc['skipped'])):
+                    if _qb2.button(
+                            f"🧹 '{_ag_tuser}' 처리완료분 비우기 "
+                            f"({_qc['done'] + _qc['skipped']}건)",
+                            key="ag_q_clean",
+                            disabled=not (_qc['done'] or _qc['skipped']),
+                            help="완료·중복스킵 건만 지웁니다. 대기·실패는 남습니다."):
                         _n = _c24q.clear(_ag_tuser, 'done') + _c24q.clear(_ag_tuser, 'skipped')
                         st.success(f"{_n}건 삭제했습니다."); st.rerun()
-                    if _qb3.button("🗑 대기열 전체 삭제", key="ag_q_wipe",
-                                   disabled=not _qc['total']):
+
+                    # 전체 삭제는 되돌릴 수 없어 확인 체크를 하나 둔다
+                    _wipe_ok = st.checkbox(
+                        f"🗑 '{_ag_tuser}' 대기열 **전체 {_qc['total']}건** 삭제를 확인합니다",
+                        key="ag_q_wipe_ok", disabled=not _qc['total'])
+                    if st.button(f"🗑 '{_ag_tuser}' 대기열 전체 삭제", key="ag_q_wipe",
+                                 disabled=not (_qc['total'] and _wipe_ok)):
                         _n = _c24q.clear(_ag_tuser)
-                        st.warning(f"{_n}건 삭제했습니다."); st.rerun()
+                        st.warning(f"'{_ag_tuser}' 대기열 {_n}건을 삭제했습니다."); st.rerun()
 
                     _qview = st.selectbox("대기열 보기", ["failed", "pending", "done", "skipped"],
                                           key="ag_q_view",
