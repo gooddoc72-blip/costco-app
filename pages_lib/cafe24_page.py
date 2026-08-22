@@ -353,10 +353,33 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                    "그 묶음 전체를 한 번에 담을 수 있습니다.")
                     else:
                         _is_disp = (_ag_mode == "메인 진열")
-                        _qcap = st.number_input("최대 담을 건수", min_value=10, max_value=3000,
-                                                step=50, value=300, key="ag_q_cap")
+                        # 담을 계정을 여기서 직접 고른다. 페이지 최상단 드롭다운만
+                        # 있으면 담기 버튼에서 어느 계정인지 확인·변경할 수 없다.
+                        _enq_opts = [t[0] for t in _ag_meta]
+                        _enq_lbl = {u: ("%s · %s%s" % (
+                            u, _disp_name(u),
+                            "" if next((m[2] for m in _ag_meta if m[0] == u), False)
+                            else "  ⚠️커머스키 없음")) for u in _enq_opts}
+                        _eq1, _eq2 = st.columns([2, 1])
+                        _enq_pick = _eq1.selectbox(
+                            "📥 담을 계정", [_enq_lbl[u] for u in _enq_opts],
+                            index=_enq_opts.index(_ag_tuser) if _ag_tuser in _enq_opts else 0,
+                            key="ag_q_enq_user",
+                            help="이 계정의 대기열에 담깁니다. 위쪽 '등록 대상 사용자'와 "
+                                 "따로 고를 수 있습니다.")
+                        _enq_user = next(u for u in _enq_opts if _enq_lbl[u] == _enq_pick)
+                        _qcap = _eq2.number_input("최대 담을 건수", min_value=10, max_value=3000,
+                                                  step=50, value=300, key="ag_q_cap")
+                        _enq_has_key = next((m[2] for m in _ag_meta if m[0] == _enq_user), False)
+                        if not _enq_has_key:
+                            st.warning(f"⚠️ '{_enq_user}'는 네이버 커머스 API 키가 없어 "
+                                       "담아도 등록되지 않습니다(배치가 건너뜁니다).")
+                        _enq_now = _c24q.counts(_enq_user)
+                        if _enq_now['total']:
+                            st.caption(f"'{_enq_user}' 기존 대기열 — 대기 {_enq_now['pending']}건 "
+                                       f"· 합계 {_enq_now['total']}건")
                         _qlabel = ("➕ 이 진열영역 전체를" if _is_disp else "➕ 이 분류 전체를")
-                        if st.button(f"{_qlabel} '{_ag_tuser}' 대기열에 담기",
+                        if st.button(f"{_qlabel} '{_enq_user}' 대기열에 담기",
                                      key="ag_q_fill",
                                      disabled=not (_ag_disp_no if _is_disp else _ag_cat_no)):
                             with st.spinner("카페24 상품 조회 중..."):
@@ -371,9 +394,9 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                             if _qerr:
                                 st.error(f"조회 실패: {_qerr}")
                             else:
-                                _na, _ns = _c24q.enqueue(_ag_tuser, _qp or [])
-                                st.success(f"조회 {len(_qp or [])}개 → 새로 담음 {_na}건 "
-                                           f"/ 이미 대기열에 있음 {_ns}건")
+                                _na, _ns = _c24q.enqueue(_enq_user, _qp or [])
+                                st.success(f"'{_enq_user}' 대기열 — 조회 {len(_qp or [])}개 → "
+                                           f"새로 담음 {_na}건 / 이미 있음 {_ns}건")
                                 st.rerun()
 
                     # ── 실패 사유별 분류 — '실패 12건'만으로는 조치를 못 한다 ──
