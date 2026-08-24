@@ -5,7 +5,7 @@ from datetime import date
 import streamlit as st
 import pandas as pd
 
-from services import parse_costco_receipt_pdf
+from services import parse_costco_receipt_pdf, render_pdf_to_images
 from receipt_settle import (
     allocate_receipt_to_orders, apply_receipt_settlement, cleanup_orphan_settlements,
     build_manual_rows, ai_match_receipt_orders, _summarize, compute_leftovers,
@@ -50,6 +50,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     _fkey = tuple(sorted(f.name for f in files)) if files else ()
     if files and st.session_state.get('_rs_fkey') != _fkey:
         parsed, fails = [], []
+        import ai_service as _ais
+        _ak0, _gk0 = _ais.get_ai_keys(settings)
         with st.spinner("영수증 인식 중..."):
             for f in files:
                 try:
@@ -58,8 +60,44 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     items, err = None, f"파싱 예외: {e}"
                 if items:
                     parsed.extend(items)
+                    continue
+                # ── 글자 없는 스캔 PDF → 페이지를 그림으로 렌더해 AI 비전으로 읽는다.
+                #    코스트코 앱에서 받은 영수증이 대개 이 형태다.
+                if not (_ak0 or _gk0):
+                    fails.append((f.name, (err or '인식 실패')
+                                  + " · AI 키가 없어 이미지 판독도 불가"))
+                    continue
+                _imgs, _rerr = render_pdf_to_images(f)
+                if _rerr or not _imgs:
+                    fails.append((f.name, f"{err or '인식 실패'} · 이미지 변환도 실패({_rerr})"))
+                    continue
+                _got = 0
+                for _pi, (_ib, _mt) in enumerate(_imgs, 1):
+                    _d, _de = _ais.parse_receipt_photo(_ak0, _ib, _mt, gemini_key=_gk0)
+                    if _de or not _d:
+                        continue
+                    _rd = _d.get('purchase_date', '') or ''
+                    for _it in (_d.get('items') or []):
+                        if not str(_it.get('상품명', '') or '').strip():
+                            continue
+                        parsed.append({
+                            '상품번호': str(_it.get('상품번호', '') or ''),
+                            '상품명': _it.get('상품명', ''),
+                            '수량': int(_it.get('수량') or 1),
+                            '단가': int(_it.get('단가') or 0),
+                            'receipt_date': _rd,
+                        })
+                        _got += 1
+                    if not _d.get('_verified', True):
+                        fails.append((f"{f.name} p{_pi}",
+                                      "금액·수량 자가검증 불일치 — 아래 표에서 값을 확인하세요: "
+                                      + " / ".join((_d.get('_check') or [])[:2])))
+                if _got:
+                    st.info(f"📄 {f.name} — 글자가 없는 스캔 PDF라 "
+                            f"이미지 {len(_imgs)}쪽을 AI로 읽어 {_got}품목 인식했습니다. "
+                            "값이 맞는지 아래 표에서 확인하세요.")
                 else:
-                    fails.append((f.name, err or "인식된 상품 항목이 없습니다"))
+                    fails.append((f.name, f"{err or '인식 실패'} · AI 이미지 판독도 품목을 못 찾음"))
         merged = {}
         for p in parsed:
             k = _n(p.get('상품번호')) or _n(p.get('상품명'))

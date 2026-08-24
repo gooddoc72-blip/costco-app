@@ -694,6 +694,52 @@ def build_price_alert_msg(changes, today_str=None):
 
 
 # ── 영수증 PDF 파싱 ───────────────────────────────────────
+def render_pdf_to_images(uploaded_pdf, max_pages=6, max_edge=2000):
+    """스캔 PDF를 페이지별 JPEG로 렌더. 반환: ([(bytes, 'image/jpeg')], err)
+
+    코스트코 영수증을 앱/스캐너로 받으면 글자가 없는 이미지 PDF라 pdfplumber가
+    아무것도 못 뽑는다. 그때 이 함수로 그림을 만들어 AI 비전 판독으로 넘긴다.
+    pypdfium2는 pdfplumber가 이미 끌고 오는 의존성이라 추가 설치가 필요 없다.
+    해상도는 긴 변 max_edge에 맞춰 잡는다 — 너무 키우면 2GB 서버에서 메모리가
+    모자라고, 너무 줄이면 영수증 잔글씨를 못 읽는다.
+    """
+    try:
+        import pypdfium2 as _pdfium
+    except ImportError:
+        return None, "pypdfium2 미설치 — 스캔 PDF를 이미지로 변환할 수 없습니다"
+    try:
+        if hasattr(uploaded_pdf, 'read'):
+            uploaded_pdf.seek(0)
+            _raw = uploaded_pdf.read()
+        else:
+            uploaded_pdf.seek(0)
+            _raw = uploaded_pdf.read()
+    except Exception as e:
+        return None, f"파일 읽기 오류: {e}"
+
+    _out = []
+    try:
+        _doc = _pdfium.PdfDocument(_raw)
+        try:
+            _n = min(len(_doc), int(max_pages))
+            for _i in range(_n):
+                _pg = _doc[_i]
+                _w, _h = _pg.get_size()          # 포인트(1/72인치)
+                _long = max(_w, _h) or 1
+                _scale = max(1.0, min(4.0, float(max_edge) / float(_long)))
+                _pil = _pg.render(scale=_scale).to_pil().convert("RGB")
+                _buf = io.BytesIO()
+                _pil.save(_buf, "JPEG", quality=88)
+                _out.append((_buf.getvalue(), "image/jpeg"))
+        finally:
+            _doc.close()
+    except Exception as e:
+        return None, f"PDF 이미지 변환 오류: {e}"
+    if not _out:
+        return None, "PDF에서 페이지를 찾지 못했습니다"
+    return _out, None
+
+
 def parse_costco_receipt_pdf(uploaded_pdf):
     try:
         import pdfplumber
