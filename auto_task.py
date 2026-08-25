@@ -299,7 +299,10 @@ def run_seller_code_task(username: str = "admin", limit: int = 50) -> bool:
     res = push_seller_codes(username, cid, csec, limit=limit, progress=lambda m: log(m))
     for e in (res.get("errors") or [])[:5]:
         log(f"  ⚠️ {e}")
-    log(f"[Task 12] 완료 — 성공 {res['ok']} / 실패 {res['failed']} / "
+    for c in (res.get("conflicts") or [])[:5]:
+        log(f"  ⚠️ 충돌 {c['naver_no']}: 네이버 {c['remote']} vs DB {c['costco_no']} — {c['name']}")
+    log(f"[Task 12] 완료 — 입력 {res['ok']} / 이미맞음 {res.get('same', 0)} / "
+        f"충돌 {len(res.get('conflicts') or [])} / 실패 {res['failed']} / "
         f"남은 대상 {res.get('remaining', 0)}")
     return res["failed"] == 0
 

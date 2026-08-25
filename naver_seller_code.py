@@ -71,6 +71,38 @@ def build_targets(username: str, only_missing: bool = True) -> tuple[list, dict]
     return targets, st
 
 
+def read_remote_seller_code(client_id: str, client_secret: str, naver_no: str) -> tuple[str, str]:
+    """네이버에 현재 들어있는 판매자 상품코드를 읽는다.
+
+    반환: (code, err) — code는 없으면 ''. err가 있으면 조회 실패.
+    밀어넣기 전 반드시 확인해야 한다. 우리 DB의 코스트코 번호가 틀린 경우가 있고
+    (실측 35건 중 8건), 그대로 밀면 네이버에 있던 올바른 코드를 덮어쓴다.
+    """
+    import requests
+    from naver_api import get_token
+    from naver_api.products import resolve_origin_product_no
+
+    token, err = get_token(client_id, client_secret)
+    if not token:
+        return "", (err or "토큰 발급 실패")
+    headers = {"Authorization": f"Bearer {token}"}
+    url = "https://api.commerce.naver.com/external/v2/products/origin-products/"
+    try:
+        r = requests.get(url + str(naver_no), headers=headers, timeout=15)
+        if r.status_code in (403, 404):
+            origin, _e = resolve_origin_product_no(client_id, client_secret, naver_no)
+            if origin:
+                r = requests.get(url + str(origin), headers=headers, timeout=15)
+        if r.status_code != 200:
+            return "", f"조회 실패({r.status_code})"
+        origin_product = r.json().get("originProduct") or {}
+        detail = origin_product.get("detailAttribute") or {}
+        code = (detail.get("sellerCodeInfo") or {}).get("sellerManagementCode") or ""
+        return str(code).strip(), ""
+    except Exception as e:
+        return "", f"조회 예외: {e}"
+
+
 def _mark_synced(username: str, product_id, costco_no: str):
     conn = get_user_db(username)
     try:
@@ -85,12 +117,17 @@ def _mark_synced(username: str, product_id, costco_no: str):
 def push_seller_codes(username: str, client_id: str, client_secret: str,
                       limit: int = 50, dry_run: bool = False,
                       delay: float = DEFAULT_DELAY, progress=None,
-                      only_missing: bool = True) -> dict:
+                      only_missing: bool = True,
+                      on_conflict: str = "skip") -> dict:
     """코스트코 번호를 네이버 판매자 상품코드에 밀어넣는다.
 
     limit: 한 번에 처리할 최대 건수 (API 부하·중단 대비). None이면 전량.
     dry_run: 호출하지 않고 대상만 집계.
-    반환: {ok, failed, skipped, stats, errors[], done[]}
+    on_conflict: 네이버에 이미 **다른** 코드가 있을 때
+        'skip'      기본 — 건드리지 않고 충돌로 보고한다. 우리 DB 번호가
+                    틀린 사례가 실측 확인됐고, 덮어쓰면 맞는 코드가 사라진다.
+        'overwrite' 우리 DB 값으로 덮어쓴다. 번호를 검증한 뒤에만 쓸 것.
+    반환: {ok, failed, skipped, same, conflicts[], stats, errors[], done[]}
     """
     import time
     from naver_api.products import update_product_full
@@ -104,23 +141,48 @@ def push_seller_codes(username: str, client_id: str, client_secret: str,
          f"코스트코번호 없음 {st['no_costco']} / 이미 반영 {st['already']} → 처리대상 {st['ready']}")
 
     if dry_run:
-        return {"ok": 0, "failed": 0, "skipped": 0, "stats": st,
-                "errors": [], "done": [], "dry_run": True, "targets": targets}
+        return {"ok": 0, "failed": 0, "skipped": 0, "same": 0, "conflicts": [],
+                "stats": st, "errors": [], "done": [], "dry_run": True, "targets": targets}
 
     if not (client_id and client_secret):
-        return {"ok": 0, "failed": 0, "skipped": len(targets), "stats": st,
-                "errors": ["네이버 커머스 API 키가 없습니다 (설정 탭에서 등록)."], "done": []}
+        return {"ok": 0, "failed": 0, "skipped": len(targets), "same": 0, "conflicts": [],
+                "stats": st, "errors": ["네이버 커머스 API 키가 없습니다 (설정 탭에서 등록)."],
+                "done": []}
 
     if limit:
         targets = targets[:int(limit)]
 
-    ok = failed = 0
-    errors, done = [], []
+    ok = failed = same = 0
+    errors, done, conflicts = [], [], []
     for i, t in enumerate(targets, 1):
         # 안전망 — build_targets가 이미 걸렀지만 값이 흘러들어오는 경로가 늘 수 있다
         if not is_costco_pno(t["costco_no"]):
             failed += 1
             errors.append(f"{t['naver_no']}: 코스트코번호 형식 아님({t['costco_no']})")
+            continue
+        # ── 사전 확인: 네이버 현재 값을 먼저 읽는다 ──
+        cur, rerr = read_remote_seller_code(client_id, client_secret, t["naver_no"])
+        if rerr:
+            failed += 1
+            errors.append(f"{t['naver_no']}: {rerr}")
+            _log(f"  [{i}/{len(targets)}] ⚠️ {t['naver_no']} — {rerr}")
+            if i < len(targets) and delay:
+                time.sleep(delay)
+            continue
+        if cur == t["costco_no"]:
+            # 이미 맞는 값 → PUT 없이 기록만 (불필요한 상품 수정 방지)
+            _mark_synced(username, t["id"], t["costco_no"])
+            same += 1
+            _log(f"  [{i}/{len(targets)}] ⏭ {t['naver_no']} 이미 {cur} — 건너뜀")
+            if i < len(targets) and delay:
+                time.sleep(delay)
+            continue
+        if cur and on_conflict == "skip":
+            conflicts.append({**t, "remote": cur})
+            _log(f"  [{i}/{len(targets)}] ⚠️ {t['naver_no']} 충돌 — "
+                 f"네이버 {cur} vs DB {t['costco_no']} → 건너뜀")
+            if i < len(targets) and delay:
+                time.sleep(delay)
             continue
         try:
             success, err, used = update_product_full(
@@ -139,6 +201,8 @@ def push_seller_codes(username: str, client_id: str, client_secret: str,
         if i < len(targets) and delay:
             time.sleep(delay)
 
-    _log(f"완료 — 성공 {ok} / 실패 {failed} (남은 대상 {max(0, st['ready'] - len(targets))})")
-    return {"ok": ok, "failed": failed, "skipped": 0, "stats": st,
-            "errors": errors, "done": done, "remaining": max(0, st["ready"] - len(targets))}
+    _log(f"완료 — 입력 {ok} / 이미맞음 {same} / 충돌 {len(conflicts)} / 실패 {failed} "
+         f"(남은 대상 {max(0, st['ready'] - len(targets))})")
+    return {"ok": ok, "failed": failed, "skipped": 0, "same": same,
+            "conflicts": conflicts, "stats": st, "errors": errors, "done": done,
+            "remaining": max(0, st["ready"] - len(targets))}
