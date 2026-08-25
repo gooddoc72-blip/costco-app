@@ -274,6 +274,36 @@ def send_notification(settings, msg, username=None):
 
 
 # ── Task 3: 정기 크롤링 ──────────────────────────
+# ── Task: 네이버 판매자 상품코드에 코스트코 번호 입력 ──────────
+def run_seller_code_task(username: str = "admin", limit: int = 50) -> bool:
+    """이미 등록된 네이버 상품의 판매자 상품코드에 코스트코 번호를 소급 입력.
+
+    이게 채워지면 주문 API가 '판매자 상품코드'로 코스트코 번호를 그대로 돌려주므로
+    상품명 유사도 매칭이 필요 없어진다. 신규 등록은 이미 넣고 있다.
+    상품당 GET+PUT 2회 호출이라 limit로 나눠 돌린다(기본 50건).
+    """
+    log("=" * 50)
+    log(f"[Task 12] 판매자 상품코드 입력 시작 (사용자: {username}, 최대 {limit}건)")
+    settings = get_all_settings(username)
+    cid = settings.get("api_client_id") or ""
+    csec = settings.get("api_client_secret") or ""
+    if not (cid and csec):
+        log("❌ 네이버 커머스 API 키 미설정 — 설정 탭에서 등록 필요")
+        return False
+    try:
+        from naver_seller_code import push_seller_codes
+    except ImportError as e:
+        log(f"❌ 모듈 로드 실패: {e}")
+        return False
+
+    res = push_seller_codes(username, cid, csec, limit=limit, progress=lambda m: log(m))
+    for e in (res.get("errors") or [])[:5]:
+        log(f"  ⚠️ {e}")
+    log(f"[Task 12] 완료 — 성공 {res['ok']} / 실패 {res['failed']} / "
+        f"남은 대상 {res.get('remaining', 0)}")
+    return res["failed"] == 0
+
+
 # ── Task: 코스트코 할인정보 수집 ──────────────────────────────
 def run_discount_task(username: str = "admin") -> bool:
     """코스트코 스페셜할인(정상가·할인가·할인액·행사기간)을 공유DB에 반영.
@@ -1717,7 +1747,7 @@ def run_hires_image_task(username="admin"):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="코스트코핫딜 자동화 실행")
     parser.add_argument("--task",
-                        choices=["shopping", "shipping", "crawl", "discount", "rank", "orders",
+                        choices=["shopping", "shipping", "crawl", "discount", "sellercode", "rank", "orders",
                                  "products", "register", "cafe24sync", "cafe24reg", "naverstock",
                                  "hiresimg", "invreturn", "all"],
                         default="all",
@@ -1728,7 +1758,8 @@ if __name__ == "__main__":
     parser.add_argument("--force", action="store_true",
                         help="opt-in 게이트 무시(수동 실행용: naverstock, cafe24reg)")
     parser.add_argument("--limit", type=int, default=None,
-                        help="cafe24reg: 이번 실행에서 처리할 건수(회당 설정값 대신)")
+                        help="cafe24reg: 이번 실행에서 처리할 건수(회당 설정값 대신) / "
+                             "sellercode: 한 번에 처리할 최대 상품 수(미지정 시 50)")
     parser.add_argument("--target", default=None,
                         help="cafe24reg: 처리할 대상 계정(설정값 대신)")
     args = parser.parse_args()
@@ -1743,6 +1774,8 @@ if __name__ == "__main__":
         run_crawl_task(args.user)
     elif args.task == "discount":
         run_discount_task(args.user)
+    elif args.task == "sellercode":
+        run_seller_code_task(args.user, limit=args.limit or 50)
     elif args.task == "rank":
         run_rank_check_task(args.user)
     elif args.task == "orders":

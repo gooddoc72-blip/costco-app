@@ -553,6 +553,10 @@ def _ensure_products_columns(conn):
         #   N = 코스트코 물건 N개를 묶어 보냄 → N배
         # services.resolve_pack_factor()가 유일한 해석 지점.
         "ALTER TABLE products ADD COLUMN pack_multiplier INTEGER DEFAULT 0",
+        # 판매자 상품코드 동기화 기록 — 네이버에 밀어넣은 코스트코 번호와 시각.
+        #   같은 번호를 다시 밀지 않기 위한 멱등 키. 값이 바뀌면 다시 밀어야 한다.
+        "ALTER TABLE products ADD COLUMN seller_code_synced TEXT DEFAULT ''",
+        "ALTER TABLE products ADD COLUMN seller_code_synced_at TEXT DEFAULT ''",
     ]:
         try:
             conn.execute(col_sql)
