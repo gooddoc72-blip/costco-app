@@ -448,58 +448,47 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
 
         st.divider()
 
-    # ── Task 4: 키워드 순위 체크 (일 1회) ──
+    # ── Task 4: 키워드 순위 체크 (메인에서 전 계정 일괄 수집) ──
     st.subheader("📈 Task 4 — 키워드 순위 자동 체크")
-    st.caption("매일 지정 시간에 네이버 쇼핑 검색 결과에서 우리 상품 순위를 자동으로 기록합니다.")
+    st.caption("메인 서버가 매일 정해진 시간에 전 계정의 추적 키워드를 모아 한 번씩만 수집하고, "
+               "계정별 상품에 매칭해 순위를 기록합니다.")
+    st.info("ℹ️ 네이버가 쇼핑 검색 API를 폐지해 **로그인 세션으로 검색 페이지를 직접 읽는 방식**으로 "
+            "바뀌었습니다. 계정마다 따로 돌리면 같은 IP에 요청이 몰려 차단되므로, "
+            "**메인에서 순차로 한 번만** 수집합니다. 아래 체크박스는 이 일괄 수집에 "
+            "**내 키워드를 포함할지** 여부입니다.")
 
-    task4_en = _gs('auto_rank_enabled') == '1'
-    task4_time_str = _gs('auto_rank_time') or '12:00'
-    t4h, t4m = [int(x) for x in task4_time_str.split(':')]
-
-    c1, c2 = st.columns([1, 2])
-    new_t4_en = c1.checkbox("활성화", value=task4_en, key="t4_en")
-    new_t4_time = c2.time_input("실행 시간", value=dtime(t4h, t4m), key="t4_time")
-
-    _t4_c1, _t4_c2, _t4_c3 = st.columns(3)
-    if _t4_c1.button("💾 Task 4 저장 & 등록", key="save_t4", type="primary", use_container_width=True):
-        t4_str = new_t4_time.strftime("%H:%M")
+    task4_en = _gs('auto_rank_enabled', '1') != '0'
+    new_t4_en = st.checkbox("내 키워드를 매일 순위 체크에 포함", value=task4_en, key="t4_en")
+    if st.button("💾 저장", key="save_t4", type="primary"):
         set_setting(USERNAME, 'auto_rank_enabled', '1' if new_t4_en else '0')
-        set_setting(USERNAME, 'auto_rank_time', t4_str)
-        if new_t4_en:
-            _cmd4 = f'"{PYTHON_PATH}" "{SCRIPT_PATH}" --task rank --user {USERNAME}'
-            ok, out = _schtasks_run(["/create", "/tn", TASK4_NAME, "/tr", _cmd4,
-                                     "/sc", "daily", "/st", t4_str, "/f"])
-            if ok:
-                st.success(f"✅ Task 4 등록 완료 — 매일 {t4_str} 순위 체크")
-            else:
-                st.error(f"❌ 등록 실패 (관리자 권한으로 실행 필요)\n{out}")
-        else:
-            _delete_task(TASK4_NAME)
-            st.info("Task 4 비활성화 — 스케줄 삭제됨")
+        _delete_task(TASK4_NAME)          # 계정별 개별 스케줄은 더 이상 쓰지 않음
+        st.success("✅ 저장됨 — 매일 메인 수집에 " + ("포함됩니다" if new_t4_en else "제외됩니다"))
         st.rerun()
 
-    if _t4_c2.button("🗑 Task 4 삭제", key="del_t4", use_container_width=True):
-        ok, out = _delete_task(TASK4_NAME)
-        set_setting(USERNAME, 'auto_rank_enabled', '0')
-        st.success("삭제됨") if ok else st.error(f"삭제 실패: {out}")
-        st.rerun()
-
-    if _t4_c3.button("▶ 지금 순위 체크", key="run_t4", use_container_width=True):
-        open_cid  = _gs('naver_open_client_id')
-        open_csec = _gs('naver_open_client_secret')
-        if not open_cid or not open_csec:
-            st.warning("설정 탭에서 네이버 Open API 키를 먼저 등록해주세요.")
-        else:
-            with st.spinner("순위 체크 중..."):
+    if IS_ADMIN:
+        st.markdown("**관리자 — 전 계정 일괄 수집**")
+        _t4_c1, _t4_c2 = st.columns(2)
+        _rank_all_time = _gs('auto_rank_all_time') or '03:00'
+        _t4h, _t4m = [int(x) for x in _rank_all_time.split(':')]
+        _new_all_time = _t4_c1.time_input("일괄 수집 시간", value=dtime(_t4h, _t4m), key="t4_all_time")
+        if _t4_c1.button("💾 시간 저장 & 등록", key="save_t4_all", use_container_width=True):
+            _ts = _new_all_time.strftime("%H:%M")
+            set_setting(USERNAME, 'auto_rank_all_time', _ts)
+            _cmd4 = f'"{PYTHON_PATH}" "{SCRIPT_PATH}" --task rank_all'
+            ok, out = _schtasks_run(["/create", "/tn", "CostcoRankAll", "/tr", _cmd4,
+                                     "/sc", "daily", "/st", _ts, "/f"])
+            st.success(f"✅ 등록 완료 — 매일 {_ts} 전 계정 순위 체크") if ok else \
+                st.error(f"❌ 등록 실패\n{out}")
+            st.rerun()
+        if _t4_c2.button("▶ 지금 전 계정 순위 체크", key="run_t4", use_container_width=True):
+            with st.spinner("전 계정 순위 체크 중... (키워드 수에 따라 오래 걸립니다)"):
                 r = subprocess.run(
-                    [PYTHON_PATH, SCRIPT_PATH, "--task", "rank", "--user", USERNAME],
-                    capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300
+                    [PYTHON_PATH, SCRIPT_PATH, "--task", "rank_all"],
+                    capture_output=True, text=True, encoding="utf-8", errors="replace",
+                    timeout=10800
                 )
             output = (r.stdout + r.stderr).strip()
-            if r.returncode == 0:
-                st.success("✅ 순위 체크 완료")
-            else:
-                st.error("❌ 오류 발생")
+            st.success("✅ 순위 체크 완료") if r.returncode == 0 else st.error("❌ 오류 발생")
             st.code(output, language=None)
 
     st.divider()

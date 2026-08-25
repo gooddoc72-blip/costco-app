@@ -227,37 +227,29 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     open_cid  = _gs('naver_open_client_id')
     open_csec = _gs('naver_open_client_secret')
 
-    if not open_cid or not open_csec:
-        st.warning("⚙️ 설정 탭 > 네이버 Open API에서 키워드 순위 체크용 API 키를 먼저 등록해주세요.")
-        with st.expander("📋 발급 방법"):
+    # 순위 수집 경로: 네이버가 쇼핑 검색 API를 폐지해 로그인 세션 크롤링으로 전환됨
+    import naver_shop_crawler as _nsc
+    _sess_ok, _sess_msg = _nsc.session_status()
+    _proxy_now = get_global_setting('naver_crawl_proxy') or ''
+    if not _sess_ok:
+        st.warning(f"⚙️ 네이버 로그인 세션이 필요합니다 — {_sess_msg}")
+        with st.expander("📋 세션 만드는 방법"):
             st.markdown("""
-    1. [developers.naver.com](https://developers.naver.com) → 로그인
-    2. **Application** → **애플리케이션 등록**
-    3. 사용 API에서 **검색 > 쇼핑** 체크
-    4. Client ID / Client Secret 복사 → 설정 탭에 입력
-    > ⚠️ 네이버 커머스 API 키와 **별개**입니다. 새로 발급 필요.
+    1. 로컬 PC에서 `naver_session_setup.py` 실행
+    2. 열리는 크롬 창에서 네이버 로그인 (판매자 본계정 대신 **별도 계정** 권장)
+    3. 생성된 `data/naver_session.json` 을 서버 `/opt/costco-app/data/` 에 업로드
+    > 네이버가 2026년부터 쇼핑 검색 API를 폐지하고 비로그인 접근도 막아, 순위 체크는 로그인 세션으로만 가능합니다.
     """)
     else:
-        # API 키 정보 + 테스트 버튼
         _t1, _t2 = st.columns([3, 1])
-        _t1.caption(f"🔑 Open API: ID `{open_cid[:8]}...` / Secret 길이 {len(open_csec)}자")
-        if _t2.button("🧪 API 키 테스트", key="rk_test_api"):
-            import requests as _rq
-            try:
-                _r = _rq.get(
-                    "https://openapi.naver.com/v1/search/shop.json",
-                    headers={"X-Naver-Client-Id": open_cid, "X-Naver-Client-Secret": open_csec},
-                    params={"query": "테스트", "display": 1},
-                    timeout=10
-                )
-                if _r.status_code == 200:
-                    _items = _r.json().get('items', [])
-                    st.success(f"✅ API 키 정상 (테스트 검색 결과 {len(_items)}건)")
-                else:
-                    _msg = _r.json().get('errorMessage', _r.text[:200]) if _r.text else ''
-                    st.error(f"❌ API 오류 [{_r.status_code}]: {_msg}")
-            except Exception as e:
-                st.error(f"❌ 호출 실패: {e}")
+        _t1.caption(f"🔐 로그인 세션: {_sess_msg} / 프록시: {'사용 중' if _proxy_now else '미사용'}")
+        if _t2.button("🧪 수집 테스트", key="rk_test_api"):
+            with st.spinner("네이버 쇼핑 검색 수집 테스트 중..."):
+                _items, _terr = _nsc.fetch_shop_items("검은콩", max_items=40, proxy=_proxy_now)
+            if _terr:
+                st.error(f"❌ {_terr}")
+            else:
+                st.success(f"✅ 수집 정상 (상위 {len(_items)}건) — 1위: {_items[0]['title'][:40]}")
 
     trackings = get_latest_ranks(USERNAME)
 
@@ -371,6 +363,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     our_product_name=_rt['product_keyword'],
                     naver_product_no=_rt.get('naver_product_no', ''),
                     store_name=_rt.get('store_name', ''),
+                    proxy=(get_global_setting('naver_crawl_proxy') or ''),
                 )
                 save_rank_result(USERNAME, _rt['id'], _r_wonbu, _r_solo, _r_compare)
                 if _rerr:

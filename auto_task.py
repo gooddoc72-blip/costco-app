@@ -945,11 +945,16 @@ def run_rank_check_task(username="admin"):
         log(f"❌ '{username}' 사용자 DB 없음")
         return False
 
+    # 순위 수집은 로그인 세션 크롤링으로 전환됨(쇼핑 검색 API 폐지). Open API 키는 미사용.
     open_cid  = settings.get('naver_open_client_id', '')
     open_csec = settings.get('naver_open_client_secret', '')
-    if not open_cid or not open_csec:
-        log("⚠️ 네이버 Open API 키 미설정 — 앱 설정 탭에서 등록 필요")
+    import naver_shop_crawler
+    _sess_ok, _sess_msg = naver_shop_crawler.session_status()
+    if not _sess_ok:
+        log(f"⚠️ 네이버 로그인 세션 문제 — {_sess_msg}")
         return False
+    _proxy = get_global_setting("naver_crawl_proxy") or ""
+    log(f"  세션: {_sess_msg} / 프록시: {'사용' if _proxy else '미사용'}")
 
     db_path = os.path.join(DATA_DIR, f"{username}.db")
     if not os.path.exists(db_path):
@@ -983,6 +988,7 @@ def run_rank_check_task(username="admin"):
             our_product_name=prod_kw,
             naver_product_no=naver_pno,
             store_name=store_nm,
+            proxy=_proxy,
         )
         if err:
             log(f"  '{kw}': 오류 — {err}")
@@ -1015,6 +1021,140 @@ def run_rank_check_task(username="admin"):
 
     log(f"[Task 4] 완료 ({len(results)}건 처리)")
     return True
+
+
+# ── Task 4-ALL: 전 계정 키워드를 메인에서 한 번에 수집·매칭 ──
+def run_rank_check_all():
+    """모든 계정의 활성 추적 키워드를 모아 키워드당 1회만 크롤링하고,
+    수집 결과를 계정별 상품에 매칭해 각자의 rank_history에 기록한다.
+
+    계정별로 따로 돌리면 브라우저가 동시에 여러 개 뜨고 같은 IP로 요청이 몰려
+    네이버 접속 제한에 걸리기 쉬워, 메인에서 직렬로 한 번만 수집한다.
+    """
+    import glob
+    import time as _time
+
+    log("=" * 50)
+    log("[Task 4-ALL] 전 계정 키워드 순위 체크 시작")
+
+    # 중복 실행 방지 락 (Windows 로컬 설치판에도 동작하도록 파일 기반)
+    lock_path = os.path.join(DATA_DIR, "rank_all.lock")
+    if os.path.exists(lock_path):
+        age_h = (_time.time() - os.path.getmtime(lock_path)) / 3600.0
+        if age_h < 6:
+            log(f"⚠️ 이미 순위 체크가 실행 중 ({age_h*60:.0f}분 경과) → 종료")
+            return False
+        log(f"ℹ️ 오래된 락 파일 무시 ({age_h:.1f}시간 경과)")
+    try:
+        with open(lock_path, "w") as _lf:
+            _lf.write(str(os.getpid()))
+    except Exception:
+        pass
+
+    try:
+        import naver_shop_crawler
+        sess_ok, sess_msg = naver_shop_crawler.session_status()
+        if not sess_ok:
+            log(f"❌ 네이버 로그인 세션 문제 — {sess_msg}")
+            return False
+        proxy = get_global_setting("naver_crawl_proxy") or ""
+        try:
+            depth = int(get_global_setting("naver_crawl_depth") or 400)
+        except (TypeError, ValueError):
+            depth = 400
+        log(f"  세션: {sess_msg} / 프록시: {'사용' if proxy else '미사용'} / 수집깊이: {depth}위")
+
+        # 1) 전 계정 활성 추적 수집 → 키워드별로 묶기
+        by_kw = {}
+        users_n = 0
+        for f in sorted(glob.glob(os.path.join(DATA_DIR, "*.db"))):
+            username = os.path.basename(f)[:-3]
+            if username in ("auth",):
+                continue
+            settings = get_user_settings(username) or {}
+            if str(settings.get("auto_rank_enabled", "1")) == "0":
+                continue
+            try:
+                conn = sqlite3.connect(f)
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute(
+                    "SELECT * FROM keyword_tracking WHERE active=1").fetchall()
+                conn.close()
+            except Exception:
+                continue
+            if not rows:
+                continue
+            users_n += 1
+            for t in rows:
+                kw = (t["search_keyword"] or "").strip()
+                if kw:
+                    by_kw.setdefault(kw, []).append((username, dict(t)))
+
+        if not by_kw:
+            log("ℹ️ 추적 중인 키워드 없음 → 종료")
+            return True
+        total_tr = sum(len(v) for v in by_kw.values())
+        log(f"  대상: {users_n}개 계정 / 추적 {total_tr}건 / 고유 키워드 {len(by_kw)}개")
+
+        # 2) 키워드당 1회 수집 → 계정별 매칭 → 각자 DB에 기록
+        per_user_results = {}
+        done = err_n = 0
+        for kw in sorted(by_kw):
+            items, cerr = naver_shop_crawler.fetch_shop_items(
+                kw, max_items=depth, proxy=proxy)
+            if cerr:
+                err_n += 1
+                log(f"  '{kw}': 수집 실패 — {cerr}")
+                if "일시적으로 제한" in cerr:      # IP 차단이면 더 두드리지 않고 중단
+                    log("  ⛔ IP 제한 감지 → 남은 키워드 중단")
+                    break
+                continue
+            done += 1
+            for username, t in by_kw[kw]:
+                r_wonbu, r_compare, r_solo = naver_api.match_rank_in_items(
+                    items, kw,
+                    our_product_name=t.get("product_keyword") or "",
+                    naver_product_no=t.get("naver_product_no") or "",
+                    store_name=t.get("store_name") or "")
+                now = datetime.now().strftime("%Y-%m-%d %H:%M")
+                dbp = os.path.join(DATA_DIR, f"{username}.db")
+                conn = sqlite3.connect(dbp)
+                try:
+                    conn.execute("ALTER TABLE rank_history ADD COLUMN rank_compare INTEGER")
+                except Exception:
+                    pass
+                conn.execute(
+                    "INSERT INTO rank_history (tracking_id, rank_price_compare, rank_total, "
+                    "rank_compare, checked_at) VALUES (?,?,?,?,?)",
+                    (t["id"], r_wonbu, r_solo, r_compare, now))
+                conn.commit()
+                conn.close()
+
+                wb_s = f"원부 {r_wonbu}위" if r_wonbu else "원부 미발견"
+                cp_s = f"가격비교 {r_compare}위" if r_compare else "가격비교 미발견"
+                sl_s = f"단독 {r_solo}위" if r_solo else "단독 미발견"
+                line = f"  [{t.get('product_keyword')}] '{kw}': {wb_s} / {cp_s} / {sl_s}"
+                log(f"  {username} {line}")
+                per_user_results.setdefault(username, []).append(line)
+
+        # 3) 계정별 알림 발송
+        today = datetime.now().strftime("%m/%d")
+        for username, lines in per_user_results.items():
+            try:
+                send_notification(get_user_settings(username) or {},
+                                  f"📈 키워드 순위 업데이트 ({today})\n" + "\n".join(lines),
+                                  username)
+            except Exception as e:
+                log(f"  {username} 알림 실패: {e}")
+
+        log(f"[Task 4-ALL] 완료 — 키워드 {done}개 수집 / 실패 {err_n}개 / "
+            f"기록 {sum(len(v) for v in per_user_results.values())}건")
+        return True
+    finally:
+        try:
+            os.remove(lock_path)
+        except Exception:
+            pass
 
 
 # ── Task 6: 네이버 등록상품 정기수집 (origin+channel 번호/가격 자동 갱신) ──
@@ -1679,9 +1819,10 @@ def run_hires_image_task(username="admin"):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="코스트코핫딜 자동화 실행")
     parser.add_argument("--task",
-                        choices=["shopping", "shipping", "crawl", "rank", "orders",
-                                 "products", "register", "cafe24sync", "cafe24reg", "naverstock",
-                                 "hiresimg", "invreturn", "all"],
+                        choices=["shopping", "shipping", "crawl", "rank", "rank_all",
+                                 "orders", "products", "register", "cafe24sync",
+                                 "cafe24reg",
+                                 "naverstock", "hiresimg", "invreturn", "all"],
                         default="all",
                         help="실행할 작업 (기본: all)")
     parser.add_argument("--user",
@@ -1705,6 +1846,8 @@ if __name__ == "__main__":
         run_crawl_task(args.user)
     elif args.task == "rank":
         run_rank_check_task(args.user)
+    elif args.task == "rank_all":
+        run_rank_check_all()
     elif args.task == "orders":
         run_fetch_orders_task(args.user)
     elif args.task == "products":
