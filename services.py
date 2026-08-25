@@ -487,11 +487,20 @@ def match_product_to_db(username, store_product_name, product_no=None,
         # 사용자 DB 항목이 있으면 사용자 split_qty 우선 (소분/묶음 개별 설정 존중)
         # 항목 없으면 공유 DB 값 사용
         _sq = _sq_user if up else _sq_shared
-        # unit_price: 공유DB(코스트코번호→가격)를 "정답"으로 최우선 사용 → 공유 수정이 즉시 반영.
-        #   공유 가격이 없을(0) 때만 사용자 개인단가로 폴백. (기존엔 사용자단가 우선이라 공유 수정이 안 먹혔음)
+        # unit_price(매입원가) 결정 — **매장 실단가만 원가로 인정한다.**
+        #   공유DB 3,359개 중 2,993개가 온라인몰 전용(store_price=0, price_type='온라인')이고,
+        #   그 unit_price는 카톤 단위 가격이다(최대 1,899만원). 이름 매칭으로 이게 잡히면
+        #   매입원가가 통째로 터진다. 원가의 권위는 매장 영수증 실단가에 있다.
+        #   온라인 전용이면 사용자 개인DB 단가(자기 영수증에서 온 값)로만 폴백한다.
         _up_unit_price = int(up.get('unit_price', 0) or 0) if up else 0
+        _sp_store_price = int(sp.get('store_price', 0) or 0)
         _sp_unit_price = int(sp.get('unit_price', 0) or 0)
-        _final_unit_price = _sp_unit_price if _sp_unit_price > 0 else _up_unit_price
+        _sp_online_only = (_sp_store_price <= 0
+                           and str(sp.get('price_type') or '') == '온라인')
+        if _sp_online_only:
+            _final_unit_price = _up_unit_price
+        else:
+            _final_unit_price = _sp_unit_price if _sp_unit_price > 0 else _up_unit_price
         return {
             **sp,
             'unit_price':       _final_unit_price,
