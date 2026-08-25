@@ -411,10 +411,10 @@ def _render_photo_receipt(USERNAME: str, settings: dict, compact: bool = False,
                                 for it in _items if it.get('단가')]
                             # 사진 영수증도 수익계산이 쓸 수 있게 DB에 남긴다
                             _persist_receipt_items(USERNAME, st.session_state['receipt_items'])
-                            # 🌐 관리자 영수증 = 실단가 최종권위 → 공유DB 매입가에 반영.
+                            # 🌐 사진 영수증도 공유DB에 반영 (상품명·번호·매입가).
                             #    이게 있어야 각 사용자의 '구매금액 정산'과 수익계산 구입가가
-                            #    영수증 실단가로 잡힌다. (예전엔 PDF 경로에만 있었다)
-                            if is_admin:
+                            #    영수증 실단가로 잡힌다.
+                            if True:
                                 _sh_ok, _sh_skip = 0, 0
                                 for _sit in _items:
                                     _spno = str(_sit.get('상품번호', '') or '').strip()
@@ -431,13 +431,13 @@ def _render_photo_receipt(USERNAME: str, settings: dict, compact: bool = False,
                                             keyword=_sit.get('상품명', ''),
                                             price=_spr, product_no=_spno,
                                             updated_by=USERNAME, receipt_date=_date,
-                                            force_store=True)
+                                            force_store=is_admin)
                                         _sh_ok += 1
                                     except Exception:
                                         _sh_skip += 1
                                 if _sh_ok:
-                                    st.info(f"🌐 공유DB 매입가 {_sh_ok}건 반영 — 각 사용자 구매금액 정산·"
-                                            f"수익계산에 이 실단가가 적용됩니다."
+                                    st.info(f"🌐 공유DB 저장 {_sh_ok}건 — 상품명·코스트코 상품번호·매입가."
+                                            f" 각 사용자 구매금액 정산·수익계산에 반영됩니다."
                                             + (f" (상품번호 없어 제외 {_sh_skip}건)" if _sh_skip else ""))
                         _cache[_sig] = {'_done': True, '_name': _d.get('_name', '')}
                         st.success(f"✅ {'저장' if _new else '갱신'} 완료 — {_date} {_stype} "
@@ -593,9 +593,12 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict, embedded: bool = False
             #    영수증이 사라지고 수익계산의 영수증 매칭이 통째로 안 됐다.
             _persist_receipt_items(USERNAME, st.session_state['receipt_items'])
 
-            # 🌐 관리자 업로드 → 영수증 가격을 공유DB에 자동 저장 (모든 사용자 수익계산에 반영).
+            # 🌐 영수증 → 공유DB 자동 저장 (상품명·코스트코 상품번호·매입가).
             #    코스트코 상품번호 있는 항목만. 소분(번호 없음)은 각자 DB로 매칭되므로 제외.
-            if IS_ADMIN:
+            #    관리자는 force_store=True로 항상 실단가를 덮어쓰고, 일반 사용자는
+            #    _upsert_shared_internal의 receipt_date 가드에 걸려
+            #    "신규 등록 + 더 최신 영수증일 때만 가격 갱신"으로 동작한다.
+            if True:
                 _rc_sig = "|".join(f"{p.get('상품번호','')}:{p.get('단가',0)}" for p in deduped)
                 if st.session_state.get('_rcpt_shared_saved_sig') != _rc_sig:
                     _saved_n = 0
@@ -622,8 +625,10 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict, embedded: bool = False
                             invalidate_data_cache()
                         except Exception:
                             pass
-                        st.success(f"🌐 관리자 업로드 → {_saved_n}종 공유DB 자동 저장 "
-                                   "(모든 사용자 수익계산에 반영됩니다)")
+                        st.success(
+                            f"🌐 공유DB 저장 {_saved_n}종 — 상품명·코스트코 상품번호·매입가"
+                            + (" (관리자: 실단가로 덮어씀)" if IS_ADMIN
+                               else " (신규 등록 + 더 최신 영수증만 가격 갱신)"))
 
             # 인식된 영수증 날짜 표시
             _dates = sorted({p.get('receipt_date', '') for p in deduped if p.get('receipt_date')})

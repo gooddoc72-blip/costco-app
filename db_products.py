@@ -19,23 +19,24 @@ def get_shared_products():
 
 
 def _upsert_shared_internal(costco_name, keyword, store_price=None, online_price=None,
-                            product_no='', split_qty=1, updated_by='', image_url='',
+                            product_no=None, split_qty=None, updated_by='', image_url='',
                             receipt_date='', force_store=False):
+    """공유상품 upsert.
+
+    split_qty=None / product_no=None 은 '건드리지 말 것' 의미다.
+    영수증 경로는 소분수를 모르는데, 예전엔 기본값 1을 그대로 UPDATE에 실어서
+    영수증을 올릴 때마다 관리자가 설정해 둔 소분수가 1로 리셋됐다.
+    """
     conn = get_auth_db()
     conn.row_factory = sqlite3.Row
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
-    split_qty = max(1, int(split_qty or 1))
+    _COLS = ("SELECT id, store_price, online_price, store_updated_at, online_updated_at, "
+             "price_type, unit_price, split_qty, product_no FROM shared_products ")
     existing = None
     if product_no:
-        existing = conn.execute(
-            "SELECT id, store_price, online_price, store_updated_at, online_updated_at, price_type, unit_price "
-            "FROM shared_products WHERE product_no=?", (product_no,)
-        ).fetchone()
+        existing = conn.execute(_COLS + "WHERE product_no=?", (product_no,)).fetchone()
     if not existing:
-        existing = conn.execute(
-            "SELECT id, store_price, online_price, store_updated_at, online_updated_at, price_type, unit_price "
-            "FROM shared_products WHERE match_keyword=?", (keyword,)
-        ).fetchone()
+        existing = conn.execute(_COLS + "WHERE match_keyword=?", (keyword,)).fetchone()
 
     if existing:
         cur_store  = existing['store_price'] or 0
@@ -70,6 +71,9 @@ def _upsert_shared_internal(costco_name, keyword, store_price=None, online_price
                 new_unit, new_pt = new_online, '온라인'
         else:
             new_unit, new_pt = existing['unit_price'] or 0, existing['price_type'] or '매장'
+        # None으로 들어온 필드는 기존값 유지 (영수증 경로가 소분수를 지우지 않도록)
+        keep_sq = int(existing['split_qty'] or 1) if split_qty is None else max(1, int(split_qty))
+        keep_pno = (existing['product_no'] or '') if product_no is None else product_no
         conn.execute("""UPDATE shared_products
                         SET costco_name=?, product_no=?, split_qty=?,
                             updated_by=?, updated_at=?, image_url=?,
@@ -77,10 +81,13 @@ def _upsert_shared_internal(costco_name, keyword, store_price=None, online_price
                             store_updated_at=?, online_updated_at=?,
                             unit_price=?, price_type=?
                         WHERE id=?""",
-                     (costco_name, product_no, split_qty, updated_by, now, image_url,
+                     (costco_name, keep_pno, keep_sq, updated_by, now, image_url,
                       new_store, new_online, st_at, on_at,
                       new_unit, new_pt, existing['id']))
     else:
+        # 신규 등록 — None(=미지정)은 기본값으로 떨어뜨린다
+        product_no = '' if product_no is None else product_no
+        split_qty = 1 if split_qty is None else max(1, int(split_qty))
         st  = int(store_price)  if store_price  is not None else 0
         on  = int(online_price) if online_price is not None else 0
         st_at = now if store_price  is not None else ''
@@ -103,7 +110,7 @@ def _upsert_shared_internal(costco_name, keyword, store_price=None, online_price
     conn.close()
 
 
-def upsert_shared_store_price(costco_name, keyword, price, product_no='', split_qty=1,
+def upsert_shared_store_price(costco_name, keyword, price, product_no='', split_qty=None,
                                updated_by='', image_url='', receipt_date='', force_store=False):
     _upsert_shared_internal(costco_name, keyword,
                             store_price=price, online_price=None,
@@ -112,7 +119,7 @@ def upsert_shared_store_price(costco_name, keyword, price, product_no='', split_
                             receipt_date=receipt_date, force_store=force_store)
 
 
-def upsert_shared_online_price(costco_name, keyword, price, product_no='', split_qty=1,
+def upsert_shared_online_price(costco_name, keyword, price, product_no='', split_qty=None,
                                 updated_by='', image_url=''):
     _upsert_shared_internal(costco_name, keyword,
                             store_price=None, online_price=price,
