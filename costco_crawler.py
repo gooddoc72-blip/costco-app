@@ -859,6 +859,92 @@ def download_product_image(product_no: str, image_url: str) -> str:
         return local_path if os.path.exists(local_path) else ""
 
 
+# ─── 할인정보 수집 (OCC API) ─────────────────────────────────────
+#  SpecialPriceOffers 카테고리 응답에 정상가·할인가·할인액·행사기간이
+#  코스트코 상품번호와 함께 들어있다. 브라우저 없이 REST만으로 받는다.
+DISCOUNT_QUERY = ":relevance:allCategories:SpecialPriceOffers"
+
+
+def fetch_costco_discounts(page_size: int = 100, max_pages: int = 20,
+                           delay: float = 1.0, log=None) -> tuple[list, str]:
+    """코스트코 스페셜할인 전량 수집.
+
+    반환: (items, error)
+      items: [{상품번호, 상품명, 정상가, 할인가, 할인액, 시작일, 종료일, 구매제한}]
+    """
+    import json as _json
+    import urllib.request
+    import urllib.parse
+    from datetime import timezone, timedelta
+
+    _KST = timezone(timedelta(hours=9))
+
+    def _kst_date(v: str) -> str:
+        """API의 UTC ISO 시각 → KST 날짜(YYYY-MM-DD).
+
+        ⚠️ 그냥 앞 10글자를 자르면 안 된다. 할인은 KST 월요일 00:00에 시작하는데
+           API는 이를 '...T15:00:00.000Z'(전날 UTC)로 준다 → 시작일이 하루 앞당겨진다.
+        """
+        v = str(v or '')
+        if not v:
+            return ''
+        try:
+            dt = datetime.strptime(v, "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=timezone.utc)
+            return dt.astimezone(_KST).strftime("%Y-%m-%d")
+        except Exception:
+            return v[:10]
+
+    def _log(m):
+        if log:
+            log(m)
+
+    headers = {
+        "Accept": "application/json",
+        "Accept-Language": "ko-KR,ko;q=0.9",
+        "Referer": f"{COSTCO_BASE}/",
+        "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                       "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"),
+    }
+
+    out, page = [], 0
+    while page < max_pages:
+        qs = urllib.parse.urlencode({
+            "query": DISCOUNT_QUERY, "pageSize": int(page_size),
+            "currentPage": page, "fields": "FULL", "lang": "ko", "curr": "KRW",
+        })
+        try:
+            req = urllib.request.Request(f"{COSTCO_OCC_URL}?{qs}", headers=headers)
+            with urllib.request.urlopen(req, timeout=40) as resp:
+                data = _json.load(resp)
+        except Exception as e:
+            return out, f"할인정보 조회 실패(page {page + 1}): {e}"
+
+        products = data.get("products") or []
+        pg = data.get("pagination") or {}
+        for p in products:
+            pno = str(p.get("code") or "").strip()
+            name = (p.get("name") or "").strip()
+            if not pno or not name:
+                continue
+            out.append({
+                "상품번호": pno,
+                "상품명": name,
+                "정상가": int((p.get("basePrice") or {}).get("intValue") or 0),
+                "할인가": int((p.get("price") or {}).get("intValue") or 0),
+                "할인액": int((p.get("discountPrice") or {}).get("intValue") or 0),
+                "시작일": _kst_date(p.get("discountStartDate")),
+                "종료일": _kst_date(p.get("discountEndDate")),
+                "구매제한": p.get("maxOrderQuantity"),
+            })
+        total_pages = int(pg.get("totalPages") or 1)
+        _log(f"  할인 수집 {page + 1}/{total_pages} — 누적 {len(out)}건")
+        page += 1
+        if page >= total_pages:
+            break
+        time.sleep(delay)      # 연속 호출 간격 — 차단 회피
+    return out, ""
+
+
 # ─── DB 저장 ─────────────────────────────────────────────────────
 def save_to_shared_products(
     products: list[dict],

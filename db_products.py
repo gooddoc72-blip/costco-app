@@ -142,6 +142,132 @@ def upsert_shared_product(costco_name, keyword, price, product_no='', split_qty=
                                 updated_by=updated_by, image_url=image_url)
 
 
+# ── 코스트코 할인정보 (공유DB에 함께 적재) ──────────────────
+#  OCC API(/rest/v2/korea/products/search)의 SpecialPriceOffers 응답에는
+#  정상가·할인가·할인액·행사기간이 다 들어있고 코스트코 상품번호가 붙어 있다.
+#  ⚠️ 할인가를 unit_price(매입원가)에 덮지 않는다.
+#     온라인몰 기준이고 기간 한정이라, 덮으면 과거 수익계산의 구입가격이 요동친다.
+#     (크롤러가 온라인가로 원가를 덮어써서 이미 한 번 겪은 문제)
+#     원가는 매장 영수증 실단가가 계속 권위를 갖는다.
+
+_DISCOUNT_COLS = [
+    "ALTER TABLE shared_products ADD COLUMN base_price INTEGER DEFAULT 0",
+    "ALTER TABLE shared_products ADD COLUMN discount_price INTEGER DEFAULT 0",
+    "ALTER TABLE shared_products ADD COLUMN discount_start TEXT DEFAULT ''",
+    "ALTER TABLE shared_products ADD COLUMN discount_end TEXT DEFAULT ''",
+    "ALTER TABLE shared_products ADD COLUMN discount_updated_at TEXT DEFAULT ''",
+]
+
+
+def _ensure_discount_cols(conn):
+    for sql in _DISCOUNT_COLS:
+        try:
+            conn.execute(sql)
+        except Exception:
+            pass          # 이미 있으면 무시
+
+
+def save_costco_discounts(items, updated_by='discount'):
+    """코스트코 할인정보를 공유DB에 반영.
+
+    items: [{상품번호, 상품명, 정상가, 할인가, 할인액, 시작일, 종료일}, ...]
+    · 기존 상품 → 할인 컬럼만 갱신 (이름/원가/소분 그대로)
+    · 신규 상품 → 상품번호·상품명 + 온라인가로 등록 (카탈로그 확충)
+      매입원가(store_price)는 건드리지 않는다 — 영수증이 채운다.
+    · 이름은 같은데 번호가 비어있던 기존 상품 → 코스트코 번호를 채운다(pno_filled)
+    반환: {'updated': n, 'inserted': n, 'skipped': n, 'pno_filled': n}
+    """
+    if not items:
+        return {'updated': 0, 'inserted': 0, 'skipped': 0, 'pno_filled': 0}
+    conn = get_auth_db()
+    conn.row_factory = sqlite3.Row
+    _ensure_discount_cols(conn)
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    up = ins = skip = filled = 0
+    for it in items:
+        pno = str(it.get('상품번호') or '').strip()
+        name = str(it.get('상품명') or '').strip()
+        if not pno or not name:
+            skip += 1
+            continue
+        try:
+            base = int(it.get('정상가') or 0)
+            sale = int(it.get('할인가') or 0)
+            disc = int(it.get('할인액') or 0)
+        except (TypeError, ValueError):
+            skip += 1
+            continue
+        row = conn.execute(
+            "SELECT id, product_no FROM shared_products WHERE product_no=?", (pno,)
+        ).fetchone()
+        keyword = name
+        if not row:
+            # 번호로 못 찾으면 이름으로 — match_keyword에 UNIQUE 제약이 있어 반드시 확인해야 한다.
+            byname = conn.execute(
+                "SELECT id, product_no FROM shared_products WHERE match_keyword=?", (name,)
+            ).fetchone()
+            if byname is not None:
+                if not str(byname['product_no'] or '').strip():
+                    # 번호가 비어있던 기존 상품 → 이번 기회에 코스트코 번호를 채운다
+                    conn.execute("UPDATE shared_products SET product_no=? WHERE id=?",
+                                 (pno, byname['id']))
+                    row = byname
+                    filled += 1
+                elif str(byname['product_no']).strip() == pno:
+                    row = byname
+                else:
+                    # 이름은 같은데 다른 상품 → 기존 행을 가로채지 않고 키워드를 구분해 신규 등록
+                    keyword = f"{name} [{pno}]"
+        if row:
+            # 할인 컬럼만 — costco_name/unit_price/split_qty는 절대 건드리지 않는다
+            conn.execute(
+                """UPDATE shared_products
+                   SET base_price=?, discount_price=?, discount_start=?,
+                       discount_end=?, discount_updated_at=?
+                   WHERE id=?""",
+                (base, disc, it.get('시작일', '') or '', it.get('종료일', '') or '',
+                 now, row['id'])
+            )
+            up += 1
+        else:
+            # 신규 — 온라인가로만 등록. 매장 실단가는 영수증이 채우도록 0으로 둔다.
+            conn.execute(
+                """INSERT INTO shared_products
+                   (product_no, costco_name, match_keyword, unit_price, split_qty,
+                    updated_by, updated_at, price_type, image_url,
+                    store_price, online_price, store_updated_at, online_updated_at,
+                    base_price, discount_price, discount_start, discount_end,
+                    discount_updated_at)
+                   VALUES (?,?,?,?,1,?,?,'온라인','',0,?,'',?,?,?,?,?,?)""",
+                (pno, name, keyword, sale, updated_by, now, sale, now,
+                 base, disc, it.get('시작일', '') or '', it.get('종료일', '') or '', now)
+            )
+            ins += 1
+    conn.commit()
+    conn.close()
+    return {'updated': up, 'inserted': ins, 'skipped': skip,
+            'pno_filled': filled}
+
+
+def get_active_costco_discounts(on_date=None):
+    """진행 중인 할인 목록. on_date(YYYY-MM-DD) 기준, 미지정 시 오늘."""
+    conn = get_auth_db()
+    conn.row_factory = sqlite3.Row
+    _ensure_discount_cols(conn)
+    d = on_date or datetime.now().strftime("%Y-%m-%d")
+    rows = conn.execute(
+        """SELECT product_no, costco_name, base_price, discount_price,
+                  unit_price, discount_start, discount_end
+           FROM shared_products
+           WHERE COALESCE(discount_price,0) > 0
+             AND (discount_start = '' OR discount_start <= ?)
+             AND (discount_end   = '' OR discount_end   >= ?)
+           ORDER BY discount_price DESC""", (d, d)
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
 def delete_shared_product(shared_id):
     conn = get_auth_db()
     conn.execute("DELETE FROM shared_products WHERE id=?", (shared_id,))

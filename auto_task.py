@@ -274,6 +274,39 @@ def send_notification(settings, msg, username=None):
 
 
 # ── Task 3: 정기 크롤링 ──────────────────────────
+# ── Task: 코스트코 할인정보 수집 ──────────────────────────────
+def run_discount_task(username: str = "admin") -> bool:
+    """코스트코 스페셜할인(정상가·할인가·할인액·행사기간)을 공유DB에 반영.
+
+    브라우저 없이 OCC REST API만 쓴다 — 로그인·크롬 불필요라 메모리 부담이 거의 없다.
+    할인가를 매입원가(unit_price)에 덮지 않는다: 온라인몰 기준이고 기간 한정이라
+    덮으면 과거 수익계산의 구입가격이 흔들린다. 원가는 영수증 실단가가 권위를 갖는다.
+    """
+    log("=" * 50)
+    log(f"[Task 11] 코스트코 할인정보 수집 시작 (실행 계정: {username})")
+    try:
+        import costco_crawler
+        from db_products import save_costco_discounts
+    except ImportError as e:
+        log(f"❌ 모듈 로드 실패: {e}")
+        return False
+
+    items, err = costco_crawler.fetch_costco_discounts(log=lambda m: log(m))
+    if err:
+        log(f"❌ 수집 실패: {err}")
+        return False
+    if not items:
+        log("ℹ️ 할인 상품 없음 → 종료")
+        return True
+
+    res = save_costco_discounts(items)
+    log(f"💾 공유DB 반영 — 갱신 {res['updated']} / 신규 {res['inserted']} / "
+        f"번호채움 {res['pno_filled']} / 건너뜀 {res['skipped']}")
+    _disc = sum(1 for i in items if int(i.get('할인액') or 0) > 0)
+    log(f"[Task 11] 완료 — 할인 {_disc}건 수집 (총 {len(items)}종)")
+    return True
+
+
 def run_crawl_task(username="admin"):
     log("=" * 50)
     log(f"[Task 3] 정기 크롤링 시작 (사용자: {username})")
@@ -1684,7 +1717,7 @@ def run_hires_image_task(username="admin"):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="코스트코핫딜 자동화 실행")
     parser.add_argument("--task",
-                        choices=["shopping", "shipping", "crawl", "rank", "orders",
+                        choices=["shopping", "shipping", "crawl", "discount", "rank", "orders",
                                  "products", "register", "cafe24sync", "cafe24reg", "naverstock",
                                  "hiresimg", "invreturn", "all"],
                         default="all",
@@ -1708,6 +1741,8 @@ if __name__ == "__main__":
         run_shipping_task(args.user)
     elif args.task == "crawl":
         run_crawl_task(args.user)
+    elif args.task == "discount":
+        run_discount_task(args.user)
     elif args.task == "rank":
         run_rank_check_task(args.user)
     elif args.task == "orders":
