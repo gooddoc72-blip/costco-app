@@ -42,6 +42,39 @@ def get_shared_naver_map() -> dict:
 def invalidate_shared_naver_map():
     _SHARED_NAVER_MAP['v'] = None
 
+
+# ── 코스트코 상품번호 검증 ────────────────────────────────
+#  코스트코 번호는 4~7자리(공유DB 1,968개 중 99.9%가 6~7자리).
+#  네이버 상품번호는 10~11자리라 자릿수만으로 확실히 구분된다.
+#  틀린 번호가 들어가는 것은 빈칸보다 나쁘다 — 관리자가 '번호 있네' 하고
+#  넘어가는데 영수증과는 끝내 안 맞기 때문. 애매하면 빈 문자열을 돌려준다.
+COSTCO_PNO_MIN_LEN = 4
+COSTCO_PNO_MAX_LEN = 7
+
+
+def is_costco_pno(value) -> bool:
+    """4~7자리 숫자면 코스트코 상품번호로 인정."""
+    v = str(value or '').strip()
+    return v.isdigit() and COSTCO_PNO_MIN_LEN <= len(v) <= COSTCO_PNO_MAX_LEN
+
+
+def costco_pno_of(matched_product, fallback=None) -> str:
+    """매칭된 제품 레코드에서 '진짜' 코스트코 상품번호만 뽑는다.
+
+    match_product_to_db()가 돌려주는 dict의 product_no는
+      · 공유DB 매칭이면 코스트코 번호(정상)
+      · 개인DB 폴백/소분 경로면 비었거나 네이버 ID가 들어있을 수 있다(오염)
+    이므로 반드시 이 함수를 통해 꺼내 쓴다. 검증 실패 시 ''.
+    """
+    for cand in (
+        (matched_product or {}).get('product_no') if isinstance(matched_product, dict) else None,
+        (matched_product or {}).get('costco_no_display') if isinstance(matched_product, dict) else None,
+        fallback,
+    ):
+        if is_costco_pno(cand):
+            return str(cand).strip()
+    return ''
+
 def _index_products(products: list) -> dict:
     if not products:
         return {'by_pno': {}, 'by_kw': {}, 'has_pno': [], 'by_naver_pno': {}, 'by_naver_channel': {}}

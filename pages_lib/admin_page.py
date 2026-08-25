@@ -34,8 +34,10 @@ from db import (
     save_rank_result, get_rank_history, get_latest_ranks,
     get_daily_ranks_in_month, get_yearly_rank_history, delete_trackings_bulk,
     get_rank_drops,
-    submit_shopping_list, get_recent_shopping_submissions, delete_shopping_submission,
+    submit_shopping_list, delete_shopping_submission,
+    get_shopping_submissions_detail, get_shopping_submission_dates,
     normalize_shopping_items,
+    upsert_shared_naver_map, get_shared_naver_costco_map,
     AUTH_DB,
 )
 from services import (
@@ -45,6 +47,7 @@ from services import (
     parse_costco_receipt_pdf, match_receipt_to_orders,
     match_receipt_to_naver_products, apply_receipt_pno_updates,
     decrypt_excel, read_excel_auto,
+    costco_pno_of, is_costco_pno,
     _token_score,
 )
 from utils import (
@@ -570,10 +573,135 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
 
     st.divider()
     st.subheader("🛒 사용자별 장보기 목록")
-    _today_str_adm = datetime.now().strftime("%Y-%m-%d")
-    _all_subs = get_recent_shopping_submissions(limit=200)
-    # 당일(order_date==오늘) 제출건만 노출 — 일자가 바뀌면 전날건은 리스트에서 자동 제외
-    _subs_today = [s for s in _all_subs if s.get('order_date') == _today_str_adm]
+    _today_d = datetime.now().date()
+
+    # ── 조회 기간·사용자 필터 (기본값 = 오늘, 과거 제출건도 상세·엑셀·프린트 가능) ──
+    _RANGE_OPTS = ["오늘", "어제", "최근 7일", "최근 30일", "이번 달", "지난 달", "직접 선택"]
+    _fc = st.columns([1.2, 1.1, 1.1, 1.4])
+    _range_opt = _fc[0].selectbox("기간", _RANGE_OPTS, index=0, key="adm_shop_range")
+
+    if _range_opt == "오늘":
+        _d_from = _d_to = _today_d
+    elif _range_opt == "어제":
+        _d_from = _d_to = _today_d - timedelta(days=1)
+    elif _range_opt == "최근 7일":
+        _d_from, _d_to = _today_d - timedelta(days=6), _today_d
+    elif _range_opt == "최근 30일":
+        _d_from, _d_to = _today_d - timedelta(days=29), _today_d
+    elif _range_opt == "이번 달":
+        _d_from, _d_to = _today_d.replace(day=1), _today_d
+    elif _range_opt == "지난 달":
+        _last_end = _today_d.replace(day=1) - timedelta(days=1)
+        _d_from, _d_to = _last_end.replace(day=1), _last_end
+    else:  # 직접 선택
+        # date_input은 사용자가 값을 비우면 None을 돌려준다 → 오늘로 폴백
+        _d_from = _fc[1].date_input("시작일", value=_today_d, key="adm_shop_from") or _today_d
+        _d_to = _fc[2].date_input("종료일", value=_today_d, key="adm_shop_to") or _today_d
+
+    if _range_opt != "직접 선택":
+        _fc[1].markdown(f"<div style='padding-top:30px;color:#666;font-size:14px'>"
+                        f"{_d_from:%Y-%m-%d} ~ {_d_to:%Y-%m-%d}</div>", unsafe_allow_html=True)
+
+    if _d_from > _d_to:
+        _d_from, _d_to = _d_to, _d_from
+
+    _uname_opts = ["전체"] + sorted({u['username'] for u in users})
+    _sel_user = _fc[3].selectbox("사용자", _uname_opts, index=0, key="adm_shop_user")
+
+    _subs_sel = get_shopping_submissions_detail(
+        _d_from.strftime("%Y-%m-%d"), _d_to.strftime("%Y-%m-%d"),
+        username=(None if _sel_user == "전체" else _sel_user),
+    )
+    _period_label = (f"{_d_from:%Y-%m-%d}" if _d_from == _d_to
+                     else f"{_d_from:%Y-%m-%d} ~ {_d_to:%Y-%m-%d}")
+
+    # ── 코스트코 번호 미확보 항목 지정 (공유 매핑에 적재 → 이후 전 사용자 자동 해석) ──
+    def _render_pno_fixer(_sub, _items):
+        """번호가 비어있는 항목을 공유DB 상품에 연결한다.
+
+        저장처는 shared_naver_map (네이버번호 ↔ 코스트코번호, 전 사용자 공용).
+        한 번 지정하면 같은 네이버번호의 주문은 match_shared_product()가
+        자동으로 코스트코번호·공유가격으로 해석하므로 다시 물어보지 않는다.
+        """
+        _miss = [_i for _i in _items
+                 if not is_costco_pno(_i.get('코스트코상품번호'))
+                 and str(_i.get('네이버상품번호') or '').strip()]
+        _old_fmt = [_i for _i in _items
+                    if not is_costco_pno(_i.get('코스트코상품번호'))
+                    and not str(_i.get('네이버상품번호') or '').strip()]
+        if not _miss:
+            if _old_fmt:
+                st.caption(f"⚠️ 코스트코 번호 없는 항목 {len(_old_fmt)}개 — 네이버 상품번호가 "
+                           "함께 저장되지 않은 예전 제출건이라 여기서 지정할 수 없습니다. "
+                           "사용자가 다시 발송하면 지정 가능해집니다.")
+            else:
+                st.caption("✅ 모든 항목에 코스트코 상품번호가 있습니다.")
+            return
+
+        _shared = cached_shared_products() or []
+        _nmap = get_shared_naver_costco_map() or {}
+
+        with st.expander(f"🔗 코스트코 번호 미확보 {len(_miss)}개 — 공유DB 상품에 연결",
+                         expanded=False):
+            st.caption("연결하면 **모든 사용자**의 같은 네이버 상품번호 주문이 이후 자동으로 "
+                       "코스트코 번호·공유 단가로 해석됩니다. (shared_naver_map에 누적)")
+            for _mi, _it in enumerate(_miss):
+                _nv = str(_it.get('네이버상품번호') or '').strip()
+                _nm = str(_it.get('상품명') or '')
+                _key = f"pnofix_{_sub['id']}_{_mi}"
+
+                if _nv in _nmap:
+                    st.markdown(f"✅ `{_nv}` → **{_nmap[_nv]}** 로 이미 연결됨 — {_nm[:45]}")
+                    continue
+
+                st.markdown(
+                    f"**{_nm[:70]}**"
+                    f"<div style='color:#888;font-size:13px'>네이버번호 {_nv}</div>",
+                    unsafe_allow_html=True)
+                _q = st.text_input("공유DB 검색어", value=_nm[:20],
+                                   key=f"{_key}_q", label_visibility="collapsed",
+                                   placeholder="상품명 일부 또는 코스트코 번호")
+                _qs = (_q or _nm).strip()
+
+                # 번호를 그대로 입력하면 정확 일치 우선, 아니면 이름 유사도 상위 10개
+                _cands = []
+                if _qs.isdigit():
+                    _cands = [p for p in _shared if str(p.get('product_no') or '') == _qs]
+                if not _cands:
+                    _scored = []
+                    for p in _shared:
+                        _sc = max(_token_score(_qs, p.get('match_keyword') or ''),
+                                  _token_score(_qs, p.get('costco_name') or ''))
+                        if _sc > 0:
+                            _scored.append((_sc, p))
+                    _scored.sort(key=lambda x: -x[0])
+                    _cands = [p for _sc, p in _scored[:10]]
+
+                if not _cands:
+                    st.caption("검색 결과 없음 — 검색어를 바꿔보세요.")
+                    st.divider()
+                    continue
+
+                _labels = [f"[{p.get('product_no')}] {p.get('costco_name')} "
+                           f"({fmt(int(p.get('unit_price') or 0))}원)" for p in _cands]
+                _c1, _c2 = st.columns([4, 1])
+                _pick = _c1.selectbox("연결할 공유DB 상품", _labels, index=0,
+                                      key=f"{_key}_pick", label_visibility="collapsed")
+                _c2.write("")
+                if _c2.button("🔗 연결", key=f"{_key}_save", use_container_width=True,
+                              type="primary"):
+                    _sel = _cands[_labels.index(_pick)]
+                    _cp = str(_sel.get('product_no') or '')
+                    if not is_costco_pno(_cp):
+                        st.error(f"공유DB 상품번호가 코스트코 번호 형식(4~7자리)이 아닙니다: {_cp}")
+                    elif upsert_shared_naver_map(_cp, _sub['username'],
+                                                 naver_pno=_nv, product_name=_nm):
+                        st.success(f"✅ {_nv} → {_cp} 연결 완료 "
+                                   f"({_sel.get('costco_name')}) — 이후 자동 해석됩니다.")
+                        st.rerun()
+                    else:
+                        st.error("저장 실패 — 번호가 비어있습니다.")
+                st.divider()
 
     def _render_shop_sub(_sub):
         try:
@@ -597,6 +725,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             _df_sub = pd.DataFrame(normalize_shopping_items(_items))
             st.dataframe(_df_sub, use_container_width=True, hide_index=True)
 
+            _render_pno_fixer(_sub, _items)
+
             _xbuf = io.BytesIO()
             try:
                 with pd.ExcelWriter(_xbuf, engine='openpyxl') as _xw:
@@ -612,7 +742,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             import streamlit.components.v1 as _components
             _prows = []
             for _it in _items:
-                _pno  = str(_it.get('코스트코상품번호') or _it.get('상품번호') or '')
+                _pno  = str(_it.get('코스트코상품번호') or '') or '—'
                 _nm   = _html_lib.escape(str(_it.get('상품명', '')))
                 _opt  = _html_lib.escape(str(_it.get('옵션정보', '') or ''))
                 _qty  = int(_it.get('코스트코구매수량') or _it.get('주문수량') or 0)
@@ -679,13 +809,14 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 delete_shopping_submission(_sub['id'])
                 st.rerun()
 
-    # ── 당일 제출건만 리스트로 노출 — 전날건은 일자가 바뀌면 노출하지 않음 ──
-    if _subs_today:
-        st.caption(f"📅 오늘({_today_str_adm}) 제출 {len(_subs_today)}건")
+    # ── 선택 기간의 제출건 리스트 (기본 = 오늘, 과거 날짜도 조회 가능) ──
+    if _subs_sel:
+        st.caption(f"📅 {_period_label} 제출 {len(_subs_sel)}건"
+                   + ("" if _sel_user == "전체" else f"  ·  👤 {_sel_user}"))
 
-        # ── 사용자별 오늘 합계 (금액 = 코스트코 매장금액) ──
+        # ── 사용자별 기간 합계 (금액 = 코스트코 매장금액) ──
         _agg_a = {}
-        for _s in _subs_today:
+        for _s in _subs_sel:
             _a = _agg_a.setdefault(_s['username'],
                                    {'종수': 0, '건수': 0, '금액': 0, '정산': 0, '제출': ''})
             _a['종수'] += int(_s.get('total_items') or 0)
@@ -700,7 +831,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         _tot_amt_a = sum(v['금액'] for v in _agg_a.values())
         _tot_set_a = sum(v['정산'] for v in _agg_a.values())
         st.markdown(
-            f"**📊 오늘 사용자별 합계** — {len(_agg_a)}명 · "
+            f"**📊 {_period_label} 사용자별 합계** — {len(_agg_a)}명 · "
             f"주문 {sum(v['건수'] for v in _agg_a.values())}건 · "
             f"구매금액 **{fmt(_tot_amt_a)}원** · 정산금액 **{fmt(_tot_set_a)}원** "
             f"· 차액 **{fmt(_tot_set_a - _tot_amt_a)}원**"
@@ -719,13 +850,74 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         st.caption("💰 매장금액 = 코스트코 계산대 결제 예상액 합계 · "
                    "🧾 정산금액 = 항목별 정산예정금액 합계. "
                    "차액은 택배·박스 원가와 수수료를 뺀 값이 아니므로 순이익이 아닙니다.")
+
+        # ── 날짜별 합계 (기간 조회 시에만) ──
+        if _d_from != _d_to:
+            _agg_d = {}
+            for _s in _subs_sel:
+                _dd = _agg_d.setdefault(_s['order_date'],
+                                        {'사용자': set(), '종수': 0, '건수': 0, '금액': 0, '정산': 0})
+                _dd['사용자'].add(_s['username'])
+                _dd['종수'] += int(_s.get('total_items') or 0)
+                _dd['금액'] += int(_s.get('total_amount') or 0)
+                try:
+                    for _i in json.loads(_s.get('items_json') or '[]'):
+                        _dd['건수'] += int(_i.get('주문건수') or 0)
+                        _dd['정산'] += int(_i.get('정산금액') or 0)
+                except Exception:
+                    pass
+            st.markdown("**📅 날짜별 합계**")
+            st.dataframe(
+                pd.DataFrame([
+                    {'날짜': _k, '사용자': f"{len(_v['사용자'])}명",
+                     '상품 종수': f"{_v['종수']}개", '주문건수': f"{_v['건수']}건",
+                     '구매금액(예상)': f"{fmt(_v['금액'])}원",
+                     '정산금액': f"{fmt(_v['정산'])}원",
+                     '차액(정산−구매)': f"{fmt(_v['정산'] - _v['금액'])}원"}
+                    for _k, _v in sorted(_agg_d.items(), reverse=True)
+                ]),
+                use_container_width=True, hide_index=True,
+            )
+
+        # ── 기간 전체 엑셀 (사용자×날짜 상세 시트 통합) ──
+        try:
+            _allbuf = io.BytesIO()
+            _all_rows = []
+            for _s in _subs_sel:
+                try:
+                    _its = json.loads(_s.get('items_json') or '[]')
+                except Exception:
+                    _its = []
+                for _r in normalize_shopping_items(_its):
+                    _all_rows.append({'날짜': _s['order_date'], '사용자': _s['username'], **_r})
+            if _all_rows:
+                with pd.ExcelWriter(_allbuf, engine='openpyxl') as _xw:
+                    pd.DataFrame(_all_rows).to_excel(_xw, index=False, sheet_name='장보기전체')
+                _allbuf.seek(0)
+                st.download_button(
+                    f"📥 기간 전체 엑셀 다운로드 ({len(_all_rows)}행)",
+                    data=_allbuf.getvalue(),
+                    file_name=(f"shopping_{_d_from:%Y%m%d}_{_d_to:%Y%m%d}"
+                               f"{'' if _sel_user == '전체' else '_' + _sel_user}.xlsx"),
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="dl_shop_range_all",
+                )
+        except Exception as _xe:
+            st.caption(f"기간 전체 엑셀 생성 실패: {_xe}")
+
         st.divider()
 
-        for _sub in _subs_today:
+        for _sub in _subs_sel:
             _render_shop_sub(_sub)
     else:
-        st.caption(f"오늘({_today_str_adm}) 제출된 장보기 목록이 없습니다. "
+        st.caption(f"{_period_label} 기간에 제출된 장보기 목록이 없습니다. "
                    "(사용자가 주문 수집 시 자동 발송되거나 '📋 장보기 목록 관리자에게 발송' 클릭 시 표시됨)")
+        try:
+            _avail = get_shopping_submission_dates(limit=14)
+        except Exception:
+            _avail = []
+        if _avail:
+            st.caption("🗓 최근 제출 이력이 있는 날짜: " + ", ".join(_avail))
 
     # ── 로컬 설치형 라이선스 관리 (1-PC 사용 인증) ──
     st.divider()

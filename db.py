@@ -114,6 +114,8 @@ from db_shopping import (
     get_recent_shopping_submissions,
     normalize_shopping_items,
     get_shopping_submissions_range,
+    get_shopping_submissions_detail,
+    get_shopping_submission_dates,
     delete_shopping_submission,
 )
 

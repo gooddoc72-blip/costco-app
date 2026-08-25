@@ -48,6 +48,7 @@ from services import (
     parse_costco_receipt_pdf, match_receipt_to_orders,
     match_receipt_to_naver_products, apply_receipt_pno_updates,
     decrypt_excel, read_excel_auto,
+    costco_pno_of,
     _token_score,
 )
 from utils import (
@@ -198,7 +199,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                      use_container_width=True, hide_index=True)
                         _pr = []
                         for _it in _its:
-                            _pno = str(_it.get('코스트코상품번호') or _it.get('상품번호') or '')
+                            _pno = str(_it.get('코스트코상품번호') or '') or '—'
                             _nm  = _hl.escape(str(_it.get('상품명', '')))
                             _opt = _hl.escape(str(_it.get('옵션정보', '') or ''))
                             _qy  = int(_it.get('코스트코구매수량') or _it.get('주문수량') or 0)
@@ -1260,7 +1261,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         # ── DB 단가 + 분리수량 조회 (DB 1회 로드) ──
         _rnd_shared = get_shared_products()
         _rnd_user   = get_all_products(USERNAME)
-        db_prices, db_splits = [], []
+        db_prices, db_splits, db_cpnos = [], [], []
         for _, r in shopping.iterrows():
             p = match_product_to_db(USERNAME, r['상품명'], product_no=r.get('상품번호', ''),
                                     _user_prods=_rnd_user, _shared_prods=_rnd_shared)
@@ -1271,8 +1272,13 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             else:
                 db_prices.append(None)
                 db_splits.append(1)
+            # 코스트코 상품번호 — 매칭된 제품(공유DB)에서만 꺼낸다.
+            #   r['상품번호']는 네이버 채널상품번호(10~11자리)라 영수증(6자리)과 안 맞는다.
+            #   검증 실패 시 빈칸 → 관리자 화면 '번호 미확보'에서 지정.
+            db_cpnos.append(costco_pno_of(p))
         shopping['팩단가'] = db_prices      # 코스트코 팩 전체 가격
         shopping['분리수량'] = db_splits    # 팩 1개 → 몇 개 분리 판매
+        shopping['코스트코상품번호'] = db_cpnos
 
         # ── 코스트코 구매수량 계산 ──
         # 분리판매(split_qty>1): ceil(주문수량 / 분리수량) 팩
@@ -1394,7 +1400,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 _est_v = int(_est) if pd.notna(_est) else 0
                 _total_b += _est_v
                 _items_b.append({
-                    "코스트코상품번호": str(_r.get('코스트코상품번호') or _r.get('상품번호') or ''),
+                    "코스트코상품번호": costco_pno_of(None, _r.get('코스트코상품번호')),
+                    "네이버상품번호": str(_r.get('상품번호') or ''),
                     "상품명": str(_r.get('상품명', '')),
                     "옵션정보": str(_r.get('옵션정보', '') or ''),
                     "주문건수": int(_r.get('주문건수', 1) or 1),
@@ -1578,7 +1585,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 _est_v = int(_est) if pd.notna(_est) else 0
                 _total_amount += _est_v
                 _items.append({
-                    "코스트코상품번호": str(r.get('코스트코상품번호') or r.get('상품번호') or ''),
+                    "코스트코상품번호": costco_pno_of(None, r.get('코스트코상품번호')),
+                    "네이버상품번호": str(r.get('상품번호') or ''),
                     "상품명": str(r.get('상품명', '')),
                     "옵션정보": str(r.get('옵션정보', '') or ''),
                     "주문건수": int(r.get('주문건수', 1) or 1),

@@ -151,6 +151,43 @@ def get_shopping_submissions_range(date_from: str, date_to: str) -> list:
     return out
 
 
+def get_shopping_submissions_detail(date_from: str, date_to: str,
+                                   username: str = None, limit: int = 2000) -> list:
+    """[관리자] 날짜범위 내 장보기 제출 **원본 행**(items_json 포함) 조회.
+
+    get_shopping_submissions_range()는 집계만 돌려주므로, 과거 날짜의 상세 품목·
+    엑셀·프린트가 필요한 관리자 화면은 이 함수를 쓴다.
+    username 지정 시 해당 사용자만. 최신 날짜 → 사용자명 순으로 정렬.
+    """
+    _ensure_table()
+    conn = get_auth_db()
+    conn.row_factory = sqlite3.Row
+    sql = """SELECT id, username, order_date, submitted_at, total_items, total_amount, items_json
+             FROM shopping_list_submissions
+             WHERE order_date >= ? AND order_date <= ?"""
+    params = [date_from, date_to]
+    if username:
+        sql += " AND username = ?"
+        params.append(username)
+    sql += " ORDER BY order_date DESC, username ASC LIMIT ?"
+    params.append(int(limit))
+    rows = conn.execute(sql, params).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_shopping_submission_dates(limit: int = 180) -> list:
+    """[관리자] 제출 이력이 있는 날짜 목록 (최신순). 기간 선택 UI용."""
+    _ensure_table()
+    conn = get_auth_db()
+    rows = conn.execute(
+        """SELECT DISTINCT order_date FROM shopping_list_submissions
+           ORDER BY order_date DESC LIMIT ?""", (int(limit),)
+    ).fetchall()
+    conn.close()
+    return [r[0] for r in rows]
+
+
 def delete_shopping_submission(submission_id: int) -> bool:
     _ensure_table()
     conn = get_auth_db()

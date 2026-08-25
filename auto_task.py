@@ -38,7 +38,7 @@ from db import (
     log_dispatch_success,
     get_return_due_lots,
 )
-from services import match_product_to_db, calc_cost
+from services import match_product_to_db, calc_cost, costco_pno_of
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")
@@ -517,8 +517,13 @@ def run_shopping_task(username="admin"):
             item_lines.append(name_line)
             item_lines.append("  " + " · ".join(detail_parts))
 
+            # 코스트코 상품번호는 매칭된 제품(공유DB)에서 꺼낸다.
+            #   pno는 네이버 채널상품번호(10~11자리)라 영수증(6자리)과 절대 안 맞는다.
+            #   검증 실패 시 빈칸 — 관리자 화면에서 '번호 미확보'로 모아 지정한다.
+            _costco_pno = costco_pno_of(matched_p)
             _admin_items.append({
-                "코스트코상품번호": str(pno or ''),
+                "코스트코상품번호": _costco_pno,
+                "네이버상품번호": str(pno or ''),
                 "상품명": name,
                 "옵션정보": opt or '',
                 "주문건수": int(order_cnt),
