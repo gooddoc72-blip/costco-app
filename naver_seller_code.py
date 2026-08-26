@@ -71,6 +71,23 @@ def build_targets(username: str, only_missing: bool = True) -> tuple[list, dict]
     return targets, st
 
 
+def is_store_costco_pno(costco_no: str) -> tuple[bool, str]:
+    """이 번호가 공유DB에서 **매장 상품**으로 확인되는가.
+
+    네이버 판매자 상품코드에는 코스트코 **매장** 번호가 들어가야 한다. 온라인몰
+    번호는 카톤 단위라 매입원가와도, 영수증과도 맞지 않는다.
+    공유DB 기준으로 store_price>0 이면 매장 상품으로 본다.
+    반환: (ok, 사유)
+    """
+    from db import get_shared_products
+    for sp in (get_shared_products() or []):
+        if str(sp.get("product_no") or "").strip() == str(costco_no).strip():
+            if int(sp.get("store_price") or 0) > 0:
+                return True, f"매장 {int(sp['store_price']):,}원 ({sp.get('costco_name', '')[:20]})"
+            return False, f"공유DB에 온라인 전용({sp.get('price_type')}) — 매장가 없음"
+    return False, "공유DB에 없는 번호"
+
+
 def read_remote_seller_code(client_id: str, client_secret: str, naver_no: str) -> tuple[str, str]:
     """네이버에 현재 들어있는 판매자 상품코드를 읽는다.
 
@@ -126,7 +143,10 @@ def push_seller_codes(username: str, client_id: str, client_secret: str,
     on_conflict: 네이버에 이미 **다른** 코드가 있을 때
         'skip'      기본 — 건드리지 않고 충돌로 보고한다. 우리 DB 번호가
                     틀린 사례가 실측 확인됐고, 덮어쓰면 맞는 코드가 사라진다.
-        'overwrite' 우리 DB 값으로 덮어쓴다. 번호를 검증한 뒤에만 쓸 것.
+        'overwrite_if_store' 우리 DB 번호가 공유DB에서 매장 상품으로 확인될 때만
+                    덮어쓴다. 네이버에 온라인 번호가 들어간 걸 매장 번호로 바로잡는
+                    안전한 경로 — DB 번호가 틀린 건(공유DB에 없거나 온라인)은 보류한다.
+        'overwrite' 검증 없이 우리 DB 값으로 덮어쓴다.
     반환: {ok, failed, skipped, same, conflicts[], stats, errors[], done[]}
     """
     import time
@@ -177,13 +197,20 @@ def push_seller_codes(username: str, client_id: str, client_secret: str,
             if i < len(targets) and delay:
                 time.sleep(delay)
             continue
-        if cur and on_conflict == "skip":
-            conflicts.append({**t, "remote": cur})
-            _log(f"  [{i}/{len(targets)}] ⚠️ {t['naver_no']} 충돌 — "
-                 f"네이버 {cur} vs DB {t['costco_no']} → 건너뜀")
-            if i < len(targets) and delay:
-                time.sleep(delay)
-            continue
+        if cur and on_conflict != "overwrite":
+            allow, why = (False, "")
+            if on_conflict == "overwrite_if_store":
+                allow, why = is_store_costco_pno(t["costco_no"])
+            if not allow:
+                conflicts.append({**t, "remote": cur, "reason": why})
+                _log(f"  [{i}/{len(targets)}] ⚠️ {t['naver_no']} 충돌 — "
+                     f"네이버 {cur} vs DB {t['costco_no']} → 보류"
+                     + (f" ({why})" if why else ""))
+                if i < len(targets) and delay:
+                    time.sleep(delay)
+                continue
+            _log(f"  [{i}/{len(targets)}] 🔁 {t['naver_no']} 교체 — "
+                 f"네이버 {cur}(온라인) → DB {t['costco_no']} [{why}]")
         try:
             success, err, used = update_product_full(
                 client_id, client_secret, t["naver_no"], {"seller_code": t["costco_no"]})

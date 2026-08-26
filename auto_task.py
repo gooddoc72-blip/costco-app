@@ -275,7 +275,8 @@ def send_notification(settings, msg, username=None):
 
 # ── Task 3: 정기 크롤링 ──────────────────────────
 # ── Task: 네이버 판매자 상품코드에 코스트코 번호 입력 ──────────
-def run_seller_code_task(username: str = "admin", limit: int = 50) -> bool:
+def run_seller_code_task(username: str = "admin", limit: int = 50,
+                         on_conflict: str = "overwrite_if_store") -> bool:
     """이미 등록된 네이버 상품의 판매자 상품코드에 코스트코 번호를 소급 입력.
 
     이게 채워지면 주문 API가 '판매자 상품코드'로 코스트코 번호를 그대로 돌려주므로
@@ -296,7 +297,8 @@ def run_seller_code_task(username: str = "admin", limit: int = 50) -> bool:
         log(f"❌ 모듈 로드 실패: {e}")
         return False
 
-    res = push_seller_codes(username, cid, csec, limit=limit, progress=lambda m: log(m))
+    res = push_seller_codes(username, cid, csec, limit=limit, progress=lambda m: log(m),
+                            on_conflict=on_conflict)
     for e in (res.get("errors") or [])[:5]:
         log(f"  ⚠️ {e}")
     for c in (res.get("conflicts") or [])[:5]:
@@ -1758,6 +1760,11 @@ if __name__ == "__main__":
     parser.add_argument("--user",
                         default="admin",
                         help="실행 대상 사용자명 (기본: admin)")
+    parser.add_argument("--on-conflict", dest="on_conflict",
+                        choices=["skip", "overwrite_if_store", "overwrite"],
+                        default="overwrite_if_store",
+                        help="sellercode: 네이버에 다른 코드가 있을 때 처리 방식 "
+                             "(기본 overwrite_if_store = DB 번호가 매장 상품일 때만 교체)")
     parser.add_argument("--force", action="store_true",
                         help="opt-in 게이트 무시(수동 실행용: naverstock, cafe24reg)")
     parser.add_argument("--limit", type=int, default=None,
@@ -1778,7 +1785,8 @@ if __name__ == "__main__":
     elif args.task == "discount":
         run_discount_task(args.user)
     elif args.task == "sellercode":
-        run_seller_code_task(args.user, limit=args.limit or 50)
+        run_seller_code_task(args.user, limit=args.limit or 50,
+                             on_conflict=args.on_conflict)
     elif args.task == "rank":
         run_rank_check_task(args.user)
     elif args.task == "orders":
