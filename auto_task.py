@@ -274,6 +274,28 @@ def send_notification(settings, msg, username=None):
 
 
 # ── Task 3: 정기 크롤링 ──────────────────────────
+# ── Task: 사용자 제품DB의 빈 코스트코 번호 채우기 ──────────────
+def run_pno_fill_task(username: str = "admin", min_score: float = 0.9,
+                      limit: int = None) -> bool:
+    """공유 카탈로그에서 이름 매칭으로 코스트코 상품번호를 채운다.
+
+    판매자 상품코드 입력도 영수증 매칭도 전부 번호를 아느냐에 걸리는데,
+    실측상 4,024개 중 176개(4.4%)만 번호를 갖고 있었다.
+    매장 상품(store_price>0) + 4~7자리 검증 + 확신 0.9 이상만 채운다.
+    """
+    log("=" * 50)
+    log(f"[Task 13] 코스트코 번호 채우기 시작 (사용자: {username}, 기준점수 {min_score})")
+    try:
+        from costco_pno_fill import fill_costco_numbers
+    except ImportError as e:
+        log(f"❌ 모듈 로드 실패: {e}")
+        return False
+    res = fill_costco_numbers(username, min_score=min_score, limit=limit,
+                              progress=lambda m: log(m))
+    log(f"[Task 13] 완료 — 채움 {res['filled']} / 매입가 동시반영 {res['price_filled']}")
+    return True
+
+
 # ── Task: 네이버 판매자 상품코드에 코스트코 번호 입력 ──────────
 def run_seller_code_task(username: str = "admin", limit: int = 50,
                          on_conflict: str = "overwrite_if_store") -> bool:
@@ -1756,7 +1778,7 @@ def run_hires_image_task(username="admin"):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="코스트코핫딜 자동화 실행")
     parser.add_argument("--task",
-                        choices=["shopping", "shipping", "crawl", "discount", "sellercode", "rank", "orders",
+                        choices=["shopping", "shipping", "crawl", "discount", "sellercode", "pnofill", "rank", "orders",
                                  "products", "register", "cafe24sync", "cafe24reg", "naverstock",
                                  "hiresimg", "invreturn", "all"],
                         default="all",
@@ -1788,6 +1810,8 @@ if __name__ == "__main__":
         run_crawl_task(args.user)
     elif args.task == "discount":
         run_discount_task(args.user)
+    elif args.task == "pnofill":
+        run_pno_fill_task(args.user, limit=args.limit)
     elif args.task == "sellercode":
         run_seller_code_task(args.user, limit=args.limit or 50,
                              on_conflict=args.on_conflict)
