@@ -1212,7 +1212,10 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 st.dataframe(_prep_coupang, use_container_width=True, hide_index=True)
 
         st.subheader("🛒 코스트코 장보기 목록")
-        shop_cols = ['상품번호', '상품명', '옵션정보', '수취인명', '수량', '정산예정금액', '배송비 합계']
+        # 원상품번호(originalProductId) — 주문의 '상품번호'는 채널번호라 계정에 따라
+        #   products.naver_origin_pno와 안 붙는다. 번호 매칭을 살리려면 함께 들고 가야 한다.
+        shop_cols = ['상품번호', '원상품번호', '상품명', '옵션정보', '수취인명', '수량',
+                     '정산예정금액', '배송비 합계']
         available_cols = [c for c in shop_cols if c in df.columns]
         shopping = df[available_cols].copy()
         shopping['옵션정보'] = shopping['옵션정보'].fillna('') if '옵션정보' in shopping.columns else ''
@@ -1238,12 +1241,19 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         if '배송비 합계' in shopping.columns:
             # 배송비는 건당 (같은 상품 N건 주문해도 1건당 배송비만 표시)
             agg_map['배송비 합계'] = 'mean'
+        # 원상품번호는 그룹 내 동일하므로 첫 값을 그대로 들고 간다 (맨 뒤에 붙어야
+        #   아래 rename_cols의 위치 기반 재명명과 순서가 맞는다)
+        _has_origin = '원상품번호' in shopping.columns
+        if _has_origin:
+            agg_map['원상품번호'] = 'first'
         shopping = shopping.groupby(group_cols, sort=True, dropna=False).agg(agg_map).reset_index()
         rename_cols = list(group_cols) + ['주문수량']
         if '정산예정금액' in agg_map:
             rename_cols.append('정산금액')
         if '배송비 합계' in agg_map:
             rename_cols.append('배송비')
+        if _has_origin:
+            rename_cols.append('원상품번호')
         shopping.columns = rename_cols
         if '배송비' in shopping.columns:
             shopping['배송비'] = shopping['배송비'].round().astype(int)
@@ -1264,6 +1274,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         db_prices, db_splits, db_cpnos = [], [], []
         for _, r in shopping.iterrows():
             p = match_product_to_db(USERNAME, r['상품명'], product_no=r.get('상품번호', ''),
+                                    origin_no=r.get('원상품번호', ''),
                                     _user_prods=_rnd_user, _shared_prods=_rnd_shared)
             if p:
                 sq = max(1, int(p.get('split_qty', 1) or 1))

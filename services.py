@@ -438,7 +438,7 @@ def _find_db_product(products, order_name: str, order_pno: str = '', pno_map: di
 
 
 def match_product_to_db(username, store_product_name, product_no=None,
-                        _user_prods=None, _shared_prods=None):
+                        _user_prods=None, _shared_prods=None, origin_no=None):
     """제품 매칭: shared_products 우선, 없으면 사용자 DB 폴백.
     _user_prods/_shared_prods: 배치 처리 시 미리 로드된 리스트 (N+1 방지용).
 
@@ -446,6 +446,23 @@ def match_product_to_db(username, store_product_name, product_no=None,
        '소분판매' 상품은, 네이버 상품번호로 매칭하고 그 자체 단가를 쓴다.
        (공유DB 이름매칭이 소분 가격을 가로채지 못하도록 최우선 처리)
     """
+    # 주문의 '상품번호'는 채널상품번호, '원상품번호'는 origin번호다. 사용자 products에
+    #   어느 쪽이 저장돼 있는지는 계정마다 다르다(admin은 origin만 1,047개·channel 0개라
+    #   채널번호로는 한 건도 안 붙었다). 실제로 인덱스에 걸리는 번호를 골라 쓴다.
+    if origin_no:
+        _o = str(origin_no).strip()
+        if not product_no:
+            product_no = _o
+        elif _o:
+            _up0 = _user_prods if _user_prods is not None else get_all_products(username)
+            _ix0 = _index_products(_up0)
+            _hit = (_ix0.get('by_naver_channel', {}).get(str(product_no))
+                    or _ix0.get('by_naver_pno', {}).get(str(product_no))
+                    or _ix0['by_pno'].get(str(product_no)))
+            if not _hit and (_ix0.get('by_naver_pno', {}).get(_o)
+                             or _ix0.get('by_naver_channel', {}).get(_o)):
+                product_no = _o
+
     if product_no:
         _uprods0 = _user_prods if _user_prods is not None else get_all_products(username)
         _uidx0 = _index_products(_uprods0)

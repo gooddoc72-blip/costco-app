@@ -522,7 +522,8 @@ def run_shopping_task(username="admin"):
             shopping_orders = orders
 
         from collections import defaultdict
-        shopping = defaultdict(lambda: {"주문수량": 0, "정산금액": 0, "배송비합": 0, "상품명": "", "옵션": "", "상품번호": ""})
+        shopping = defaultdict(lambda: {"주문수량": 0, "정산금액": 0, "배송비합": 0, "상품명": "",
+                                        "옵션": "", "상품번호": "", "원상품번호": ""})
         for o in shopping_orders:
             pno = str(o.get("상품번호", ""))
             name = o.get("상품명", "")
@@ -535,6 +536,8 @@ def run_shopping_task(username="admin"):
             shopping[key]["상품명"] = name
             shopping[key]["옵션"] = opt
             shopping[key]["상품번호"] = pno
+            if not shopping[key]["원상품번호"]:
+                shopping[key]["원상품번호"] = str(o.get("원상품번호", "") or "")
 
         products = get_all_products(username)
         total_cost = 0
@@ -557,6 +560,7 @@ def run_shopping_task(username="admin"):
 
             matched_p = match_product_to_db(username, name,
                                               product_no=pno or None,
+                                              origin_no=item.get("원상품번호") or None,
                                               _user_prods=products)
             _pack_price = int(matched_p.get('unit_price') or 0) if matched_p else 0
             _est_cost = calc_cost(matched_p, costco_qty) if matched_p else 0

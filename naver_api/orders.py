@@ -107,7 +107,7 @@ def get_new_orders(client_id, client_secret, hours_back=48, status_type="ALL"):
                     naver_columns = [
                         "상품주문번호", "주문번호", "배송속성", "풀필먼트사(주문 기준)", "택배사(주문 기준)", "배송방법(구매자 요청)", 
                         "배송방법", "택배사", "송장번호", "발송일", "판매채널", "구매자명", "구매자ID", "수취인명", "주문상태", 
-                        "주문세부상태", "수량클레임 여부", "결제위치", "결제일", "상품번호", "상품명", "상품종류", "반품안심케어", 
+                        "주문세부상태", "수량클레임 여부", "결제위치", "결제일", "상품번호", "원상품번호", "상품명", "상품종류", "반품안심케어", 
                         "멤버십N배송", "옵션정보", "옵션관리코드", "수량", "옵션가격", "상품가격", "최종 상품별 할인액", 
                         "최초 상품별 할인액", "판매자 부담 할인액", "최종 상품별 총 주문금액", "최초 상품별 총 주문금액", "사은품", 
                         "발주확인일", "발송기한", "발송처리일", "송장출력일", "배송비 형태", "배송비 묶음번호", "배송비 유형", 
@@ -148,6 +148,11 @@ def get_new_orders(client_id, client_secret, hours_back=48, status_type="ALL"):
                         "주문세부상태": _SUB_STATUS_KO.get(place_status, place_status) if place_status else "",
                         "결제일": str(po.get("paymentDate", "")).replace("T", " ")[:19],
                         "상품번호": po.get("productId", ""),
+                        # 원상품번호(originalProductId) — 주문의 productId는 채널상품번호라
+                        #   products.naver_origin_pno와 번호 체계가 달라 브리지가 끊긴다.
+                        #   API가 둘 다 주는데 지금껏 채널번호만 저장해 매칭이 이름 유사도로
+                        #   떨어지고 있었다. 원상품번호를 함께 실어 번호 매칭을 살린다.
+                        "원상품번호": po.get("originalProductId", ""),
                         "상품명": po.get("productName", ""),
                         "옵션정보": po.get("productOption", ""),
                         "옵션번호": str(po.get("optionCode", "") or po.get("itemNo", "") or ""),
@@ -640,7 +645,7 @@ def fetch_order_details_by_ids(client_id, client_secret, order_ids):
     naver_columns = [
         "상품주문번호", "주문번호", "배송속성", "풀필먼트사(주문 기준)", "택배사(주문 기준)", "배송방법(구매자 요청)",
         "배송방법", "택배사", "송장번호", "발송일", "판매채널", "구매자명", "구매자ID", "수취인명", "주문상태",
-        "주문세부상태", "수량클레임 여부", "결제위치", "결제일", "상품번호", "상품명", "상품종류", "반품안심케어",
+        "주문세부상태", "수량클레임 여부", "결제위치", "결제일", "상품번호", "원상품번호", "상품명", "상품종류", "반품안심케어",
         "멤버십N배송", "옵션정보", "옵션관리코드", "수량", "옵션가격", "상품가격", "최종 상품별 할인액",
         "최초 상품별 할인액", "판매자 부담 할인액", "최종 상품별 총 주문금액", "최초 상품별 총 주문금액", "사은품",
         "발주확인일", "발송기한", "발송처리일", "송장출력일", "배송비 형태", "배송비 묶음번호", "배송비 유형",
@@ -698,6 +703,7 @@ def fetch_order_details_by_ids(client_id, client_secret, order_ids):
                     "주문세부상태": _SUB_STATUS_KO.get(place_status, place_status) if place_status else "",
                     "결제일": str(po.get("paymentDate", "")).replace("T", " ")[:19],
                     "상품번호": po.get("productId", ""),
+                    "원상품번호": po.get("originalProductId", ""),
                     "상품명": po.get("productName", ""),
                     "옵션정보": po.get("productOption", ""),
                     "수량": po.get("quantity", 1),
