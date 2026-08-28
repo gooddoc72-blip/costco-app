@@ -1313,6 +1313,54 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             return int(row['코스트코구매수량']) * int(row['팩단가'])
         shopping['예상금액'] = shopping.apply(_expected_cost, axis=1) if not shopping.empty else None
 
+        # ── 🗑 발송 전 제외 (관리자에게 보내기 전에 뺄 항목 고르기) ──
+        #   장보기 목록은 HTML 표라 행별 위젯을 못 단다. 대신 여기서 제외 목록을
+        #   골라 shopping 자체를 걸러낸다 → 표·합계·엑셀·발송이 모두 같은 기준이 된다.
+        #   제외는 화면에서만 빼는 것이고 주문 데이터(daily_orders)는 건드리지 않는다.
+        _excl_key = f'_shop_excl_{order_date_str}'
+        _excl_prev = st.session_state.get(_excl_key, []) or []
+
+        def _row_label(_r):
+            _opt = str(_r.get('옵션정보', '') or '').strip()
+            return (f"{str(_r.get('상품명', ''))[:44]}"
+                    + (f" · {_opt[:18]}" if _opt else "")
+                    + f"  ({int(_r.get('주문수량', 0) or 0)}개)")
+
+        _label_by_key, _keys_all = {}, []
+        for _, _r in shopping.iterrows():
+            _k = f"{_r.get('상품번호', '')}|{_r.get('상품명', '')}|{_r.get('옵션정보', '') or ''}"
+            _keys_all.append(_k)
+            _label_by_key[_k] = _row_label(_r)
+        shopping = shopping.assign(_rowkey=_keys_all)
+
+        with st.expander(f"🗑 발송 목록에서 제외"
+                         + (f" — {len(_excl_prev)}종 제외 중" if _excl_prev else ""),
+                         expanded=bool(_excl_prev)):
+            st.caption("여기서 뺀 항목은 아래 표·합계·엑셀·관리자 발송에서 모두 빠집니다. "
+                       "저장된 주문 데이터는 지워지지 않습니다.")
+            _excl = st.multiselect(
+                "제외할 항목", options=_keys_all,
+                default=[k for k in _excl_prev if k in _label_by_key],
+                format_func=lambda k: _label_by_key.get(k, k),
+                key=f"shop_excl_ms_{order_date_str}", label_visibility="collapsed",
+                placeholder="빼려면 상품을 선택하세요")
+            if st.button("↩ 제외 모두 해제", key=f"shop_excl_reset_{order_date_str}",
+                         disabled=not _excl):
+                st.session_state[_excl_key] = []
+                st.rerun()
+        st.session_state[_excl_key] = list(_excl)
+
+        if _excl:
+            _before_n = len(shopping)
+            shopping = shopping[~shopping['_rowkey'].isin(_excl)].reset_index(drop=True)
+            st.warning(f"🗑 {_before_n - len(shopping)}종 제외됨 — 남은 {len(shopping)}종만 "
+                       "표시·발송됩니다.")
+        shopping = shopping.drop(columns=['_rowkey'])
+        if shopping.empty:
+            # return 하지 않는다 — 이 아래에 영수증 업로드 등 다른 섹션이 이어져 있어
+            # 페이지가 통째로 잘린다. 빈 표로 그대로 흘려보낸다.
+            st.info("모든 항목이 제외되어 장보기 목록이 비었습니다.")
+
         # ── 표시 컬럼 구성 (요청: 수량/정산금액/택배비 중심) ──
         has_split = (shopping['분리수량'] > 1).any()
         has_multi = (shopping['묶음수량'] > 1).any()

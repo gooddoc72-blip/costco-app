@@ -82,7 +82,50 @@ def _set_cache_helpers(shared_fn, user_fn, merged_fn, invalidate_fn, **kwargs):
     invalidate_data_cache = invalidate_fn
 
 
-def _show_dispatch_result(container, result, err, total):
+def _build_fail_table(username, result, result_df):
+    """실패 목록을 '어느 주문인지 알아볼 수 있는' 표로 만든다.
+
+    API가 주는 건 상품주문번호와 사유뿐이라, 그것만 보고는 어떤 건을 다시 처리해야
+    할지 알 수 없다. 업로드한 송장 파일(result_df)에서 송장번호를, 주문이력에서
+    수취인·상품명을 끌어와 붙인다.
+    """
+    items = result.get('fail_items') or []
+    if not items:
+        return None
+    df = pd.DataFrame(items)
+    df['상품주문번호'] = df['상품주문번호'].astype(str).str.strip()
+
+    # 송장번호 — 업로드 파일에서
+    try:
+        if result_df is not None and '상품주문번호' in result_df.columns:
+            _t = result_df.copy()
+            _t['상품주문번호'] = _t['상품주문번호'].astype(str).str.split('.').str[0].str.strip()
+            _cols = ['상품주문번호'] + [c for c in ('송장번호', '택배사') if c in _t.columns]
+            df = df.merge(_t[_cols].drop_duplicates(subset=['상품주문번호']),
+                          on='상품주문번호', how='left')
+    except Exception:
+        pass
+
+    # 수취인·상품명 — 주문이력에서 (없으면 빈칸으로 둔다)
+    try:
+        from db import get_user_db
+        conn = get_user_db(username)
+        rows = conn.execute(
+            "SELECT order_no, recipient, product_name, qty FROM order_history").fetchall()
+        conn.close()
+        info = {str(r[0]).strip(): (r[1], r[2], r[3]) for r in rows}
+        df['수취인'] = df['상품주문번호'].map(lambda k: (info.get(k) or ('', '', ''))[0])
+        df['상품명'] = df['상품주문번호'].map(lambda k: (info.get(k) or ('', '', ''))[1])
+        df['수량'] = df['상품주문번호'].map(lambda k: (info.get(k) or ('', '', ''))[2])
+    except Exception:
+        pass
+
+    order = [c for c in ('구분', '상품주문번호', '수취인', '상품명', '수량',
+                         '송장번호', '택배사', '사유') if c in df.columns]
+    return df[order]
+
+
+def _show_dispatch_result(container, result, err, total, username=None, result_df=None):
     """발송처리 API 결과를 container(st.columns 셀 등)에 표시."""
     if err:
         container.error(f"❌ {err}")
@@ -96,10 +139,33 @@ def _show_dispatch_result(container, result, err, total):
         container.success(f"✅ 성공 {ok}건 / 실패 {fail}건 (전송 {sent}건)")
     else:
         container.error(f"❌ 전체 실패 {fail}건 (전송 {sent}건)")
-    if result.get('fail_details'):
-        with container.expander("📋 실패 상세", expanded=True):
-            for d in result['fail_details']:
-                st.text(d)
+    if not fail:
+        return
+
+    _tbl = _build_fail_table(username, result, result_df) if username else None
+    with container.expander(f"📋 실패 {fail}건 — 상세", expanded=True):
+        if _tbl is not None and not _tbl.empty:
+            st.dataframe(_tbl, use_container_width=True, hide_index=True)
+            # 재작업용 다운로드 — 화면은 새로고침하면 사라진다
+            try:
+                _buf = io.BytesIO()
+                with pd.ExcelWriter(_buf, engine='openpyxl') as _w:
+                    _tbl.to_excel(_w, index=False, sheet_name='발송실패')
+                _buf.seek(0)
+                st.download_button(
+                    f"📥 실패 목록 엑셀 ({len(_tbl)}건)", data=_buf.getvalue(),
+                    file_name=f"발송실패_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key=f"dl_fail_{id(result)}")
+            except Exception as _xe:
+                st.caption(f"엑셀 생성 실패: {_xe}")
+            _reasons = _tbl['사유'].value_counts() if '사유' in _tbl.columns else None
+            if _reasons is not None and len(_reasons) > 1:
+                st.caption("사유별: " + " · ".join(
+                    f"{r[:28]} {n}건" for r, n in _reasons.head(4).items()))
+        # 원문도 함께 남긴다 (400 오류의 전체 메시지 등 표에 안 담기는 정보가 있다)
+        for d in (result.get('fail_details') or []):
+            st.text(d)
 
 
 def _prepare_dispatch_rows(username, result_df, success_order_ids):
@@ -512,7 +578,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     _nv_df = _nv_df.explode('상품주문번호').reset_index(drop=True)
                     with st.spinner(f"네이버에 {len(_items)}건 발송처리 중..."):
                         _res, _err = naver_api.ship_orders(api_id, api_secret, _items)
-                    _show_dispatch_result(_dc3, _res, _err, len(_items))
+                    _show_dispatch_result(_dc3, _res, _err, len(_items),
+                                          username=USERNAME, result_df=_nv_df)
                     if _res and _res.get('success_order_ids'):
                         # ① 발송건 상세를 먼저 주문이력에 채운다 — dispatch_log 저장 시
                         #    정산예정금액을 여기서 읽어가고, 수익계산도 이 JOIN을 쓴다.
@@ -548,7 +615,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                for _, r in result_df.iterrows()]
                     with st.spinner(f"쿠팡 Wing에 {len(_items)}건 발송처리 중..."):
                         _res, _err = coupang_api.dispatch_orders(cq_access, cq_secret, cq_vendor, _items)
-                    _show_dispatch_result(_dc3, _res, _err, len(_items))
+                    _show_dispatch_result(_dc3, _res, _err, len(_items),
+                                          username=USERNAME, result_df=result_df)
                     if _res and _res.get('success_order_ids'):
                         # 발송처리 성공 시 dispatch_log에 자동 저장
                         _drows = _prepare_dispatch_rows(USERNAME, result_df, _res['success_order_ids'])

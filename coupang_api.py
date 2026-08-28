@@ -442,6 +442,7 @@ def dispatch_orders(access_key: str, secret_key: str, vendor_id: str, ship_data:
     total_success = 0
     total_fail = 0
     fail_details = []
+    fail_items = []   # 구조화 실패 목록 (화면 표·엑셀용)
     success_order_ids = []
 
     # 송장업로드 API(orders/invoices)는 shipmentBoxId·orderId·vendorItemId를 요구.
@@ -460,6 +461,8 @@ def dispatch_orders(access_key: str, secret_key: str, vendor_id: str, ship_data:
         if "-" not in poid:
             total_fail += 1
             fail_details.append(f"[건너뜀] {poid}: 상품주문번호 형식(주문번호-아이템번호)을 확인하세요.")
+            fail_items.append({"상품주문번호": str(poid), "구분": "건너뜀",
+                               "사유": "상품주문번호 형식(주문번호-아이템번호) 확인 필요"})
             continue
         order_id, vendor_item_id = poid.split("-", 1)
         box_id = box_map.get(str(order_id).strip())
@@ -484,6 +487,8 @@ def dispatch_orders(access_key: str, secret_key: str, vendor_id: str, ship_data:
         except (TypeError, ValueError) as e:
             total_fail += 1
             fail_details.append(f"[실패] {poid}: 번호 변환 오류 {e}")
+            fail_items.append({"상품주문번호": str(poid), "구분": "실패",
+                               "사유": f"번호 변환 오류 {e}"})
 
     if dtos:
         # 송장업로드(상품준비중 → 배송): POST /orders/invoices (batch)
@@ -505,6 +510,8 @@ def dispatch_orders(access_key: str, secret_key: str, vendor_id: str, ship_data:
             _msg = (rb.get("message") if isinstance(rb, dict) else "") or resp.text[:300]
             for poid in dto_poids:
                 fail_details.append(f"[실패] {poid}: [{resp.status_code}] {_msg}")
+                fail_items.append({"상품주문번호": str(poid), "구분": "실패",
+                                   "사유": f"[{resp.status_code}] {_msg}"})
             total_fail += len(dtos)
         else:
             # 응답 responseList(=data): shipmentBoxId별 succeed/resultMessage
@@ -524,6 +531,8 @@ def dispatch_orders(access_key: str, secret_key: str, vendor_id: str, ship_data:
                     else:
                         total_fail += 1
                         fail_details.append(f"[실패] {poid}: {str(rb)[:180]}")
+                        fail_items.append({"상품주문번호": str(poid), "구분": "실패",
+                                           "사유": str(rb)[:160]})
                     continue
                 _ok = (rr.get("succeed") is True
                        or str(rr.get("resultCode", "")).upper() in ("SUCCESS", "PERMANENT_SUCCESS"))
@@ -533,11 +542,14 @@ def dispatch_orders(access_key: str, secret_key: str, vendor_id: str, ship_data:
                 else:
                     total_fail += 1
                     fail_details.append(f"[실패] {poid}: {rr.get('resultMessage') or rr}")
+                    fail_items.append({"상품주문번호": str(poid), "구분": "실패",
+                                       "사유": str(rr.get('resultMessage') or rr)[:160]})
 
     return {
         "success": total_success,
         "fail": total_fail,
         "fail_details": fail_details,
+        "fail_items": fail_items,
         "sent_count": len(ship_data),
         "success_order_ids": success_order_ids,
     }, None

@@ -309,6 +309,9 @@ def ship_orders(client_id, client_secret, ship_data):
     total_success = 0
     total_fail = 0
     all_fail_details = []
+    # 구조화 실패 목록 — 화면에서 수취인·상품명과 합쳐 표로 보여주기 위함.
+    #   fail_details(문자열)는 알림·로그용으로 그대로 유지한다.
+    all_fail_items = []
     success_order_ids = []
 
     try:
@@ -333,6 +336,8 @@ def ship_orders(client_id, client_secret, ship_data):
                         poid = f.get("productOrderId", "")
                         msg = f.get("message", "사유 미상")
                         all_fail_details.append(f"[실패] {poid}: {msg}")
+                        all_fail_items.append({"상품주문번호": str(poid),
+                                               "구분": "실패", "사유": str(msg)})
                     break  # 청크 성공, 다음 청크로
 
                 # 400 오류 — 실패 인덱스 파싱 후 해당 항목 제거 후 재시도
@@ -346,6 +351,9 @@ def ship_orders(client_id, client_secret, ship_data):
                         all_fail_details.append(
                             f"[건너뜀] {bad_poid}: 발송처리 불가 (이미 처리됐거나 취소/반품 상태)"
                         )
+                        all_fail_items.append({
+                            "상품주문번호": str(bad_poid), "구분": "건너뜀",
+                            "사유": "발송처리 불가 (이미 처리됐거나 취소/반품 상태)"})
                         total_fail += 1
                         continue  # 재시도
                 # 인덱스 파싱 불가 또는 반복 실패 → 전체 청크 실패 처리
@@ -358,6 +366,10 @@ def ship_orders(client_id, client_secret, ship_data):
                     f"[오류 400] {err_msg} ({len(remaining)}건 전체 실패)"
                 )
                 all_fail_details.append(f"    └ 전송한 상품주문번호: {_bad_show}")
+                for _bx in remaining:
+                    all_fail_items.append({
+                        "상품주문번호": str(_bx.get("productOrderId", "")),
+                        "구분": "오류400", "사유": str(err_msg)[:160]})
                 total_fail += len(remaining)
                 break
 
@@ -365,6 +377,7 @@ def ship_orders(client_id, client_secret, ship_data):
             "success": total_success,
             "fail": total_fail,
             "fail_details": all_fail_details,
+            "fail_items": all_fail_items,
             "sent_count": len(dispatch_list),
             "success_order_ids": success_order_ids,
         }, None
