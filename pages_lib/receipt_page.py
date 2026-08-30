@@ -412,9 +412,8 @@ def _render_photo_receipt(USERNAME: str, settings: dict, compact: bool = False,
                             # 사진 영수증도 수익계산이 쓸 수 있게 DB에 남긴다
                             _persist_receipt_items(USERNAME, st.session_state['receipt_items'])
                             # 🌐 사진 영수증도 공유DB에 반영 (상품명·번호·매입가).
-                            #    이게 있어야 각 사용자의 '구매금액 정산'과 수익계산 구입가가
-                            #    영수증 실단가로 잡힌다.
-                            if True:
+                            #    PDF 경로와 같은 이유로 관리자 전용.
+                            if is_admin:
                                 _sh_ok, _sh_skip = 0, 0
                                 for _sit in _items:
                                     _spno = str(_sit.get('상품번호', '') or '').strip()
@@ -594,11 +593,10 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict, embedded: bool = False
             _persist_receipt_items(USERNAME, st.session_state['receipt_items'])
 
             # 🌐 영수증 → 공유DB 자동 저장 (상품명·코스트코 상품번호·매입가).
-            #    코스트코 상품번호 있는 항목만. 소분(번호 없음)은 각자 DB로 매칭되므로 제외.
-            #    관리자는 force_store=True로 항상 실단가를 덮어쓰고, 일반 사용자는
-            #    _upsert_shared_internal의 receipt_date 가드에 걸려
-            #    "신규 등록 + 더 최신 영수증일 때만 가격 갱신"으로 동작한다.
-            if True:
+            #    **관리자만** 쓴다. 매장 구매·발송·청구를 관리자가 전담하는 운영이라
+            #    영수증도 관리자만 올리고, 공유DB의 매장 실단가가 곧 사용자 청구
+            #    근거가 되기 때문이다. 사용자가 올린 값이 섞이면 청구액이 흔들린다.
+            if IS_ADMIN:
                 _rc_sig = "|".join(f"{p.get('상품번호','')}:{p.get('단가',0)}" for p in deduped)
                 if st.session_state.get('_rcpt_shared_saved_sig') != _rc_sig:
                     _saved_n = 0
