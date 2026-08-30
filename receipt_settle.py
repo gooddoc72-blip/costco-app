@@ -10,6 +10,9 @@
 비용 공식은 수익계산과 동일:
   구입가 = (영수증단가 // split_qty) * 수량 * 묶음배수(pack)
 """
+import os
+import sqlite3
+
 from db import get_user_db, get_all_users, get_all_products
 from services import resolve_pack_factor, _token_score
 
@@ -52,7 +55,76 @@ def _order_cost(receipt_unit, qty, product):
     return (int(receipt_unit) // split) * int(qty) * pack
 
 
-def allocate_receipt_to_orders(receipt_items, date_from, date_to, users=None):
+def build_stock_pool(date_upto, exclude_dates=None):
+    """지정일까지의 '가용 재고'를 계산한다 — {코스트코번호: {units, price, name}}.
+
+    왜 필요한가:
+      실제 운영은 당일 산 것만 당일 나가지 않는다. 8/13에 10개 사서 8/13에 3개,
+      8/18에 4개 나가는 식이다. 그런데 매칭은 '그날 영수증 ↔ 그날 주문'만 봐서,
+      재고에서 나간 주문은 영원히 미매칭으로 남았다(8/18 실측: 미매칭 56건 중
+      16건이 과거 영수증에 있는 재고 출고분이었다).
+
+    계산 방식 — 이미 저장된 사실만 쓴다. 별도 장부를 만들지 않아 이중 차감이 없다:
+      가용 units = Σ(영수증 구매 qty × split_qty)  −  Σ(정산에 배치된 qty × pack)
+    단위는 소분 단위(units)다. 소분 상품은 1팩이 split_qty개로 쪼개져 나간다.
+    """
+    from db import get_shared_products
+    import glob
+    from db_core import DATA_DIR
+
+    exclude = {str(d) for d in (exclude_dates or [])}
+    split_by = {}
+    for sp in (get_shared_products() or []):
+        pn = _norm(sp.get('product_no'))
+        if pn:
+            split_by[pn] = max(1, int(sp.get('split_qty') or 1))
+
+    # ① 입고 — 모든 사용자 DB의 영수증 이력 (지정일 이하, 제외일 빼고)
+    pool = {}
+    for f in sorted(glob.glob(os.path.join(DATA_DIR, "*.db"))):
+        u = os.path.basename(f)[:-3]
+        if u == "auth" or ".bak" in u or ".backup" in u:
+            continue
+        try:
+            conn = sqlite3.connect(f)
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT product_no, product_name, unit_price, qty, receipt_date "
+                "FROM receipt_items WHERE receipt_date <= ?", (str(date_upto),)).fetchall()
+            conn.close()
+        except Exception:
+            continue
+        for r in rows:
+            pn = _norm(r['product_no'])
+            rd = _norm(r['receipt_date'])
+            if not pn or rd in exclude:
+                continue
+            e = pool.setdefault(pn, {'units': 0, 'price': 0, 'name': '', 'date': ''})
+            e['units'] += int(r['qty'] or 0) * split_by.get(pn, 1)
+            if rd >= e['date']:          # 가장 최근 영수증 단가를 쓴다
+                e['price'] = int(r['unit_price'] or 0)
+                e['name'] = _norm(r['product_name'])
+                e['date'] = rd
+
+    # ② 출고 — 이미 정산에 배치된 수량
+    try:
+        from db_receipt_settle import _conn as _rs_conn, _ensure as _rs_ensure
+        c = _rs_conn(); _rs_ensure(c)
+        for pn, used in c.execute(
+                "SELECT costco_no, SUM(qty) FROM receipt_settle_items "
+                "WHERE order_date <= ? GROUP BY costco_no", (str(date_upto),)):
+            pn = _norm(pn)
+            if pn in pool:
+                pool[pn]['units'] -= int(used or 0)
+        c.close()
+    except Exception:
+        pass
+
+    return {k: v for k, v in pool.items() if v['units'] > 0}
+
+
+def allocate_receipt_to_orders(receipt_items, date_from, date_to, users=None,
+                               stock_pool=None):
     """영수증 품목을 기간 내 모든 사용자 주문에 코스트코 상품번호로 자동배치.
 
     Returns:
@@ -115,7 +187,29 @@ def allocate_receipt_to_orders(receipt_items, date_from, date_to, users=None):
                 if _best and _sc >= 0.55:
                     costco_no = _best['costco']
                     via = 'name'
-            if costco_no not in price_by_costco:
+            # ③ 재고 이월 — 당일 영수증에 없으면 과거 구매분(가용 재고)에서 찾는다.
+            #    실제로는 며칠 전 산 걸 오늘 내보내는 일이 흔한데, 당일 영수증만
+            #    보면 그게 전부 미매칭으로 남았다. 찾으면 수량을 차감해 같은 재고가
+            #    두 번 쓰이지 않게 한다.
+            _from_stock = None
+            if costco_no not in price_by_costco and stock_pool:
+                _cand = _norm((prod or {}).get('product_no')) or onv
+                if _cand not in stock_pool:
+                    _cand, _sc2 = None, 0.0
+                    for _pn, _e in stock_pool.items():
+                        _s = _token_score(nm, _e.get('name') or '')
+                        if _s > _sc2:
+                            _sc2, _cand = _s, _pn
+                    if _sc2 < 0.55:
+                        _cand = None
+                if _cand and stock_pool.get(_cand, {}).get('units', 0) > 0:
+                    _need = int(o['qty'] or 1) * int(_split_pack(prod)[1] or 1)
+                    if stock_pool[_cand]['units'] >= _need:
+                        stock_pool[_cand]['units'] -= _need
+                        _from_stock = _cand
+                        via = 'stock'
+
+            if _from_stock is None and costco_no not in price_by_costco:
                 # 미매칭 주문 — 수동/AI 매칭 후보로 반환
                 unmatched_orders.append({
                     'username': uname, 'order_no': _norm(o['order_no']),
@@ -125,7 +219,11 @@ def allocate_receipt_to_orders(receipt_items, date_from, date_to, users=None):
                     'split_qty': int((prod or {}).get('split_qty', 1) or 1),
                 })
                 continue
-            up = price_by_costco[costco_no]
+            if _from_stock is not None:
+                costco_no = _from_stock
+                up = int(stock_pool[_from_stock].get('price') or 0)
+            else:
+                up = price_by_costco[costco_no]
             qty = int(o['qty'] or 1)
             _sq, _pk = _split_pack(prod)
             rows.append({
