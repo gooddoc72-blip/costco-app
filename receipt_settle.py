@@ -55,6 +55,21 @@ def _order_cost(receipt_unit, qty, product):
     return (int(receipt_unit) // split) * int(qty) * pack
 
 
+def get_settle_start_date():
+    """정산 기준일 — 이 날짜 이전의 구매(영수증)는 매칭에 쓰지 않는다.
+
+    과거 데이터는 영수증 업로드가 들쭉날쭉해 재고 계산이 실제와 맞지 않는다.
+    기준일부터 규칙대로(매일 구매 → 당일 영수증 업로드 → 당일 정산) 쌓아야
+    재고 이월이 신뢰할 수 있는 값이 된다.
+    데이터를 지우지는 않는다 — 과거 영수증은 공유DB 매장 카탈로그의 근거다.
+    """
+    try:
+        from db import get_global_setting
+        return (get_global_setting("settle_start_date") or "").strip()
+    except Exception:
+        return ""
+
+
 def build_stock_pool(date_upto, exclude_dates=None):
     """지정일까지의 '가용 재고'를 계산한다 — {코스트코번호: {units, price, name}}.
 
@@ -88,9 +103,16 @@ def build_stock_pool(date_upto, exclude_dates=None):
         try:
             conn = sqlite3.connect(f)
             conn.row_factory = sqlite3.Row
-            rows = conn.execute(
-                "SELECT product_no, product_name, unit_price, qty, receipt_date "
-                "FROM receipt_items WHERE receipt_date <= ?", (str(date_upto),)).fetchall()
+            _start = get_settle_start_date()
+            if _start:
+                rows = conn.execute(
+                    "SELECT product_no, product_name, unit_price, qty, receipt_date "
+                    "FROM receipt_items WHERE receipt_date <= ? AND receipt_date >= ?",
+                    (str(date_upto), _start)).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT product_no, product_name, unit_price, qty, receipt_date "
+                    "FROM receipt_items WHERE receipt_date <= ?", (str(date_upto),)).fetchall()
             conn.close()
         except Exception:
             continue
@@ -110,9 +132,12 @@ def build_stock_pool(date_upto, exclude_dates=None):
     try:
         from db_receipt_settle import _conn as _rs_conn, _ensure as _rs_ensure
         c = _rs_conn(); _rs_ensure(c)
-        for pn, used in c.execute(
-                "SELECT costco_no, SUM(qty) FROM receipt_settle_items "
-                "WHERE order_date <= ? GROUP BY costco_no", (str(date_upto),)):
+        _st = get_settle_start_date()
+        _q = ("SELECT costco_no, SUM(qty) FROM receipt_settle_items "
+              "WHERE order_date <= ?" + (" AND order_date >= ?" if _st else "") +
+              " GROUP BY costco_no")
+        _args = (str(date_upto), _st) if _st else (str(date_upto),)
+        for pn, used in c.execute(_q, _args):
             pn = _norm(pn)
             if pn in pool:
                 pool[pn]['units'] -= int(used or 0)
