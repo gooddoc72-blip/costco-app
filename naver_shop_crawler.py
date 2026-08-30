@@ -36,8 +36,11 @@ ERR_EXPIRED = ("네이버 로그인 세션이 만료됐습니다. naver_session_
 #   찾게 만들었다 — 원인 순서대로 안내한다.
 #   화면은 st.code()로 그려 마크다운이 먹지 않고, 키워드마다 반복 출력되므로
 #   평문으로 짧게 유지한다. 자세한 조치 순서는 설정 화면 안내에 둔다.
-ERR_BLOCKED = ("네이버가 쇼핑 검색 접근을 제한했습니다 — 대개 IP가 아니라 로그인 계정 "
-               "단위입니다. naver_session_setup.py 로 다른 계정 세션을 발급하세요.")
+#   원인을 단정하지 않는다. 실측(2026-08-30)으로 배제된 것: IP(서버·가정용 동시 차단),
+#   헤드리스 여부, AutomationControlled 플래그, URL 파라미터, 저장 순서,
+#   storage_state vs 영구프로필. 대화형 로그인 직후의 첫 요청만 통과했다.
+ERR_BLOCKED = ("네이버가 쇼핑 검색 접근을 제한했습니다(자동 수집 차단). "
+               "naver_session_setup.py 로 세션을 다시 발급해 보세요.")
 
 _BLOCK_MARKS = ("접속이 일시적으로 제한", "일시적으로 제한되었습니다", "content_error")
 
@@ -151,16 +154,40 @@ def fetch_shop_items(keyword, max_items=400, session_path=None, sort="rel",
 
     try:
         with sync_playwright() as pw:
-            br = pw.chromium.launch(
-                headless=headless,
-                proxy=proxy_cfg,
-                args=["--no-sandbox", "--disable-dev-shm-usage",
-                      "--disable-blink-features=AutomationControlled"],
-            )
+            # ⭐ 영구 프로필 우선.
+            #   storage_state(쿠키+localStorage)로 복원한 컨텍스트는 쇼핑 검색에서
+            #   항상 차단 페이지를 받았다. 같은 계정·같은 IP·같은 옵션인데 로그인
+            #   직후의 라이브 컨텍스트만 통과했다 — storage_state가 sessionStorage를
+            #   저장하지 않기 때문으로 보인다. 실제 사용자 프로필 디렉터리를 그대로
+            #   재사용하면 그 상태가 통째로 남는다.
+            _args = ["--no-sandbox", "--disable-dev-shm-usage",
+                     "--disable-blink-features=AutomationControlled"]
+            _ctx_kw = dict(locale="ko-KR", user_agent=UA,
+                           viewport={"width": 1400, "height": 900},
+                           extra_http_headers={"Accept-Language": "ko-KR,ko;q=0.9"})
+            _use_profile = os.path.isdir(PROFILE_DIR)
+            br = None
+            if _use_profile:
+                ctx = pw.chromium.launch_persistent_context(
+                    PROFILE_DIR, headless=headless, proxy=proxy_cfg,
+                    args=_args, **_ctx_kw)
+                # 프로필은 브라우저를 닫을 때 **세션 쿠키(NID_AUT/NID_SES)를 버린다**
+                #   → 프로필만으로는 로그아웃 상태가 된다. 저장해 둔 쿠키를 주입해
+                #   로그인 상태를 되살린다. 프로필은 sessionStorage 등 나머지 상태를,
+                #   쿠키 파일은 로그인 자격을 담당하는 조합이다.
+                try:
+                    import json as _json
+                    with open(p, encoding="utf-8") as _f:
+                        _ck = (_json.load(_f) or {}).get("cookies") or []
+                    if _ck:
+                        ctx.add_cookies(_ck)
+                except Exception:
+                    pass
+            else:
+                br = pw.chromium.launch(headless=headless, proxy=proxy_cfg, args=_args)
             try:
-                ctx = br.new_context(storage_state=p, locale="ko-KR", user_agent=UA,
-                                     viewport={"width": 1400, "height": 900},
-                                     extra_http_headers={"Accept-Language": "ko-KR,ko;q=0.9"})
+                if not _use_profile:
+                    ctx = br.new_context(storage_state=p, **_ctx_kw)
                 ctx.add_init_script(
                     "Object.defineProperty(navigator,'webdriver',{get:()=>undefined});")
                 page = ctx.new_page()
@@ -225,7 +252,14 @@ def fetch_shop_items(keyword, max_items=400, session_path=None, sort="rel",
                     if idx < pages:
                         time.sleep(random.uniform(min_delay, max_delay))
             finally:
-                br.close()
+                # 영구 프로필이면 br이 없다(launch_persistent_context가 컨텍스트를 직접 반환)
+                if br is not None:
+                    br.close()
+                else:
+                    try:
+                        ctx.close()
+                    except Exception:
+                        pass
     except Exception as e:
         return None, str(e)[:200]
 

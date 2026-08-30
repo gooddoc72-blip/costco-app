@@ -20,10 +20,28 @@ import json
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 SESSION_PATH = os.path.join(BASE, "data", "naver_session.json")
+PROFILE_DIR = os.path.join(BASE, "data", "naver_browser_profile")
 DIAG_PATH = os.path.join(BASE, "data", "naver_session_diag.json")
 TEST_KEYWORD = "검은콩"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36")
+
+
+# 한글 Windows 콘솔은 기본 cp949라 이모지(✅ 등)를 print하면 UnicodeEncodeError로
+# 죽는다. 실제로 로그인 감지 직후 죽어 세션 저장(ctx.storage_state)까지 못 갔다.
+# 콘솔 인코딩을 UTF-8로 바꾸되, 그래도 못 찍는 문자는 대체해 절대 죽지 않게 한다.
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
+
+def _q(v):
+    """헤더·URL에 넣을 값은 반드시 퍼센트 인코딩. 한글이 그대로 들어가면
+    'Invalid character in header content' 로 검증이 실패한다."""
+    import urllib.parse
+    return urllib.parse.quote(str(v))
 
 
 def main():
@@ -45,11 +63,16 @@ def main():
 
     diag = {}
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=False,
-                                    args=["--disable-blink-features=AutomationControlled"])
-        ctx = browser.new_context(locale="ko-KR", viewport={"width": 1280, "height": 900},
-                                  user_agent=UA)
-        page = ctx.new_page()
+        # ⭐ 영구 프로필로 로그인한다. storage_state는 sessionStorage를 저장하지
+        #   않아, 복원한 컨텍스트가 쇼핑 검색에서 차단됐다. 수집기도 같은 프로필을
+        #   재사용하므로 로그인 상태가 그대로 이어진다.
+        os.makedirs(PROFILE_DIR, exist_ok=True)
+        browser = None
+        ctx = p.chromium.launch_persistent_context(
+            PROFILE_DIR, headless=False,
+            args=["--disable-blink-features=AutomationControlled"],
+            locale="ko-KR", viewport={"width": 1280, "height": 900}, user_agent=UA)
+        page = ctx.pages[0] if ctx.pages else ctx.new_page()
         page.goto("https://nid.naver.com/nidlogin.login", wait_until="domcontentloaded")
 
         # 로그인 쿠키(NID_AUT/NID_SES)가 생길 때까지 최대 10분 대기 — 콘솔 입력 불필요
@@ -71,7 +94,7 @@ def main():
                 print("   ... 대기 %d초" % _waited)
         else:
             print("\n10분 안에 로그인이 감지되지 않아 종료합니다.")
-            browser.close()
+            ctx.close()
             return 1
 
         # 1) 무슨 일이 있어도 세션부터 저장 (검증 실패해도 쿠키는 남긴다)
@@ -85,7 +108,7 @@ def main():
         print("로그인 쿠키(NID_AUT/NID_SES): %s" % ("있음 ✅" if logged_in else "없음 ❌"))
         if not logged_in:
             print("→ 로그인이 완료되지 않았습니다. 창에서 로그인 후 다시 실행해 주세요.")
-            browser.close()
+            ctx.close()
             _save_diag(diag)
             return 1
 
@@ -107,6 +130,17 @@ def main():
         print("   title: %s" % title[:60])
         print("   → %s" % ("차단(로그인 요구) ❌" if blocked else "접근 성공 ✅"))
 
+        # ⭐ 쇼핑 페이지를 실제로 방문한 뒤 다시 저장한다.
+        #   예전엔 로그인 직후에만 저장해서, 쇼핑 검색이 내려주는 세션 쿠키가
+        #   파일에 안 담겼다. 그 세션을 복원하면 수집기가 곧바로 차단 페이지를 받는다
+        #   (로그인 창에서는 되는데 크롤러만 막히던 원인).
+        if not blocked:
+            page.wait_for_timeout(1500)
+            ctx.storage_state(path=SESSION_PATH)
+            _c2 = ctx.cookies()
+            print("   세션 재저장: 쿠키 %d개 (쇼핑 방문 후)" % len(_c2))
+            diag["cookie_count_after_shop"] = len(_c2)
+
         # 3) 내부 검색 API 응답 구조 확인 (세션 쿠키 그대로 사용)
         print("\n[검증2] 내부 검색 API 호출...")
         try:
@@ -114,7 +148,8 @@ def main():
                 "https://search.shopping.naver.com/api/search/all",
                 params={"sort": "rel", "pagingIndex": 1, "pagingSize": 40,
                         "productSet": "total", "query": TEST_KEYWORD},
-                headers={"Referer": "https://search.shopping.naver.com/search/all?query=" + TEST_KEYWORD,
+                headers={"Referer": ("https://search.shopping.naver.com/search/all?query="
+                                     + _q(TEST_KEYWORD)),   # 한글 그대로 넣으면 헤더 오류
                          "User-Agent": UA, "Accept": "application/json, text/plain, */*",
                          "Accept-Language": "ko-KR,ko;q=0.9"},
                 timeout=30000)
@@ -138,7 +173,7 @@ def main():
             diag["api_exception"] = repr(e)[:200]
             print("   호출 실패: %s" % repr(e)[:120])
 
-        browser.close()
+        ctx.close()
 
     _save_diag(diag)
     ok = diag.get("api_status") == 200 and diag.get("api_product_count")
