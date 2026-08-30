@@ -93,16 +93,44 @@ def dedup_product_name(name):
 
 def check_keyword_rank(open_client_id, open_client_secret, keyword,
                        our_product_name='', naver_product_no='',
-                       store_name='', max_pages=10):
+                       store_name='', max_pages=10, proxy=None):
     """
-    네이버 쇼핑 검색에서 원부/단독 순위 별도 추적 (최대 1000위 탐색)
-    반환: (rank_wonbu, rank_solo, error)
+    네이버 쇼핑 검색에서 원부/단독 순위 별도 추적
+    반환: (rank_wonbu, rank_compare, rank_solo, error)
       - rank_wonbu: 가격비교 모음(원부) 매칭 시 순위 (None=미발견)
+      - rank_compare: 가격비교 상품 매칭 시 순위 (None=미발견)
       - rank_solo: 단독 상품 매칭 시 순위 (None=미발견)
-    productType (Naver 쇼핑 검색 API):
-      "1" 일반상품, "2" 가격비교 매칭 일반상품
-      "3" 가격비교 비매칭 일반상품, "4" 단독상품
-      가격비교 모음(원부)은 별도 productType 사용 (보통 큰 값)
+
+    수집 경로: 네이버가 쇼핑 검색 API를 폐지(404 SE05)하고 웹 검색도 비로그인을
+    차단해, 로그인 세션 쿠키로 내부 검색 API를 호출한다(naver_shop_crawler).
+    open_client_id/secret은 더 이상 쓰지 않지만 호출부 호환을 위해 인자는 유지한다.
+    """
+    # ── 1단계: 로그인 세션으로 검색결과 수집 (전체 통합 순위 기준) ──
+    # pos = 광고 제외한 실제 노출 순위. max_pages는 100건 단위(기존 호출부 호환)
+    try:
+        import naver_shop_crawler
+    except ImportError as e:
+        return None, None, None, f"수집 모듈 로드 실패: {e}"
+
+    collected, _cerr = naver_shop_crawler.fetch_shop_items(
+        keyword, max_items=max(40, int(max_pages) * 100), proxy=proxy)
+    if _cerr:
+        return None, None, None, _cerr
+    if not collected:
+        _last_match_info[0] = ""
+        return None, None, None, None
+
+    _w, _c, _s = match_rank_in_items(collected, keyword, our_product_name,
+                                     naver_product_no, store_name)
+    return _w, _c, _s, None
+
+
+def match_rank_in_items(collected, keyword, our_product_name='', naver_product_no='',
+                        store_name=''):
+    """수집된 검색결과(collected)에서 우리 상품의 순위를 찾는다.
+
+    수집과 매칭을 분리해, 키워드 1회 수집분을 여러 계정·여러 상품 매칭에 재사용한다.
+    반환: (rank_wonbu, rank_compare, rank_solo)
     """
     try:
         from utils import ProductMatcher
@@ -110,78 +138,13 @@ def check_keyword_rank(open_client_id, open_client_secret, keyword,
         ProductMatcher = None
 
     _last_match_info[0] = ""
-    """
-    네이버 쇼핑 검색 API로 키워드 순위 확인.
-    open_client_id/secret: developers.naver.com Open API 키 (Commerce API와 다름)
-    반환: (rank_price_compare, rank_total, error_msg)
-      - rank_price_compare: 가격비교 상품 중 순위 (None=미발견)
-      - rank_total: 전체 상품 중 순위 (None=미발견)
-    """
-    headers = {
-        "X-Naver-Client-Id": open_client_id,
-        "X-Naver-Client-Secret": open_client_secret,
-    }
 
     import re as _re
     def _clean_trigrams(s):
         s = _re.sub(r'[^\w가-힣]', '', s.lower())
         return set(s[i:i+3] for i in range(len(s)-2)) if len(s) >= 3 else set()
 
-    def _classify(item):
-        try:
-            hp = int(item.get("hprice") or 0)
-        except (TypeError, ValueError):
-            hp = 0
-        if hp > 0:
-            return "원부"
-        ptype = str(item.get("productType", ""))
-        if ptype == "2":
-            return "가격비교"
-        return "단독"
-
-    # ── 1단계: 모든 항목을 먼저 수집 (전체 통합 순위 기준) ──
-    # pos = API 응답 전체에서 몇 번째인지 (광고 제외, 분류 무관)
-    # 실제 네이버 웹 순위와 동일한 기준으로 계산
-    collected = []
-    overall_pos = 0
-
-    for page in range(max_pages):
-        start = page * 100 + 1
-        params = {"query": keyword, "display": 100, "start": start, "sort": "sim"}
-        try:
-            resp = requests.get(
-                "https://openapi.naver.com/v1/search/shop.json",
-                headers=headers, params=params, timeout=15,
-            )
-            if resp.status_code == 401:
-                return None, None, None, "인증 실패: 네이버 Open API 키를 확인해주세요"
-            if resp.status_code != 200:
-                err = resp.json().get("errorMessage", resp.text[:200])
-                return None, None, None, f"API 오류({resp.status_code}): {err}"
-
-            items = resp.json().get("items", [])
-            if not items:
-                break
-
-            for item in items:
-                overall_pos += 1
-                cls = _classify(item)
-                collected.append({
-                    "cls": cls,
-                    "pos": overall_pos,
-                    "mall_pid": str(item.get("productId", "")),
-                    "title": item.get("title", "").replace("<b>", "").replace("</b>", "").strip(),
-                    "mall": item.get("mallName", ""),
-                    "ptype": str(item.get("productType", "")),
-                    "hp": item.get("hprice") or 0,
-                })
-        except Exception as e:
-            return None, None, None, str(e)
-
-    if not collected:
-        return None, None, None, None
-
-    # ── 2단계: 우선순위 매칭 ──
+    # ── 우선순위 매칭 ──
     # 우선순위: 1) PNO_EXACT (productId)  2) STORE+NAME (best sim)  3) NAME_ONLY
     rank_wonbu = rank_compare = rank_solo = None
     debug_lines = []
@@ -237,7 +200,7 @@ def check_keyword_rank(open_client_id, open_client_secret, keyword,
 
     if debug_lines:
         _last_match_info[0] = " || ".join(debug_lines)
-    return rank_wonbu, rank_compare, rank_solo, None
+    return rank_wonbu, rank_compare, rank_solo
 
 
 

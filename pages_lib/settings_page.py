@@ -4,6 +4,7 @@ import pandas as pd
 
 from db import (
     set_setting, change_password, get_user_db,
+    get_global_setting, set_global_setting,
 )
 from utils import fmt
 from pages_lib import guide_page
@@ -282,10 +283,39 @@ def _render_settings_content(USERNAME: str, _gs, IS_ADMIN: bool = False):
     else:
         st.info("쇼핑몰 ID와 Client ID/Secret을 입력·저장하면 '카페24 인증' 버튼이 나타납니다.")
 
+    # ── 순위 체크 수집 설정 (로그인 세션 + 프록시) ─────────
+    st.divider()
+    st.subheader("📈 순위 체크 수집 설정")
+    st.caption("네이버가 2026년 쇼핑 검색 API를 폐지하고 비로그인 접근도 차단해, "
+               "순위 체크는 로그인 세션으로 검색 페이지를 직접 읽습니다.")
+    try:
+        import naver_shop_crawler as _nsc
+        _ok, _msg = _nsc.session_status()
+        (st.success if _ok else st.warning)(
+            f"{'✅' if _ok else '⚠️'} 네이버 로그인 세션: {_msg}")
+        if not _ok:
+            st.caption("로컬 PC에서 `naver_session_setup.py` 실행 → 생성된 "
+                       "`data/naver_session.json` 을 서버 `/opt/costco-app/data/` 에 업로드")
+    except Exception as _se:
+        st.info(f"세션 상태 확인 불가: {_se}")
+
+    if IS_ADMIN:
+        _px_now = get_global_setting('naver_crawl_proxy') or ''
+        _new_px = st.text_input(
+            "프록시 주소 (전체 사용자 공용)", value=_px_now, key="crawl_proxy_in",
+            placeholder="http://아이디:비밀번호@호스트:포트  (비우면 서버 IP로 직접 접속)")
+        st.caption("네이버는 짧은 시간에 요청이 몰린 IP의 접속을 일시 제한합니다. "
+                   "통신사 유동IP(주거용) 프록시를 권장하며, 데이터센터·VPN 대역은 차단될 수 있습니다.")
+        if st.button("프록시 저장", key="save_crawl_proxy"):
+            set_global_setting('naver_crawl_proxy', _new_px.strip())
+            st.success("✅ 프록시 설정 저장 완료!")
+
     # ── 네이버 Open API ───────────────────────────────────
     st.divider()
-    st.subheader("🔍 네이버 Open API (순위 체크용)")
-    st.caption("developers.naver.com에서 쇼핑 검색 API를 신청하면 발급받을 수 있습니다. 네이버 커머스 API 키와 별개입니다.")
+    st.subheader("🔍 네이버 Open API (검색량·트렌드용)")
+    st.caption("데이터랩 12개월 추이·성별/연령 조회에 사용됩니다. "
+               "개발자센터(developers.naver.com) 키와 NAVER API HUB(ncloud.com) 키 모두 인식합니다. "
+               "쇼핑 검색 API는 폐지돼 순위 체크에는 더 이상 쓰이지 않습니다.")
     _oc1, _oc2 = st.columns(2)
     _new_open_cid  = _oc1.text_input("Client ID",     value=_gs('naver_open_client_id'),  key="open_cid_in")
     _new_open_csec = _oc2.text_input("Client Secret", value=_gs('naver_open_client_secret'), type="password", key="open_csec_in")
