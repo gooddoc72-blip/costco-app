@@ -148,6 +148,83 @@ def build_stock_pool(date_upto, exclude_dates=None):
     return {k: v for k, v in pool.items() if v['units'] > 0}
 
 
+def get_stock_status(date_upto=None):
+    """현재 구입재고 현황 — 입고·사용·잔량·재고금액.
+
+    build_stock_pool은 '남은 것'만 돌려주는데, 현황 화면은 입고/사용까지
+    보여야 실물과 대조할 수 있다. 같은 원천(영수증 이력·정산 기록)을 쓰되
+    차감 전 값도 함께 낸다.
+    반환: [{costco_no, name, price, units_in, units_used, units_left, amount}]
+    """
+    import glob
+    from datetime import datetime as _dt
+    from db import get_shared_products
+    from db_core import DATA_DIR
+
+    d = str(date_upto or _dt.now().strftime("%Y-%m-%d"))
+    start = get_settle_start_date()
+
+    split_by = {}
+    for sp in (get_shared_products() or []):
+        pn = _norm(sp.get('product_no'))
+        if pn:
+            split_by[pn] = max(1, int(sp.get('split_qty') or 1))
+
+    pool = {}
+    for f in sorted(glob.glob(os.path.join(DATA_DIR, "*.db"))):
+        u = os.path.basename(f)[:-3]
+        if u == "auth" or ".bak" in u or ".backup" in u:
+            continue
+        try:
+            conn = sqlite3.connect(f)
+            conn.row_factory = sqlite3.Row
+            if start:
+                rows = conn.execute(
+                    "SELECT product_no,product_name,unit_price,qty,receipt_date FROM receipt_items "
+                    "WHERE receipt_date <= ? AND receipt_date >= ?", (d, start)).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT product_no,product_name,unit_price,qty,receipt_date FROM receipt_items "
+                    "WHERE receipt_date <= ?", (d,)).fetchall()
+            conn.close()
+        except Exception:
+            continue
+        for r in rows:
+            pn = _norm(r['product_no'])
+            if not pn:
+                continue
+            e = pool.setdefault(pn, {'costco_no': pn, 'name': '', 'price': 0,
+                                     'units_in': 0, 'units_used': 0, 'date': ''})
+            e['units_in'] += int(r['qty'] or 0) * split_by.get(pn, 1)
+            rd = _norm(r['receipt_date'])
+            if rd >= e['date']:
+                e['price'] = int(r['unit_price'] or 0)
+                e['name'] = _norm(r['product_name'])
+                e['date'] = rd
+
+    try:
+        from db_receipt_settle import _conn as _rc, _ensure as _re
+        c = _rc(); _re(c)
+        q = ("SELECT costco_no, SUM(qty) FROM receipt_settle_items WHERE order_date <= ?"
+             + (" AND order_date >= ?" if start else "") + " GROUP BY costco_no")
+        for pn, used in c.execute(q, (d, start) if start else (d,)):
+            pn = _norm(pn)
+            if pn in pool:
+                pool[pn]['units_used'] += int(used or 0)
+        c.close()
+    except Exception:
+        pass
+
+    out = []
+    for e in pool.values():
+        left = e['units_in'] - e['units_used']
+        sq = split_by.get(e['costco_no'], 1)
+        out.append({**e, 'units_left': left,
+                    'amount': max(0, left) * (e['price'] // max(1, sq))})
+    out.sort(key=lambda x: -x['amount'])
+    return out
+
+
 def allocate_receipt_to_orders(receipt_items, date_from, date_to, users=None,
                                stock_pool=None):
     """영수증 품목을 기간 내 모든 사용자 주문에 코스트코 상품번호로 자동배치.

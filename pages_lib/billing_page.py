@@ -220,6 +220,21 @@ def _tab_billing(USERNAME):
         st.info(f"{d} 청구 대상 주문이 없습니다.")
         return
 
+    # ── 원가 미확정(0원) 경고 ─────────────────────────────────
+    #   원가가 0이면 그 주문은 사실상 공짜로 청구된다 = 그대로 손실이다.
+    #   코스트코 단가를 못 찾은 것이므로 청구 전에 반드시 눈에 띄어야 한다.
+    _zero = [r for r in all_rows if int(r.get('cost') or 0) <= 0]
+    if _zero:
+        st.error(f"⚠️ 원가 미확정 {len(_zero)}건 — 0원으로 집계되어 **청구되지 않습니다**. "
+                 "코스트코 단가를 못 찾은 건이니 영수증 정산이나 제품DB에서 단가를 채운 뒤 "
+                 "다시 확인하세요.")
+        with st.expander(f"🔍 원가 미확정 {len(_zero)}건 보기", expanded=True):
+            st.dataframe(pd.DataFrame([
+                {'판매자': dmap.get(r['username'], r['username']), '수취인': r['recipient'],
+                 '상품명': str(r['product_name'])[:44], '수량': r['qty'],
+                 '주문번호': r['order_no']} for r in _zero
+            ]), use_container_width=True, hide_index=True)
+
     summary = {}
     for r in all_rows:
         s = summary.setdefault(r['username'], {'count': 0, 'amount': 0})

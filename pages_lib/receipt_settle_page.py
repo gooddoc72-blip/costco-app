@@ -9,7 +9,7 @@ from services import parse_costco_receipt_pdf, render_pdf_to_images
 from receipt_settle import (
     allocate_receipt_to_orders, apply_receipt_settlement, cleanup_orphan_settlements,
     build_manual_rows, ai_match_receipt_orders, _summarize, compute_leftovers,
-    build_stock_pool, get_settle_start_date,
+    build_stock_pool, get_settle_start_date, get_stock_status,
 )
 from db_receipt_settle import (
     save_settlement_batch, list_settlement_batches, get_settlement_items,
@@ -227,6 +227,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                   'receipt_date': _rd_by_cno.get(cno, '')})
     if not receipt_items:
         st.info("정산하려면 표에 **코스트코 상품번호 + 실단가(>0)** 가 있는 항목이 최소 1개 필요합니다.")
+        _render_stock_status()
         _render_history(_disp_map(), USERNAME)
         return
     st.caption(f"✅ 정산 대상 품목 {len(receipt_items)}종")
@@ -262,6 +263,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
 
     alloc = st.session_state.get('rs_alloc')
     if not alloc:
+        _render_stock_status()
         _render_history(_disp_map(), USERNAME)
         return
 
@@ -338,6 +340,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                        "각 사용자 수익계산에 즉시 반영됩니다.")
             st.rerun()
 
+    _render_stock_status()
     _render_history(dmap, USERNAME)
 
 
@@ -531,6 +534,49 @@ def _render_match_section(alloc, dmap, settings, USERNAME):
             _merge_matches(alloc, new, list(ois))
             st.success(f"✋ {len(new)}건 매칭 추가")
             st.rerun()
+
+
+def _render_stock_status():
+    """📦 현재 구입재고 — 영수증 입고분에서 주문 사용분을 뺀 잔량.
+
+    정산 시점에만 계산되던 값을 상시 조회 가능하게 한다. 실물 재고와 대조하고
+    묶여 있는 자금을 파악하려면 필요하다.
+    """
+    st.divider()
+    st.subheader("📦 현재 구입재고")
+    _sd = get_settle_start_date()
+    st.caption(f"영수증 입고 − 주문 사용 = 잔량"
+               + (f" · 기준일 **{_sd}** 이후" if _sd else " · 전체 기간"))
+    try:
+        rows = get_stock_status()
+    except Exception as e:
+        st.error(f"재고 조회 실패: {e}")
+        return
+    if not rows:
+        st.info("현재 재고가 없습니다. 영수증을 업로드하면 구입분이 재고로 잡힙니다.")
+        return
+
+    _left = [r for r in rows if r['units_left'] > 0]
+    _neg = [r for r in rows if r['units_left'] < 0]
+    _amt = sum(r['amount'] for r in _left)
+    _m1, _m2, _m3 = st.columns(3)
+    _m1.metric("재고 품목", f"{len(_left)}종")
+    _m2.metric("재고 금액", f"{fmt(_amt)}원")
+    _m3.metric("소진 품목", f"{len(rows) - len(_left) - len(_neg)}종")
+
+    if _neg:
+        st.warning(f"⚠️ 사용량이 입고량을 넘은 품목 {len(_neg)}종 — 영수증 누락이 의심됩니다. "
+                   "그날 구매한 영수증이 업로드됐는지 확인하세요.")
+
+    _only = st.checkbox("잔량 있는 것만", value=True, key="rs_stock_only")
+    _view = _left if _only else rows
+    st.dataframe(pd.DataFrame([
+        {'코스트코번호': r['costco_no'], '상품명': str(r['name'])[:34],
+         '입고': r['units_in'], '사용': r['units_used'], '남음': r['units_left'],
+         '단가': fmt(r['price']), '재고금액': fmt(r['amount'])}
+        for r in _view
+    ]), use_container_width=True, hide_index=True)
+    st.caption("단위는 소분 단위입니다 — 1팩을 N개로 나눠 파는 상품은 팩이 아니라 낱개 기준입니다.")
 
 
 def _render_history(dmap, USERNAME=''):
