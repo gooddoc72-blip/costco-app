@@ -13,6 +13,7 @@ from receipt_settle import (
 from db_receipt_settle import (
     save_settlement_batch, list_settlement_batches, get_settlement_items,
     get_settlement_shortages, get_settlement_leftovers, get_user_billing_basis,
+    set_shortage_decision,
     get_user_settlement_summary, delete_settlement_batch,
 )
 from db import (
@@ -203,7 +204,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                   'receipt_date': _rd_by_cno.get(cno, '')})
     if not receipt_items:
         st.info("정산하려면 표에 **코스트코 상품번호 + 실단가(>0)** 가 있는 항목이 최소 1개 필요합니다.")
-        _render_history(_disp_map())
+        _render_history(_disp_map(), USERNAME)
         return
     st.caption(f"✅ 정산 대상 품목 {len(receipt_items)}종")
 
@@ -235,7 +236,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
 
     alloc = st.session_state.get('rs_alloc')
     if not alloc:
-        _render_history(_disp_map())
+        _render_history(_disp_map(), USERNAME)
         return
 
     dmap = _disp_map()
@@ -311,7 +312,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                        "각 사용자 수익계산에 즉시 반영됩니다.")
             st.rerun()
 
-    _render_history(dmap)
+    _render_history(dmap, USERNAME)
 
 
 def _render_leftover_section(receipt_items, alloc, dmap, d_day, USERNAME):
@@ -506,7 +507,7 @@ def _render_match_section(alloc, dmap, settings, USERNAME):
             st.rerun()
 
 
-def _render_history(dmap):
+def _render_history(dmap, USERNAME=''):
     st.divider()
     _h1, _h2 = st.columns([3, 1.3])
     _h1.subheader("📚 정산 이력")
@@ -555,12 +556,34 @@ def _render_history(dmap):
             except Exception:
                 _sh = []
             if _sh:
-                st.markdown(f"**⚠️ 부족분 {len(_sh)}건** — 주문은 있는데 영수증에서 못 찾은 건")
-                st.dataframe(pd.DataFrame([
-                    {'사용자': dmap.get(x['username'], x['username']), '수취인': x.get('recipient', ''),
-                     '상품명': str(x.get('product_name', ''))[:40], '수량': x.get('qty', 0),
-                     '주문번호': x.get('order_no', '')} for x in _sh
-                ]), use_container_width=True, hide_index=True)
+                _undec = [x for x in _sh if not str(x.get('decision') or '').strip()]
+                st.markdown(f"**⚠️ 부족분 {len(_sh)}건** — 주문은 있는데 영수증에서 못 찾은 건"
+                            + (f" · 미확인 {len(_undec)}건" if _undec else " · 전부 확인됨"))
+                st.caption("실제로 **샀는데 매칭만 실패**한 건은 청구에 포함하고, "
+                           "**정말 못 산 건**은 제외하세요. 제외한 건은 청구서에서 빠집니다.")
+                _DEC_LABEL = {'bill': '✅ 청구포함', 'exclude': '🚫 청구제외', '': '⬜ 미확인'}
+                _pick = []
+                for x in _sh:
+                    _k = f"rs_sh_{b['id']}_{x['id']}"
+                    _c1, _c2 = st.columns([0.5, 9])
+                    if _c1.checkbox("선택", key=_k, label_visibility="collapsed"):
+                        _pick.append(x['id'])
+                    _cur = str(x.get('decision') or '')
+                    _c2.markdown(
+                        f"{_DEC_LABEL.get(_cur, '⬜ 미확인')} · **{dmap.get(x['username'], x['username'])}** "
+                        f"· {str(x.get('recipient') or '')} · {str(x.get('product_name') or '')[:40]} "
+                        f"· {x.get('qty', 0)}개 <span style='color:#999'>({x.get('order_no', '')})</span>",
+                        unsafe_allow_html=True)
+                _b1, _b2, _b3 = st.columns(3)
+                if _b1.button(f"✅ 선택 청구포함 ({len(_pick)})", key=f"rs_shb_{b['id']}",
+                              disabled=not _pick, use_container_width=True):
+                    set_shortage_decision(_pick, 'bill', USERNAME); st.rerun()
+                if _b2.button(f"🚫 선택 청구제외 ({len(_pick)})", key=f"rs_shx_{b['id']}",
+                              disabled=not _pick, use_container_width=True):
+                    set_shortage_decision(_pick, 'exclude', USERNAME); st.rerun()
+                if _b3.button(f"↩ 선택 미확인으로 ({len(_pick)})", key=f"rs_shr_{b['id']}",
+                              disabled=not _pick, use_container_width=True):
+                    set_shortage_decision(_pick, '', USERNAME); st.rerun()
 
             try:
                 _lf = get_settlement_leftovers(b['id']) or []

@@ -76,6 +76,15 @@ def _ensure(conn):
         )
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_rss_batch ON receipt_settle_shortages(batch_id)")
+    # 부족분 판정 — '' 미확인 / bill 청구포함(샀는데 매칭만 실패) / exclude 청구제외(실제 미구매)
+    #   실제로 안 산 물건까지 추정단가로 청구되면 과청구가 된다. 관리자가 건별로 본다.
+    for _sql in ("ALTER TABLE receipt_settle_shortages ADD COLUMN decision TEXT DEFAULT ''",
+                 "ALTER TABLE receipt_settle_shortages ADD COLUMN decided_by TEXT DEFAULT ''",
+                 "ALTER TABLE receipt_settle_shortages ADD COLUMN decided_at TEXT DEFAULT ''"):
+        try:
+            conn.execute(_sql)
+        except Exception:
+            pass
 
     # 재고분 — 영수증으로 산 수량 중 그날 주문에 쓰이지 않고 남은 것
     conn.execute("""
@@ -181,6 +190,38 @@ def get_settlement_shortages(batch_id):
         (batch_id,)).fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+def set_shortage_decision(ids, decision, decided_by=""):
+    """부족분 판정 저장. decision: 'bill' | 'exclude' | '' (미확인으로 되돌리기)."""
+    if not ids:
+        return 0
+    if decision not in ("bill", "exclude", ""):
+        raise ValueError("decision must be bill/exclude/''")
+    conn = _conn(); _ensure(conn)
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    n = 0
+    for i in ids:
+        cur = conn.execute(
+            "UPDATE receipt_settle_shortages SET decision=?, decided_by=?, decided_at=? WHERE id=?",
+            (decision, decided_by, now if decision else "", int(i)))
+        n += cur.rowcount
+    conn.commit(); conn.close()
+    return n
+
+
+def get_excluded_orders(bill_date):
+    """그 날짜에 '청구 제외'로 판정된 (사용자, 주문번호) 집합.
+
+    청구서가 order_history를 훑을 때 이 건들을 빼기 위한 것.
+    날짜는 주문일(order_date) 기준 — 청구서와 같은 기준이어야 한다.
+    """
+    conn = _conn(); _ensure(conn)
+    rows = conn.execute(
+        "SELECT username, order_no FROM receipt_settle_shortages "
+        "WHERE decision='exclude' AND order_date=?", (str(bill_date),)).fetchall()
+    conn.close()
+    return {(str(r[0] or "").strip(), str(r[1] or "").strip()) for r in rows}
 
 
 def get_settlement_leftovers(batch_id):

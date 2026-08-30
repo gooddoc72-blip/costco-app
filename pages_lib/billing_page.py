@@ -200,8 +200,24 @@ def _tab_billing(USERNAME):
             all_rows.append({'username': u, 'order_no': str(o['order_no']),
                              'recipient': o['recipient'], 'product_name': o['product_name'],
                              'qty': int(o['qty'] or 1), 'cost': int(o['cost_price'] or 0)})
+    # ── 청구 제외 반영 ────────────────────────────────────────
+    #   영수증과 매칭되지 않은 주문(부족분) 중 관리자가 '실제로 못 샀다'고 판정한 건은
+    #   청구에서 뺀다. 안 산 물건을 추정단가로 청구하면 과청구가 된다.
+    try:
+        from db_receipt_settle import get_excluded_orders
+        _excl = get_excluded_orders(str(d))
+    except Exception:
+        _excl = set()
+    _excl_rows = [r for r in all_rows if (r['username'], r['order_no']) in _excl]
+    if _excl_rows:
+        all_rows = [r for r in all_rows if (r['username'], r['order_no']) not in _excl]
+        st.warning(f"🚫 청구 제외 {len(_excl_rows)}건 "
+                   f"({fmt(sum(r['cost'] for r in _excl_rows))}원) — "
+                   "영수증 미매칭 중 관리자가 '미구매'로 판정한 건입니다. "
+                   "영수증 정산 › 정산 이력에서 되돌릴 수 있습니다.")
+
     if not all_rows:
-        st.info(f"{d} 주문이 없습니다.")
+        st.info(f"{d} 청구 대상 주문이 없습니다.")
         return
 
     summary = {}
