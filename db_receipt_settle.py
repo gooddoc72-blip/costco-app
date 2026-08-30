@@ -51,11 +51,54 @@ def _ensure(conn):
         )
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_rsi_batch ON receipt_settle_items(batch_id)")
+    # 매칭 출처 — number(코스트코번호 정확) / name(상품명 유사도) / manual(수동·AI)
+    #   청구 근거가 '영수증 확정'인지 '이름으로 추정'인지 구분하려면 반드시 남아야 한다.
+    #   계산은 되고 있었는데 저장에서 빠져 있어, 청구서가 근거를 구분할 수 없었다.
+    try:
+        conn.execute("ALTER TABLE receipt_settle_items ADD COLUMN via TEXT DEFAULT ''")
+    except Exception:
+        pass
+
+    # 부족분 — 그날 주문은 있는데 영수증에서 못 찾은 건 (안 샀거나 매칭 실패)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS receipt_settle_shortages (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            batch_id     INTEGER,
+            username     TEXT,
+            order_no     TEXT,
+            order_date   TEXT,
+            recipient    TEXT,
+            naver_no     TEXT,
+            product_name TEXT,
+            qty          INTEGER DEFAULT 0,
+            prev_cost    INTEGER DEFAULT 0,
+            created_at   TEXT
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_rss_batch ON receipt_settle_shortages(batch_id)")
+
+    # 재고분 — 영수증으로 산 수량 중 그날 주문에 쓰이지 않고 남은 것
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS receipt_settle_leftovers (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            batch_id     INTEGER,
+            costco_no    TEXT,
+            name         TEXT,
+            unit_price   INTEGER DEFAULT 0,
+            qty_receipt  INTEGER DEFAULT 0,
+            split_qty    INTEGER DEFAULT 1,
+            units_in     INTEGER DEFAULT 0,
+            units_used   INTEGER DEFAULT 0,
+            units_left   INTEGER DEFAULT 0,
+            created_at   TEXT
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_rsl_batch ON receipt_settle_leftovers(batch_id)")
     conn.commit()
 
 
 def save_settlement_batch(label, date_from, date_to, receipt_dates,
-                          rows, created_by):
+                          rows, created_by, shortages=None, leftovers=None):
     """정산 배치와 배치행 저장 → batch_id 반환.
 
     rows: [{username, order_no, order_date, costco_no, naver_no,
@@ -76,12 +119,32 @@ def save_settlement_batch(label, date_from, date_to, receipt_dates,
         conn.execute(
             "INSERT INTO receipt_settle_items "
             "(batch_id,username,order_no,order_date,costco_no,naver_no,product_name,"
-            " qty,unit_price,amount,prev_cost,created_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            " qty,unit_price,amount,prev_cost,via,created_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (bid, r.get('username', ''), r.get('order_no', ''), r.get('order_date', ''),
              r.get('costco_no', ''), r.get('naver_no', ''), r.get('product_name', ''),
              int(r.get('qty', 0) or 0), int(r.get('unit_price', 0) or 0),
-             int(r.get('amount', 0) or 0), int(r.get('prev_cost', 0) or 0), now),
+             int(r.get('amount', 0) or 0), int(r.get('prev_cost', 0) or 0),
+             str(r.get('via', '') or ''), now),
+        )
+    for sh in (shortages or []):
+        conn.execute(
+            "INSERT INTO receipt_settle_shortages "
+            "(batch_id,username,order_no,order_date,recipient,naver_no,product_name,"
+            " qty,prev_cost,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (bid, sh.get('username', ''), sh.get('order_no', ''), sh.get('order_date', ''),
+             sh.get('recipient', ''), sh.get('naver_no', ''), sh.get('product_name', ''),
+             int(sh.get('qty', 0) or 0), int(sh.get('prev_cost', 0) or 0), now),
+        )
+    for lf in (leftovers or []):
+        conn.execute(
+            "INSERT INTO receipt_settle_leftovers "
+            "(batch_id,costco_no,name,unit_price,qty_receipt,split_qty,"
+            " units_in,units_used,units_left,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (bid, lf.get('costco_no', ''), lf.get('name', ''),
+             int(lf.get('unit_price', 0) or 0), int(lf.get('qty_receipt', 0) or 0),
+             int(lf.get('split_qty', 1) or 1), int(lf.get('units_in', 0) or 0),
+             int(lf.get('units_used', 0) or 0), int(lf.get('units_left', 0) or 0), now),
         )
     conn.commit()
     conn.close()
@@ -107,6 +170,50 @@ def get_settlement_items(batch_id):
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+def get_settlement_shortages(batch_id):
+    """부족분 — 주문은 있는데 영수증에서 못 찾은 건."""
+    conn = _conn(); _ensure(conn)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(
+        "SELECT * FROM receipt_settle_shortages WHERE batch_id=? ORDER BY username, order_no",
+        (batch_id,)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_settlement_leftovers(batch_id):
+    """재고분 — 영수증 구매 수량 중 그날 주문에 안 쓰이고 남은 것."""
+    conn = _conn(); _ensure(conn)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(
+        "SELECT * FROM receipt_settle_leftovers WHERE batch_id=? ORDER BY units_left DESC",
+        (batch_id,)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_user_billing_basis(batch_id):
+    """사용자별 청구 근거 분해 — 확정(번호)/추정(이름)/수동 금액을 나눠 집계.
+
+    청구액만 보여주면 그 돈이 영수증 실단가인지 이름으로 추측한 값인지 알 수 없다.
+    분쟁을 막으려면 근거를 갈라 보여줘야 한다.
+    """
+    conn = _conn(); _ensure(conn)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(
+        "SELECT username, COALESCE(via,'') via, COUNT(*) n, SUM(amount) amt "
+        "FROM receipt_settle_items WHERE batch_id=? GROUP BY username, via",
+        (batch_id,)).fetchall()
+    conn.close()
+    out = {}
+    for r in rows:
+        u = out.setdefault(r["username"], {"확정": [0, 0], "추정": [0, 0], "수동": [0, 0]})
+        key = {"number": "확정", "name": "추정"}.get(r["via"], "수동")
+        u[key][0] += int(r["n"] or 0)
+        u[key][1] += int(r["amt"] or 0)
+    return out
 
 
 def get_user_settlement_summary(batch_id):

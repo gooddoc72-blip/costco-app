@@ -12,6 +12,7 @@ from receipt_settle import (
 )
 from db_receipt_settle import (
     save_settlement_batch, list_settlement_batches, get_settlement_items,
+    get_settlement_shortages, get_settlement_leftovers, get_user_billing_basis,
     get_user_settlement_summary, delete_settlement_batch,
 )
 from db import (
@@ -287,9 +288,18 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         if st.button("✅ 정산 적용 (구입가 반영 + 정산표 저장)", type="primary", key="rs_apply_btn"):
             with st.spinner("적용 중..."):
                 n = apply_receipt_settlement(rows)
+                # 부족분(주문은 있는데 영수증에 없음)·재고분(사고 남은 것)도 함께 남긴다.
+                #   화면에만 있고 저장이 안 돼, 나중에 "그날 뭐가 모자랐나"를 알 수 없었다.
+                _short = (alloc.get('unmatched_orders') or [])
+                try:
+                    # receipt_items는 이 화면이 파싱해 들고 있는 그 영수증 품목이다
+                    _left = compute_leftovers(receipt_items, rows)
+                except Exception:
+                    _left = []
                 bid = save_settlement_batch(
                     label=f"당일 {d_day}", date_from=str(d_from), date_to=str(d_to),
                     receipt_dates=str(d_day), rows=rows, created_by=USERNAME,
+                    shortages=_short, leftovers=_left,
                 )
             try:
                 if invalidate_data_cache:
@@ -525,6 +535,47 @@ def _render_history(dmap):
                      '품목수': u['item_count'], '총수량': u['qty'],
                      '구매금액': fmt(u['amount'])} for u in usum
                 ]), use_container_width=True, hide_index=True)
+            # ── 근거 분해 · 부족분 · 재고분 (저장된 값 그대로) ──
+            try:
+                _basis = get_user_billing_basis(b['id']) or {}
+            except Exception:
+                _basis = {}
+            if _basis:
+                st.markdown("**🧾 청구 근거 분해**")
+                st.dataframe(pd.DataFrame([
+                    {'사용자': dmap.get(_u, _u),
+                     '확정(번호)': f"{_v['확정'][0]}건 · {fmt(_v['확정'][1])}원",
+                     '추정(이름)': f"{_v['추정'][0]}건 · {fmt(_v['추정'][1])}원",
+                     '수동': f"{_v['수동'][0]}건 · {fmt(_v['수동'][1])}원"}
+                    for _u, _v in sorted(_basis.items())
+                ]), use_container_width=True, hide_index=True)
+
+            try:
+                _sh = get_settlement_shortages(b['id']) or []
+            except Exception:
+                _sh = []
+            if _sh:
+                st.markdown(f"**⚠️ 부족분 {len(_sh)}건** — 주문은 있는데 영수증에서 못 찾은 건")
+                st.dataframe(pd.DataFrame([
+                    {'사용자': dmap.get(x['username'], x['username']), '수취인': x.get('recipient', ''),
+                     '상품명': str(x.get('product_name', ''))[:40], '수량': x.get('qty', 0),
+                     '주문번호': x.get('order_no', '')} for x in _sh
+                ]), use_container_width=True, hide_index=True)
+
+            try:
+                _lf = get_settlement_leftovers(b['id']) or []
+            except Exception:
+                _lf = []
+            if _lf:
+                _amt = sum(int(x['unit_price'] or 0) * int(x['units_left'] or 0)
+                           // max(1, int(x['split_qty'] or 1)) for x in _lf)
+                st.markdown(f"**📦 재고분 {len(_lf)}종** — 사고 남은 수량 (추정 {fmt(_amt)}원)")
+                st.dataframe(pd.DataFrame([
+                    {'코스트코번호': x['costco_no'], '상품명': str(x['name'])[:34],
+                     '영수증수량': x['qty_receipt'], '사용': x['units_used'],
+                     '남음': x['units_left'], '단가': fmt(x['unit_price'])} for x in _lf
+                ]), use_container_width=True, hide_index=True)
+
             _c1, _c2 = st.columns([3, 1])
             if _c2.button("🗑 이 배치 삭제", key=f"rs_del_{b['id']}"):
                 delete_settlement_batch(b['id'])

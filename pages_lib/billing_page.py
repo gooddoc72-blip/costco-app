@@ -210,11 +210,45 @@ def _tab_billing(USERNAME):
         s['count'] += 1
         s['amount'] += r['cost']
 
+    # ── 청구 근거 분해 ────────────────────────────────────────
+    #   청구액만 보여주면 그 돈이 영수증 실단가인지 공유DB 추정치인지 알 수 없다.
+    #   코스트코 번호 커버리지가 낮은 동안에는 추정으로 청구되는 건이 섞이므로,
+    #   근거를 갈라 보여줘야 나중에 "이 금액 근거가 뭐냐"에 답할 수 있다.
+    _basis = {}
+    try:
+        from db_receipt_settle import get_user_billing_basis, list_settlement_batches
+        for _b in (list_settlement_batches(limit=30) or []):
+            if str(_b.get('receipt_dates') or '') == str(d) or str(_b.get('date_from') or '') == str(d):
+                for _u, _v in (get_user_billing_basis(_b['id']) or {}).items():
+                    _acc = _basis.setdefault(_u, {'확정': [0, 0], '추정': [0, 0], '수동': [0, 0]})
+                    for _k in ('확정', '추정', '수동'):
+                        _acc[_k][0] += _v[_k][0]
+                        _acc[_k][1] += _v[_k][1]
+    except Exception:
+        _basis = {}
+
     st.markdown("### 판매자별 청구 요약")
-    st.dataframe(pd.DataFrame([
-        {'판매자': dmap.get(u, u), '주문수': s['count'], '청구액(구매가)': fmt(s['amount'])}
-        for u, s in sorted(summary.items(), key=lambda kv: -kv[1]['amount'])
-    ]), use_container_width=True, hide_index=True)
+    _tbl = []
+    for u, s in sorted(summary.items(), key=lambda kv: -kv[1]['amount']):
+        _b = _basis.get(u)
+        _row = {'판매자': dmap.get(u, u), '주문수': s['count'],
+                '청구액(구매가)': fmt(s['amount'])}
+        if _basis:
+            _conf = _b['확정'][0] if _b else 0
+            _est = (_b['추정'][0] + _b['수동'][0]) if _b else 0
+            _row['영수증 확정'] = f"{_conf}건" if _b else "-"
+            _row['추정·수동'] = f"{_est}건" if _b else "-"
+            _row['근거 없음'] = f"{max(0, s['count'] - _conf - _est)}건"
+        _tbl.append(_row)
+    st.dataframe(pd.DataFrame(_tbl), use_container_width=True, hide_index=True)
+    if _basis:
+        st.caption("🧾 **영수증 확정** = 코스트코 상품번호로 영수증과 정확히 매칭된 건 · "
+                   "**추정·수동** = 상품명 유사도나 수동 지정으로 붙인 건 · "
+                   "**근거 없음** = 영수증 정산을 거치지 않아 공유DB 추정단가가 쓰인 건. "
+                   "확정 외에는 실매입가와 다를 수 있습니다.")
+    else:
+        st.caption("⚠️ 이 날짜의 영수증 정산 기록이 없어 청구액 전액이 **공유DB 추정단가** 기준입니다. "
+                   "관리자 › 영수증 정산에서 당일 영수증을 적용하면 실단가로 확정됩니다.")
     _tot = sum(s['amount'] for s in summary.values())
     st.markdown(f"### 총 청구액: **{fmt(_tot)}원**  ·  판매자 {len(summary)}명  ·  주문 {len(all_rows)}건")
 
