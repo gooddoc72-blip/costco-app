@@ -310,6 +310,33 @@ def _render_settings_content(USERNAME: str, _gs, IS_ADMIN: bool = False):
             set_global_setting('naver_crawl_proxy', _new_px.strip())
             st.success("✅ 프록시 설정 저장 완료!")
 
+        # ── 저빈도 순환 설정 ──────────────────────────────────
+        #   전체 키워드를 한 번에 돌면 "짧은 시간 내 과다 요청 IP"로 차단된다.
+        #   회차마다 일부만 돌고 며칠에 걸쳐 한 바퀴 돈다.
+        st.markdown("**⏱ 수집 빈도 (IP 차단 회피)**")
+        _rb1, _rb2, _rb3 = st.columns(3)
+        _cur_batch = int(get_global_setting('naver_rank_batch') or 8)
+        _cur_gmin = int(get_global_setting('naver_rank_gap_min') or 30)
+        _cur_gmax = int(get_global_setting('naver_rank_gap_max') or 60)
+        _new_batch = _rb1.number_input("회차당 키워드 수", min_value=1, max_value=100,
+                                       value=_cur_batch, step=1, key="rank_batch_in")
+        _new_gmin = _rb2.number_input("최소 간격(초)", min_value=5, max_value=600,
+                                      value=_cur_gmin, step=5, key="rank_gmin_in")
+        _new_gmax = _rb3.number_input("최대 간격(초)", min_value=5, max_value=900,
+                                      value=_cur_gmax, step=5, key="rank_gmax_in")
+        _cur_cursor = int(get_global_setting('naver_rank_cursor') or 0)
+        st.caption(f"현재 진행 위치: {_cur_cursor + 1}번 키워드부터 · "
+                   "차단이 감지되면 그 회차는 즉시 중단하고 위치를 유지합니다.")
+        _sb1, _sb2 = st.columns([1, 3])
+        if _sb1.button("빈도 저장", key="save_rank_freq"):
+            set_global_setting('naver_rank_batch', str(int(_new_batch)))
+            set_global_setting('naver_rank_gap_min', str(int(min(_new_gmin, _new_gmax))))
+            set_global_setting('naver_rank_gap_max', str(int(max(_new_gmin, _new_gmax))))
+            st.success("✅ 저장 완료!")
+        if _sb2.button("↩ 진행 위치 처음으로", key="reset_rank_cursor"):
+            set_global_setting('naver_rank_cursor', '0')
+            st.success("✅ 다음 회차부터 1번 키워드로 시작합니다.")
+
     # ── 네이버 Open API ───────────────────────────────────
     st.divider()
     st.subheader("🔍 네이버 Open API (검색량·트렌드용)")

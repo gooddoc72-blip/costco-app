@@ -1132,6 +1132,7 @@ def run_rank_check_all():
     """
     import glob
     import time as _time
+    import random as _random
 
     log("=" * 50)
     log("[Task 4-ALL] 전 계정 키워드 순위 체크 시작")
@@ -1195,17 +1196,51 @@ def run_rank_check_all():
         total_tr = sum(len(v) for v in by_kw.values())
         log(f"  대상: {users_n}개 계정 / 추적 {total_tr}건 / 고유 키워드 {len(by_kw)}개")
 
+        # ── 저빈도 순환 ──────────────────────────────────────────
+        #   네이버는 "짧은 시간 내에 너무 많은 요청이 이루어진 IP"를 차단한다.
+        #   키워드 전체를 한 번에 도는 기존 방식이 그 조건에 정확히 걸렸다.
+        #   회차마다 batch개만 돌고 커서를 옮겨, 며칠에 걸쳐 한 바퀴 돌린다.
+        #   순위는 매일 볼 필요가 없으니 이 편이 실용적이고 안전하다.
+        _all_kws = sorted(by_kw)
+        try:
+            _batch = max(1, int(get_global_setting("naver_rank_batch") or 8))
+        except (TypeError, ValueError):
+            _batch = 8
+        try:
+            _cursor = int(get_global_setting("naver_rank_cursor") or 0)
+        except (TypeError, ValueError):
+            _cursor = 0
+        if _cursor >= len(_all_kws):
+            _cursor = 0
+        _slice = _all_kws[_cursor:_cursor + _batch]
+        _next_cursor = _cursor + len(_slice)
+        if _next_cursor >= len(_all_kws):
+            _next_cursor = 0
+        try:
+            _gap_min = float(get_global_setting("naver_rank_gap_min") or 30)
+            _gap_max = float(get_global_setting("naver_rank_gap_max") or 60)
+        except (TypeError, ValueError):
+            _gap_min, _gap_max = 30.0, 60.0
+        log(f"  이번 회차: {_cursor + 1}~{_cursor + len(_slice)}번 키워드 {len(_slice)}개 "
+            f"(전체 {len(_all_kws)}개 · 간격 {_gap_min:.0f}~{_gap_max:.0f}초)")
+
         # 2) 키워드당 1회 수집 → 계정별 매칭 → 각자 DB에 기록
         per_user_results = {}
         done = err_n = 0
-        for kw in sorted(by_kw):
+        _blocked = False
+        for _ki, kw in enumerate(_slice):
+            if _ki:      # 키워드 사이 간격 — 요청이 몰리지 않게
+                _time.sleep(_random.uniform(_gap_min, _gap_max))
             items, cerr = naver_shop_crawler.fetch_shop_items(
                 kw, max_items=depth, proxy=proxy)
             if cerr:
                 err_n += 1
                 log(f"  '{kw}': 수집 실패 — {cerr}")
-                if "일시적으로 제한" in cerr:      # IP 차단이면 더 두드리지 않고 중단
-                    log("  ⛔ IP 제한 감지 → 남은 키워드 중단")
+                # 문자열이 아니라 크롤러가 내보내는 상수와 대조한다.
+                #   (안내 문구를 고치면 문자열 매칭은 조용히 깨진다)
+                if cerr == naver_shop_crawler.ERR_BLOCKED:
+                    _blocked = True
+                    log("  ⛔ 접근 제한 감지 → 남은 키워드 중단 (커서 유지, 다음 회차 재시도)")
                     break
                 continue
             done += 1
@@ -1246,8 +1281,14 @@ def run_rank_check_all():
             except Exception as e:
                 log(f"  {username} 알림 실패: {e}")
 
+        # 커서 이동 — 차단으로 중단됐으면 그대로 두어 다음 회차에 같은 구간을 재시도한다.
+        if not _blocked:
+            set_global_setting("naver_rank_cursor", str(_next_cursor))
+            _pos = "다음 회차 %d번부터" % (_next_cursor + 1) if _next_cursor else "다음 회차 처음부터"
+        else:
+            _pos = "커서 유지(%d번부터 재시도)" % (_cursor + 1)
         log(f"[Task 4-ALL] 완료 — 키워드 {done}개 수집 / 실패 {err_n}개 / "
-            f"기록 {sum(len(v) for v in per_user_results.values())}건")
+            f"기록 {sum(len(v) for v in per_user_results.values())}건 · {_pos}")
         return True
     finally:
         try:
