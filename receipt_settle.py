@@ -245,6 +245,198 @@ def get_settled_order_keys():
         return set()
 
 
+def build_shopping_bridge(order_date, users=None):
+    """그날 장보기 제출목록 → {username: {네이버번호: 코스트코번호}} + 이름 후보.
+
+    이게 핵심 브리지다. 장보기 목록은 '그날 각 사용자가 실제로 사야 했던 상품'을
+    코스트코번호와 네이버상품번호로 나란히 들고 있다(8/31 실측: oxo 18품목 중
+    코스트코번호 15·네이버번호 18, tblue 20품목 중 8·20). 제품DB 매핑률이 20%대라
+    번호 브리지가 자주 끊기는데, 장보기 목록이 그 공백을 그날치로 메운다.
+
+    Returns: {username: {'nv2cno': {네이버번호: 코스트코번호},
+                         'items': [{costco, naver, name, qty}...]}}
+    """
+    import json as _json
+    out = {}
+    try:
+        from db import get_shopping_submissions_detail
+        subs = get_shopping_submissions_detail(str(order_date), str(order_date)) or []
+    except Exception:
+        return out
+    for s in subs:
+        uname = _norm(s.get('username'))
+        if users is not None and uname not in set(users):
+            continue
+        try:
+            items = _json.loads(s.get('items_json') or '[]')
+        except Exception:
+            items = []
+        nv2cno, lst = {}, []
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            cno = _norm(it.get('코스트코상품번호'))
+            nv = _norm(it.get('네이버상품번호'))
+            nm = _norm(it.get('상품명'))
+            if cno and nv:
+                nv2cno.setdefault(nv, cno)
+            if cno or nv:
+                lst.append({'costco': cno, 'naver': nv, 'name': nm,
+                            'qty': int(it.get('주문수량') or 0)})
+        if nv2cno or lst:
+            out[uname] = {'nv2cno': nv2cno, 'items': lst}
+    return out
+
+
+def allocate_dispatched_to_receipt(receipt_items, dispatch_date, users=None,
+                                   shopping_date=None, exclude_orders=None,
+                                   stock_pool=None):
+    """오늘 출고된 주문 × 오늘 영수증 × 그날 장보기 목록 — 3자 매칭.
+
+    정산 대상은 '오늘 일괄발송(출고)한 주문'이다. 돈이 나가는 시점이 발송이고,
+    수익계산도 dispatch_log 기준이라 기준이 일치한다. 결제일(order_date)로 잡으면
+    마감 이후 주문이 다음날 출고되는 실제 흐름과 어긋나 매칭이 대량으로 깨졌다.
+
+    주문 1건당 매칭 순서:
+      ① 장보기 브리지 — 출고건 네이버번호 → 그날 장보기 항목의 코스트코번호
+      ② 제품DB 매핑   — products.naver_* → product_no
+      ③ 이름 유사도   — 출고 상품명 ↔ 영수증 상품명 (≥ NAME_MATCH_MIN)
+      ④ 재고 이월     — 과거 구매분(stock_pool)에서 차감
+
+    Returns: allocate_receipt_to_orders와 동일한 형태(rows/unmatched_*/user_summary).
+    """
+    from db import get_dispatched_orders_with_details
+
+    price_by_costco, name_by_costco = {}, {}
+    for it in (receipt_items or []):
+        cno = _norm(it.get('상품번호'))
+        if not cno:
+            continue
+        try:
+            up = int(float(it.get('단가') or 0))
+        except (TypeError, ValueError):
+            up = 0
+        if up > 0:
+            price_by_costco[cno] = up
+            name_by_costco[cno] = _norm(it.get('상품명'))
+
+    if users is None:
+        users = [u['username'] for u in get_all_users()]
+    bridge = build_shopping_bridge(shopping_date or dispatch_date, users=users)
+    _ritems = [{'costco': c, 'name': name_by_costco.get(c, ''), 'price': price_by_costco[c]}
+               for c in price_by_costco]
+    _excl = exclude_orders if exclude_orders is not None else set()
+
+    rows, matched_costco, unmatched_orders = [], set(), []
+    for uname in users:
+        try:
+            disp = get_dispatched_orders_with_details(uname, str(dispatch_date)) or []
+        except Exception:
+            disp = []
+        if not disp:
+            continue
+        nmap = _naver_to_product_map(uname)
+        ub = bridge.get(uname) or {'nv2cno': {}, 'items': []}
+        for o in disp:
+            ono = _norm(o.get('order_no'))
+            if _excl and (uname, ono) in _excl:
+                continue
+            onv = _norm(o.get('product_no'))
+            nm = _norm(o.get('product_name'))
+            prod = nmap.get(onv)
+            costco_no, via = '', ''
+
+            # ① 장보기 목록 브리지 (그날 사야 했던 목록 = 영수증과 같은 근거)
+            _c = _norm(ub['nv2cno'].get(onv))
+            if _c and _c in price_by_costco:
+                costco_no, via = _c, 'shopping'
+            # ①-b 장보기 항목 이름으로 코스트코번호 찾기 (네이버번호가 비어 있는 제출분)
+            if not costco_no and ub['items']:
+                _b, _s = None, 0.0
+                for si in ub['items']:
+                    if not si['costco'] or si['costco'] not in price_by_costco:
+                        continue
+                    _sc = _token_score(nm, si['name'])
+                    if _sc > _s:
+                        _s, _b = _sc, si
+                if _b and _s >= NAME_MATCH_MIN:
+                    costco_no, via = _b['costco'], 'shopping-name'
+            # ② 제품DB 매핑 → ③ 주문번호 자체
+            if not costco_no:
+                _c2 = _norm((prod or {}).get('product_no'))
+                if _c2 in price_by_costco:
+                    costco_no, via = _c2, 'number'
+                elif onv in price_by_costco:
+                    costco_no, via = onv, 'number'
+            # ③ 영수증 상품명 유사도
+            if not costco_no:
+                _b, _s = None, 0.0
+                for ri in _ritems:
+                    _sc = _token_score(nm, ri['name'])
+                    if _sc > _s:
+                        _s, _b = _sc, ri
+                if _b and _s >= NAME_MATCH_MIN:
+                    costco_no, via = _b['costco'], 'name'
+
+            qty = int(o.get('qty') or 1)
+            _sq, _pk = _split_pack(prod)
+
+            # ④ 재고 이월 — 오늘 영수증에 없으면 과거 구매분에서 찾는다
+            if not costco_no and stock_pool:
+                _cand = _norm((prod or {}).get('product_no')) or onv
+                if _cand not in stock_pool:
+                    _cand, _s2 = None, 0.0
+                    for _pn, _e in stock_pool.items():
+                        _sc = _token_score(nm, _e.get('name') or '')
+                        if _sc > _s2:
+                            _s2, _cand = _sc, _pn
+                    if _s2 < NAME_MATCH_MIN:
+                        _cand = None
+                if _cand and stock_pool.get(_cand, {}).get('units', 0) > 0:
+                    _need = qty * int(_pk or 1)
+                    if stock_pool[_cand]['units'] >= _need:
+                        stock_pool[_cand]['units'] -= _need
+                        rows.append({
+                            'username': uname, 'order_no': ono,
+                            'order_date': str(dispatch_date), 'costco_no': _cand,
+                            'naver_no': onv, 'product_name': nm, 'qty': qty,
+                            'unit_price': int(stock_pool[_cand].get('price') or 0),
+                            'amount': _order_cost(int(stock_pool[_cand].get('price') or 0), qty, prod),
+                            'prev_cost': int(o.get('cost_price') or 0), 'via': 'stock',
+                            'split_qty': _sq, 'pack': _pk,
+                        })
+                        matched_costco.add(_cand)
+                        continue
+
+            if not costco_no:
+                unmatched_orders.append({
+                    'username': uname, 'order_no': ono,
+                    'order_date': str(dispatch_date), 'recipient': _norm(o.get('recipient')),
+                    'naver_no': onv, 'product_name': nm, 'qty': qty,
+                    'prev_cost': int(o.get('cost_price') or 0),
+                    'split_qty': _sq,
+                })
+                continue
+
+            up = price_by_costco[costco_no]
+            rows.append({
+                'username': uname, 'order_no': ono, 'order_date': str(dispatch_date),
+                'costco_no': costco_no, 'naver_no': onv, 'product_name': nm,
+                'qty': qty, 'unit_price': up, 'amount': _order_cost(up, qty, prod),
+                'prev_cost': int(o.get('cost_price') or 0), 'via': via,
+                'split_qty': _sq, 'pack': _pk,
+            })
+            matched_costco.add(costco_no)
+
+    unmatched = [
+        {'상품번호': c, '상품명': name_by_costco.get(c, ''), '단가': price_by_costco[c]}
+        for c in price_by_costco if c not in matched_costco
+    ]
+    return {'rows': rows, 'unmatched_receipt': unmatched,
+            'unmatched_orders': unmatched_orders,
+            'user_summary': _summarize(rows)}
+
+
 def allocate_receipt_to_orders(receipt_items, date_from, date_to, users=None,
                                stock_pool=None, exclude_orders=None):
     """영수증 품목을 기간 내 모든 사용자 주문에 코스트코 상품번호로 자동배치.
