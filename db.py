@@ -118,7 +118,9 @@ from db_shopping import (
     get_shopping_submission_dates,
     delete_shopping_submission,
     get_shopping_exclusions,
-    set_shopping_exclusions,
+    get_shopping_exclusion_rows,
+    add_shopping_exclusions,
+    remove_shopping_exclusions,
     clear_shopping_exclusions,
 )
 

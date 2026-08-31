@@ -230,14 +230,30 @@ def get_shopping_exclusions(username: str, order_date: str) -> list:
         conn.close()
 
 
-def set_shopping_exclusions(username: str, order_date: str, rowkeys, labels: dict = None) -> int:
-    """해당 날짜의 제외 목록을 rowkeys로 통째 교체(멱등). 반환: 저장된 건수."""
+def get_shopping_exclusion_rows(username: str, order_date: str) -> list:
+    """제외 목록 상세 (복구 UI용) — 오늘 목록에 없는 항목도 라벨로 보여주기 위함."""
+    conn = get_user_db(username)
+    try:
+        _ensure_shop_excl_table(conn)
+        rows = conn.execute(
+            "SELECT rowkey, label, excluded_at FROM shopping_exclusions "
+            "WHERE order_date=? ORDER BY excluded_at DESC, rowkey", (str(order_date),)).fetchall()
+        return [dict(r) for r in rows]
+    except Exception:
+        return []
+    finally:
+        conn.close()
+
+
+def add_shopping_exclusions(username: str, order_date: str, rowkeys, labels: dict = None) -> int:
+    """제외 목록에 추가(기존 건 유지). 반환: 추가 시도한 건수."""
     keys = [str(k) for k in (rowkeys or []) if str(k).strip()]
+    if not keys:
+        return 0
     conn = get_user_db(username)
     try:
         _ensure_shop_excl_table(conn)
         _now = datetime.now().strftime("%Y-%m-%d %H:%M")
-        conn.execute("DELETE FROM shopping_exclusions WHERE order_date=?", (str(order_date),))
         for _k in keys:
             conn.execute(
                 "INSERT OR REPLACE INTO shopping_exclusions "
@@ -245,6 +261,24 @@ def set_shopping_exclusions(username: str, order_date: str, rowkeys, labels: dic
                 (str(order_date), _k, str((labels or {}).get(_k, '') or ''), _now))
         conn.commit()
         return len(keys)
+    finally:
+        conn.close()
+
+
+def remove_shopping_exclusions(username: str, order_date: str, rowkeys) -> int:
+    """제외 해제(되살리기). 반환: 해제된 건수."""
+    keys = [str(k) for k in (rowkeys or []) if str(k).strip()]
+    if not keys:
+        return 0
+    conn = get_user_db(username)
+    try:
+        _ensure_shop_excl_table(conn)
+        ph = ",".join("?" * len(keys))
+        cur = conn.execute(
+            f"DELETE FROM shopping_exclusions WHERE order_date=? AND rowkey IN ({ph})",
+            [str(order_date)] + keys)
+        conn.commit()
+        return cur.rowcount
     finally:
         conn.close()
 

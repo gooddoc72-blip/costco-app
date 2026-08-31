@@ -38,7 +38,8 @@ from db import (
     get_rank_drops,
     submit_shopping_list, get_recent_shopping_submissions, delete_shopping_submission,
     normalize_shopping_items,
-    get_shopping_exclusions, set_shopping_exclusions, clear_shopping_exclusions,
+    get_shopping_exclusions, get_shopping_exclusion_rows, add_shopping_exclusions,
+    remove_shopping_exclusions, clear_shopping_exclusions,
     AUTH_DB,
 )
 from services import (
@@ -1315,8 +1316,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         shopping['예상금액'] = shopping.apply(_expected_cost, axis=1) if not shopping.empty else None
 
         # ── 🗑 발송 전 제외 (관리자에게 보내기 전에 뺄 항목 고르기) ──
-        #   장보기 목록은 HTML 표라 행별 위젯을 못 단다. 대신 여기서 제외 목록을
-        #   골라 shopping 자체를 걸러낸다 → 표·합계·엑셀·발송이 모두 같은 기준이 된다.
+        #   아래 표에서 행 왼쪽 체크박스로 고른 뒤 '🗑 선택 삭제' → shopping 자체를
+        #   걸러낸다 → 표·합계·엑셀·발송이 모두 같은 기준이 된다.
         #   제외는 화면에서만 빼는 것이고 주문 데이터(daily_orders)는 건드리지 않는다.
         #   ⭐ 제외 목록은 사용자 DB(shopping_exclusions)에 날짜별로 저장한다.
         #      세션에만 두면 새로고침(=새 Streamlit 세션)에서 제외가 풀려
@@ -1342,44 +1343,60 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             _label_by_key[_k] = _row_label(_r)
         shopping = shopping.assign(_rowkey=_keys_all)
 
-        _excl_vis_prev = [k for k in _excl_prev if k in _label_by_key]
-        _ms_key = f"shop_excl_ms_{order_date_str}"
-        with st.expander(f"🗑 발송 목록에서 제외"
-                         + (f" — {len(_excl_vis_prev)}종 제외 중" if _excl_vis_prev else ""),
-                         expanded=bool(_excl_vis_prev)):
-            st.caption("여기서 뺀 항목은 아래 표·합계·엑셀·관리자 발송에서 모두 빠집니다. "
-                       "새로고침해도 유지되며, 저장된 주문 데이터는 지워지지 않습니다.")
-            _excl_sel = st.multiselect(
-                "제외할 항목", options=_keys_all,
-                default=_excl_vis_prev,
-                format_func=lambda k: _label_by_key.get(k, k),
-                key=_ms_key, label_visibility="collapsed",
-                placeholder="빼려면 상품을 선택하세요")
-            if st.button("↩ 제외 모두 해제", key=f"shop_excl_reset_{order_date_str}",
-                         disabled=not _excl_prev):
-                try:
-                    clear_shopping_exclusions(USERNAME, order_date_str)
-                except Exception as _ce:
-                    st.error(f"제외 해제 실패: {_ce}")
-                # 위젯 state를 지워야 default가 다시 먹는다 (안 지우면 옛 선택이 되살아남)
-                st.session_state.pop(_ms_key, None)
-                st.session_state.pop(_excl_key, None)
-                st.rerun()
-        # 오늘 목록에 없는 옛 rowkey는 보존한다 — 주문이 다시 들어와도 제외 유지.
-        _excl = sorted(set(_excl_prev).difference(_keys_all).union(_excl_sel))
-        if _excl != sorted(_excl_prev):
-            try:
-                set_shopping_exclusions(USERNAME, order_date_str, _excl, _label_by_key)
-            except Exception as _se:
-                st.error(f"제외 목록 저장 실패: {_se}")
-        st.session_state[_excl_key] = list(_excl)
-
-        if _excl:
+        # 제외 적용 — 표·합계·엑셀·관리자 발송이 모두 같은 기준을 쓴다.
+        #   오늘 목록에 없는 옛 rowkey도 DB에 그대로 둬서, 그 주문이 다시 들어와도 계속 빠진다.
+        _excl_hit_n = 0
+        if _excl_prev:
             _before_n = len(shopping)
-            shopping = shopping[~shopping['_rowkey'].isin(_excl)].reset_index(drop=True)
-            if _before_n != len(shopping):
-                st.warning(f"🗑 {_before_n - len(shopping)}종 제외됨 — 남은 {len(shopping)}종만 "
-                           "표시·발송됩니다.")
+            shopping = shopping[~shopping['_rowkey'].isin(_excl_prev)].reset_index(drop=True)
+            _excl_hit_n = _before_n - len(shopping)
+
+        # ── ↩ 되살리기 (표에서 체크 삭제한 항목 복구) ──
+        _excl_rows_db = []
+        if _excl_prev:
+            try:
+                _excl_rows_db = get_shopping_exclusion_rows(USERNAME, order_date_str)
+            except Exception:
+                _excl_rows_db = [{'rowkey': k, 'label': _label_by_key.get(k, k)} for k in _excl_prev]
+        _restore_key = f"shop_excl_restore_{order_date_str}"
+        if _excl_rows_db:
+            with st.expander(f"↩ 삭제한 항목 {len(_excl_rows_db)}종 — 되살리기", expanded=False):
+                st.caption("표에서 체크해 뺀 항목입니다. 새로고침해도 계속 빠져 있으며, "
+                           "저장된 주문 데이터는 지워지지 않습니다.")
+                _lab_db = {}
+                for _er in _excl_rows_db:
+                    _ek = str(_er.get('rowkey') or '')
+                    _lab_db[_ek] = (str(_er.get('label') or '')
+                                    or _label_by_key.get(_ek, _ek))
+                _restore_sel = st.multiselect(
+                    "되살릴 항목", options=list(_lab_db.keys()),
+                    format_func=lambda k: _lab_db.get(k, k),
+                    key=_restore_key, label_visibility="collapsed",
+                    placeholder="되살릴 상품을 선택하세요")
+                _rb1, _rb2, _ = st.columns([1.4, 1.4, 3])
+                if _rb1.button("↩ 선택 되살리기", key=f"shop_excl_restore_btn_{order_date_str}",
+                               disabled=not _restore_sel, use_container_width=True):
+                    try:
+                        remove_shopping_exclusions(USERNAME, order_date_str, _restore_sel)
+                    except Exception as _rex:
+                        st.error(f"되살리기 실패: {_rex}")
+                    st.session_state.pop(_restore_key, None)
+                    st.session_state.pop(_excl_key, None)
+                    st.rerun()
+                if _rb2.button("↩ 전체 되살리기", key=f"shop_excl_reset_{order_date_str}",
+                               use_container_width=True):
+                    try:
+                        clear_shopping_exclusions(USERNAME, order_date_str)
+                    except Exception as _ce:
+                        st.error(f"되살리기 실패: {_ce}")
+                    st.session_state.pop(_restore_key, None)
+                    st.session_state.pop(_excl_key, None)
+                    st.rerun()
+        if _excl_hit_n:
+            st.caption(f"🗑 {_excl_hit_n}종 삭제됨 — 남은 {len(shopping)}종만 표시·발송됩니다.")
+
+        # 표에서 고른 행 → rowkey 역변환용 (표 순서와 동일)
+        _row_keys = shopping['_rowkey'].tolist() if '_rowkey' in shopping.columns else []
         shopping = shopping.drop(columns=['_rowkey'])
         if shopping.empty:
             # return 하지 않는다 — 이 아래에 영수증 업로드 등 다른 섹션이 이어져 있어
@@ -1401,7 +1418,10 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         if '배송비' in shopping.columns:
             disp_cols += ['배송비']
 
-        # ── HTML 테이블로 렌더링 ──
+        # ── 표 렌더 — 상품번호 앞 체크박스로 골라 🗑 삭제 ──
+        #   HTML 표에는 행별 위젯을 못 달아 예전엔 별도 multiselect로 뺐다.
+        #   st.dataframe의 행 선택(on_select)이면 표 왼쪽에 진짜 체크박스가 붙고,
+        #   Styler로 분리/묶음 배경색도 그대로 유지된다.
         num_cols = {'주문수량', '정산금액', '구매금액', '배송비'}
         # 분리/묶음 행은 배경색으로 시각 구분만 유지 (해당 컬럼은 표시 안 함)
         def _row_bg(row):
@@ -1409,48 +1429,55 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 return '#d6eaf8'  # 분리판매 → 하늘색
             if int(row.get('묶음수량', 1)) > 1:
                 return '#fff3cd'  # 묶음판매 → 노란색
-            return 'white'
+            return ''             # 기본 행 — 테마 배경 그대로
 
-        col_labels = {}
+        _shop_disp = shopping.reset_index(drop=True)
+        _bgs = [_row_bg(_r) for _, _r in _shop_disp.iterrows()]
+        _disp_df = _shop_disp[disp_cols].copy()
 
-        th_cells = ''.join(
-            f'<th style="background:#f8f9fa;padding:7px 12px;border-bottom:2px solid #dee2e6;'
-            f'font-weight:600;white-space:nowrap;text-align:{"right" if c in num_cols else "left"}">'
-            f'{col_labels.get(c, c)}</th>'
-            for c in disp_cols
+        def _style_row(_r):
+            _bg = _bgs[_r.name] if _r.name < len(_bgs) else ''
+            return [(f'background-color:{_bg};color:#212529' if _bg else '')] * len(_r)
+
+        def _fmt_num(v):
+            try:
+                if v is None or pd.isna(v):
+                    return '-'
+                return f'{int(v):,}'
+            except (TypeError, ValueError):
+                return str(v)
+
+        _sty = _disp_df.style.apply(_style_row, axis=1)
+        _num_disp = [c for c in disp_cols if c in num_cols]
+        if _num_disp:
+            _sty = _sty.format(_fmt_num, subset=_num_disp)
+
+        # 제외 목록·행수가 바뀌면 위젯 키를 바꿔 선택을 초기화한다
+        # (st.dataframe 선택 state는 session_state로 직접 못 지운다)
+        _tbl_key = f"shop_tbl_{order_date_str}_{len(_excl_prev)}_{len(_disp_df)}"
+        _tbl_sel = st.dataframe(
+            _sty, use_container_width=True, hide_index=True,
+            on_select="rerun", selection_mode="multi-row", key=_tbl_key,
+            height=min(1200, 40 + 35 * max(1, len(_disp_df))),
         )
-        row_htmls = []
-        # 전체 row로 iterate해서 _row_bg가 분리/묶음수량을 읽을 수 있도록 함
-        for _, row in shopping.iterrows():
-            bg = _row_bg(row)
-            tds = []
-            for c in disp_cols:
-                v = row[c]
-                is_num = c in num_cols
-                if pd.isna(v) or v == '' or v is None:
-                    display = '-'
-                elif is_num:
-                    try:
-                        display = f'{int(v):,}'
-                    except Exception:
-                        display = str(v)
-                else:
-                    display = str(v)
-                align = 'right' if is_num else 'left'
-                tds.append(
-                    f'<td style="background:{bg};padding:6px 12px;border-bottom:1px solid #e9ecef;'
-                    f'white-space:normal;word-break:break-word;text-align:{align}">{display}</td>'
-                )
-            row_htmls.append(f'<tr>{"".join(tds)}</tr>')
+        try:
+            _sel_pos = list(_tbl_sel.selection.rows)
+        except Exception:
+            _sel_pos = []
+        _sel_keys = [_row_keys[_i] for _i in _sel_pos if 0 <= _i < len(_row_keys)]
 
-        st.markdown(
-            f'<div style="overflow-x:auto;border:1px solid #dee2e6;border-radius:4px;margin-bottom:8px">'
-            f'<table style="width:100%;border-collapse:collapse;font-size:14px">'
-            f'<thead><tr>{th_cells}</tr></thead>'
-            f'<tbody>{"".join(row_htmls)}</tbody>'
-            f'</table></div>',
-            unsafe_allow_html=True
-        )
+        _dc1, _dc2 = st.columns([1.6, 4])
+        if _dc1.button(f"🗑 선택 {len(_sel_keys)}종 삭제" if _sel_keys else "🗑 선택 삭제",
+                       key=f"shop_excl_del_{order_date_str}", type="secondary",
+                       disabled=not _sel_keys, use_container_width=True):
+            try:
+                add_shopping_exclusions(USERNAME, order_date_str, _sel_keys, _label_by_key)
+            except Exception as _dex:
+                st.error(f"삭제 실패: {_dex}")
+            st.session_state.pop(_excl_key, None)
+            st.rerun()
+        _dc2.caption("행 왼쪽 체크박스로 고른 뒤 삭제 — 표·합계·엑셀·관리자 발송에서 빠집니다. "
+                     "새로고침해도 유지되고, 되살리려면 위 '삭제한 항목'에서 복구하세요.")
 
         captions = []
         if has_split:
