@@ -7,7 +7,7 @@ import json
 import sqlite3
 from datetime import datetime
 
-from db_core import AUTH_DB, get_auth_db, retry_on_lock
+from db_core import AUTH_DB, get_auth_db, get_user_db, retry_on_lock
 
 
 def _ensure_table():
@@ -198,3 +198,64 @@ def delete_shopping_submission(submission_id: int) -> bool:
     conn.commit()
     conn.close()
     return n > 0
+
+
+# ── 장보기 목록 제외(발송 전 빼기) — 사용자 DB에 날짜별 영속 ──────────
+#   세션에만 두면 새로고침(=새 Streamlit 세션) 때 제외가 풀려 뺐던 제품이
+#   장보기 목록에 되살아난다. 주문 데이터(order_history/daily_orders)는
+#   건드리지 않고 '이 날짜에 뺀 항목'만 저장한다.
+
+def _ensure_shop_excl_table(conn):
+    conn.execute("""CREATE TABLE IF NOT EXISTS shopping_exclusions (
+                        order_date  TEXT NOT NULL,
+                        rowkey      TEXT NOT NULL,
+                        label       TEXT DEFAULT '',
+                        excluded_at TEXT,
+                        PRIMARY KEY (order_date, rowkey)
+                    )""")
+
+
+def get_shopping_exclusions(username: str, order_date: str) -> list:
+    """해당 날짜에 장보기 목록에서 뺀 rowkey 목록."""
+    conn = get_user_db(username)
+    try:
+        _ensure_shop_excl_table(conn)
+        rows = conn.execute(
+            "SELECT rowkey FROM shopping_exclusions WHERE order_date=? ORDER BY rowkey",
+            (str(order_date),)).fetchall()
+        return [str(r['rowkey']) for r in rows]
+    except Exception:
+        return []
+    finally:
+        conn.close()
+
+
+def set_shopping_exclusions(username: str, order_date: str, rowkeys, labels: dict = None) -> int:
+    """해당 날짜의 제외 목록을 rowkeys로 통째 교체(멱등). 반환: 저장된 건수."""
+    keys = [str(k) for k in (rowkeys or []) if str(k).strip()]
+    conn = get_user_db(username)
+    try:
+        _ensure_shop_excl_table(conn)
+        _now = datetime.now().strftime("%Y-%m-%d %H:%M")
+        conn.execute("DELETE FROM shopping_exclusions WHERE order_date=?", (str(order_date),))
+        for _k in keys:
+            conn.execute(
+                "INSERT OR REPLACE INTO shopping_exclusions "
+                "(order_date, rowkey, label, excluded_at) VALUES (?,?,?,?)",
+                (str(order_date), _k, str((labels or {}).get(_k, '') or ''), _now))
+        conn.commit()
+        return len(keys)
+    finally:
+        conn.close()
+
+
+def clear_shopping_exclusions(username: str, order_date: str) -> int:
+    """해당 날짜의 제외를 모두 해제. 반환: 해제 건수."""
+    conn = get_user_db(username)
+    try:
+        _ensure_shop_excl_table(conn)
+        cur = conn.execute("DELETE FROM shopping_exclusions WHERE order_date=?", (str(order_date),))
+        conn.commit()
+        return cur.rowcount
+    finally:
+        conn.close()

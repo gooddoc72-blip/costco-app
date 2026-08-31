@@ -38,6 +38,7 @@ from db import (
     get_rank_drops,
     submit_shopping_list, get_recent_shopping_submissions, delete_shopping_submission,
     normalize_shopping_items,
+    get_shopping_exclusions, set_shopping_exclusions, clear_shopping_exclusions,
     AUTH_DB,
 )
 from services import (
@@ -1317,8 +1318,16 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         #   장보기 목록은 HTML 표라 행별 위젯을 못 단다. 대신 여기서 제외 목록을
         #   골라 shopping 자체를 걸러낸다 → 표·합계·엑셀·발송이 모두 같은 기준이 된다.
         #   제외는 화면에서만 빼는 것이고 주문 데이터(daily_orders)는 건드리지 않는다.
+        #   ⭐ 제외 목록은 사용자 DB(shopping_exclusions)에 날짜별로 저장한다.
+        #      세션에만 두면 새로고침(=새 Streamlit 세션)에서 제외가 풀려
+        #      뺐던 제품이 목록에 되살아났다.
         _excl_key = f'_shop_excl_{order_date_str}'
-        _excl_prev = st.session_state.get(_excl_key, []) or []
+        if _excl_key not in st.session_state:
+            try:
+                st.session_state[_excl_key] = get_shopping_exclusions(USERNAME, order_date_str)
+            except Exception:
+                st.session_state[_excl_key] = []
+        _excl_prev = st.session_state.get(_excl_key) or []
 
         def _row_label(_r):
             _opt = str(_r.get('옵션정보', '') or '').strip()
@@ -1333,28 +1342,44 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             _label_by_key[_k] = _row_label(_r)
         shopping = shopping.assign(_rowkey=_keys_all)
 
+        _excl_vis_prev = [k for k in _excl_prev if k in _label_by_key]
+        _ms_key = f"shop_excl_ms_{order_date_str}"
         with st.expander(f"🗑 발송 목록에서 제외"
-                         + (f" — {len(_excl_prev)}종 제외 중" if _excl_prev else ""),
-                         expanded=bool(_excl_prev)):
+                         + (f" — {len(_excl_vis_prev)}종 제외 중" if _excl_vis_prev else ""),
+                         expanded=bool(_excl_vis_prev)):
             st.caption("여기서 뺀 항목은 아래 표·합계·엑셀·관리자 발송에서 모두 빠집니다. "
-                       "저장된 주문 데이터는 지워지지 않습니다.")
-            _excl = st.multiselect(
+                       "새로고침해도 유지되며, 저장된 주문 데이터는 지워지지 않습니다.")
+            _excl_sel = st.multiselect(
                 "제외할 항목", options=_keys_all,
-                default=[k for k in _excl_prev if k in _label_by_key],
+                default=_excl_vis_prev,
                 format_func=lambda k: _label_by_key.get(k, k),
-                key=f"shop_excl_ms_{order_date_str}", label_visibility="collapsed",
+                key=_ms_key, label_visibility="collapsed",
                 placeholder="빼려면 상품을 선택하세요")
             if st.button("↩ 제외 모두 해제", key=f"shop_excl_reset_{order_date_str}",
-                         disabled=not _excl):
-                st.session_state[_excl_key] = []
+                         disabled=not _excl_prev):
+                try:
+                    clear_shopping_exclusions(USERNAME, order_date_str)
+                except Exception as _ce:
+                    st.error(f"제외 해제 실패: {_ce}")
+                # 위젯 state를 지워야 default가 다시 먹는다 (안 지우면 옛 선택이 되살아남)
+                st.session_state.pop(_ms_key, None)
+                st.session_state.pop(_excl_key, None)
                 st.rerun()
+        # 오늘 목록에 없는 옛 rowkey는 보존한다 — 주문이 다시 들어와도 제외 유지.
+        _excl = sorted(set(_excl_prev).difference(_keys_all).union(_excl_sel))
+        if _excl != sorted(_excl_prev):
+            try:
+                set_shopping_exclusions(USERNAME, order_date_str, _excl, _label_by_key)
+            except Exception as _se:
+                st.error(f"제외 목록 저장 실패: {_se}")
         st.session_state[_excl_key] = list(_excl)
 
         if _excl:
             _before_n = len(shopping)
             shopping = shopping[~shopping['_rowkey'].isin(_excl)].reset_index(drop=True)
-            st.warning(f"🗑 {_before_n - len(shopping)}종 제외됨 — 남은 {len(shopping)}종만 "
-                       "표시·발송됩니다.")
+            if _before_n != len(shopping):
+                st.warning(f"🗑 {_before_n - len(shopping)}종 제외됨 — 남은 {len(shopping)}종만 "
+                           "표시·발송됩니다.")
         shopping = shopping.drop(columns=['_rowkey'])
         if shopping.empty:
             # return 하지 않는다 — 이 아래에 영수증 업로드 등 다른 섹션이 이어져 있어
