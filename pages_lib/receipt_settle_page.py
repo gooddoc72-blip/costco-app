@@ -340,7 +340,10 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     _learn = {'filled': 0, 'by_user': {}}
                 # 부족분(주문은 있는데 영수증에 없음)·재고분(사고 남은 것)도 함께 남긴다.
                 #   화면에만 있고 저장이 안 돼, 나중에 "그날 뭐가 모자랐나"를 알 수 없었다.
-                _short = (alloc.get('unmatched_orders') or [])
+                # 부족분(원가 미확정)은 '그날 주문'만 남긴다. 조회창을 넓히면서
+                # 이전 날짜의 미판매 주문까지 매일 부족분으로 쌓이면 판정이 무의미해진다.
+                _short = [o for o in (alloc.get('unmatched_orders') or [])
+                          if str(o.get('order_date') or '') == str(d_day)]
                 try:
                     # receipt_items는 이 화면이 파싱해 들고 있는 그 영수증 품목이다
                     _left = compute_leftovers(receipt_items, rows)
