@@ -8,6 +8,7 @@ import pandas as pd
 from services import parse_costco_receipt_pdf, render_pdf_to_images
 from receipt_settle import (
     allocate_receipt_to_orders, apply_receipt_settlement, cleanup_orphan_settlements,
+    learn_costco_mappings,
     build_manual_rows, ai_match_receipt_orders, _summarize, compute_leftovers,
     build_stock_pool, get_settle_start_date, get_stock_status,
 )
@@ -317,6 +318,13 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         if st.button("✅ 정산 적용 (구입가 반영 + 정산표 저장)", type="primary", key="rs_apply_btn"):
             with st.spinner("적용 중..."):
                 n = apply_receipt_settlement(rows)
+                # 매칭 결과(네이버번호↔코스트코번호)를 제품DB에 저장 → 다음 정산부터
+                # 번호로 바로 붙는다. 예전엔 이름·수동·AI로 붙여도 저장이 안 돼
+                # 같은 상품이 매번 미매칭으로 나왔다.
+                try:
+                    _learn = learn_costco_mappings(rows)
+                except Exception:
+                    _learn = {'filled': 0, 'by_user': {}}
                 # 부족분(주문은 있는데 영수증에 없음)·재고분(사고 남은 것)도 함께 남긴다.
                 #   화면에만 있고 저장이 안 돼, 나중에 "그날 뭐가 모자랐나"를 알 수 없었다.
                 _short = (alloc.get('unmatched_orders') or [])
@@ -336,8 +344,13 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             except Exception:
                 pass
             st.session_state.pop('rs_alloc', None)
+            _lmsg = ""
+            if (_learn or {}).get('filled'):
+                _lu = ", ".join(f"{k} {v}건" for k, v in (_learn.get('by_user') or {}).items())
+                _lmsg = (f" 🧠 코스트코번호 매핑 {_learn['filled']}건 학습({_lu}) — "
+                         "다음 정산부터 자동 매칭됩니다.")
             st.success(f"✅ 정산 적용 완료 — 주문 {n}건 구입가 반영, 정산 배치 #{bid} 저장. "
-                       "각 사용자 수익계산에 즉시 반영됩니다.")
+                       "각 사용자 수익계산에 즉시 반영됩니다." + _lmsg)
             st.rerun()
 
     _render_stock_status()

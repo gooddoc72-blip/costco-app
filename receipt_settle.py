@@ -14,7 +14,13 @@ import os
 import sqlite3
 
 from db import get_user_db, get_all_users, get_all_products
-from services import resolve_pack_factor, _token_score
+from services import resolve_pack_factor, _token_score, is_costco_pno
+
+#: 상품명 유사도 폴백 하한. 네이버 상품명은 SEO 키워드가 붙어 길고 영수증명은
+#  축약·영문이라 공통 토큰 비율이 구조적으로 낮다. 0.55에서는 명백히 같은 상품도
+#  0.50에서 걸려 탈락했다(8/19 실측: 미매칭 31건 중 14건이 0.50대).
+#  0.45·0.40까지 낮춰도 추가로 붙는 건 0건이라 0.50이 경계다.
+NAME_MATCH_MIN = 0.50
 
 
 def _norm(s):
@@ -286,7 +292,7 @@ def allocate_receipt_to_orders(receipt_items, date_from, date_to, users=None,
                     s = _token_score(nm, ri['name'])
                     if s > _sc:
                         _sc, _best = s, ri
-                if _best and _sc >= 0.55:
+                if _best and _sc >= NAME_MATCH_MIN:
                     costco_no = _best['costco']
                     via = 'name'
             # ③ 재고 이월 — 당일 영수증에 없으면 과거 구매분(가용 재고)에서 찾는다.
@@ -302,7 +308,7 @@ def allocate_receipt_to_orders(receipt_items, date_from, date_to, users=None,
                         _s = _token_score(nm, _e.get('name') or '')
                         if _s > _sc2:
                             _sc2, _cand = _s, _pn
-                    if _sc2 < 0.55:
+                    if _sc2 < NAME_MATCH_MIN:
                         _cand = None
                 if _cand and stock_pool.get(_cand, {}).get('units', 0) > 0:
                     _need = int(o['qty'] or 1) * int(_split_pack(prod)[1] or 1)
@@ -527,6 +533,67 @@ def cleanup_orphan_settlements():
             orphan_batches.add(it['batch_id'])
     removed = delete_settlement_items_by_id(orphan_ids, list(orphan_batches)) if orphan_ids else 0
     return {'checked': len(items), 'removed': removed, 'batches': orphan_batches}
+
+
+def learn_costco_mappings(rows):
+    """매칭 결과(네이버번호 ↔ 코스트코번호)를 사용자 제품DB에 되기입한다.
+
+    왜 필요한가:
+      영수증 매칭은 '제품DB에 코스트코번호가 있느냐'에 걸려 있는데, 실측 매핑률이
+      20%대(oxo 23% / tblue 21%)에 고착돼 있었다. 이름·재고·수동·AI로 어렵게 붙인
+      매칭이 어디에도 저장되지 않아, 같은 상품이 다음 정산에서 또 미매칭으로 나왔다.
+      한 번 붙은 매핑을 저장하면 다음부터는 ①번(번호 브리지)으로 바로 붙는다.
+
+    안전장치:
+      · 이미 코스트코번호가 있는 레코드는 절대 덮어쓰지 않는다(사용자 값이 권위).
+      · 4~7자리 형식 검증(is_costco_pno) — 네이버 ID가 번호칸에 섞이는 오염 차단.
+      · via='number'는 이미 번호로 붙은 행이라 배울 게 없어 건너뛴다.
+
+    Returns: {'filled': 채운 레코드 수, 'by_user': {username: n}, 'pairs': 시도한 매핑 수}
+    """
+    pairs = {}
+    for r in (rows or []):
+        if str(r.get('via') or '') == 'number':
+            continue
+        u = _norm(r.get('username'))
+        nv = _norm(r.get('naver_no'))
+        cno = _norm(r.get('costco_no'))
+        if not (u and nv and is_costco_pno(cno)):
+            continue
+        pairs.setdefault(u, {}).setdefault(nv, cno)
+
+    filled, by_user = 0, {}
+    for uname, m in pairs.items():
+        try:
+            conn = get_user_db(uname)
+        except Exception:
+            continue
+        try:
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(products)")}
+            key_cols = [c for c in ('naver_channel_pno', 'naver_origin_pno') if c in cols]
+            if not key_cols or 'product_no' not in cols:
+                continue
+            _where = " OR ".join("TRIM(COALESCE(%s,''))=?" % c for c in key_cols)
+            n = 0
+            for nv, cno in m.items():
+                cur = conn.execute(
+                    "UPDATE products SET product_no=? "
+                    "WHERE TRIM(COALESCE(product_no,''))='' AND (%s)" % _where,
+                    [cno] + [nv] * len(key_cols))
+                n += cur.rowcount
+            conn.commit()
+            if n:
+                by_user[uname] = n
+                filled += n
+        except Exception:
+            pass
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+    return {'filled': filled, 'by_user': by_user,
+            'pairs': sum(len(v) for v in pairs.values())}
 
 
 def apply_receipt_settlement(rows):
