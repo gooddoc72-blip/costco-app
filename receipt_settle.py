@@ -231,8 +231,22 @@ def get_stock_status(date_upto=None):
     return out
 
 
+def get_settled_order_keys():
+    """이미 다른 배치에서 정산된 (사용자, 주문번호) 집합.
+
+    조회 범위를 전날까지 넓히면 어제 이미 정산한 주문이 다시 잡혀 구입가가
+    두 번 덮어써진다. 그걸 막는 제외 목록.
+    """
+    try:
+        from db_receipt_settle import iter_all_settlement_item_orders
+        return {(_norm(r.get('username')), _norm(r.get('order_no')))
+                for r in (iter_all_settlement_item_orders() or [])}
+    except Exception:
+        return set()
+
+
 def allocate_receipt_to_orders(receipt_items, date_from, date_to, users=None,
-                               stock_pool=None):
+                               stock_pool=None, exclude_orders=None):
     """영수증 품목을 기간 내 모든 사용자 주문에 코스트코 상품번호로 자동배치.
 
     Returns:
@@ -263,6 +277,7 @@ def allocate_receipt_to_orders(receipt_items, date_from, date_to, users=None,
     _ritems = [{'costco': c, 'name': name_by_costco.get(c, ''), 'price': price_by_costco[c]}
                for c in price_by_costco]
 
+    _excl = exclude_orders if exclude_orders is not None else set()
     rows, matched_costco, unmatched_orders = [], set(), []
     for uname in users:
         nmap = _naver_to_product_map(uname)     # 네이버번호 → 사용자 제품레코드(정확한 코스트코번호)
@@ -277,6 +292,9 @@ def allocate_receipt_to_orders(receipt_items, date_from, date_to, users=None,
         except Exception:
             ords = []
         for o in ords:
+            # 이미 정산된 주문은 후보에서 뺀다 (구입가 이중 반영 방지)
+            if _excl and (uname, _norm(o['order_no'])) in _excl:
+                continue
             onv = _norm(o['product_no'])
             nm = _norm(o['product_name'])
             prod = nmap.get(onv)

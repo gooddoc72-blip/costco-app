@@ -1,6 +1,6 @@
 """🧾 영수증 정산 (관리자) — 코스트코 영수증을 각 사용자 주문에 자동배치하고
 각 주문 구입가에 실단가를 반영 + 사용자별 정산표 생성."""
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 import streamlit as st
 import pandas as pd
@@ -10,7 +10,7 @@ from receipt_settle import (
     allocate_receipt_to_orders, apply_receipt_settlement, cleanup_orphan_settlements,
     learn_costco_mappings,
     build_manual_rows, ai_match_receipt_orders, _summarize, compute_leftovers,
-    build_stock_pool, get_settle_start_date, get_stock_status,
+    build_stock_pool, get_settle_start_date, get_stock_status, get_settled_order_keys,
 )
 from db_receipt_settle import (
     save_settlement_batch, list_settlement_batches, get_settlement_items,
@@ -249,17 +249,30 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     if _rdates:
         st.caption(f"🧾 영수증 인식 날짜: **{', '.join(_rdates)}** → 기본 정산일로 설정됨. "
                    "여러 날짜면 각 날짜별로 나눠 배치하세요.")
-    st.caption(f"**{d_day}** 에 결제된(주문일 기준) 모든 판매자 주문 중, 위 영수증 상품번호와 일치하는 건에 배치합니다.")
-    d_from = d_to = d_day
+    # 코스트코에 가는 날과 주문이 들어온 날은 어긋난다 — 마감(기본 12:00) 이후 주문은
+    # 다음날 장을 보므로, 오늘 산 물건의 주문일은 어제(혹은 그 전날)다. 당일만 보면
+    # 그 주문들이 통째로 미매칭이 됐다(8/19 실측: 콩담백면은 8/17 주문과 100% 일치).
+    # 이전 날짜는 '아직 정산 안 된 주문'만 후보로 넣어 이중 반영을 막는다.
+    _lookback = st.number_input(
+        "이전 주문도 포함 (일)", value=2, min_value=0, max_value=7, step=1, key="rs_lookback",
+        help="마감 이후 주문은 다음날 장을 보기 때문에, 오늘 영수증이 어제·그제 주문에 대응합니다. "
+             "이미 정산된 주문은 자동으로 제외되므로 중복 청구되지 않습니다.")
+    d_to = d_day
+    d_from = d_day - timedelta(days=int(_lookback))
+    st.caption(f"**{d_from} ~ {d_to}** 결제 주문 중 **아직 정산되지 않은 건**에서 "
+               "위 영수증 상품번호와 일치하는 주문을 찾아 배치합니다.")
 
     if st.button("🔎 당일 자동배치 미리보기", type="primary", key="rs_preview_btn"):
-        with st.spinner("당일 주문을 조회해 배치 중..."):
+        with st.spinner("주문을 조회해 배치 중..."):
             # 재고 이월 — 당일 영수증에 없는 주문을 과거 구매분(가용 재고)에서 찾는다.
             #   실측(8/15~19): 미매칭 159건 → 100건으로 59건 감소.
             _pool = build_stock_pool(str(d_to), exclude_dates=[str(d_day)])
+            _settled = get_settled_order_keys()
             alloc = allocate_receipt_to_orders(
-                receipt_items, str(d_from), str(d_to), stock_pool=_pool
+                receipt_items, str(d_from), str(d_to), stock_pool=_pool,
+                exclude_orders=_settled,
             )
+        alloc['_settled_skipped'] = len(_settled)
         st.session_state['rs_alloc'] = alloc
 
     alloc = st.session_state.get('rs_alloc')
