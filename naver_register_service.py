@@ -451,11 +451,22 @@ def register_one(username, api_id, api_secret, product, cat_id, opts=None):
     # 한글표시사항: 코스트코 스펙 → '제품 상세정보' 표 + 제조자
     _spec_table = ""
     _manufacturer = ""
+    _brand = ""
+    _volume = ""
     if opts.get("with_spec") and _spec:
         _spec_table = _cc.build_spec_table_html(_spec)
         for _k in ("제조자/수입자", "제조원/수입원", "제조원", "수입원", "제조사"):
             if _spec.get(_k):
                 _manufacturer = str(_spec[_k]).strip()
+                break
+        # 네이버 속성(브랜드·모델명)용 — 스펙에 있으면 그대로 쓴다
+        for _k in ("브랜드", "제조사/브랜드", "상표"):
+            if _spec.get(_k):
+                _brand = str(_spec[_k]).strip()
+                break
+        for _k in ("내용량", "용량", "중량", "총 중량", "규격"):
+            if _spec.get(_k):
+                _volume = str(_spec[_k]).strip()
                 break
 
     # 상세페이지: [공통상단] + 상품명 + (2줄 여백) + 상품설명 + 이미지들 + 표시사항표 + [공통하단]
@@ -516,7 +527,10 @@ def register_one(username, api_id, api_secret, product, cat_id, opts=None):
         "detail_html":       detail_html,
         "seller_code":       str(product.get("product_no") or "").strip(),
         "seller_tags":       seller_tags,
-        "manufacturer":      _manufacturer,
+        "manufacturer":      _manufacturer or _brand,
+        # 네이버 속성(naverShoppingSearchInfo) — 브랜드·모델명
+        "brand":             _brand or _manufacturer,
+        "model_name":        (name.replace(_volume, "").strip() if _volume else ""),
         "benefits":          _benefits or None,
         "delivery":          _delivery or None,
     })

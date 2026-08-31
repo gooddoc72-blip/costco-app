@@ -446,7 +446,8 @@ def register_one(creds, save_tokens, product, margin, target, opts,
         "shipping_fee": 0, "origin_code": "03",
         "delivery": _dv,          # 배송비 유형·반품/교환비·택배사 (프리셋 일괄 적용)
         "after_service_tel": target.get('as_tel') or '1588-1234',
-        "seller_tags": _tags, "manufacturer": _manuf or None,
+        # manufacturer/brand/model_name → 네이버 속성(naverShoppingSearchInfo)에도 들어간다
+        "seller_tags": _tags, "manufacturer": _manuf or None, "brand": _manuf or None,
         "model_name": _model or None, "origin_content": _origin or None,
         "seller_code": _seller_code,
         # 구매/리뷰 포인트 — 등록 시점에 같이 건다. 안 넣으면 나중에

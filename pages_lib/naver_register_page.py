@@ -406,6 +406,10 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         'cat_id': str(_cid or ''), 'cat_full': _cfull or '',
                         'origin': _i1.get('origin', '국산'), 'brand': _i1.get('brand', ''),
                         'costco_no': str((_i2 or {}).get('product_no', '') or ''),
+                        # 네이버 '속성'(브랜드·제조사·모델명)·용량 — 사진 판독값
+                        'manufacturer': _i1.get('manufacturer', '') or _i1.get('brand', ''),
+                        'model_name': _i1.get('model_name', ''),
+                        'volume': _i1.get('volume', ''),
                     }
                     # ── SEO 상품명 자동 적용 ──
                     #  사진에서 읽은 이름은 '검색용'이 아니라 '표기용'이라 그대로 등록하면
@@ -418,7 +422,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         with st.spinner("연관검색어 분석 → 저검색 키워드 앞단 배치..."):
                             _sres, _serr0 = naver_api.keyword_seo_name(
                                 _adk0, _ads0, _adc0, _nm, ai_key=_ph_aikey,
-                                category=_cfull or '', front_max=200,
+                                category=_cfull or '', front_max=200, n_front=3,
                                 gemini_key=_ph_gkey)
                         if _sres and _sres.get('name') and _sres['name'] != _nm:
                             st.session_state['_ph_pv']['name_raw'] = _nm
@@ -463,9 +467,13 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     if not (_adk and _ads and _adc):
                         st.info("검색광고 API 키가 필요합니다 (설정 탭 > 📊 네이버 검색광고 API).")
                     else:
-                        _sc1, _sc2 = st.columns([1.4, 1])
+                        _sc1, _sc2, _sc3 = st.columns([1.4, 1, 1])
                         _fmax = _sc2.number_input("앞단 기준 검색량 이하", value=200, step=50,
                                                   min_value=50, key="ph_seo_fmax")
+                        _nfront = _sc3.number_input(
+                            "앞단 키워드 수", value=3, min_value=1, max_value=5, step=1,
+                            key="ph_seo_nfront",
+                            help="상품명 앞단에 넣을 연관검색 키워드 개수 (기본 3개). 뒤에 대표어가 붙습니다.")
                         if _sc1.button("🔍 키워드 분석", key="ph_seo_go",
                                        use_container_width=True):
                             import naver_api as _na
@@ -474,7 +482,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                 _res, _serr = _na.keyword_seo_name(
                                     _adk, _ads, _adc, _seed, ai_key=_ph_aikey,
                                     category=_pv.get('cat_full', ''), front_max=int(_fmax),
-                                    gemini_key=_ph_gkey)
+                                    n_front=int(_nfront), gemini_key=_ph_gkey)
                             if _serr and not (_res or {}).get('candidates'):
                                 st.warning(f"키워드 조회 실패: {_serr}")
                             else:
@@ -576,6 +584,27 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 if not _costco_no.strip():
                     st.warning("⚠️ 코스트코 상품번호가 비어 있습니다 — 입력해야 등록됩니다.")
 
+                # ── 🏷 상품 속성 (브랜드·제조사·모델명·용량) ────────────────
+                #   네이버 detailAttribute.naverShoppingSearchInfo 로 등록된다.
+                #   비워두면 그 항목만 빠지고, 라벨 사진을 읽었으면 그 값이 우선 채워진다.
+                _lbl_food = st.session_state.get('_ph_food') or {}
+                _ac1, _ac2, _ac3 = st.columns(3)
+                _brand_in = _ac1.text_input(
+                    "브랜드", value=str(_pv.get('brand', '') or ''), key="ph_brand",
+                    help="네이버 상품 '속성 > 브랜드'로 등록됩니다.")
+                _maker_in = _ac2.text_input(
+                    "제조사", value=str(_lbl_food.get('manufacturer')
+                                    or _pv.get('manufacturer', '') or ''), key="ph_maker",
+                    help="라벨 사진을 읽었으면 그 제조사가 기본값입니다.")
+                _model_in = _ac3.text_input(
+                    "모델명", value=str(_pv.get('model_name', '') or ''), key="ph_model",
+                    help="용량/수량을 뺀 제품명. 비우면 상품명이 쓰입니다.")
+                _vol_in = st.text_input(
+                    "용량/중량", value=str(_lbl_food.get('volume')
+                                       or _pv.get('volume', '') or ''), key="ph_volume",
+                    help="상품명·상품정보제공고시(내용량)에 반영됩니다. "
+                         "네이버 카테고리 속성(용량 항목)은 커머스API에 속성 조회가 없어 자동 선택이 불가합니다.")
+
                 # ── 🏷 AI 연관태그 (생성 → 검토 → 등록) ─────────────────
                 st.markdown("**🏷 연관태그 (검색 노출용 · 최대 10개)**")
                 _adc = (_gs('naver_ad_api_key'), _gs('naver_ad_secret'), _gs('naver_ad_customer_id'))
@@ -655,12 +684,18 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                 "category_id": _ec.strip(),
                                 "seller_code": _costco_no.strip(),
                                 "seller_tags": _sel_tags,
-                                "food_notice": _food,
+                                # 용량은 식품고시 '내용량'으로도 반영 (입력값 우선)
+                                "food_notice": ({**_food, 'volume': _vol_in.strip()}
+                                                if (_food and _vol_in.strip()) else _food),
                                 "detail_html": _build_detail(_en.strip(), _cdns, _desc,
                                                              _food_info_html(_food)),
                                 "shipping_fee": 0, "origin_code": "03",
                                 "after_service_tel": _gs("naver_as_tel") or "1588-1234",
-                                "manufacturer": _pv.get('brand') or "상품 상세페이지 참조",
+                                # 속성 — 브랜드·제조사·모델명 (naverShoppingSearchInfo)
+                                "brand": _brand_in.strip(),
+                                "manufacturer": (_maker_in.strip() or _brand_in.strip()
+                                                 or "상품 상세페이지 참조"),
+                                "model_name": _model_in.strip(),
                             })
                             if _res and _res.get('origin_product_no'):
                                 st.success(f"✅ 네이버 등록 완료! (origin #{_res.get('origin_product_no')}) "

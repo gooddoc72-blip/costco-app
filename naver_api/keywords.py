@@ -275,12 +275,13 @@ def _comp_rank(r):
     return {"낮음": 0, "중간": 1, "높음": 2}.get(str(r.get("경쟁도", "")), 1)
 
 
-def order_seo_keywords(rows, front_max=200, n_front=2):
+def order_seo_keywords(rows, front_max=200, n_front=3):
     """검색량 rows → 상품명용 키워드 배치 (순수 함수, API 불필요 = 단위테스트 가능).
 
     롱테일 전략: 저검색(총검색량 ≤ front_max) 키워드를 '앞단'에 둔다.
     신규 상품은 대표어로 상위노출이 어려우니, 경쟁 낮은 저검색 키워드를 앞에 배치해
     롱테일 검색 1페이지를 노린다. 대표어(최고검색량)는 뒤에 보조로 붙인다.
+    n_front = 앞단에 넣을 연관검색 키워드 수 (기본 3개).
 
     각 row에 band 라벨을 달아 반환:
       'front' = 저검색(≤front_max) 후보  ·  'rep' = 대표어  ·  'mid' = 그 외
@@ -318,7 +319,7 @@ def order_seo_keywords(rows, front_max=200, n_front=2):
 
 
 def keyword_seo_name(ad_api_key, ad_secret, customer_id, seed, ai_key=None,
-                     category="", front_max=200, n_front=2, manual_kw=None,
+                     category="", front_max=200, n_front=3, manual_kw=None,
                      gemini_key=None):
     """검색량 분석 기반 SEO 상품명 + 후보 키워드. (메인 네이버 등록용)
 
@@ -362,7 +363,8 @@ def keyword_seo_name(ad_api_key, ad_secret, customer_id, seed, ai_key=None,
             _sys = ("너는 네이버 스마트스토어 SEO 상품명 작성 전문가다. 주어진 키워드를 "
                     "'제시된 순서대로' 자연스럽게 포함하는 한국어 상품명을 한 줄로 만든다. "
                     "특히 앞쪽 키워드가 상품명 앞부분에 오도록 배치한다. "
-                    "중복·과장·특수문자·이모지 금지, 최대 40자. 상품명만 출력.")
+                    "**주어진 키워드는 하나도 빠뜨리지 말 것** (연관검색 키워드 3개 + 대표어). "
+                    "중복·과장·특수문자·이모지 금지, 최대 50자. 상품명만 출력.")
             _msg = (f"원본 상품명: {_seed}\n카테고리: {category or '미상'}\n"
                     f"앞단부터 순서대로 포함할 키워드: {', '.join(ordered)}\n"
                     f"상품명 한 줄만 출력.")

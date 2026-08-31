@@ -402,6 +402,40 @@ def _build_food_notice(fn, name):
     return {"productInfoProvidedNoticeType": "FOOD", "food": food}
 
 
+def _clean_product_attributes(attrs):
+    """productAttributes 정제 — 네이버가 받는 형태만 남긴다.
+
+    입력: [{attributeSeq, attributeValueSeq?, attributeRealValue?, attributeRealValueUnitCode?}]
+    attributeSeq 없거나 값이 하나도 없는 항목은 버린다(있으면 등록이 400으로 떨어진다).
+    """
+    out = []
+    for a in (attrs or []):
+        if not isinstance(a, dict):
+            continue
+        try:
+            _seq = int(a.get("attributeSeq") or 0)
+        except (TypeError, ValueError):
+            continue
+        if _seq <= 0:
+            continue
+        item = {"attributeSeq": _seq}
+        try:
+            _vseq = int(a.get("attributeValueSeq") or 0)
+        except (TypeError, ValueError):
+            _vseq = 0
+        if _vseq > 0:
+            item["attributeValueSeq"] = _vseq
+        _real = str(a.get("attributeRealValue") or "").strip()
+        if _real:
+            item["attributeRealValue"] = _real[:100]
+            _unit = str(a.get("attributeRealValueUnitCode") or "").strip()
+            if _unit:
+                item["attributeRealValueUnitCode"] = _unit[:20]
+        if len(item) > 1:          # seq 말고 값이 하나라도 있어야 유효
+            out.append(item)
+    return out[:50]
+
+
 def register_product(client_id, client_secret, product_info):
     """
     네이버 스마트스토어 상품 등록.
@@ -508,6 +542,37 @@ def register_product(client_id, client_secret, product_info):
             "sellerManagementCode": _seller_code[:50],
         }
 
+    # ── 네이버쇼핑 검색정보(속성) — 브랜드·제조사·모델명 ────────────────
+    #   상품 '속성' 영역에 노출되고 쇼핑 검색·카탈로그 매칭에 쓰인다.
+    #   예전엔 제조사를 상품정보제공고시(etc)에만 넣어서 속성 칸이 통째로 비어 있었다.
+    _nsi = {}
+    for _nk, _nv in (("brandName", product_info.get("brand")),
+                     ("manufacturerName", product_info.get("manufacturer")),
+                     ("modelName", product_info.get("model_name"))):
+        _nt = str(_nv or "").strip()
+        # 고시 기본문구가 그대로 넘어오면 속성으로는 쓰지 않는다
+        if _nt and _nt != "상품 상세페이지 참조":
+            _nsi[_nk] = _nt[:50]
+    # 브랜드 '카탈로그' 연결은 brandId + brandName(카탈로그와 정확히 일치)이 둘 다 있어야 한다.
+    # brandName만 보내면 텍스트 브랜드로만 들어간다(등록은 정상).
+    try:
+        _bid = int(product_info.get("brand_id") or 0)
+    except (TypeError, ValueError):
+        _bid = 0
+    if _bid > 0 and _nsi.get("brandName"):
+        _nsi["brandId"] = _bid
+    _has_nsi = bool(_nsi)
+    if _has_nsi:
+        payload["originProduct"]["detailAttribute"]["naverShoppingSearchInfo"] = _nsi
+
+    # ── 카테고리 속성(productAttributes) — [{attributeSeq, attributeValueSeq|attributeRealValue}] ──
+    #   네이버 커머스API에는 '카테고리별 속성 메타 조회' 공개 엔드포인트가 없어
+    #   attributeSeq를 알고 있을 때만 넣을 수 있다. 호출측이 주면 그대로 실어보낸다.
+    _prod_attrs = _clean_product_attributes(product_info.get("product_attributes"))
+    _has_attrs = bool(_prod_attrs)
+    if _has_attrs:
+        payload["originProduct"]["detailAttribute"]["productAttributes"] = _prod_attrs
+
     # 연관태그(SEO sellerTags) — [{code, text}] 목록. 있으면 seoInfo에 주입 (최대 10개)
     _seller_tags = product_info.get("seller_tags") or []
     _has_tags = bool(_seller_tags)
@@ -551,7 +616,7 @@ def register_product(client_id, client_secret, product_info):
         _res, _err = _do_post(payload)
         if not _err:
             return _res, None
-        if not (_has_tags or _has_food):
+        if not (_has_tags or _has_food or _has_nsi or _has_attrs):
             return _res, _err
 
         # 재시도 — 예전엔 실패하면 무조건 태그를 통째로 버렸다. 그래서 태그와
@@ -561,23 +626,33 @@ def register_product(client_id, client_secret, product_info):
         _tag_blamed = any(k in _le for k in ('seoinfo', 'sellertags', 'tag', '태그'))
         _food_blamed = any(k in _le for k in
                            ('productinfoprovidednotice', 'notice', '고시', '상품정보제공'))
+        # 속성(브랜드·제조사·모델명·카테고리속성)이 거부되면 그것만 빼고 재시도한다.
+        _attr_blamed = any(k in _le for k in
+                           ('navershoppingsearchinfo', 'productattributes', 'brand',
+                            'manufacturer', 'attribute', '브랜드', '제조사', '속성'))
         # _format_naver_err가 '[field] message' 형태로 필드를 실어준다.
-        # 다른 필드를 콕 집어 지목했다면 태그·고시는 죄가 없다 → 그대로 둔다.
+        # 다른 필드를 콕 집어 지목했다면 태그·고시·속성은 죄가 없다 → 그대로 둔다.
         _named = [f.lower() for f in _re_mod.findall(r'\[([^\]]+)\]', str(_err))]
-        _blames_other = bool(_named) and not (_tag_blamed or _food_blamed)
+        _blames_other = bool(_named) and not (_tag_blamed or _food_blamed or _attr_blamed)
         if _blames_other:
             return _res, _err
 
         _da = payload["originProduct"]["detailAttribute"]
         _dropped = []
-        # 지목된 게 없으면(오류 메시지가 불투명) 최후수단으로 둘 다 빼고 1회 시도.
-        _opaque = not (_tag_blamed or _food_blamed)
+        # 지목된 게 없으면(오류 메시지가 불투명) 최후수단으로 전부 빼고 1회 시도.
+        _opaque = not (_tag_blamed or _food_blamed or _attr_blamed)
         if _has_tags and (_tag_blamed or _opaque):
             if _da.pop("seoInfo", None) is not None:
                 _dropped.append("태그")
         if _has_food and (_food_blamed or _opaque):
             _da["productInfoProvidedNotice"] = _etc_notice
             _dropped.append("식품고시")
+        if _has_nsi and (_attr_blamed or _opaque):
+            if _da.pop("naverShoppingSearchInfo", None) is not None:
+                _dropped.append("속성(브랜드·제조사)")
+        if _has_attrs and (_attr_blamed or _opaque):
+            if _da.pop("productAttributes", None) is not None:
+                _dropped.append("카테고리속성")
         if not _dropped:
             return _res, _err
 
