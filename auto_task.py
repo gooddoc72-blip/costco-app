@@ -1721,7 +1721,8 @@ def run_cafe24_register_task(username="admin", limit=None, target=None,
                      'product_name': _row['product_name'],
                      'price': _row['price']},
                     _margin, target, opts,
-                    have_code=_have_code, have_name=_have_name, shared=_shared)
+                    have_code=_have_code, have_name=_have_name, shared=_shared,
+                    target_user=_tuser)
             except Exception as e:
                 import traceback
                 log(f"    ❌ {str(_row['product_name'])[:24]} — 예외: {e}")

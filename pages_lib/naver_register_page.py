@@ -967,7 +967,18 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     _cf_open = IS_ADMIN or (_gs('cafe24_register_open') == '1')
     if _cf_open and _cf_mall and _cf_cid and _cf_tok:
         import cafe24_api
-        with st.expander("🛒→N 카페24 상품을 네이버에 등록", expanded=False):
+        from db_cafe24_queue import cafe24_reg_quota, log_cafe24_registration
+        _cfq = cafe24_reg_quota(USERNAME)
+        _cfq_label = ("" if not _cfq['limit']
+                      else "  ·  한도 %d/%d" % (_cfq['used'], _cfq['limit']))
+        with st.expander("🛒→N 카페24 상품을 네이버에 등록" + _cfq_label, expanded=False):
+            if _cfq['limit']:
+                if _cfq['blocked']:
+                    st.error("🚫 등록 한도를 다 썼습니다 (%d/%d). 관리자에게 한도 상향을 요청하세요."
+                             % (_cfq['used'], _cfq['limit']))
+                else:
+                    st.info("ℹ️ 등록 한도 %d개 중 **%d개 사용** — 남은 %d개."
+                            % (_cfq['limit'], _cfq['used'], _cfq['remaining']))
             _cf_creds = {'mall_id': _cf_mall, 'client_id': _cf_cid,
                          'client_secret': _cf_cred('client_secret'),
                          'access_token': _cf_tok, 'refresh_token': _cf_cred('refresh_token'),
@@ -1040,6 +1051,12 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         _done_pnos = set()   # 등록 성공분 → 목록에서 제외(다음 클릭에 다음 상품 처리)
                         _prog = st.progress(0.0)
                         _targets = _cf2n_list[:30]
+                        # 한도가 있으면 남은 개수만큼만 (초과분은 시도조차 안 한다)
+                        if _cfq['limit']:
+                            _targets = _targets[:max(0, _cfq['remaining'])]
+                            if not _targets:
+                                st.error("🚫 등록 한도를 다 썼습니다 (%d/%d)."
+                                         % (_cfq['used'], _cfq['limit']))
                         for _i, _p in enumerate(_targets):
                             _prog.progress((_i + 1) / len(_targets))
                             _name = str(_p['product_name']); _cfprice = int(_p['price'])
@@ -1068,6 +1085,10 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                             })
                             if not _re2:
                                 _done_pnos.add(str(_p.get('product_no')))
+                                log_cafe24_registration(
+                                    USERNAME, _p.get('product_no'),
+                                    (_res or {}).get('origin_product_no', ''),
+                                    _name, source='cafe24-bulk')
                             _rows.append({
                                 '상품': _name[:26], '카테고리': str(_cat_full or '')[:24],
                                 '판매가': _sale,
@@ -1106,7 +1127,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         _opts = [f"{c['id']} — {c['full_name']}" for c in _cats]
                         _sel = st.selectbox("카테고리 선택", _opts, key=f"cf2n_catsel_{_pno}")
                         _cat_id = _sel.split(" — ")[0].strip()
-                        if st.button("🛍 네이버 등록", key=f"cf2n_reg_{_pno}", type="primary"):
+                        if st.button("🛍 네이버 등록", key=f"cf2n_reg_{_pno}", type="primary",
+                                     disabled=_cfq['blocked']):
                             with st.spinner("카페24 상세 조회 → 이미지 업로드 → 네이버 등록 중..."):
                                 _full, _fe = cafe24_api.get_product(_cf_creds, _pno, save_tokens=_cf_save)
                                 if _fe or not _full:
@@ -1133,6 +1155,10 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                             if _re2:
                                                 st.error(f"❌ 네이버 등록 실패: {_re2}")
                                             else:
+                                                log_cafe24_registration(
+                                                    USERNAME, _pno,
+                                                    (_res or {}).get('origin_product_no', ''),
+                                                    _full.get('product_name', ''), source='cafe24-one')
                                                 st.success(f"✅ 네이버 등록 완료! (origin #{_res.get('origin_product_no')}) "
                                                            f"— 스마트스토어에서 확인하세요.")
                     else:

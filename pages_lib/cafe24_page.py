@@ -687,7 +687,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                             _res = c24reg.register_one(
                                 _ag_creds, _ag_save, _p, _ag_margin, _ag_target, _ag_opts,
                                 have_code=_ag_have_code, have_name=_ag_have_name,
-                                shared=_ag_shared)
+                                shared=_ag_shared, target_user=_ag_tuser)
                             _icon = {'ok': '✅', 'skip': '⏭'}.get(_res['status'], '❌')
                             _ag_rows.append({
                                 '상품': _res['name'][:24], '코드': _res['code'],

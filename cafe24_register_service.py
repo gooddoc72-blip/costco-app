@@ -292,7 +292,7 @@ def load_existing(tid, tsecret):
 
 
 def register_one(creds, save_tokens, product, margin, target, opts,
-                 have_code=None, have_name=None, shared=None):
+                 have_code=None, have_name=None, shared=None, target_user=''):
     """카페24 상품 1건을 대상 사용자의 스마트스토어에 등록.
 
     product : {'product_no', 'product_name', 'price'} (카페24 목록 항목)
@@ -317,6 +317,22 @@ def register_one(creds, save_tokens, product, margin, target, opts,
 
     _name = str(product.get('product_name', ''))
     _pno = product.get('product_no')
+
+    # ── 등록 한도(누적) — 관리자가 사용자별로 건 상한. 0/미설정이면 무제한 ──
+    #   여기서 막아야 UI·대기열·크론 세 경로가 같은 규칙을 따른다.
+    _tu = str(target_user or target.get('username') or '').strip()
+    if _tu:
+        try:
+            from db_cafe24_queue import cafe24_reg_quota
+            _q = cafe24_reg_quota(_tu)
+        except Exception:
+            _q = {'blocked': False}
+        if _q.get('blocked'):
+            return {'status': 'fail', 'name': _name, 'code': '', 'code_src': '',
+                    'category': '', 'tags': 0, 'price': 0,
+                    'detail': '등록 한도 초과 (%d/%d) — 관리자에게 한도 상향을 요청하세요.'
+                              % (_q.get('used', 0), _q.get('limit', 0)),
+                    'reason': 'QUOTA'}
     # 유료배송이면 배송비를 구매자가 내므로 판매가에 녹이지 않는다
     _dv = naver_api.merge_delivery(opts.get('delivery'))
     # 무료배송일 때만 택배비를 판매가에 녹인다(유료면 구매자가 낸다)
@@ -464,6 +480,14 @@ def register_one(creds, save_tokens, product, margin, target, opts,
     have_name.add(_final_name)
     have_name.add(_cf_name)
     _warn = str((_res or {}).get('warning') or '')
+    # 한도 계산 근거 — 대기열을 안 쓰는 경로도 세려면 성공 시점에 남겨야 한다
+    if _tu:
+        try:
+            from db_cafe24_queue import log_cafe24_registration
+            log_cafe24_registration(_tu, _pno, (_res or {}).get('origin_product_no', ''),
+                                    _final_name, source='cafe24')
+        except Exception:
+            pass
     return _r('ok', ('등록 (⚠️ %s)' % _warn[:120]) if _warn else '등록',
               code=_seller_code, code_src=_code_src,
               category=str(_cfull or ''), tags=len(_tags or []))

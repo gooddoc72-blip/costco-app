@@ -274,3 +274,96 @@ def clear(target_user, status=None):
 
     init_queue()
     return retry_on_lock(_do)
+
+
+# ── 카페24 등록 한도 (사용자별 누적) ───────────────────────────────
+#   관리자가 카페24 카탈로그를 열어준 사용자가 무한정 등록하는 걸 막는다.
+#   한도는 사용자 설정 'cafe24_register_limit'(0/빈값 = 무제한),
+#   사용량은 '이 앱의 카페24 경로로 등록에 성공한 상품 수'(누적)다.
+
+def _ensure_reg_log(conn):
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS cafe24_register_log (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            username     TEXT NOT NULL,
+            product_no   TEXT DEFAULT '',
+            origin_no    TEXT DEFAULT '',
+            product_name TEXT DEFAULT '',
+            source       TEXT DEFAULT '',
+            created_at   TEXT DEFAULT ''
+        )""")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_cf24log_user "
+                 "ON cafe24_register_log(username)")
+
+
+def log_cafe24_registration(username, product_no, origin_no='', product_name='', source=''):
+    """카페24 경로 등록 성공 1건 기록. 한도 계산의 근거."""
+    def _w():
+        conn = get_auth_db()
+        try:
+            _ensure_reg_log(conn)
+            conn.execute(
+                "INSERT INTO cafe24_register_log "
+                "(username, product_no, origin_no, product_name, source, created_at) "
+                "VALUES (?,?,?,?,?,?)",
+                (str(username or ''), str(product_no or ''), str(origin_no or ''),
+                 str(product_name or '')[:120], str(source or ''), _now()))
+            conn.commit()
+        finally:
+            conn.close()
+    try:
+        retry_on_lock(_w)
+        return True
+    except Exception:
+        return False
+
+
+def get_cafe24_reg_count(username):
+    """누적 등록 수 — 대기열 완료분(done)과 직접등록 로그를 상품번호로 합집합.
+
+    대기열을 쓰지 않는 '건별 등록'도 세야 하고, 반대로 이 기능이 생기기 전에
+    대기열로 이미 등록한 것도 빠지면 안 된다. 그래서 둘을 합쳐 중복을 뺀다.
+    """
+    conn = get_auth_db()
+    try:
+        _ensure_reg_log(conn)
+        init_queue()
+        row = conn.execute(
+            "SELECT COUNT(*) FROM ("
+            "  SELECT product_no FROM cafe24_reg_queue "
+            "   WHERE target_user=? AND status='done' AND TRIM(COALESCE(product_no,''))<>''"
+            "  UNION "
+            "  SELECT product_no FROM cafe24_register_log "
+            "   WHERE username=? AND TRIM(COALESCE(product_no,''))<>''"
+            ")", (str(username), str(username))).fetchone()
+        return int(row[0] or 0)
+    except Exception:
+        return 0
+    finally:
+        conn.close()
+
+
+def get_cafe24_reg_limit(username):
+    """사용자별 누적 한도. 0이면 무제한. 미설정도 무제한."""
+    try:
+        from db import get_setting
+        v = str(get_setting(username, 'cafe24_register_limit') or '').strip()
+    except Exception:
+        v = ''
+    if not v:
+        return 0
+    try:
+        return max(0, int(float(v)))
+    except (TypeError, ValueError):
+        return 0
+
+
+def cafe24_reg_quota(username):
+    """{limit, used, remaining, blocked} — 한도 확인 1회로 끝내는 헬퍼.
+    limit=0(무제한)이면 blocked는 항상 False, remaining은 None."""
+    _lim = get_cafe24_reg_limit(username)
+    _used = get_cafe24_reg_count(username)
+    if _lim <= 0:
+        return {'limit': 0, 'used': _used, 'remaining': None, 'blocked': False}
+    _rem = max(0, _lim - _used)
+    return {'limit': _lim, 'used': _used, 'remaining': _rem, 'blocked': _rem <= 0}

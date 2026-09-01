@@ -160,6 +160,31 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     st.success("✅ 오픈됨" if _cfo_new else "🙈 숨김 처리됨")
                     st.rerun()
 
+                # ── 등록 한도(누적) — 열어준 사용자가 무한정 올리는 것 방지 ──
+                if _cfo_new:
+                    from db_cafe24_queue import cafe24_reg_quota
+                    _q = cafe24_reg_quota(u['username'])
+                    _lc1, _lc2 = st.columns([1, 2])
+                    _lim_new = _lc1.number_input(
+                        "카페24 등록 한도 (누적, 0=무제한)", min_value=0, max_value=100000,
+                        step=10, value=int(_q['limit'] or 0),
+                        key=f"cf24lim_{u['username']}",
+                        help="이 사용자가 카페24 카탈로그로 등록할 수 있는 누적 상품 수. "
+                             "대기열·크론·건별 등록 모두 합산합니다. 0이면 제한 없음.")
+                    with _lc2:
+                        st.write("")
+                        if _q['limit']:
+                            st.caption(f"현재 **{_q['used']} / {_q['limit']}**개 사용 "
+                                       f"(남은 {_q['remaining']}개)"
+                                       + ("  ·  🚫 한도 소진" if _q['blocked'] else ""))
+                        else:
+                            st.caption(f"현재 누적 등록 **{_q['used']}개** · 한도 없음")
+                    if int(_lim_new) != int(_q['limit'] or 0):
+                        set_setting(u['username'], 'cafe24_register_limit', str(int(_lim_new)))
+                        st.success(f"✅ 한도 {int(_lim_new)}개로 저장"
+                                   if _lim_new else "✅ 한도 해제(무제한)")
+                        st.rerun()
+
                 # ── 🛒 카페24 전용 메뉴(대행등록·코스트코 매칭·동기화) 오픈/숨김 ──
                 _cmo_cur = get_setting(u['username'], 'cafe24_menu_open') == '1'
                 _cmo_new = st.checkbox(
