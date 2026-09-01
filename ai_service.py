@@ -79,7 +79,7 @@ def _gemini_post(api_key, model, body, timeout=60):
         → thinkingConfig를 빼고 1회 재시도.
     """
     import copy as _copy
-    tried, last_err = [], None
+    tried, last_err, _bumped = [], None, False
     queue = [model] + [m for m in GEMINI_FALLBACK_MODELS if m != model]
     for _m in queue:
         if _m in tried:
@@ -108,7 +108,33 @@ def _gemini_post(api_key, model, body, timeout=60):
                     return None, "빈 응답(후보 없음 — 안전차단/키 확인)"
                 parts = (cands[0].get("content") or {}).get("parts") or []
                 text = "".join(p.get("text", "") for p in parts)
-                return (text.strip() or None), (None if text.strip() else "빈 응답")
+                # ⚠️ Gemini 3.x flash는 thinkingBudget=0을 무시하고 사고 토큰을 쓴다.
+                #    그 토큰이 maxOutputTokens를 같이 깎아, 예산이 빠듯하면 본문이
+                #    통째로 잘려 빈 응답/토막 응답이 된다(실측: 상품명 생성 120토큰
+                #    → thoughts 116 소진 → finishReason=MAX_TOKENS, 본문 0자).
+                #    → 예산을 키워 한 번만 다시 부른다. 사고 토큰도 과금되지만
+                #      한 번에 수백 토큰이라 비용 영향은 무시할 수준이다.
+                _fr = str(cands[0].get("finishReason") or "")
+                if (not text.strip()) and _fr == "MAX_TOKENS" and not _bumped:
+                    _bumped = True
+                    _cur = int((_b.get("generationConfig") or {}).get("maxOutputTokens") or 0)
+                    _b.setdefault("generationConfig", {})["maxOutputTokens"] = \
+                        min(8192, max(_cur * 4, _cur + 1024))
+                    body = _b               # 이후 재시도에도 넉넉한 예산 유지
+                    r = requests.post(
+                        GEMINI_URL.format(model=_m),
+                        headers={"x-goog-api-key": str(api_key).strip(),
+                                 "content-type": "application/json"},
+                        json=_b, timeout=timeout)
+                    if r.status_code == 200:
+                        cands = r.json().get("candidates") or []
+                        parts = ((cands[0].get("content") or {}).get("parts") or []) if cands else []
+                        text = "".join(p.get("text", "") for p in parts)
+                if text.strip():
+                    return text.strip(), None
+                if _fr == "MAX_TOKENS":
+                    return None, "빈 응답(출력 예산 초과 — 사고 토큰이 본문을 밀어냄)"
+                return None, "빈 응답"
             try:
                 _msg = r.json().get("error", {}).get("message") or r.text[:200]
             except Exception:
