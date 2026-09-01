@@ -159,6 +159,30 @@ def suggest_category_for_name(name, client_id, client_secret,
     return best.get("id"), best.get("full_name"), None
 
 
+def _exif_orientation(im):
+    """EXIF Orientation 값 (1=정상, 3=180°, 6=시계90°, 8=반시계90°). 없으면 1."""
+    try:
+        _ex = im.getexif()
+        return int(_ex.get(274) or 1) if _ex else 1
+    except Exception:
+        return 1
+
+
+def _exif_upright(im):
+    """EXIF 회전 정보를 '실제 픽셀'로 굽는다.
+
+    휴대폰 사진은 센서 방향 그대로 저장하고 '어느 쪽이 위인지'는 EXIF에만 적어둔다.
+    그런데 convert("RGB")·resize·JPEG 재저장을 거치면 그 EXIF가 사라져서, 화면에선
+    똑바로 보이던 사진이 업로드 후 90도 누워 버린다. PC 스크린샷·다운로드 이미지는
+    애초에 이 태그가 없어 관리자만 멀쩡했다.
+    """
+    try:
+        from PIL import ImageOps
+        return ImageOps.exif_transpose(im) or im
+    except Exception:
+        return im
+
+
 def _square_canvas(im, size=1000, bg=(255, 255, 255)):
     """PIL 이미지를 '가운데 기준 정사각 크롭'으로 size×size 로 변환 (흰 여백 없음).
     짧은 변을 한 변으로 하는 정사각을 이미지 중앙에서 잘라냄:
@@ -166,7 +190,7 @@ def _square_canvas(im, size=1000, bg=(255, 255, 255)):
       · 가로로 긴 사진 → 세로에 맞추고 좌·우를 균등하게 잘라냄
     _resize_square(업로드)와 resize_square_bytes(미리보기)의 공용 로직 = 결과 동일."""
     from PIL import Image
-    im = im.convert("RGB")
+    im = _exif_upright(im).convert("RGB")   # 폰 사진 90도 눕는 것 방지
     _w, _h = im.size
     _s = min(_w, _h)                       # 정사각 한 변 = 짧은 변
     _left = (_w - _s) // 2                  # 가운데 정렬
@@ -183,14 +207,18 @@ def _resize_fit(src_path, max_w=1000, max_h=12000):
         from PIL import Image
         import tempfile, os as _os
         with Image.open(src_path) as _im0:
-            _w, _h = _im0.size
+            _rot = _exif_orientation(_im0) != 1   # 폰 사진이면 세워서 다시 저장해야 한다
+            _im1 = _exif_upright(_im0)
+            _w, _h = _im1.size
             if _w <= 0 or _h <= 0:
                 return None
             _r = min(max_w / _w, max_h / _h, 1.0)
-            if _r >= 1.0:
-                return None                      # 이미 작음 → 원본 그대로
-            _im = _im0.convert("RGB").resize(
-                (max(1, int(_w * _r)), max(1, int(_h * _r))), Image.LANCZOS)
+            if _r >= 1.0 and not _rot:
+                return None                      # 이미 작고 회전도 없음 → 원본 그대로
+            _im = _im1.convert("RGB")
+            if _r < 1.0:
+                _im = _im.resize(
+                    (max(1, int(_w * _r)), max(1, int(_h * _r))), Image.LANCZOS)
         _fd, _out = tempfile.mkstemp(suffix=".jpg")
         _os.close(_fd)
         _im.save(_out, "JPEG", quality=90)
@@ -208,7 +236,7 @@ def _resize_square(src_path, size=1000, bg=(255, 255, 255)):
         with Image.open(src_path) as _im0:
             if _im0.size[0] <= 0 or _im0.size[1] <= 0:
                 return None
-            canvas = _square_canvas(_im0, size, bg)
+            canvas = _square_canvas(_im0, size, bg)   # 내부에서 EXIF 세움
         _fd, _out = tempfile.mkstemp(suffix=".jpg")
         _os.close(_fd)
         canvas.save(_out, "JPEG", quality=90)

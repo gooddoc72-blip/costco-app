@@ -312,16 +312,23 @@ def _shrink_for_ai(image_bytes, media_type, max_edge=1092):
     반환: (bytes, media_type). PIL 없거나 실패·이미 작으면 원본 그대로.
     """
     try:
-        from PIL import Image
+        from PIL import Image, ImageOps
         import io as _io
-        with Image.open(_io.BytesIO(image_bytes)) as im:
+        with Image.open(_io.BytesIO(image_bytes)) as im0:
+            # 폰 사진은 회전 정보를 EXIF에만 갖는다 — 세워서 보내야 AI가 글씨를 제대로 읽는다
+            try:
+                _rot = int((im0.getexif() or {}).get(274) or 1) != 1
+            except Exception:
+                _rot = False
+            im = ImageOps.exif_transpose(im0) or im0
             w, h = im.size
-            if max(w, h) <= max_edge:
-                return image_bytes, media_type   # 이미 충분히 작음
+            if max(w, h) <= max_edge and not _rot:
+                return image_bytes, media_type   # 이미 작고 회전도 없음
             im = im.convert("RGB")
-            scale = max_edge / float(max(w, h))
-            im = im.resize((max(1, round(w * scale)), max(1, round(h * scale))),
-                           Image.LANCZOS)
+            scale = min(1.0, max_edge / float(max(w, h)))
+            if scale < 1.0:
+                im = im.resize((max(1, round(w * scale)), max(1, round(h * scale))),
+                               Image.LANCZOS)
             buf = _io.BytesIO()
             im.save(buf, "JPEG", quality=88)
             return buf.getvalue(), "image/jpeg"
