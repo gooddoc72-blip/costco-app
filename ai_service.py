@@ -54,12 +54,74 @@ def claude_complete(api_key: str, system: str, user_msg: str,
 
 # ── Gemini (Google) ────────────────────────────────────────
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-GEMINI_MODEL = "gemini-2.5-flash"   # 현행 flash. thinking 끄고 사용(아래).
+# ⚠️ 버전을 박으면 구글이 그 모델을 '신규 사용자에게만' 닫을 때 **새로 키를 발급한
+#    사용자만** 404가 난다(2026-09 실측: gemini-2.5-flash가 그렇게 막혔고, 기존 키인
+#    oxo·baremi542는 계속 됐다). 그래서 별칭을 기본으로 쓴다.
+GEMINI_MODEL = "gemini-flash-latest"   # 현행 flash 별칭. thinking 끄고 사용(아래).
+#: 모델이 막혔을 때(404/모델 없음) 순서대로 다시 시도할 후보.
+GEMINI_FALLBACK_MODELS = ("gemini-flash-latest", "gemini-3.7-flash", "gemini-2.5-flash")
 # 영수증처럼 깨알글씨·부호(-T)·검산이 필요한 판독은 flash가 자주 틀린다.
 # → pro로 먼저 읽고 실패 시 flash로 폴백. (pro는 느리고 비싸지만 여전히 Claude보다 저렴)
 # ⚠️ 'gemini-2.5-pro'는 신규 사용자에게 404다. 버전이 바뀌어도 안 깨지도록 별칭을 쓴다.
-#    ('gemini-flash-latest' 별칭은 이 호출 형식에서 400이 나서 flash는 버전을 명시)
+#    (flash도 같은 이유로 별칭으로 되돌렸다 — 'gemini-flash-latest' 400은 옛 이야기이고
+#     2026-09 실측에서 thinkingBudget=0을 포함해도 200이다)
 GEMINI_VISION_MODEL = "gemini-pro-latest"
+
+
+def _gemini_post(api_key, model, body, timeout=60):
+    """Gemini 호출 1회 + 자가복구 재시도. 반환: (text, error).
+
+    두 가지 함정을 여기서 흡수한다.
+      · 모델이 막힘(404) — 버전 박힌 이름이 신규 사용자에게 닫히는 일이 실제로 있었다.
+        → GEMINI_FALLBACK_MODELS를 순서대로 다시 시도.
+      · thinkingBudget=0 거부(400) — gemini-3.6-flash는 thinking 끄기를 안 받는다
+        (실측: 3.6은 400, 3.7·flash-latest는 200).
+        → thinkingConfig를 빼고 1회 재시도.
+    """
+    import copy as _copy
+    tried, last_err = [], None
+    queue = [model] + [m for m in GEMINI_FALLBACK_MODELS if m != model]
+    for _m in queue:
+        if _m in tried:
+            continue
+        tried.append(_m)
+        for _drop_think in (False, True):
+            _b = _copy.deepcopy(body)
+            if _drop_think:
+                _gc = _b.get("generationConfig") or {}
+                if "thinkingConfig" not in _gc:
+                    break                      # 뺄 게 없으면 재시도 무의미
+                _gc.pop("thinkingConfig", None)
+            try:
+                r = requests.post(
+                    GEMINI_URL.format(model=_m),
+                    headers={"x-goog-api-key": str(api_key).strip(),
+                             "content-type": "application/json"},
+                    json=_b, timeout=timeout)
+            except Exception as e:
+                last_err = str(e)
+                break
+            if r.status_code == 200:
+                data = r.json()
+                cands = data.get("candidates") or []
+                if not cands:
+                    return None, "빈 응답(후보 없음 — 안전차단/키 확인)"
+                parts = (cands[0].get("content") or {}).get("parts") or []
+                text = "".join(p.get("text", "") for p in parts)
+                return (text.strip() or None), (None if text.strip() else "빈 응답")
+            try:
+                _msg = r.json().get("error", {}).get("message") or r.text[:200]
+            except Exception:
+                _msg = r.text[:200]
+            last_err = f"[{r.status_code}] {_msg}"
+            if r.status_code == 400 and not _drop_think:
+                continue                        # thinking 빼고 한 번 더
+            break                               # 그 외에는 다음 모델로
+        if last_err and not str(last_err).startswith("[404]"):
+            # 404(모델 없음)가 아니면 다른 모델로 바꿔도 소용없다 — 키·쿼터·요청 문제
+            if not (str(last_err).startswith("[400]") and "model" in str(last_err).lower()):
+                break
+    return None, last_err or "빈 응답"
 
 
 def gemini_complete(api_key: str, system: str, user_msg: str,
@@ -75,24 +137,7 @@ def gemini_complete(api_key: str, system: str, user_msg: str,
             "generationConfig": {"maxOutputTokens": max_tokens, "temperature": 0,
                                  "thinkingConfig": {"thinkingBudget": 0}},
         }
-        r = requests.post(
-            GEMINI_URL.format(model=model),
-            headers={"x-goog-api-key": api_key.strip(), "content-type": "application/json"},
-            json=body, timeout=60,
-        )
-        if r.status_code != 200:
-            try:
-                _e = r.json().get("error", {}).get("message") or r.text[:200]
-            except Exception:
-                _e = r.text[:200]
-            return None, f"[{r.status_code}] {_e}"
-        data = r.json()
-        cands = data.get("candidates") or []
-        if not cands:
-            return None, "빈 응답(후보 없음 — 안전차단/키 확인)"
-        parts = (cands[0].get("content") or {}).get("parts") or []
-        text = "".join(p.get("text", "") for p in parts)
-        return (text.strip() or None), (None if text.strip() else "빈 응답")
+        return _gemini_post(api_key, model, body, timeout=60)
     except Exception as e:
         return None, str(e)
 
@@ -318,23 +363,7 @@ def gemini_vision(api_key, image_bytes, media_type, system, user_text,
         # pro(영수증 판독)는 thinking이 부호·검산 정확도를 올리므로 켜둔다.
         if not thinking:
             body["generationConfig"]["thinkingConfig"] = {"thinkingBudget": 0}
-        r = requests.post(
-            GEMINI_URL.format(model=model),
-            headers={"x-goog-api-key": api_key.strip(), "content-type": "application/json"},
-            json=body, timeout=180 if thinking else 90,
-        )
-        if r.status_code != 200:
-            try:
-                _e = r.json().get("error", {}).get("message") or r.text[:200]
-            except Exception:
-                _e = r.text[:200]
-            return None, f"[{r.status_code}] {_e}"
-        _cands = r.json().get("candidates") or []
-        if not _cands:
-            return None, "빈 응답(후보 없음 — 안전차단/키 확인)"
-        _parts = (_cands[0].get("content") or {}).get("parts") or []
-        _text = "".join(p.get("text", "") for p in _parts)
-        return (_text.strip() or None), (None if _text.strip() else "빈 응답")
+        return _gemini_post(api_key, model, body, timeout=180 if thinking else 90)
     except Exception as e:
         return None, str(e)
 
