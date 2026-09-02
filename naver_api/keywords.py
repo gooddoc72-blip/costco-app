@@ -670,7 +670,7 @@ def keyword_prefix_terms(keywords, cores, anchors=None):
     return _out
 
 
-def ai_brand_terms(terms, ai_key=None, gemini_key=None):
+def ai_brand_terms(terms, ai_key=None, gemini_key=None, category='', seed=''):
     """주어진 낱말 중 '회사·브랜드 이름'인 것만 돌려준다.
 
     여러 조건을 한 번에 판단시키면 놓치지만(담터율무차가 계속 통과했다),
@@ -691,7 +691,8 @@ def ai_brand_terms(terms, ai_key=None, gemini_key=None):
             "브랜드가 아닌 것: 원산지·지역(뉴질랜드, 국산, 제주), 형태·상태(냉동, 얼린, 볶은, 롤), "
             "용도(업소용), 등급·규격(특대과, 대용량), 일반 명사.\n"
             "고른 것만 쉼표로 구분해 출력. 없으면 '없음'. 다른 말 금지.")
-    _msg = "낱말: " + ", ".join(_t[:30])
+    _msg = ("이 낱말들은 '%s' 상품(%s)의 검색어 앞부분에서 뽑았다.\n낱말: %s"
+            % (seed or '(미상)', category or '미상', ", ".join(_t[:30])))
     try:
         import ai_service
         _txt, _e, _ = ai_service.ai_complete(
@@ -711,7 +712,7 @@ def ai_brand_terms(terms, ai_key=None, gemini_key=None):
 
 
 def drop_other_brand_keywords(keywords, cores, own_brand='', ai_key=None, gemini_key=None,
-                             anchors=None):
+                             anchors=None, category='', seed=''):
     """앞머리가 '남의 브랜드'인 키워드를 뺀다.
 
     커클랜드딸기(자기 브랜드)·뉴질랜드골드키위(원산지)는 남기고
@@ -725,7 +726,8 @@ def drop_other_brand_keywords(keywords, cores, own_brand='', ai_key=None, gemini
     _ask = [p for p in _pref if p != _own and p not in _BRAND_ALLOW]
     if not _ask:
         return _kws
-    _brands = ai_brand_terms(_ask, ai_key=ai_key, gemini_key=gemini_key)
+    _brands = ai_brand_terms(_ask, ai_key=ai_key, gemini_key=gemini_key,
+                             category=category, seed=seed)
     _brands.discard(_own)
     _brands -= _BRAND_ALLOW
     if not _brands:
@@ -877,7 +879,8 @@ def is_junk_keyword(kw):
     for _t in _k.split():
         if len(_t) < 2:
             return True
-        if _t.replace('.', '').isdigit():
+        if _t[0].isdigit():
+            # '150', '50t', '2.72kg' — 규격 조각이지 검색어가 아니다
             return True
     return False
 
@@ -1114,7 +1117,7 @@ def seo_keyword_pool(ad_api_key, ad_secret, customer_id, seed, ai_key=None,
     _kws = [str(r.get("키워드", "")).strip() for r in _rel]
     _kept = drop_other_brand_keywords(_kws, _cores, own_brand=brand,
                                       ai_key=ai_key, gemini_key=gemini_key,
-                                      anchors=_anchors)
+                                      anchors=_anchors, category=category, seed=_seed)
     if _kept and len(_kept) < len(_kws):
         _ks = set(_kept)
         for _k in _kws:
@@ -1190,8 +1193,17 @@ def compose_seo_name(seed, ordered, category="", ai_key=None, gemini_key=None,
     _name = " ".join(str(_txt).split()).strip().strip('"').strip()
     if len(_name) < 4:
         return _fallback, "AI 응답이 너무 짧음"
-    if _seed_flat not in _name.lower().replace(" ", ""):
-        return _fallback, "AI가 원본 상품명을 훼손"
+    # 예전엔 원본이 '통짜로' 남아있는지 봤는데, 앞단 키워드를 자연스럽게 섞으면
+    # 거의 항상 실패해 AI 조합이 늘 버려졌다. 원본 낱말이 하나도 빠지지 않고
+    # 순서대로 남아있으면 통과시킨다. 낱말을 합쳐버리는 훼손은 여전히 걸린다
+    # ('커클랜드 … 딸기'를 '커클랜드딸기'로 합치면 온전한 낱말이 아니게 된다).
+    _ntoks = [t.lower() for t in _name.split()]
+    _pos = -1
+    for _st in [t.lower() for t in _seed.split()]:
+        try:
+            _pos = _ntoks.index(_st, _pos + 1)
+        except ValueError:
+            return _fallback, "AI가 원본 상품명을 훼손"
     _allow = (_seed + " " + " ".join(_kws)).lower().replace(" ", "")
     _extra = [t for t in _name.split() if t.lower().replace(" ", "") not in _allow]
     if _extra:
