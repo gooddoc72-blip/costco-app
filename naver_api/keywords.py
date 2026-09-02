@@ -896,10 +896,17 @@ def keyword_seo_name(ad_api_key, ad_secret, customer_id, seed, ai_key=None,
                 # AI가 원본 상품명의 낱말을 지운 적이 있다
                 # ('… 냉동 딸기 …' → '커클랜드딸기'로 합쳐 '냉동 딸기'가 사라짐).
                 # 원본이 통째로 남아있을 때만 채택한다.
-                if len(_name) >= 4 and _seed_flat in _name.lower().replace(" ", ""):
+                _nf = _name.lower().replace(" ", "")
+                # 후보에 없던 말을 지어낸 적도 있다(율무차 상품에 '스테비아').
+                # 원본 상품명이나 선택 키워드에서 나오지 않은 낱말은 허용하지 않는다.
+                _allow = (_seed + " " + " ".join(ordered)).lower().replace(" ", "")
+                _extra = [t for t in _name.split()
+                          if t.lower().replace(" ", "") not in _allow]
+                if len(_name) >= 4 and _seed_flat in _nf and not _extra:
                     result["name"] = dedup_product_name(_name)[:100]
                     return result, None
-                err = err or "AI 조합이 원본 상품명을 훼손 — 기계 조합 사용"
+                err = err or ("AI 조합이 없던 낱말을 넣음(%s) — 기계 조합 사용" % ", ".join(_extra)
+                              if _extra else "AI 조합이 원본 상품명을 훼손 — 기계 조합 사용")
         except Exception as _ex:
             err = str(_ex)
     # AI 실패/미사용 → 앞단 키워드 + 원본명 이어붙임 (중복 키워드 제거)
