@@ -484,6 +484,78 @@ def ai_shopping_keywords(seed, category='', ai_key=None, gemini_key=None, n=5):
     return _out[:int(n)]
 
 
+#: 상품이 아니라 '정보'를 찾는 검색어 — 상품명에 넣으면 노출도 전환도 안 된다.
+#  (율무차 후보에 '율무가루만드는법', '율무효능'이 그대로 올라왔다)
+_INFO_WORDS = (
+    '만드는법', '만들기', '만드는', '하는법', '레시피', '효능', '효과', '부작용',
+    '증상', '유래', '뜻', '차이', '비교', '후기', '블로그', '카페', '종류',
+    '먹는법', '보관법', '사용법', '고르는법', '손질', '요리', '칼로리', '성분',
+)
+
+
+def is_info_keyword(kw):
+    """상품 검색어가 아니라 정보성 검색어인지."""
+    _k = str(kw or '').replace(' ', '')
+    return any(_w in _k for _w in _INFO_WORDS)
+
+
+def ai_pick_keywords(seed, candidates, category='', ai_key=None, gemini_key=None, n=5):
+    """후보 중 '이 상품을 살 사람이 실제로 검색할' 키워드만 고른다.
+
+    문자 기반 필터는 낱말이 겹치기만 하면 통과시킨다. 그래서 냉동딸기 상품에
+    '대관령딸기'(생딸기 산지 검색어)가, 율무차에 '생율무가루팩'이 남는다.
+    형태·상태(냉동/생, 가루/차/즙)가 같은지는 의미 판단이 있어야 걸러진다.
+
+    candidates: [{'키워드','총검색량',...}] 또는 [키워드, ...]
+    반환: 선택된 키워드 리스트 (AI 불가·실패 시 빈 리스트 → 호출부가 원래 후보 사용)
+    """
+    _seed = str(seed or '').strip()
+    _cands = []
+    for _c in (candidates or []):
+        _k = (_c.get('키워드') if isinstance(_c, dict) else _c)
+        _k = str(_k or '').strip()
+        if _k and _k not in _cands:
+            _cands.append(_k)
+    if not (_seed and _cands):
+        return []
+    try:
+        import ai_service
+        _gk = ai_service.resolve_gemini_key(gemini_key)
+    except Exception:
+        return []
+    if not (ai_key or _gk):
+        return []
+
+    _sys = ("너는 네이버 쇼핑 SEO 전문가다. 후보 검색어 중 **이 상품 자체를 사려는 사람이 "
+            "검색할 것만** 고른다.\n"
+            "반드시 제외:\n"
+            "- 상품의 형태·상태·가공이 다른 것 (냉동식품에 '생/산지직송', 차 제품에 '가루/원물')\n"
+            "- 다른 상품 (딸기 상품에 '블루베리')\n"
+            "- 정보성 검색어 (효능·만드는법·레시피·후기)\n"
+            "- 다른 브랜드명\n"
+            "고른 것만 쉼표로 구분해 출력한다. 없으면 '없음'만 출력. 다른 말 금지.\n"
+            "최대 %d개." % int(n))
+    _msg = ("상품명: %s\n카테고리: %s\n후보: %s"
+            % (_seed, category or '미상', ', '.join(_cands[:40])))
+    try:
+        import ai_service
+        _txt, _e, _ = ai_service.ai_complete(
+            _sys, _msg, gemini_key=_gk, anthropic_key=ai_key or '', max_tokens=200,
+            claude_model=getattr(ai_service, 'VISION_MODEL', None))
+    except Exception:
+        return []
+    if not _txt or '없음' in str(_txt)[:6]:
+        return []
+    _norm = {_k.lower().replace(' ', ''): _k for _k in _cands}
+    _out = []
+    for _p in str(_txt).replace('\n', ',').split(','):
+        _p = _p.strip().strip('"').strip("'").lstrip('-').strip()
+        _n = _p.lower().replace(' ', '')
+        if _n in _norm and _norm[_n] not in _out:      # 후보에 없던 말은 버린다(환각 방지)
+            _out.append(_norm[_n])
+    return _out[:int(n)]
+
+
 def keyword_seo_name(ad_api_key, ad_secret, customer_id, seed, ai_key=None,
                      category="", front_max=200, n_front=3, manual_kw=None,
                      gemini_key=None, brand="", model_name=""):
@@ -538,10 +610,29 @@ def keyword_seo_name(ad_api_key, ad_secret, customer_id, seed, ai_key=None,
                     _rel.append(_r)
                     _have.add(_k.lower().replace(" ", ""))
 
+    # 정보성 검색어 제거 — '율무효능', '율무가루만드는법'은 상품 검색어가 아니다
+    _info = [r for r in _rel if is_info_keyword(r.get("키워드"))]
+    if len(_info) < len(_rel):
+        _rel = [r for r in _rel if r not in _info]
+        _dropped += len(_info)
+
     if not _rel:
         return ({"name": _seed, "front": [], "rep": None, "candidates": [],
                  "hints": _hints, "dropped": _dropped},
                 err or "관련 연관키워드 없음")
+
+    # 의미 선별 — 낱말만 겹치는 '대관령딸기'(생딸기)를 냉동딸기 상품에서 빼려면
+    # 형태·상태를 이해해야 한다. 후보에 없던 말은 버려 환각을 막는다.
+    if not manual_kw:
+        _pick = ai_pick_keywords(_seed, _rel, category=category, ai_key=ai_key,
+                                 gemini_key=gemini_key, n=max(2, int(n_front) + 2))
+        if _pick:
+            _pn = {k.lower().replace(" ", "") for k in _pick}
+            _sel = [r for r in _rel
+                    if str(r.get("키워드", "")).lower().replace(" ", "") in _pn]
+            if _sel:
+                _dropped += len(_rel) - len(_sel)
+                _rel = _sel
 
     plan = order_seo_keywords(_rel, front_max=front_max, n_front=n_front)
     if manual_kw:

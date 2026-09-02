@@ -68,6 +68,8 @@ from .keywords import (
     relevance_anchors,
     is_relevant_keyword,
     ai_shopping_keywords,
+    ai_pick_keywords,
+    is_info_keyword,
     naver_shopping_search,
     naver_autocomplete,
     _norm_kw,
