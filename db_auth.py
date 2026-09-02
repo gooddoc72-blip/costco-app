@@ -115,17 +115,40 @@ def init_auth_db():
     conn.close()
 
 
-def check_login(username, password):
-    conn = get_auth_db()
-    row = conn.execute(
-        "SELECT password, display_name, is_admin, status FROM users WHERE username=?",
-        (username,)
+def find_user_row(conn, username):
+    """아이디를 대소문자·앞뒤공백 무시하고 찾는다.
+
+    왜: 관리자가 만든 'Sueb' 같은 대문자 아이디를 사용자가 'sueb'로 입력하면
+    기존 `WHERE username=?`(SQLite는 대소문자 구분)로는 행 자체를 못 찾아
+    비밀번호를 아무리 초기화해도 '로그인 실패'만 반복됐다.
+    정확히 일치하는 행이 있으면 그쪽을 우선(ORDER BY)해서, 만에 하나
+    대소문자만 다른 두 계정이 공존해도 원래 계정이 밀리지 않게 한다.
+    반환: (username, password, display_name, is_admin, status) 또는 None
+    """
+    username = (username or "").strip()
+    if not username:
+        return None
+    return conn.execute(
+        "SELECT username, password, display_name, is_admin, status FROM users "
+        "WHERE username=? COLLATE NOCASE ORDER BY (username=?) DESC LIMIT 1",
+        (username, username)
     ).fetchone()
+
+
+def check_login(username, password):
+    """성공 시 dict, 실패 시 사유 문자열.
+
+    사유를 구분해서 돌려주는 이유: 예전엔 '없는 아이디'와 '틀린 비밀번호'가
+    똑같이 None이라 화면에 '로그인 실패'만 떠서, 오타인지 승인 대기인지
+    관리자도 사용자도 구분할 수 없었다.
+    """
+    conn = get_auth_db()
+    row = find_user_row(conn, username)
     if not row:
         conn.close()
-        return None
+        return "no_user"
 
-    stored = row[0]
+    real_username, stored = row[0], row[1]
     pw_ok = False
     needs_upgrade = False
 
@@ -138,19 +161,21 @@ def check_login(username, password):
 
     if not pw_ok:
         conn.close()
-        return None
+        return "bad_pw"
 
     if needs_upgrade:
         new_hash = hash_pw(password)
-        conn.execute("UPDATE users SET password=? WHERE username=?", (new_hash, username))
+        conn.execute("UPDATE users SET password=? WHERE username=?", (new_hash, real_username))
         conn.commit()
 
     conn.close()
-    if row[3] == 'pending':
+    if row[4] == 'pending':
         return "pending"
-    if row[3] == 'rejected':
+    if row[4] == 'rejected':
         return "rejected"
-    return {"username": username, "display_name": row[1], "is_admin": row[2]}
+    # username은 반드시 DB에 저장된 원본을 돌려준다.
+    # 입력값(sueb)을 그대로 쓰면 data/{username}.db 가 새로 생겨 데이터가 갈라진다.
+    return {"username": real_username, "display_name": row[2], "is_admin": row[3]}
 
 
 def get_global_setting(key, default=''):
@@ -170,7 +195,13 @@ def set_global_setting(key, value):
 def register_user(username, password, display_name=""):
     require_approval = get_global_setting('require_approval', '1')
     status = 'pending' if require_approval == '1' else 'active'
+    username = (username or "").strip()
     conn = get_auth_db()
+    # 로그인이 대소문자를 무시하므로, 가입도 무시해야 'Sueb'/'sueb' 두 계정이
+    # 생겨 로그인 시 어느 쪽이 잡힐지 모호해지는 상황을 막을 수 있다.
+    if not username or find_user_row(conn, username):
+        conn.close()
+        return False, None
     try:
         conn.execute("INSERT INTO users VALUES (?,?,?,?,?,?)",
                      (username, hash_pw(password), display_name or username, 0,
@@ -241,7 +272,11 @@ def get_all_users():
 
 
 def add_user(username, password, display_name=""):
+    username = (username or "").strip()
     conn = get_auth_db()
+    if not username or find_user_row(conn, username):
+        conn.close()
+        return False
     try:
         conn.execute("INSERT INTO users VALUES (?,?,?,?,?,?)",
                      (username, hash_pw(password), display_name or username, 0,
@@ -265,10 +300,18 @@ def delete_user(username):
 
 
 def change_password(username, new_password):
+    """성공 여부를 반환. 예전엔 대상이 없어도 조용히 성공한 것처럼 보였다."""
     conn = get_auth_db()
-    conn.execute("UPDATE users SET password=? WHERE username=?", (hash_pw(new_password), username))
+    row = find_user_row(conn, username)
+    if not row:
+        conn.close()
+        return False
+    cur = conn.execute("UPDATE users SET password=? WHERE username=?",
+                       (hash_pw(new_password), row[0]))
     conn.commit()
+    changed = cur.rowcount > 0
     conn.close()
+    return changed
 
 
 def get_user_info(username):

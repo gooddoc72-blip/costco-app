@@ -475,7 +475,7 @@ def _admin_stock():
             name = c1.text_input("상품명")
             pno = c2.text_input("코스트코 상품번호")
             c3, c4, c5, c6 = st.columns(4)
-            users = [u['username'] for u in get_all_users() if u.get('approved')]
+            users = [u['username'] for u in get_all_users() if u.get('status', 'active') == 'active']
             owner = c3.selectbox("보유자", users) if users else c3.text_input("보유자")
             cost = c4.number_input("구입가(1팩)", min_value=0, step=100)
             packs = c5.number_input("수량(팩)", min_value=1, step=1, value=1)

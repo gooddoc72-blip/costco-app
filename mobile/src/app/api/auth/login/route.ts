@@ -11,17 +11,40 @@ export async function POST(req: NextRequest) {
   }
 
   const db = getAuthDb();
+  // 아이디는 대소문자·앞뒤공백을 무시해서 찾는다 (Streamlit 쪽 check_login과 동일 규칙).
+  // 정확히 일치하는 행이 있으면 그쪽을 우선한다.
+  const uname = String(username).trim();
   const row = db
-    .prepare('SELECT password, display_name, is_admin, status FROM users WHERE username = ?')
-    .get(username) as
-    | { password: string; display_name: string; is_admin: number; status: string }
+    .prepare(
+      'SELECT username, password, display_name, is_admin, status FROM users ' +
+        'WHERE username = ? COLLATE NOCASE ORDER BY (username = ?) DESC LIMIT 1'
+    )
+    .get(uname, uname) as
+    | {
+        username: string;
+        password: string;
+        display_name: string;
+        is_admin: number;
+        status: string;
+      }
     | undefined;
 
   if (!row) {
     return NextResponse.json({ error: '로그인 실패' }, { status: 401 });
   }
-  if (row.status && row.status !== 'approved') {
-    return NextResponse.json({ error: '승인 대기 중인 계정입니다' }, { status: 403 });
+  // 파이썬 쪽이 쓰는 status 값은 active / pending / rejected 뿐이다.
+  // 예전엔 존재하지도 않는 'approved'와 비교해서 모든 계정이 403으로 막혀 있었다.
+  const status = row.status || 'active';
+  if (status !== 'active') {
+    return NextResponse.json(
+      {
+        error:
+          status === 'rejected'
+            ? '가입이 거절된 계정입니다'
+            : '관리자 승인 대기 중인 계정입니다',
+      },
+      { status: 403 }
+    );
   }
 
   // bcrypt ($2a$ / $2b$) 또는 sha256 해시 호환
@@ -36,10 +59,12 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: '로그인 실패' }, { status: 401 });
   }
 
-  const token = createSession(username, remember ? 30 : 1);
+  // 세션에는 반드시 DB에 저장된 원본 아이디를 넣는다.
+  // 입력값(sueb)을 그대로 쓰면 이후 조회가 다른 사용자 DB를 가리킨다.
+  const token = createSession(row.username, remember ? 30 : 1);
 
   const res = NextResponse.json({
-    username,
+    username: row.username,
     display_name: row.display_name,
     is_admin: !!row.is_admin,
   });

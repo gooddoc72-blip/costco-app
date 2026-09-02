@@ -143,9 +143,16 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     st.rerun()
                 reset_pw = c3.text_input("새 비밀번호", key=f"reset_{u['username']}", type="password")
                 if c3.button("비밀번호 초기화", key=f"resetbtn_{u['username']}", use_container_width=True):
-                    if reset_pw:
-                        change_password(u['username'], reset_pw)
-                        st.success(f"✅ '{u['username']}' 비밀번호 변경 완료!")
+                    # 붙여넣기로 딸려온 앞뒤 공백은 제거한다. 눈에 안 보이는 공백 하나 때문에
+                    # 알려준 비밀번호로 로그인이 안 되는 사고가 나기 쉽다.
+                    _pw = (reset_pw or "").strip()
+                    if not _pw:
+                        st.warning("새 비밀번호를 입력한 뒤 버튼을 눌러주세요.")
+                    elif change_password(u['username'], _pw):
+                        st.success(f"✅ '{u['username']}' 비밀번호 변경 완료! "
+                                   f"(로그인 아이디는 대소문자 구분 없이 `{u['username']}`)")
+                    else:
+                        st.error(f"❌ '{u['username']}' 계정을 찾지 못해 변경하지 못했습니다.")
 
                 # ── 🛒 카페24→네이버 등록 기능 오픈/숨김 (관리자 카탈로그 공용) ──
                 st.markdown("<hr style='margin:6px 0'>", unsafe_allow_html=True)

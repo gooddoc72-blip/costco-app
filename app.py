@@ -289,7 +289,7 @@ if st.session_state['user'] is None:
                 remember_me = st.checkbox("자동 로그인 (30일간 유지)", value=True)
                 if st.form_submit_button("로그인", use_container_width=True, type="primary"):
                     result = check_login(username, password)
-                    if result and isinstance(result, dict):
+                    if isinstance(result, dict):
                         st.session_state['user'] = result
                         init_user_db(result['username'])
                         if remember_me:
@@ -298,7 +298,12 @@ if st.session_state['user'] is None:
                             _set_qparam('sid', _token)
                         st.rerun()
                     else:
-                        st.error("로그인 실패")
+                        st.error({
+                            "no_user":  "존재하지 않는 아이디입니다. 철자를 확인해주세요.",
+                            "bad_pw":   "비밀번호가 일치하지 않습니다.",
+                            "pending":  "관리자 승인 대기 중인 계정입니다.",
+                            "rejected": "가입이 거절된 계정입니다. 관리자에게 문의하세요.",
+                        }.get(result, "로그인 실패"))
 
         if allow_signup == '1' and len(tabs) > 1:
             with tabs[1]:
