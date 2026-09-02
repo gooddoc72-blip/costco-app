@@ -499,7 +499,8 @@ def is_info_keyword(kw):
     return any(_w in _k for _w in _INFO_WORDS)
 
 
-def ai_pick_keywords(seed, candidates, category='', ai_key=None, gemini_key=None, n=5):
+def ai_pick_keywords(seed, candidates, category='', ai_key=None, gemini_key=None, n=5,
+                     brand=''):
     """후보 중 '이 상품을 살 사람이 실제로 검색할' 키워드만 고른다.
 
     문자 기반 필터는 낱말이 겹치기만 하면 통과시킨다. 그래서 냉동딸기 상품에
@@ -536,12 +537,13 @@ def ai_pick_keywords(seed, candidates, category='', ai_key=None, gemini_key=None
             "- 상품을 특정하지 못하는 상위 분류어 ('과일', '식품', '생활용품')\n"
             "- 용도·대상이 다른 것 (업소용/자판기용/사료용)\n"
             "- 정보성(효능·만드는법·레시피)·거래성(가격·주문·추천·최저가) 검색어\n"
-            "- 다른 브랜드명\n"
+            "- 재료·맛·성분이 다른 것 (호두아몬드율무차에 '검은콩율무차')\n"
+            "- 다른 브랜드·제조사 이름이 들어간 것 (위에 적힌 이 상품의 브랜드가 아닌 회사명)\n"
             "확신이 없으면 제외한다. 적게 고르는 편이 낫다.\n"
             "고른 것만 쉼표로 구분해 출력한다. 없으면 '없음'만 출력. 다른 말 금지.\n"
             "최대 %d개." % int(n))
-    _msg = ("상품명: %s\n카테고리: %s\n후보: %s"
-            % (_seed, category or '미상', ', '.join(_cands[:40])))
+    _msg = ("상품명: %s\n이 상품의 브랜드: %s\n카테고리: %s\n후보: %s"
+            % (_seed, brand or '(미상)', category or '미상', ', '.join(_cands[:40])))
     try:
         import ai_service
         _txt, _e, _ = ai_service.ai_complete(
@@ -720,7 +722,8 @@ def keyword_seo_name(ad_api_key, ad_secret, customer_id, seed, ai_key=None,
                 _seen_s.add(_kk)
                 _sample.append(_r)
         _pick = ai_pick_keywords(_seed, _sample, category=category, ai_key=ai_key,
-                                 gemini_key=gemini_key, n=max(2, int(n_front) + 2))
+                                 gemini_key=gemini_key, n=max(2, int(n_front) + 2),
+                                 brand=brand)
         if _pick:
             _pn = {k.lower().replace(" ", "") for k in _pick}
             _sel = [r for r in _rel
@@ -739,6 +742,14 @@ def keyword_seo_name(ad_api_key, ad_secret, customer_id, seed, ai_key=None,
                 ordered.append(k)
     else:
         front, ordered = plan["front"], plan["ordered_kw"]
+        # 한쪽이 다른 쪽에 통째로 들어있으면 긴 쪽만 남긴다.
+        # ('냉동과일'+'수입냉동과일', '키친타올'+'롤키친타올')
+        _norm_all = [(k, k.lower().replace(" ", "")) for k in ordered]
+        _drop = {k for k, kn in _norm_all
+                 if any(kn != on and kn in on for _, on in _norm_all)}
+        if _drop:
+            ordered = [k for k in ordered if k not in _drop]
+            front = [k for k in front if k not in _drop]
 
     result = {"name": _seed, "front": front, "rep": plan["rep"],
               "candidates": plan["candidates"], "hints": _hints, "dropped": _dropped}
