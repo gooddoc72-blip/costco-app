@@ -65,6 +65,104 @@ try:
 except ImportError:
     naver_register_service = None
 
+def _load_json_preset(username, key):
+    """settings에 JSON으로 저장된 프리셋(배송·혜택) 읽기. 상품DB 탭이 저장한 것과 동일 키."""
+    from db import get_setting
+    try:
+        return json.loads(get_setting(username, key) or "{}")
+    except Exception:
+        return {}
+
+
+def _save_json_preset(username, key, val):
+    from db import set_setting
+    set_setting(username, key, json.dumps(val))
+
+
+def _delivery_label(d):
+    """배송 프리셋 → 한 줄 요약. expander 제목에 현재 설정을 그대로 보여준다."""
+    _lbl = naver_api.FEE_TYPE_LABELS.get(d['fee_type'], d['fee_type'])
+    if d['fee_type'] == 'FREE':
+        if d['ship_cost']:
+            _lbl += " (택배비 %s원 판매가 포함)" % format(d['ship_cost'], ',')
+    elif d['fee_type'] == 'UNIT_QUANTITY_PAID':
+        _lbl += " %s원 / %d개마다" % (format(d['base_fee'], ','), d['repeat_quantity'])
+    elif d['fee_type'] == 'CONDITIONAL_FREE':
+        _lbl += " %s원 (%s원 이상 무료)" % (format(d['base_fee'], ','),
+                                          format(d['free_conditional_amount'], ','))
+    else:
+        _lbl += " %s원" % format(d['base_fee'], ',')
+    return "%s · %s" % (_lbl, naver_api.DELIVERY_COMPANIES.get(d['company'], d['company']))
+
+
+def _render_photo_delivery(USERNAME, kp="phdv"):
+    """사진등록 건별 배송 설정. 저장된 프리셋이 기본값이고, 이 건만 바꿀 수 있다.
+
+    왜 필요했나: 사진등록만 shipping_fee=0을 하드코딩해 넘겨서, 다른 경로가
+    쓰는 naver_delivery_preset과 무관하게 **항상 무료배송**으로 등록됐다.
+    반환: merge_delivery를 통과한 배송 dict (register_product의 'delivery').
+    """
+    _saved = naver_api.merge_delivery(_load_json_preset(USERNAME, 'naver_delivery_preset'))
+    with st.expander("🚚 배송 설정  ·  현재: " + _delivery_label(_saved), expanded=False):
+        st.caption("기본값은 상품DB 탭의 '🚚 배송 설정'입니다. 여기서 바꾸면 **이번 등록 건에만** 적용됩니다.")
+        _types = list(naver_api.FEE_TYPES)
+        _c1, _c2 = st.columns(2)
+        _ft = _c1.selectbox(
+            "배송비 유형", _types,
+            index=_types.index(_saved['fee_type']) if _saved['fee_type'] in _types else 0,
+            format_func=lambda t: naver_api.FEE_TYPE_LABELS.get(t, t), key=f"{kp}_type")
+        _codes = list(naver_api.DELIVERY_COMPANIES.keys())
+        _comp = _c2.selectbox(
+            "택배사", _codes,
+            index=_codes.index(_saved['company']) if _saved['company'] in _codes else 0,
+            format_func=lambda c: f"{naver_api.DELIVERY_COMPANIES[c]} ({c})", key=f"{kp}_comp")
+
+        _ship_cost, _base_fee = 0, 0
+        _repeat_qty = int(_saved['repeat_quantity'])
+        _free_amt = int(_saved['free_conditional_amount'])
+        _f1, _f2 = st.columns(2)
+        if _ft == 'FREE':
+            _ship_cost = _f1.number_input(
+                "택배비 (참고용)", min_value=0, max_value=50000, step=500,
+                value=int(_saved['ship_cost']), key=f"{kp}_ship",
+                help="사진등록의 판매가 공식에는 이 값이 더해지지 않습니다. "
+                     "무료배송으로 낼 거면 위 '네이버 판매가'에 직접 반영하세요.")
+        else:
+            _base_fee = _f1.number_input(
+                "구매자 부담 배송비", min_value=10, max_value=50000, step=500,
+                value=max(10, int(_saved['base_fee'] or 3000)), key=f"{kp}_base")
+            if _ft == 'UNIT_QUANTITY_PAID':
+                _repeat_qty = _f2.number_input(
+                    "반복부과 수량", min_value=1, max_value=100, step=1,
+                    value=max(1, int(_saved['repeat_quantity'])), key=f"{kp}_rep",
+                    help="이 수량마다 배송비를 다시 부과합니다 (예: 2 → 2개당 3,000원).")
+            elif _ft == 'CONDITIONAL_FREE':
+                _free_amt = _f2.number_input(
+                    "무료 조건금액", min_value=0, max_value=1000000, step=1000,
+                    value=int(_saved['free_conditional_amount']), key=f"{kp}_free")
+
+        _e1, _e2 = st.columns(2)
+        _return_fee = _e1.number_input("반품 배송비", min_value=0, max_value=50000, step=500,
+                                       value=int(_saved['return_fee']), key=f"{kp}_ret")
+        _exchange_fee = _e2.number_input("교환 배송비", min_value=0, max_value=50000, step=500,
+                                         value=int(_saved['exchange_fee']), key=f"{kp}_exc")
+
+        _new = naver_api.merge_delivery({
+            'ship_cost': int(_ship_cost), 'fee_type': _ft, 'base_fee': int(_base_fee),
+            'repeat_quantity': int(_repeat_qty), 'free_conditional_amount': int(_free_amt),
+            'return_fee': int(_return_fee), 'exchange_fee': int(_exchange_fee),
+            'company': _comp,
+        })
+        if _ft == 'FREE':
+            st.warning("⚠️ 무료배송입니다 — 판매가에 택배비가 포함돼 있지 않으면 "
+                       "판매 건마다 택배비만큼 손해입니다. 위 '네이버 판매가'를 확인하세요.")
+        if st.button("💾 이 설정을 기본 배송 설정으로 저장", key=f"{kp}_save"):
+            _save_json_preset(USERNAME, 'naver_delivery_preset', _new)
+            st.success("✅ 저장했습니다 — 이후 모든 등록 경로에 적용됩니다.")
+            st.rerun()
+    return _new
+
+
 # app.py 라우터에서 주입되는 cached wrapper들
 cached_shared_products = None
 cached_user_products = None
@@ -659,6 +757,11 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     except Exception:
                         _sel_tags = [{"code": t.get("code"), "text": t["text"]} for t in _cur_tags]
 
+                # ── 🚚 배송 설정 (프리셋 기본값 · 이 건만 변경 가능) ──
+                _ph_delivery = _render_photo_delivery(USERNAME)
+                # 혜택(리뷰포인트) 프리셋도 다른 등록 경로와 동일하게 함께 건다.
+                _ph_benefits = _load_json_preset(USERNAME, 'naver_benefit_preset')
+
                 if st.button("🛍 네이버 등록", type="primary", key="ph_reg1",
                              disabled=not (_prod_imgs and _en.strip() and _ec.strip()
                                            and _es > 0 and _costco_no.strip())):
@@ -689,6 +792,11 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                                 if (_food and _vol_in.strip()) else _food),
                                 "detail_html": _build_detail(_en.strip(), _cdns, _desc,
                                                              _food_info_html(_food)),
+                                # 배송은 위 '🚚 배송 설정'이 결정한다.
+                                # shipping_fee는 delivery가 없을 때만 쓰이는 폴백이다.
+                                "delivery": _ph_delivery,
+                                "delivery_company": _ph_delivery['company'],
+                                "benefits": _ph_benefits or None,
                                 "shipping_fee": 0, "origin_code": "03",
                                 "after_service_tel": _gs("naver_as_tel") or "1588-1234",
                                 # 속성 — 브랜드·제조사·모델명 (naverShoppingSearchInfo)
@@ -701,6 +809,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                 st.success(f"✅ 네이버 등록 완료! (origin #{_res.get('origin_product_no')}) "
                                            f"— {_en.strip()[:20]} / {fmt(int(_es))}원 / 이미지 {len(_cdns)}장"
                                            + (f" / 태그 {len(_sel_tags)}개" if _sel_tags else ""))
+                                st.caption("🚚 적용된 배송: " + _delivery_label(_ph_delivery))
                                 if _re2:   # 태그만 거부되고 등록은 성공한 경우 경고
                                     st.warning(_re2)
                                 st.image(_cdns[0], width=220,
