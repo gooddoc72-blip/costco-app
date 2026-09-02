@@ -671,10 +671,12 @@ def keyword_prefix_terms(keywords, cores, anchors=None):
 
 
 def ai_brand_terms(terms, ai_key=None, gemini_key=None, category='', seed=''):
-    """주어진 낱말 중 '회사·브랜드 이름'인 것만 돌려준다.
+    """주어진 낱말 중 '회사·브랜드 이름'인 것을 돌려준다.
 
-    여러 조건을 한 번에 판단시키면 놓치지만(담터율무차가 계속 통과했다),
-    '이 낱말이 브랜드인가'만 물으면 안정적으로 맞춘다.
+    "이 중 브랜드인 것만 골라라"로 물으면, 목록에 브랜드가 하나뿐일 때
+    모델이 '없음'으로 답해버린다(담터 하나만 있는 목록에서 3회 모두 '없음').
+    낱말마다 예/아니오를 강제하면 안정적으로 맞춘다. 잘 알려지지 않은
+    중소 브랜드(담터·베리필드)도 이 형식에서는 잡힌다.
     반환: 브랜드로 판정된 낱말 집합 (소문자·공백제거). 실패 시 빈 집합.
     """
     _t = [str(x).strip() for x in (terms or []) if str(x).strip()]
@@ -687,27 +689,40 @@ def ai_brand_terms(terms, ai_key=None, gemini_key=None, category='', seed=''):
         return set()
     if not (ai_key or _gk):
         return set()
-    _sys = ("주어진 낱말 중 **회사·브랜드·제조사 이름**인 것만 고른다.\n"
-            "브랜드가 아닌 것: 원산지·지역(뉴질랜드, 국산, 제주), 형태·상태(냉동, 얼린, 볶은, 롤), "
-            "용도(업소용), 등급·규격(특대과, 대용량), 일반 명사.\n"
-            "고른 것만 쉼표로 구분해 출력. 없으면 '없음'. 다른 말 금지.")
-    _msg = ("이 낱말들은 '%s' 상품(%s)의 검색어 앞부분에서 뽑았다.\n낱말: %s"
-            % (seed or '(미상)', category or '미상', ", ".join(_t[:30])))
+    _sys = (
+        "각 낱말이 **회사·브랜드·제조사 이름**인지 하나씩 판정한다.\n"
+        "브랜드로 본다: 식품·생활용품 제조사나 상표 이름 "
+        "(담터, 동서, 오뚜기, 베리필드, 커클랜드, 듀라셀, 제스프리 등). "
+        "잘 알려지지 않은 중소 브랜드도 브랜드다.\n"
+        "브랜드가 아니다: 원산지·지역(뉴질랜드, 국산, 제주), "
+        "형태·상태(냉동, 얼린, 볶은, 롤, 뽑아쓰는), 용도·대상(업소용, 임산부), "
+        "등급·규격(특대과, 대용량), 맛·재료(무설탕, 검은콩), 일반 명사.\n"
+        "출력: 낱말=예 또는 낱말=아니오 를 한 줄에 하나씩. 다른 말 금지."
+    )
+    _msg = "낱말: " + ", ".join(_t[:30])
+    if seed:
+        _msg = ("이 낱말들은 '%s' 상품(%s)의 검색어 앞부분에서 뽑았다.\n%s"
+                % (seed, category or '미상', _msg))
     try:
         import ai_service
         _txt, _e, _ = ai_service.ai_complete(
-            _sys, _msg, gemini_key=_gk, anthropic_key=ai_key or '', max_tokens=120,
+            _sys, _msg, gemini_key=_gk, anthropic_key=ai_key or '', max_tokens=400,
             claude_model=getattr(ai_service, 'VISION_MODEL', None))
     except Exception:
         return set()
-    if not _txt or '없음' in str(_txt)[:6]:
+    if not _txt:
         return set()
     _valid = {x.lower().replace(' ', '') for x in _t}
     _out = set()
-    for _p in str(_txt).replace('\n', ',').split(','):
-        _p = _p.strip().strip('"').strip("'").lstrip('-').strip().lower().replace(' ', '')
-        if _p in _valid:            # 후보에 없던 말은 버린다(환각 방지)
-            _out.add(_p)
+    for _line in str(_txt).splitlines():
+        _line = _line.strip().lstrip('-').strip()
+        if '=' not in _line:
+            continue
+        _w, _v = _line.rsplit('=', 1)
+        _w = _w.strip().strip('"').strip("'").lower().replace(' ', '')
+        _v = _v.strip()
+        if _w in _valid and _v.startswith('예'):   # 후보에 없던 말은 버린다
+            _out.add(_w)
     return _out
 
 
