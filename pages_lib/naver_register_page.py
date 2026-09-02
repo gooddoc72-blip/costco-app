@@ -602,9 +602,27 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                     st.rerun()
                             _hnt = ", ".join(_seo.get('hints') or [])
                             if _hnt:
+                                _srcs = _seo.get('sources') or {}
+                                _srct = " + ".join(f"{k} {v}" for k, v in _srcs.items())
                                 st.caption(f"🔎 조회 검색어: **{_hnt}**"
-                                           + (f"  ·  무관한 연관어 {_seo.get('dropped', 0)}개 제외"
+                                           + (f"  ·  수집 {_srct}" if _srct else "")
+                                           + (f"  ·  {_seo.get('dropped', 0)}개 제외"
                                               if _seo.get('dropped') else ""))
+                            # 왜 빠졌는지 — 결과가 이상할 때 프롬프트/규칙을 고칠 근거
+                            _rej = _seo.get('rejected') or []
+                            if _rej:
+                                _why = {'form': '형태·상태 다름', 'other': '다른 상품',
+                                        'broad': '상위 분류어', 'use': '용도 다름',
+                                        'ingr': '재료·맛 다름', 'brand': '타 브랜드',
+                                        'info': '정보성', 'deal': '거래성'}
+                                with st.expander(f"🚫 제외된 키워드 {len(_rej)}개 (사유)",
+                                                 expanded=False):
+                                    st.dataframe(
+                                        pd.DataFrame([
+                                            {"키워드": r.get('키워드'),
+                                             "사유": _why.get(str(r.get('사유')), r.get('사유') or '-')}
+                                            for r in _rej[:60]]),
+                                        use_container_width=True, hide_index=True)
                             st.caption("체크한 키워드를 앞단부터 넣어 상품명을 다시 만듭니다.  "
                                        "⬆️ = 저검색 앞단추천 · 🎯 = 대표어(최고검색)")
                             _picked = []
