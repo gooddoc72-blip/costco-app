@@ -78,6 +78,8 @@ from .keywords import (
     ai_brand_terms,
     drop_other_brand_keywords,
     sanitize_product_name,
+    join_keywords_with_name,
+    is_junk_keyword,
     core_fit_score,
     score_keyword,
     collect_keyword_candidates,

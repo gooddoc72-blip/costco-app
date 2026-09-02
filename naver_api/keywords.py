@@ -635,13 +635,24 @@ def is_purpose_mismatch(kw):
     return any(_w in _k for _w in _PURPOSE_WORDS)
 
 
-def keyword_prefix_terms(keywords, cores):
-    """키워드에서 본체어를 뺀 앞머리 낱말들.
+#: 브랜드로 판정돼도 상품명에 남겨도 되는 이름 (이 사업은 코스트코 상품 재판매다)
+_BRAND_ALLOW = {'코스트코', 'costco'}
 
-    '담터율무차'→'담터', '뉴질랜드골드키위'→'뉴질랜드', '커클랜드딸기'→'커클랜드'.
+
+def keyword_prefix_terms(keywords, cores, anchors=None):
+    """키워드에서 상품을 설명하는 조각을 걷어낸 '앞머리'들.
+
+    '담터율무차'→'담터', '뉴질랜드골드키위'→'뉴질랜드', '커클랜드딸기'→(없음).
     이 앞머리가 남의 브랜드인지만 따로 물어보면 판정이 훨씬 정확해진다.
+
+    본체어만 걷어내면 '베리필드냉동딸기'가 '베리필드냉동'으로 남아 AI가
+    브랜드로 못 알아본다. 상품명에서 뽑은 조각(anchors)까지 걷어내야
+    '베리필드'만 깔끔하게 남는다.
     """
     import re as _re
+    _strip = [str(c).lower().replace(' ', '') for c in (cores or [])]
+    _strip += [str(a).lower().replace(' ', '') for a in (anchors or [])]
+    _strip = sorted({x for x in _strip if len(x) >= 2}, key=len, reverse=True)
     _out = {}
     for _k in (keywords or []):
         _kk = str(_k or '').strip()
@@ -649,13 +660,12 @@ def keyword_prefix_terms(keywords, cores):
         if not _n:
             continue
         _best = _n
-        for _c in sorted([str(c).lower().replace(' ', '') for c in (cores or [])],
-                         key=len, reverse=True):
-            if len(_c) >= 2 and _c in _best:
+        for _c in _strip:
+            if _c in _best:
                 _best = _best.replace(_c, ' ')
         for _p in _re.split(r'\s+', _best):
             _p = _p.strip()
-            if len(_p) >= 2:
+            if len(_p) >= 2 and _p not in _BRAND_ALLOW:
                 _out.setdefault(_p, []).append(_kk)
     return _out
 
@@ -700,7 +710,8 @@ def ai_brand_terms(terms, ai_key=None, gemini_key=None):
     return _out
 
 
-def drop_other_brand_keywords(keywords, cores, own_brand='', ai_key=None, gemini_key=None):
+def drop_other_brand_keywords(keywords, cores, own_brand='', ai_key=None, gemini_key=None,
+                             anchors=None):
     """앞머리가 '남의 브랜드'인 키워드를 뺀다.
 
     커클랜드딸기(자기 브랜드)·뉴질랜드골드키위(원산지)는 남기고
@@ -710,12 +721,13 @@ def drop_other_brand_keywords(keywords, cores, own_brand='', ai_key=None, gemini
     if not _kws:
         return _kws
     _own = str(own_brand or '').lower().replace(' ', '')
-    _pref = keyword_prefix_terms(_kws, cores)
-    _ask = [p for p in _pref if p != _own]
+    _pref = keyword_prefix_terms(_kws, cores, anchors=anchors)
+    _ask = [p for p in _pref if p != _own and p not in _BRAND_ALLOW]
     if not _ask:
         return _kws
     _brands = ai_brand_terms(_ask, ai_key=ai_key, gemini_key=gemini_key)
     _brands.discard(_own)
+    _brands -= _BRAND_ALLOW
     if not _brands:
         return _kws
     _bad = set()
@@ -729,18 +741,54 @@ def drop_other_brand_keywords(keywords, cores, own_brand='', ai_key=None, gemini
 _NAME_OK_CHARS = " .,%+-/()[]&"
 
 
-def sanitize_product_name(name, max_len=100):
-    """등록 직전 상품명 정리 — 이모지·특수문자 제거, 공백 정리, 낱말 중복 제거.
+def sanitize_product_name(name, max_len=100, dedup=False):
+    """등록 직전 상품명 정리 — 이모지·특수문자 제거, 공백 정리.
 
-    조합이 어떤 경로(AI/기계)를 타든 마지막에 한 번 통과시켜,
-    화면에 보이는 것과 실제로 등록되는 것이 같게 만든다.
+    dedup은 기본으로 끈다. 전체에 걸어버리면 앞단 키워드와 겹치는
+    **원본 상품명 쪽 낱말**이 지워진다. 실제로 '호두아몬드율무차'가 통째로
+    사라져 '본비 18g x 120스틱'만 남은 적이 있다.
+    중복 제거는 키워드 구간에만 따로 건다.
     """
     _t = str(name or '')
     _out = []
     for _ch in _t:
         _out.append(_ch if (_ch.isalnum() or _ch in _NAME_OK_CHARS) else ' ')
     _t = ' '.join(''.join(_out).split())
-    return dedup_product_name(_t)[:max_len].strip()
+    if dedup:
+        _t = dedup_product_name(_t)
+    return _t[:max_len].strip()
+
+
+def join_keywords_with_name(seed, keywords, max_len=100):
+    """앞단 키워드 + 원본 상품명 (기계 조합). 원본은 절대 건드리지 않는다.
+
+    원본에 이미 들어있는 키워드는 버리고, 키워드 안에서 원본과 겹치는
+    낱말도 덜어낸다. 길이가 넘치면 뒤(원본·용량)가 아니라 앞단을 줄인다.
+    """
+    _seed = str(seed or '').strip()
+    _sf = _seed.lower().replace(' ', '')
+    _stoks = {t.lower() for t in _seed.split()}
+    _parts, _seen = [], set()
+    for _k in (keywords or []):
+        _k = str(_k or '').strip()
+        if not _k:
+            continue
+        if _k.lower().replace(' ', '') in _sf:      # 원본에 이미 있는 말
+            continue
+        _tt = [t for t in _k.split() if t.lower() not in _stoks] or _k.split()
+        _k2 = ' '.join(_tt).strip()
+        _kn = _k2.lower().replace(' ', '')
+        if _kn and _kn not in _seen:
+            _seen.add(_kn)
+            _parts.append(_k2)
+    _head = dedup_product_name(' '.join(_parts)).strip()
+    while _head and len((_head + ' ' + _seed).strip()) > max_len:
+        _ht = _head.split()
+        if len(_ht) <= 1:
+            _head = ''
+            break
+        _head = ' '.join(_ht[:-1])                  # 뒤쪽 키워드부터 덜어낸다
+    return sanitize_product_name((_head + ' ' + _seed).strip(), max_len)
 
 
 # ── 키워드 분석 ────────────────────────────────────────────────
@@ -815,6 +863,25 @@ def score_keyword(row, cores, category='', front_max=200):
                  + 0.10 * _volsc + 0.10 * _mosc, 4)
 
 
+def is_junk_keyword(kw):
+    """검색어로 성립하지 않는 조각 — 주로 자동완성에서 딸려온다.
+
+    자동완성은 사람이 치다 만 문자열까지 준다:
+      '호두아몬드율무차 로', '호두아몬드율무차 150'
+    이런 게 점수 상위로 올라와 상품명 앞단에 박혔다.
+    한 글자 낱말이나 홀로 선 숫자가 섞이면 검색어가 아니다.
+    """
+    _k = str(kw or '').strip()
+    if not _k or len(_k.replace(' ', '')) < 2:
+        return True
+    for _t in _k.split():
+        if len(_t) < 2:
+            return True
+        if _t.replace('.', '').isdigit():
+            return True
+    return False
+
+
 def collect_keyword_candidates(ad_api_key, ad_secret, customer_id, hints,
                                expand=True, autocomplete=True):
     """세 갈래로 후보를 모은다. 반환: (rows, err)
@@ -842,7 +909,8 @@ def collect_keyword_candidates(ad_api_key, ad_secret, customer_id, hints,
                 _ac += [k for k in (naver_autocomplete(_h) or [])]
             except Exception:
                 pass
-        _new = [k for k in _ac if _norm_kw(k) not in _by][:20]
+        _new = [k for k in _ac
+                if _norm_kw(k) not in _by and not is_junk_keyword(k)][:20]
         if _new:
             try:
                 _vol = keyword_volumes(ad_api_key, ad_secret, customer_id, _new)
@@ -986,7 +1054,7 @@ def seo_keyword_pool(ad_api_key, ad_secret, customer_id, seed, ai_key=None,
 
     def _keep(_r):
         _k = str(_r.get("키워드", "")).strip()
-        if not _k:
+        if not _k or is_junk_keyword(_k):
             return False
         _kn = _k.lower().replace(" ", "")
         if _kn in _self_norms or _kn in _seed_flat:
@@ -1045,7 +1113,8 @@ def seo_keyword_pool(ad_api_key, ad_secret, customer_id, seed, ai_key=None,
     # 남의 브랜드 제거
     _kws = [str(r.get("키워드", "")).strip() for r in _rel]
     _kept = drop_other_brand_keywords(_kws, _cores, own_brand=brand,
-                                      ai_key=ai_key, gemini_key=gemini_key)
+                                      ai_key=ai_key, gemini_key=gemini_key,
+                                      anchors=_anchors)
     if _kept and len(_kept) < len(_kws):
         _ks = set(_kept)
         for _k in _kws:
@@ -1080,7 +1149,7 @@ def compose_seo_name(seed, ordered, category="", ai_key=None, gemini_key=None,
     if not _kws:
         return sanitize_product_name(_seed, max_len), ""
 
-    _fallback = sanitize_product_name(" ".join(_kws) + " " + _seed, max_len)
+    _fallback = join_keywords_with_name(_seed, _kws, max_len)
     _seed_flat = _seed.lower().replace(" ", "")
     try:
         import ai_service
