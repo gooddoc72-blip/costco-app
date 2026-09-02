@@ -586,11 +586,18 @@ def keyword_seo_name(ad_api_key, ad_secret, customer_id, seed, ai_key=None,
                    clean_search_seed(_seed).lower().replace(" ", "")}
     _self_norms.discard("")
 
+    _seed_flat = _seed.lower().replace(" ", "")
+
     def _keep(_r):
         _k = str(_r.get("키워드", "")).strip()
         if not _k:
             return False
-        if _k.lower().replace(" ", "") in _self_norms:
+        _kn = _k.lower().replace(" ", "")
+        if _kn in _self_norms:
+            return False
+        # 상품명에 이미 들어있는 말('제스프리 골드키위 특대과'에 '골드키위')은
+        # 앞에 또 적어도 노출이 늘지 않는다. 실제로 더할 게 있는 것만 남긴다.
+        if _kn in _seed_flat:
             return False
         return is_relevant_keyword(_k, _anchors)
 
@@ -679,10 +686,10 @@ def keyword_seo_name(ad_api_key, ad_secret, customer_id, seed, ai_key=None,
                     "규칙:\n"
                     "1) 주어진 검색 키워드를 제시된 순서대로 모두 포함하고, "
                     "앞쪽 키워드를 상품명 맨 앞에 둔다.\n"
-                    "2) 원본 상품명의 브랜드·제품명·용량/수량 표기는 그대로 유지해 뒤에 붙인다. "
-                    "임의로 바꾸거나 빼지 않는다.\n"
-                    "3) 같은 낱말을 두 번 쓰지 않는다. 키워드가 원본 상품명에 이미 있으면 "
-                    "그 자리를 그대로 두고 앞에 또 적지 않는다.\n"
+                    "2) **원본 상품명은 글자 그대로 통째로 유지**해 키워드 뒤에 붙인다. "
+                    "낱말을 빼거나 순서를 바꾸거나 다른 말로 합치지 않는다.\n"
+                    "3) 키워드끼리 같은 낱말이 겹치면 하나만 남긴다. "
+                    "원본 상품명 쪽은 절대 건드리지 않는다.\n"
                     "4) 40자 이내. 낱말은 띄어쓰기로 구분한다.")
             _msg = (f"원본 상품명: {_seed}\n카테고리: {category or '미상'}\n"
                     f"앞단부터 순서대로 포함할 검색 키워드: {', '.join(ordered)}\n"
@@ -692,9 +699,13 @@ def keyword_seo_name(ad_api_key, ad_secret, customer_id, seed, ai_key=None,
                 claude_model=getattr(ai_service, "VISION_MODEL", None))
             if _txt:
                 _name = " ".join(str(_txt).split()).strip().strip('"').strip()
-                if len(_name) >= 4:
+                # AI가 원본 상품명의 낱말을 지운 적이 있다
+                # ('… 냉동 딸기 …' → '커클랜드딸기'로 합쳐 '냉동 딸기'가 사라짐).
+                # 원본이 통째로 남아있을 때만 채택한다.
+                if len(_name) >= 4 and _seed_flat in _name.lower().replace(" ", ""):
                     result["name"] = dedup_product_name(_name)[:100]
                     return result, None
+                err = err or "AI 조합이 원본 상품명을 훼손 — 기계 조합 사용"
         except Exception as _ex:
             err = str(_ex)
     # AI 실패/미사용 → 앞단 키워드 + 원본명 이어붙임 (중복 키워드 제거)
