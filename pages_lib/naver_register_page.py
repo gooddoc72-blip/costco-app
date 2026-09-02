@@ -520,8 +520,10 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         with st.spinner("연관검색어 분석 → 저검색 키워드 앞단 배치..."):
                             _sres, _serr0 = naver_api.keyword_seo_name(
                                 _adk0, _ads0, _adc0, _nm, ai_key=_ph_aikey,
-                                category=_cfull or '', front_max=200, n_front=3,
-                                gemini_key=_ph_gkey)
+                                category=(_cfull or _i1.get('category') or ''),
+                                front_max=200, n_front=3, gemini_key=_ph_gkey,
+                                brand=_i1.get('brand', ''),
+                                model_name=_i1.get('model_name', ''))
                         if _sres and _sres.get('name') and _sres['name'] != _nm:
                             st.session_state['_ph_pv']['name_raw'] = _nm
                             st.session_state['_ph_pv']['name'] = _sres['name']
@@ -580,7 +582,9 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                 _res, _serr = _na.keyword_seo_name(
                                     _adk, _ads, _adc, _seed, ai_key=_ph_aikey,
                                     category=_pv.get('cat_full', ''), front_max=int(_fmax),
-                                    n_front=int(_nfront), gemini_key=_ph_gkey)
+                                    n_front=int(_nfront), gemini_key=_ph_gkey,
+                                    brand=_pv.get('brand', ''),
+                                    model_name=_pv.get('model_name', ''))
                             if _serr and not (_res or {}).get('candidates'):
                                 st.warning(f"키워드 조회 실패: {_serr}")
                             else:
@@ -596,6 +600,11 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                                use_container_width=True):
                                     st.session_state['_ph_en_pending'] = _seo['name']
                                     st.rerun()
+                            _hnt = ", ".join(_seo.get('hints') or [])
+                            if _hnt:
+                                st.caption(f"🔎 조회 검색어: **{_hnt}**"
+                                           + (f"  ·  무관한 연관어 {_seo.get('dropped', 0)}개 제외"
+                                              if _seo.get('dropped') else ""))
                             st.caption("체크한 키워드를 앞단부터 넣어 상품명을 다시 만듭니다.  "
                                        "⬆️ = 저검색 앞단추천 · 🎯 = 대표어(최고검색)")
                             _picked = []
@@ -614,7 +623,9 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                     _res2, _ = _na.keyword_seo_name(
                                         _adk, _ads, _adc, _seed2, ai_key=_ph_aikey,
                                         category=_pv.get('cat_full', ''), manual_kw=_picked,
-                                        gemini_key=_ph_gkey)
+                                        gemini_key=_ph_gkey,
+                                        brand=_pv.get('brand', ''),
+                                        model_name=_pv.get('model_name', ''))
                                 st.session_state['_ph_en_pending'] = _res2['name']
                                 st.session_state['_ph_seo'] = {**_seo, 'name': _res2['name']}
                                 st.rerun()

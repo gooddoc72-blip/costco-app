@@ -225,7 +225,12 @@ def keyword_tool(ad_api_key, ad_secret, customer_id, keyword):
         "X-Customer": str(customer_id),
         "X-Signature": _sig,
     }
-    _hint = str(keyword or "").replace(" ", "")
+    # keyword가 리스트면 hintKeywords 다중 조회(네이버 허용 최대 5개).
+    # 상품명 한 덩어리보다 '핵심어 여러 개'가 연관어를 훨씬 많이 준다.
+    if isinstance(keyword, (list, tuple, set)):
+        _hint = ",".join([str(k).replace(" ", "") for k in keyword if str(k).strip()][:5])
+    else:
+        _hint = str(keyword or "").replace(" ", "")
     if not _hint:
         return [], "키워드를 입력하세요."
 
@@ -318,25 +323,227 @@ def order_seo_keywords(rows, front_max=200, n_front=3):
     return {"front": front, "rep": rep_kw, "ordered_kw": ordered, "candidates": candidates}
 
 
+# ── 상품명 → 검색용 키워드 추출 ────────────────────────────────
+# 네이버 키워드도구(keywordstool)의 hintKeywords는 '검색어'를 기대한다.
+# 상품명 전체를 그대로 던지면 자기 자신 1건만 돌아오고 연관검색어가 하나도 안 나온다.
+#   '본비 호두아몬드율무차 18g x 120스틱' → 1건('본비호두아몬드율무차18GX120스틱', 20회)
+#   '호두아몬드율무차'                    → 118건
+# 그동안 상품명 전체를 seed로 던져서, 연관키워드가 없으니 원본 상품명이 그대로
+# 등록됐다(= 쇼핑성 키워드가 하나도 안 붙었다). 규격·용량·괄호를 걷어낸
+# '핵심 검색어'를 만들어 던진다.
+_SPEC_UNITS_LATIN = ('kg', 'mg', 'ml', 'cm', 'mm', 'lb', 'oz', 'ct', 'pcs', 'ea', 'g', 'l', 'p', 't')
+_SPEC_UNITS_KR = ('개입', '개', '매', '입', '스틱', '포', '정', '장', '봉', '팩',
+                  '병', '캔', '구', '인분', '미', '과', '롤', '단')
+
+#: 검색어로서 의미가 없는 상품명 토큰 (브랜드 수식어·판매문구)
+_SEED_NOISE = {
+    '시그니처', 'signature', '그레이드', 'grade', '정품', '무료배송', '당일발송',
+    '특가', '세트', 'set', '신상', 'best', '대용량', '행사', '할인',
+}
+
+
+def clean_search_seed(name):
+    """상품명 → 검색용 핵심어. 용량·규격·괄호·판매문구를 걷어낸다.
+
+    '커클랜드 시그니처 냉동 딸기 그레이드 A 2.72kg (6LB)' → '커클랜드 냉동 딸기'
+    '본비 호두아몬드율무차 18g x 120스틱'                → '본비 호두아몬드율무차'
+    """
+    import re as _re
+    _t = str(name or '')
+    _t = _re.sub(r'\([^)]*\)', ' ', _t)
+    _t = _re.sub(r'\[[^\]]*\]', ' ', _t)
+    _t = _t.replace('×', ' ').replace('*', ' ').replace('/', ' ')
+    # 숫자+단위 — 라틴 단위는 뒤에 글자가 안 붙을 때만(‘6LB’는 제거, ‘1등급’은 유지)
+    _t = _re.sub(r'(?i)\d+(?:\.\d+)?\s*(?:' + '|'.join(_SPEC_UNITS_LATIN) + r')(?![a-z0-9가-힣])',
+                 ' ', _t)
+    _t = _re.sub(r'\d+(?:\.\d+)?\s*(?:' + '|'.join(_SPEC_UNITS_KR) + r')', ' ', _t)
+    _t = _re.sub(r'(?i)(?<![a-z0-9])x(?![a-z0-9])', ' ', _t)      # 곱셈 x
+    _t = _re.sub(r'\d+(?:\.\d+)?', ' ', _t)                        # 남은 숫자
+    _t = _re.sub(r'(?i)(?<![a-z])[a-z](?![a-z])', ' ', _t)         # 단독 알파벳('그레이드 A')
+    _toks = [w for w in _t.split() if w and w.lower() not in _SEED_NOISE]
+    _out, _seen = [], set()
+    for _w in _toks:                       # 같은 낱말 반복 제거('건전지 … 건전지')
+        _n = _w.lower()
+        if _n in _seen:
+            continue
+        _seen.add(_n)
+        _out.append(_w)
+    return ' '.join(_out).strip()
+
+
+def build_hint_keywords(name, category='', brand='', model_name='', max_hints=5):
+    """키워드도구에 던질 hint 목록(최대 5개). 앞쪽이 우선순위가 높다.
+
+    상품 본체(뒤쪽 토큰)를 먼저 넣는다 — 한국어 상품명은 '브랜드 … 제품'
+    순이라 뒤쪽이 검색어에 가깝다('커클랜드 냉동 딸기' → '냉동딸기').
+    """
+    _core = clean_search_seed(name)
+    _toks = _core.split()
+    _brand = str(brand or '').strip()
+    _prod = [w for w in _toks if w.lower() != _brand.lower()] or _toks
+    # 규격을 떼고 남은 한 글자 찌꺼기('D형'→'형')는 검색어가 못 된다.
+    # 단 '쌀'처럼 한 글자가 상품 본체인 경우가 있어, 대안이 있을 때만 버린다.
+    _hp = [w for w in _prod if len(w) >= 2] or _prod
+    _hints = []
+
+    def _add(_x):
+        _x = str(_x or '').strip().replace(' ', '')
+        if not _x or _x in _hints or len(_hints) >= max_hints:
+            return
+        if len(_x) < 2 and not ('가' <= _x <= '힣'):
+            return          # 한 글자는 한글일 때만 허용(라틴 한 글자는 규격 찌꺼기)
+        _hints.append(_x)
+
+    _order = []
+    if len(_hp) >= 2:
+        _order.append(''.join(_hp[-2:]))            # 뒤 2토큰 = 보통 상품 본체
+    _order.append(_hp[-1] if _hp else '')           # 마지막 토큰
+    # 남은 자리는 긴 토큰부터 — 합성명사('골드키위','알카라인')가 실제 검색어일 확률이 높다
+    _order += sorted([w for w in _hp if len(w) >= 2], key=lambda w: -len(w))
+    _order.append(clean_search_seed(model_name))
+    if str(category or '').strip():
+        _order.append(str(category).replace('>', ' ').split()[-1])
+    if _brand and _hp:
+        _order.append(_brand + _hp[-1])
+    for _x in _order:
+        _add(_x)
+    return _hints
+
+
+def relevance_anchors(name, category='', extra=()):
+    """관련성 판정용 앵커 집합 (소문자·공백제거).
+
+    키워드도구는 '연관'이라는 이름과 달리 무관한 고검색어를 잔뜩 준다
+    (율무차 → 레모네이드·우렁강된장, 냉동딸기 → 복숭아·쌀10KG).
+    그걸 그대로 상품명 앞단에 박으면 상품명이 망가진다.
+    상품명·카테고리에서 뽑은 조각과 겹치는 후보만 통과시킨다.
+    합성어('호두아몬드율무차')는 통짜로는 안 걸리므로 2~4글자 조각도 앵커로 쓴다.
+    """
+    _words = clean_search_seed(name).split()
+    _words += [w for w in str(category or '').replace('>', ' ').split()]
+    _words += [str(x) for x in (extra or [])]
+    _out = set()
+    for _w in _words:
+        _w = str(_w).strip().lower().replace(' ', '')
+        if len(_w) < 2 or _w in _SEED_NOISE:
+            continue
+        _out.add(_w)
+        if len(_w) >= 4:
+            for _n in (2, 3, 4):
+                for _i in range(len(_w) - _n + 1):
+                    _out.add(_w[_i:_i + _n])
+    return _out
+
+
+def is_relevant_keyword(kw, anchors):
+    """후보 키워드가 상품과 관련 있는지 (앵커 조각을 하나라도 포함하는지)."""
+    _k = str(kw or '').lower().replace(' ', '')
+    if not _k or not anchors:
+        return False
+    return any(_a in _k for _a in anchors)
+
+
+def ai_shopping_keywords(seed, category='', ai_key=None, gemini_key=None, n=5):
+    """AI가 뽑는 쇼핑성 검색 키워드 후보. 키워드도구 결과가 부실할 때 쓴다.
+
+    키워드도구는 hint가 희귀어면 연관어를 거의 안 준다. 그때 상품명만 남으면
+    쇼핑성 키워드가 통째로 빠지므로, AI 후보를 뽑아 다시 키워드도구로
+    검색량을 확인한다(지어낸 키워드를 그대로 쓰지 않기 위해).
+    반환: [키워드, ...]
+    """
+    _seed = str(seed or '').strip()
+    if not _seed:
+        return []
+    try:
+        import ai_service
+        _gk = ai_service.resolve_gemini_key(gemini_key)
+    except Exception:
+        return []
+    if not (ai_key or _gk):
+        return []
+    _sys = ("너는 네이버 쇼핑 검색 키워드 전문가다. 주어진 상품을 살 사람이 "
+            "네이버 쇼핑에서 실제로 검색할 만한 키워드만 고른다. "
+            "규칙: 상품 자체를 가리키는 키워드만(용도·대상·형태 포함 가능). "
+            "브랜드명·용량·수량·과장어·중복 금지. 2~10자. "
+            "쉼표로 구분해 %d개만 출력하고 다른 말은 하지 마라." % int(n))
+    _msg = "상품명: %s\n카테고리: %s" % (_seed, category or '미상')
+    try:
+        import ai_service
+        _txt, _e, _ = ai_service.ai_complete(
+            _sys, _msg, gemini_key=_gk, anthropic_key=ai_key or '', max_tokens=120,
+            claude_model=getattr(ai_service, 'VISION_MODEL', None))
+    except Exception:
+        return []
+    if not _txt:
+        return []
+    _out = []
+    for _p in str(_txt).replace('\n', ',').split(','):
+        _p = _p.strip().strip('"').strip("'").lstrip('-').strip()
+        if 2 <= len(_p) <= 12 and _p not in _out:
+            _out.append(_p)
+    return _out[:int(n)]
+
+
 def keyword_seo_name(ad_api_key, ad_secret, customer_id, seed, ai_key=None,
                      category="", front_max=200, n_front=3, manual_kw=None,
-                     gemini_key=None):
+                     gemini_key=None, brand="", model_name=""):
     """검색량 분석 기반 SEO 상품명 + 후보 키워드. (메인 네이버 등록용)
 
-    저검색(≤front_max) 키워드를 상품명 '앞단'에 배치한다.
-    manual_kw가 주어지면(사용자 수동선택) 그 순서 그대로 앞단에 쓴다.
-    ai_key 있으면 AI가 자연스러운 상품명으로 조합(앞단 순서 유지), 없으면 이어붙임.
+    파이프라인:
+      1) 상품명 → 핵심 검색어(hint) 추출        clean_search_seed / build_hint_keywords
+      2) 키워드도구 조회 (hint 최대 5개 동시)
+      3) 상품과 무관한 연관어 제거              relevance_anchors / is_relevant_keyword
+      4) 후보가 부족하면 AI 쇼핑 키워드 → 검색량 재조회로 보강
+      5) 저검색(≤front_max) 앞단 + 대표어 배치  order_seo_keywords
+      6) AI가 자연스러운 한 줄 상품명으로 조합 (실패 시 이어붙임)
 
+    manual_kw가 주어지면(사용자 수동선택) 그 순서 그대로 앞단에 쓴다.
     반환: (result, err)
-      result = {'name', 'front'[], 'rep', 'candidates'[{키워드,총검색량,경쟁도,band}]}
+      result = {'name', 'front'[], 'rep', 'candidates'[{키워드,총검색량,경쟁도,band}],
+                'hints'[], 'dropped'(관련성 필터로 제외한 수)}
     """
     _seed = str(seed or "").strip()
-    rows, err = keyword_tool(ad_api_key, ad_secret, customer_id, _seed)
-    if err or not rows:
-        return {"name": _seed, "front": [], "rep": None, "candidates": []}, (err or "연관키워드 없음")
+    _hints = build_hint_keywords(_seed, category=category, brand=brand,
+                                 model_name=model_name)
+    rows, err = keyword_tool(ad_api_key, ad_secret, customer_id, _hints or _seed)
 
-    plan = order_seo_keywords(rows, front_max=front_max, n_front=n_front)
-    # 수동 선택이 있으면 그 키워드를 앞단으로 (순서 보존)
+    _anchors = relevance_anchors(_seed, category)
+    _seed_norm = _seed.lower().replace(" ", "")
+
+    def _keep(_r):
+        _k = str(_r.get("키워드", "")).strip()
+        if not _k:
+            return False
+        if _k.lower().replace(" ", "") == _seed_norm:   # 상품명 통짜 에코
+            return False
+        return is_relevant_keyword(_k, _anchors)
+
+    _rel = [r for r in (rows or []) if _keep(r)]
+    _dropped = len(rows or []) - len(_rel)
+
+    # 후보가 부족하면 AI 쇼핑 키워드로 보강 — 단, 검색량은 키워드도구로 재확인한다
+    if len(_rel) < max(1, int(n_front)):
+        _aikw = ai_shopping_keywords(_seed, category=category, ai_key=ai_key,
+                                     gemini_key=gemini_key, n=5)
+        if _aikw:
+            _rows2, _e2 = keyword_tool(ad_api_key, ad_secret, customer_id, _aikw[:5])
+            _have = {str(r.get("키워드", "")).lower().replace(" ", "") for r in _rel}
+            for _r in (_rows2 or []):
+                _k = str(_r.get("키워드", "")).strip()
+                if not _k or _k.lower().replace(" ", "") in _have:
+                    continue
+                if _k.lower().replace(" ", "") == _seed_norm:
+                    continue
+                if is_relevant_keyword(_k, _anchors) or _k in _aikw:
+                    _rel.append(_r)
+                    _have.add(_k.lower().replace(" ", ""))
+
+    if not _rel:
+        return ({"name": _seed, "front": [], "rep": None, "candidates": [],
+                 "hints": _hints, "dropped": _dropped},
+                err or "관련 연관키워드 없음")
+
+    plan = order_seo_keywords(_rel, front_max=front_max, n_front=n_front)
     if manual_kw:
         front = [str(k).strip() for k in manual_kw if str(k).strip()]
         ordered = []
@@ -348,7 +555,7 @@ def keyword_seo_name(ad_api_key, ad_secret, customer_id, seed, ai_key=None,
         front, ordered = plan["front"], plan["ordered_kw"]
 
     result = {"name": _seed, "front": front, "rep": plan["rep"],
-              "candidates": plan["candidates"]}
+              "candidates": plan["candidates"], "hints": _hints, "dropped": _dropped}
     if not ordered:
         return result, None
 
@@ -360,15 +567,19 @@ def keyword_seo_name(ad_api_key, ad_secret, customer_id, seed, ai_key=None,
     if ai_key or _gk:
         try:
             import ai_service
-            _sys = ("너는 네이버 스마트스토어 SEO 상품명 작성 전문가다. 주어진 키워드를 "
-                    "'제시된 순서대로' 자연스럽게 포함하는 한국어 상품명을 한 줄로 만든다. "
-                    "특히 앞쪽 키워드가 상품명 앞부분에 오도록 배치한다. "
-                    "**주어진 키워드는 하나도 빠뜨리지 말 것** (연관검색 키워드 3개 + 대표어). "
-                    "중복·과장·특수문자·이모지 금지, 최대 50자. 상품명만 출력.")
+            _sys = ("너는 네이버 스마트스토어 SEO 상품명 작성 전문가다.\n"
+                    "출력: 상품명 한 줄만. 설명·따옴표·이모지·특수문자 금지.\n"
+                    "규칙:\n"
+                    "1) 주어진 검색 키워드를 제시된 순서대로 모두 포함하고, "
+                    "앞쪽 키워드를 상품명 맨 앞에 둔다.\n"
+                    "2) 원본 상품명의 브랜드·제품명·용량/수량 표기는 그대로 유지해 뒤에 붙인다. "
+                    "임의로 바꾸거나 빼지 않는다.\n"
+                    "3) 같은 낱말을 두 번 쓰지 않는다. 키워드가 원본 상품명에 이미 있으면 "
+                    "그 자리를 그대로 두고 앞에 또 적지 않는다.\n"
+                    "4) 40자 이내. 낱말은 띄어쓰기로 구분한다.")
             _msg = (f"원본 상품명: {_seed}\n카테고리: {category or '미상'}\n"
-                    f"앞단부터 순서대로 포함할 키워드: {', '.join(ordered)}\n"
+                    f"앞단부터 순서대로 포함할 검색 키워드: {', '.join(ordered)}\n"
                     f"상품명 한 줄만 출력.")
-            # Gemini 우선 → Claude 폴백 (gemini_key=None → 설정에서 자동 해석)
             _txt, _e, _ = ai_service.ai_complete(
                 _sys, _msg, gemini_key=_gk, anthropic_key=ai_key or '', max_tokens=120,
                 claude_model=getattr(ai_service, "VISION_MODEL", None))
@@ -394,9 +605,17 @@ def keyword_optimized_name(ad_api_key, ad_secret, customer_id, seed,
     """
     _seed = str(seed or "").strip()
     info = {"rep": None, "low": [], "err": None}
-    rows, err = keyword_tool(ad_api_key, ad_secret, customer_id, _seed)
+    # 상품명 통짜를 던지면 연관어가 안 나온다 — keyword_seo_name과 같은 정제를 쓴다.
+    _hints = build_hint_keywords(_seed, category=category)
+    rows, err = keyword_tool(ad_api_key, ad_secret, customer_id, _hints or _seed)
+    if rows:
+        _anc = relevance_anchors(_seed, category)
+        _sn = _seed.lower().replace(" ", "")
+        rows = [r for r in rows
+                if str(r.get("키워드", "")).lower().replace(" ", "") != _sn
+                and is_relevant_keyword(r.get("키워드"), _anc)]
     if err or not rows:
-        info["err"] = err or "연관키워드 없음"
+        info["err"] = err or "관련 연관키워드 없음"
         return _seed, info
     rep = rows[0]                                    # keyword_tool = 총검색량 내림차순 → 대표어
     band = [r for r in rows if low <= int(r.get("총검색량", 0)) <= high]
