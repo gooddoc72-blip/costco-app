@@ -526,13 +526,18 @@ def ai_pick_keywords(seed, candidates, category='', ai_key=None, gemini_key=None
     if not (ai_key or _gk):
         return []
 
-    _sys = ("너는 네이버 쇼핑 SEO 전문가다. 후보 검색어 중 **이 상품 자체를 사려는 사람이 "
-            "검색할 것만** 고른다.\n"
+    _sys = ("너는 네이버 쇼핑 상품명 검수자다. 후보 검색어 중 **이 상품에 그대로 붙여도 "
+            "구매자가 '내가 찾던 것'이라고 할 것만** 고른다.\n"
+            "판정 기준: 그 키워드로 검색한 사람에게 이 상품을 배송했을 때 "
+            "불만이 없겠는가? 조금이라도 아니면 제외한다.\n"
             "반드시 제외:\n"
-            "- 상품의 형태·상태·가공이 다른 것 (냉동식품에 '생/산지직송', 차 제품에 '가루/원물')\n"
-            "- 다른 상품 (딸기 상품에 '블루베리')\n"
-            "- 정보성 검색어 (효능·만드는법·레시피·후기)\n"
+            "- 형태·상태·가공이 다른 것 (냉동식품에 '생·산지직송', 스틱차에 '가루·원물·자판기용')\n"
+            "- 다른 상품 (딸기 상품에 '블루베리', 키위 상품에 '참외')\n"
+            "- 상품을 특정하지 못하는 상위 분류어 ('과일', '식품', '생활용품')\n"
+            "- 용도·대상이 다른 것 (업소용/자판기용/사료용)\n"
+            "- 정보성(효능·만드는법·레시피)·거래성(가격·주문·추천·최저가) 검색어\n"
             "- 다른 브랜드명\n"
+            "확신이 없으면 제외한다. 적게 고르는 편이 낫다.\n"
             "고른 것만 쉼표로 구분해 출력한다. 없으면 '없음'만 출력. 다른 말 금지.\n"
             "최대 %d개." % int(n))
     _msg = ("상품명: %s\n카테고리: %s\n후보: %s"
@@ -554,6 +559,66 @@ def ai_pick_keywords(seed, candidates, category='', ai_key=None, gemini_key=None
         if _n in _norm and _norm[_n] not in _out:      # 후보에 없던 말은 버린다(환각 방지)
             _out.append(_norm[_n])
     return _out[:int(n)]
+
+
+#: 상품명에 넣으면 안 되는 거래·홍보성 낱말.
+#  네이버 상품명 가이드가 금지하는 문구이기도 하고, 검색어로 붙여봐야
+#  '골드키위가격'·'딸기주문'처럼 상품을 설명하지 못한다.
+_PROMO_WORDS = (
+    '가격', '최저가', '가성비', '할인', '쿠폰', '특가', '세일', '무료배송', '배송비',
+    '주문', '구매', '판매', '파는곳', '판매처', '싼곳', '저렴', '직구', '해외직구',
+    '추천', '순위', '베스트', '인기', '정품', '이벤트', '사은품', '리뷰', '후기',
+    '도매', '총판', '대량', '나눔', '중고',
+)
+
+
+def is_promo_keyword(kw):
+    """상품명에 넣으면 안 되는 거래·홍보성 검색어인지."""
+    _k = str(kw or '').replace(' ', '')
+    return any(_w in _k for _w in _PROMO_WORDS)
+
+
+def core_terms(name, category=''):
+    """상품의 '본체'를 가리키는 말들 — 제품 본체 토큰 + 카테고리 리프.
+
+    관련성 앵커(relevance_anchors)는 상품명의 아무 낱말이나 겹치면 통과시킨다.
+    그래서 냉동딸기 상품에 '냉동블루베리'가, 딸기 상품에 상위어 '과일'이 남았다.
+    상품 본체를 가리키지 않는 후보를 걸러내려면 본체어를 따로 잡아야 한다.
+    """
+    _out = set()
+    _toks = clean_search_seed(name).split()
+    if _toks:
+        _out.add(_toks[-1].lower())            # 한국어 상품명은 뒤쪽이 본체
+    _cat = str(category or '').replace('>', ' ').split()
+    if _cat:
+        _out.add(_cat[-1].lower())
+    _out.discard('')
+    return _out
+
+
+def shares_core(kw, cores):
+    """후보가 상품 본체를 가리키는지.
+
+    본체어가 3자 이상이면 3글자 조각까지 인정한다 — '키친타월'과 '키친타올'은
+    표기만 다른 같은 상품이라 조각('키친타')으로 이어져야 살릴 수 있다.
+    2자 본체어('딸기')는 통째로 들어있어야 인정한다. 상위어('과일')는
+    본체어 조각을 품지 못하므로 자연히 걸러진다.
+    """
+    _k = str(kw or '').lower().replace(' ', '')
+    if not _k or not cores:
+        return False
+    for _c in cores:
+        _c = str(_c).lower().replace(' ', '')
+        if len(_c) < 3:
+            if _c and _c in _k:
+                return True
+            continue
+        if _c in _k:
+            return True
+        for _i in range(len(_c) - 2):
+            if _c[_i:_i + 3] in _k:
+                return True
+    return False
 
 
 def keyword_seo_name(ad_api_key, ad_secret, customer_id, seed, ai_key=None,
@@ -580,6 +645,7 @@ def keyword_seo_name(ad_api_key, ad_secret, customer_id, seed, ai_key=None,
     rows, err = keyword_tool(ad_api_key, ad_secret, customer_id, _hints or _seed)
 
     _anchors = relevance_anchors(_seed, category)
+    _cores = core_terms(_seed, category)
     # 상품명 통짜와 그 정제형('본비 호두아몬드율무차'→'본비호두아몬드율무차')은
     # 키워드도구가 그대로 되돌려준다. 상품명에 또 붙이면 같은 말이 두 번 나온다.
     _self_norms = {_seed.lower().replace(" ", ""),
@@ -599,6 +665,10 @@ def keyword_seo_name(ad_api_key, ad_secret, customer_id, seed, ai_key=None,
         # 앞에 또 적어도 노출이 늘지 않는다. 실제로 더할 게 있는 것만 남긴다.
         if _kn in _seed_flat:
             return False
+        if is_promo_keyword(_k):       # 가격·주문·추천… 상품명 금지 문구
+            return False
+        if not shares_core(_k, _cores):  # 상품 본체를 안 가리키면 제외
+            return False
         return is_relevant_keyword(_k, _anchors)
 
     _rel = [r for r in (rows or []) if _keep(r)]
@@ -616,6 +686,8 @@ def keyword_seo_name(ad_api_key, ad_secret, customer_id, seed, ai_key=None,
                 if not _k or _k.lower().replace(" ", "") in _have:
                     continue
                 if _k.lower().replace(" ", "") in _self_norms:
+                    continue
+                if is_promo_keyword(_k) or not shares_core(_k, _cores):
                     continue
                 if is_relevant_keyword(_k, _anchors) or _k in _aikw:
                     _rel.append(_r)
