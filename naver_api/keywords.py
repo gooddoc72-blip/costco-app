@@ -623,6 +623,108 @@ def shares_core(kw, cores):
     return False
 
 
+#: 용도·대상이 달라 같은 상품으로 볼 수 없는 수식어.
+#  '자판기율무차'는 자판기 전용 분말이라 스틱차 상품에 붙이면 안 된다.
+#  AI 선별에 맡겼더니 실행마다 통과 여부가 갈려서 확정 규칙으로 뺀다.
+_PURPOSE_WORDS = ('자판기', '사료용', '산업용', '병원용', '렌탈', '렌트', '리퍼', '전시품')
+
+
+def is_purpose_mismatch(kw):
+    """용도·대상이 다른 상품을 가리키는 검색어인지."""
+    _k = str(kw or '').replace(' ', '')
+    return any(_w in _k for _w in _PURPOSE_WORDS)
+
+
+def keyword_prefix_terms(keywords, cores):
+    """키워드에서 본체어를 뺀 앞머리 낱말들.
+
+    '담터율무차'→'담터', '뉴질랜드골드키위'→'뉴질랜드', '커클랜드딸기'→'커클랜드'.
+    이 앞머리가 남의 브랜드인지만 따로 물어보면 판정이 훨씬 정확해진다.
+    """
+    import re as _re
+    _out = {}
+    for _k in (keywords or []):
+        _kk = str(_k or '').strip()
+        _n = _kk.lower().replace(' ', '')
+        if not _n:
+            continue
+        _best = _n
+        for _c in sorted([str(c).lower().replace(' ', '') for c in (cores or [])],
+                         key=len, reverse=True):
+            if len(_c) >= 2 and _c in _best:
+                _best = _best.replace(_c, ' ')
+        for _p in _re.split(r'\s+', _best):
+            _p = _p.strip()
+            if len(_p) >= 2:
+                _out.setdefault(_p, []).append(_kk)
+    return _out
+
+
+def ai_brand_terms(terms, ai_key=None, gemini_key=None):
+    """주어진 낱말 중 '회사·브랜드 이름'인 것만 돌려준다.
+
+    여러 조건을 한 번에 판단시키면 놓치지만(담터율무차가 계속 통과했다),
+    '이 낱말이 브랜드인가'만 물으면 안정적으로 맞춘다.
+    반환: 브랜드로 판정된 낱말 집합 (소문자·공백제거). 실패 시 빈 집합.
+    """
+    _t = [str(x).strip() for x in (terms or []) if str(x).strip()]
+    if not _t:
+        return set()
+    try:
+        import ai_service
+        _gk = ai_service.resolve_gemini_key(gemini_key)
+    except Exception:
+        return set()
+    if not (ai_key or _gk):
+        return set()
+    _sys = ("주어진 낱말 중 **회사·브랜드·제조사 이름**인 것만 고른다.\n"
+            "브랜드가 아닌 것: 원산지·지역(뉴질랜드, 국산, 제주), 형태·상태(냉동, 얼린, 볶은, 롤), "
+            "용도(업소용), 등급·규격(특대과, 대용량), 일반 명사.\n"
+            "고른 것만 쉼표로 구분해 출력. 없으면 '없음'. 다른 말 금지.")
+    _msg = "낱말: " + ", ".join(_t[:30])
+    try:
+        import ai_service
+        _txt, _e, _ = ai_service.ai_complete(
+            _sys, _msg, gemini_key=_gk, anthropic_key=ai_key or '', max_tokens=120,
+            claude_model=getattr(ai_service, 'VISION_MODEL', None))
+    except Exception:
+        return set()
+    if not _txt or '없음' in str(_txt)[:6]:
+        return set()
+    _valid = {x.lower().replace(' ', '') for x in _t}
+    _out = set()
+    for _p in str(_txt).replace('\n', ',').split(','):
+        _p = _p.strip().strip('"').strip("'").lstrip('-').strip().lower().replace(' ', '')
+        if _p in _valid:            # 후보에 없던 말은 버린다(환각 방지)
+            _out.add(_p)
+    return _out
+
+
+def drop_other_brand_keywords(keywords, cores, own_brand='', ai_key=None, gemini_key=None):
+    """앞머리가 '남의 브랜드'인 키워드를 뺀다.
+
+    커클랜드딸기(자기 브랜드)·뉴질랜드골드키위(원산지)는 남기고
+    담터율무차(경쟁사)는 뺀다.
+    """
+    _kws = [str(k).strip() for k in (keywords or []) if str(k).strip()]
+    if not _kws:
+        return _kws
+    _own = str(own_brand or '').lower().replace(' ', '')
+    _pref = keyword_prefix_terms(_kws, cores)
+    _ask = [p for p in _pref if p != _own]
+    if not _ask:
+        return _kws
+    _brands = ai_brand_terms(_ask, ai_key=ai_key, gemini_key=gemini_key)
+    _brands.discard(_own)
+    if not _brands:
+        return _kws
+    _bad = set()
+    for _b in _brands:
+        for _k in _pref.get(_b, []):
+            _bad.add(_k)
+    return [k for k in _kws if k not in _bad]
+
+
 def keyword_seo_name(ad_api_key, ad_secret, customer_id, seed, ai_key=None,
                      category="", front_max=200, n_front=3, manual_kw=None,
                      gemini_key=None, brand="", model_name=""):
@@ -669,6 +771,8 @@ def keyword_seo_name(ad_api_key, ad_secret, customer_id, seed, ai_key=None,
             return False
         if is_promo_keyword(_k):       # 가격·주문·추천… 상품명 금지 문구
             return False
+        if is_purpose_mismatch(_k):    # 자판기용·사료용… 용도가 다른 상품
+            return False
         if not shares_core(_k, _cores):  # 상품 본체를 안 가리키면 제외
             return False
         return is_relevant_keyword(_k, _anchors)
@@ -689,7 +793,8 @@ def keyword_seo_name(ad_api_key, ad_secret, customer_id, seed, ai_key=None,
                     continue
                 if _k.lower().replace(" ", "") in _self_norms:
                     continue
-                if is_promo_keyword(_k) or not shares_core(_k, _cores):
+                if (is_promo_keyword(_k) or is_purpose_mismatch(_k)
+                        or not shares_core(_k, _cores)):
                     continue
                 if is_relevant_keyword(_k, _anchors) or _k in _aikw:
                     _rel.append(_r)
@@ -744,6 +849,12 @@ def keyword_seo_name(ad_api_key, ad_secret, customer_id, seed, ai_key=None,
         front, ordered = plan["front"], plan["ordered_kw"]
         # 한쪽이 다른 쪽에 통째로 들어있으면 긴 쪽만 남긴다.
         # ('냉동과일'+'수입냉동과일', '키친타올'+'롤키친타올')
+        # 앞머리가 남의 브랜드인 키워드 제거 ('담터율무차'는 빼고 '커클랜드딸기'는 남긴다)
+        _kept = drop_other_brand_keywords(ordered, _cores, own_brand=brand,
+                                          ai_key=ai_key, gemini_key=gemini_key)
+        if _kept:
+            ordered = _kept
+            front = [k for k in front if k in _kept]
         _norm_all = [(k, k.lower().replace(" ", "")) for k in ordered]
         _drop = {k for k, kn in _norm_all
                  if any(kn != on and kn in on for _, on in _norm_all)}
