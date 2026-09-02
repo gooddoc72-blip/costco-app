@@ -941,6 +941,56 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         with st.expander("🗑 미발송 주문 영구 삭제 (다시 수집돼도 복원 안 됨)", expanded=False):
             _perm_ids_all = (df['상품주문번호'].astype(str).tolist()
                              if '상품주문번호' in df.columns else [])
+
+            def _perm_delete_now(_ids, _confirm_key=None):
+                """order_history 삭제 + 제외목록 등록 후 화면 상태 초기화.
+                범위 삭제·건별 삭제가 같은 경로를 쓰도록 한 곳에 모았다."""
+                from db import delete_orders_from_history
+                _pn = delete_orders_from_history(USERNAME, _ids)
+                for _k in ['orders', 'order_full', 'order_full_naver', 'order_full_coupang',
+                           'order_excel_bytes', 'order_excel_bytes_coupang',
+                           'order_coupang_excel_wing']:
+                    st.session_state.pop(_k, None)
+                st.session_state['_orders_cleared'] = True
+                if _confirm_key:
+                    st.session_state[_confirm_key] = False
+                try:
+                    if invalidate_data_cache:
+                        invalidate_data_cache()
+                except Exception:
+                    pass
+                st.success(f"🗑 {_pn}건 영구 삭제 완료 — 제외 목록에 등록되어 "
+                           "다시 수집해도 복원되지 않습니다.")
+                st.rerun()
+
+            # ── 건별 선택 삭제 ──────────────────────────────
+            #   범위(플랫폼) 단위 삭제만 있어서, 목록에서 한두 건만 빼려면
+            #   방법이 없었다. 수취인·상품명으로 골라 지운다.
+            st.markdown("**① 주문 건별로 골라 삭제**")
+            _one_map = {}
+            for _r in df.to_dict('records'):
+                _ono = str(_r.get('상품주문번호', '') or '').strip()
+                if not _ono:
+                    continue
+                _plat = '🟡쿠팡' if '-' in _ono else '🟢네이버'
+                _one_map[f"{_plat} · {_r.get('수취인명', '') or '-'} · "
+                         f"{str(_r.get('상품명', '') or '')[:34]} · "
+                         f"{_r.get('수량', 1)}개 · {_ono}"] = _ono
+            if not _one_map:
+                st.caption("삭제할 주문이 없습니다.")
+            else:
+                _one_sel = st.multiselect(
+                    "삭제할 주문 선택", list(_one_map.keys()), key="perm_del_one_sel",
+                    help="선택한 주문만 order_history에서 삭제하고 제외 목록에 등록합니다. "
+                         "아래 '제외 목록'에서 되살릴 수 있습니다.")
+                if st.button(f"🗑 선택한 {len(_one_sel)}건 삭제", key="perm_del_one_btn",
+                             disabled=not _one_sel, use_container_width=False):
+                    _one_ids = [_one_map[_k] for _k in _one_sel]
+                    st.session_state.pop('perm_del_one_sel', None)
+                    _perm_delete_now(_one_ids)
+
+            st.divider()
+            st.markdown("**② 범위로 한 번에 삭제**")
             _pc1, _pc2 = st.columns([1.2, 3])
             _perm_scope = _pc1.radio(
                 "삭제 범위", ["네이버만", "쿠팡만", "현재 표시 전체"],
@@ -962,22 +1012,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     key="perm_del_confirm")
                 if st.button("🗑 영구 삭제 실행", key="perm_del_btn", type="secondary",
                              disabled=not (_perm_confirm and _perm_ids)):
-                    from db import delete_orders_from_history
-                    _pn = delete_orders_from_history(USERNAME, _perm_ids)
-                    for _k in ['orders', 'order_full', 'order_full_naver', 'order_full_coupang',
-                               'order_excel_bytes', 'order_excel_bytes_coupang',
-                               'order_coupang_excel_wing']:
-                        st.session_state.pop(_k, None)
-                    st.session_state['_orders_cleared'] = True
-                    st.session_state['perm_del_confirm'] = False
-                    try:
-                        if invalidate_data_cache:
-                            invalidate_data_cache()
-                    except Exception:
-                        pass
-                    st.success(f"🗑 {_pn}건 영구 삭제 완료 — 제외 목록에 등록되어 "
-                               "다시 수집해도 복원되지 않습니다.")
-                    st.rerun()
+                    _perm_delete_now(_perm_ids, 'perm_del_confirm')
 
             # ── 제외 목록 (복구) ──────────────────────────────
             st.divider()

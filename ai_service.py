@@ -536,6 +536,9 @@ _PHOTO_SYSTEM = (
     "- volume: 포장에 표기된 용량·중량·수량을 반드시 읽어서 넣는다 "
     "(예: '260mL x 3개입', '1.5kg', '30개입', '500g x 2입', '1L x 6'). 정말 안 보이면 ''.\n"
     "- name: 브랜드+제품명+용량/수량을 모두 포함한 실제 판매용 상품명. **용량/수량을 절대 빠뜨리지 말 것.**\n"
+    "- name 안의 용량 표기와 volume은 **글자까지 똑같이** 쓴다. "
+    "name이 '18g x 120스틱'이면 volume도 '18g x 120스틱'이다 — "
+    "'120개입'처럼 다른 말로 바꿔 적지 말 것(같은 규격이 상품명에 두 번 붙는다).\n"
     "- price: 사진 속 가격표/라벨에서 읽은 판매가(숫자만, 원 단위). 할인가가 있으면 할인가. 가격 안 보이면 0.\n"
     "- category: 상품 분류 키워드(예: 어묵, 키친타월, 견과류).\n"
     "- origin: 원산지(모르면 '국산'). brand: 브랜드(모르면 '').\n"
@@ -543,6 +546,40 @@ _PHOTO_SYSTEM = (
     "- model_name: 용량/수량을 뺀 순수 제품명(예: '커클랜드 그릭요거트 플레인 무지방'). 모르면 ''.\n"
     "가격을 지어내지 말 것 — 안 보이면 반드시 0."
 )
+
+
+def _name_has_volume(name, vol):
+    """상품명에 이미 그 용량/수량 표기가 들어있는지 판정.
+
+    단순 부분문자열 비교로는 같은 규격을 다른 말로 적었을 때를 못 잡는다.
+    실제 사고: name='본비호두아몬드율무차18GX120스틱', volume='18GX120개입'
+    → 문자열이 다르다고 판단해 뒤에 또 붙여서
+      '본비호두아몬드율무차18GX120스틱18GX120개입'이 등록됐다.
+
+    판정 규칙(느슨한 쪽으로): 용량의 숫자가 모두 상품명에 이미 있고,
+    그 중 첫 숫자+단위(예: '18g')가 그대로 있거나 두 자리 이상 숫자가 하나라도
+    있으면 '같은 규격을 표기만 다르게 쓴 것'으로 본다.
+    두 번째 조건은 '3종 세트' 상품명에 '3kg'를 안 붙이고 넘어가는 오판을 막는다.
+    """
+    import re as _re
+    _n = (name or "").replace(" ", "").lower()
+    _v = (vol or "").replace(" ", "").lower()
+    if not _v:
+        return True
+    if _v in _n:
+        return True
+    # 단위 뒤의 x는 '1L x 6'처럼 곱셈 구분자다 — 단위에 붙여 읽으면 'lx'가 되어
+    # 상품명의 '1l'과 안 맞는다. 뒤쪽 x는 떼고 본다.
+    _pairs = [(_m.group(1), _m.group(2).rstrip("x")) for _m in
+              _re.finditer(r"(\d+(?:\.\d+)?)([a-z가-힣]*)", _v)]
+    _vnums = [_p[0] for _p in _pairs]
+    if not _vnums:
+        return False
+    _nnums = set(_re.findall(r"\d+(?:\.\d+)?", _n))
+    if not all(_x in _nnums for _x in _vnums):
+        return False
+    _first = _pairs[0][0] + _pairs[0][1]
+    return (_first in _n) or any(len(_x.split(".")[0]) >= 2 for _x in _vnums)
 
 
 def analyze_product_photo(api_key, image_bytes, media_type, *, gemini_key=''):
@@ -566,7 +603,7 @@ def analyze_product_photo(api_key, image_bytes, media_type, *, gemini_key=''):
     # 용량/수량이 상품명에 빠졌으면 자동으로 뒤에 붙임 (누락 방지)
     _name = str(_d.get("name", "") or "").strip()
     _vol = str(_d.get("volume", "") or "").strip()
-    if _vol and _vol.replace(" ", "").lower() not in _name.replace(" ", "").lower():
+    if _vol and not _name_has_volume(_name, _vol):
         _name = (_name + " " + _vol).strip()
     # 네이버 '속성'(브랜드·제조사·모델명)과 용량 — 등록 payload의
     # detailAttribute.naverShoppingSearchInfo 에 들어간다. 예전엔 volume을
