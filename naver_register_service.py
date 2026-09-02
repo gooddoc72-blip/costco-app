@@ -453,6 +453,7 @@ def register_one(username, api_id, api_secret, product, cat_id, opts=None):
     _manufacturer = ""
     _brand = ""
     _volume = ""
+    _vol_for_name = ""      # 상품명에 보장할 용량 표기 (규격 제외)
     if opts.get("with_spec") and _spec:
         _spec_table = _cc.build_spec_table_html(_spec)
         for _k in ("제조자/수입자", "제조원/수입원", "제조원", "수입원", "제조사"):
@@ -467,6 +468,13 @@ def register_one(username, api_id, api_secret, product, cat_id, opts=None):
         for _k in ("내용량", "용량", "중량", "총 중량", "규격"):
             if _spec.get(_k):
                 _volume = str(_spec[_k]).strip()
+                break
+        # 상품명에 붙일 용량은 '규격'을 제외한다 — 규격은 '30x20x10cm' 같은
+        # 치수 문자열이 들어와 상품명에 붙이면 오히려 망가진다.
+        for _k in ("내용량", "용량", "중량", "총 중량"):
+            _vv = str(_spec.get(_k) or "").strip()
+            if _vv and len(_vv) <= 20:
+                _vol_for_name = _vv
                 break
 
     # 상세페이지: [공통상단] + 상품명 + (2줄 여백) + 상품설명 + 이미지들 + 표시사항표 + [공통하단]
@@ -514,6 +522,14 @@ def register_one(username, api_id, api_secret, product, cat_id, opts=None):
                 api_id, api_secret, _ai, name, opts.get("cat_full", ""), name)
         except Exception:
             seller_tags = []
+
+    # 네이버 상품명에 용량/수량은 필수 — 빠져 있으면 붙인다(중복이면 그대로).
+    if _vol_for_name:
+        try:
+            import ai_service as _ai_v
+            name = _ai_v.ensure_volume_in_name(name, _vol_for_name)
+        except Exception:
+            pass
 
     res, e2 = naver_api.register_product(api_id, api_secret, {
         "name":              name,

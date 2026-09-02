@@ -709,10 +709,26 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     "모델명", value=str(_pv.get('model_name', '') or ''), key="ph_model",
                     help="용량/수량을 뺀 제품명. 비우면 상품명이 쓰입니다.")
                 _vol_in = st.text_input(
-                    "용량/중량", value=str(_lbl_food.get('volume')
-                                       or _pv.get('volume', '') or ''), key="ph_volume",
-                    help="상품명·상품정보제공고시(내용량)에 반영됩니다. "
+                    "용량/중량 *", value=str(_lbl_food.get('volume')
+                                          or _pv.get('volume', '') or ''), key="ph_volume",
+                    help="필수. 상품명 끝과 상품정보제공고시(내용량)에 들어갑니다. "
+                         "상품명에 이미 같은 규격이 있으면 중복해서 붙지 않습니다. "
                          "네이버 카테고리 속성(용량 항목)은 커머스API에 속성 조회가 없어 자동 선택이 불가합니다.")
+
+                # ── 용량/수량은 상품명 필수 ─────────────────────────────
+                #   예전엔 이 입력이 식품고시(내용량)에만 반영되고 상품명에는
+                #   안 들어갔다. 용량을 고쳐도 상품명은 그대로였다.
+                import ai_service as _ai_vol
+                _vol_eff = (_vol_in or '').strip()
+                _name_final = _ai_vol.ensure_volume_in_name(_en.strip(), _vol_eff)
+                if not _vol_eff:
+                    st.error("⚠️ 용량/중량은 필수입니다 — 네이버 상품명에 용량·수량이 "
+                             "들어가야 합니다. 입력해야 등록 버튼이 열립니다.")
+                elif _name_final != _en.strip():
+                    st.warning(f"ℹ️ 상품명에 용량/수량이 없어 등록 시 뒤에 붙습니다 → "
+                               f"**{_name_final}**")
+                else:
+                    st.caption(f"✅ 상품명에 용량/수량 포함됨 — 등록될 상품명: {_name_final}")
 
                 # ── 🏷 AI 연관태그 (생성 → 검토 → 등록) ─────────────────
                 st.markdown("**🏷 연관태그 (검색 노출용 · 최대 10개)**")
@@ -775,7 +791,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
 
                 if st.button("🛍 네이버 등록", type="primary", key="ph_reg1",
                              disabled=not (_prod_imgs and _en.strip() and _ec.strip()
-                                           and _es > 0 and _costco_no.strip())):
+                                           and _es > 0 and _costco_no.strip()
+                                           and _vol_eff)):
                     import tempfile, os as _os3
                     with st.spinner(f"제품사진 {len(_prod_imgs)}장 업로드 → 네이버 등록 중..."):
                         _cdns = []
@@ -793,7 +810,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                             st.error("이미지 업로드 실패 — 대표이미지를 못 올렸습니다.")
                         else:
                             _res, _re2 = naver_api.register_product(api_id, api_secret, {
-                                "name": _en.strip(), "sale_price": int(_es),
+                                "name": _name_final, "sale_price": int(_es),
                                 "image_url": _cdns[0], "extra_image_urls": _cdns[1:],
                                 "category_id": _ec.strip(),
                                 "seller_code": _costco_no.strip(),
@@ -818,7 +835,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                             })
                             if _res and _res.get('origin_product_no'):
                                 st.success(f"✅ 네이버 등록 완료! (origin #{_res.get('origin_product_no')}) "
-                                           f"— {_en.strip()[:20]} / {fmt(int(_es))}원 / 이미지 {len(_cdns)}장"
+                                           f"— {_name_final[:20]} / {fmt(int(_es))}원 / 이미지 {len(_cdns)}장"
                                            + (f" / 태그 {len(_sel_tags)}개" if _sel_tags else ""))
                                 st.caption("🚚 적용된 배송: " + _delivery_label(_ph_delivery))
                                 if _re2:   # 태그만 거부되고 등록은 성공한 경우 경고

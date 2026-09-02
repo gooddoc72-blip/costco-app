@@ -582,6 +582,28 @@ def _name_has_volume(name, vol):
     return (_first in _n) or any(len(_x.split(".")[0]) >= 2 for _x in _vnums)
 
 
+def ensure_volume_in_name(name, volume, max_len=100):
+    """상품명에 용량/수량 표기를 보장한다 (없으면 뒤에 붙임).
+
+    네이버 상품명에 용량·수량은 필수다. 판독 단계에서 한 번 붙이지만,
+    사용자가 상품명을 직접 고치거나 SEO 재생성을 거치면서 빠질 수 있어
+    등록 직전에 다시 확인한다. 이미 같은 규격이 다른 표기로 들어있으면
+    (_name_has_volume) 중복해서 붙이지 않는다.
+    """
+    _n = str(name or '').strip()
+    _v = str(volume or '').strip()
+    if not _v or _name_has_volume(_n, _v):
+        return _n[:max_len]
+    _joined = (_n + ' ' + _v).strip()
+    if len(_joined) <= max_len:
+        return _joined
+    # 길이 초과 시 뒤(용량)를 자르면 안 된다 — 앞단 SEO 키워드를 낱말 단위로 덜어낸다.
+    _toks = _n.split()
+    while len(_toks) > 1 and len(' '.join(_toks) + ' ' + _v) > max_len:
+        _toks.pop(0)
+    return (' '.join(_toks) + ' ' + _v).strip()[:max_len]
+
+
 def analyze_product_photo(api_key, image_bytes, media_type, *, gemini_key=''):
     """상품 사진 → {name, price, category, origin, brand}. 반환: (dict, error).
 
