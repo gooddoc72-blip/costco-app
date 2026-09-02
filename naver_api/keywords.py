@@ -580,13 +580,17 @@ def keyword_seo_name(ad_api_key, ad_secret, customer_id, seed, ai_key=None,
     rows, err = keyword_tool(ad_api_key, ad_secret, customer_id, _hints or _seed)
 
     _anchors = relevance_anchors(_seed, category)
-    _seed_norm = _seed.lower().replace(" ", "")
+    # 상품명 통짜와 그 정제형('본비 호두아몬드율무차'→'본비호두아몬드율무차')은
+    # 키워드도구가 그대로 되돌려준다. 상품명에 또 붙이면 같은 말이 두 번 나온다.
+    _self_norms = {_seed.lower().replace(" ", ""),
+                   clean_search_seed(_seed).lower().replace(" ", "")}
+    _self_norms.discard("")
 
     def _keep(_r):
         _k = str(_r.get("키워드", "")).strip()
         if not _k:
             return False
-        if _k.lower().replace(" ", "") == _seed_norm:   # 상품명 통짜 에코
+        if _k.lower().replace(" ", "") in _self_norms:
             return False
         return is_relevant_keyword(_k, _anchors)
 
@@ -604,7 +608,7 @@ def keyword_seo_name(ad_api_key, ad_secret, customer_id, seed, ai_key=None,
                 _k = str(_r.get("키워드", "")).strip()
                 if not _k or _k.lower().replace(" ", "") in _have:
                     continue
-                if _k.lower().replace(" ", "") == _seed_norm:
+                if _k.lower().replace(" ", "") in _self_norms:
                     continue
                 if is_relevant_keyword(_k, _anchors) or _k in _aikw:
                     _rel.append(_r)
@@ -624,7 +628,19 @@ def keyword_seo_name(ad_api_key, ad_secret, customer_id, seed, ai_key=None,
     # 의미 선별 — 낱말만 겹치는 '대관령딸기'(생딸기)를 냉동딸기 상품에서 빼려면
     # 형태·상태를 이해해야 한다. 후보에 없던 말은 버려 환각을 막는다.
     if not manual_kw:
-        _pick = ai_pick_keywords(_seed, _rel, category=category, ai_key=ai_key,
+        _hn = {str(h).lower().replace(" ", "") for h in _hints}
+        _byv = sorted(_rel, key=lambda r: int(r.get("총검색량", 0) or 0), reverse=True)
+        _low = [r for r in _byv if 1 <= int(r.get("총검색량", 0) or 0) <= front_max]
+        _low.sort(key=lambda r: (_comp_rank(r), -int(r.get("총검색량", 0) or 0)))
+        _sample, _seen_s = [], set()
+        for _r in ([r for r in _byv
+                    if str(r.get("키워드", "")).lower().replace(" ", "") in _hn]
+                   + _byv[:12] + _low[:28]):
+            _kk = str(_r.get("키워드", "")).lower().replace(" ", "")
+            if _kk and _kk not in _seen_s:
+                _seen_s.add(_kk)
+                _sample.append(_r)
+        _pick = ai_pick_keywords(_seed, _sample, category=category, ai_key=ai_key,
                                  gemini_key=gemini_key, n=max(2, int(n_front) + 2))
         if _pick:
             _pn = {k.lower().replace(" ", "") for k in _pick}
