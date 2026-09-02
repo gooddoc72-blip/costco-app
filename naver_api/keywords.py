@@ -847,14 +847,14 @@ def keyword_seo_name(ad_api_key, ad_secret, customer_id, seed, ai_key=None,
                 ordered.append(k)
     else:
         front, ordered = plan["front"], plan["ordered_kw"]
-        # 한쪽이 다른 쪽에 통째로 들어있으면 긴 쪽만 남긴다.
-        # ('냉동과일'+'수입냉동과일', '키친타올'+'롤키친타올')
         # 앞머리가 남의 브랜드인 키워드 제거 ('담터율무차'는 빼고 '커클랜드딸기'는 남긴다)
         _kept = drop_other_brand_keywords(ordered, _cores, own_brand=brand,
                                           ai_key=ai_key, gemini_key=gemini_key)
         if _kept:
             ordered = _kept
             front = [k for k in front if k in _kept]
+        # 한쪽이 다른 쪽에 통째로 들어있으면 긴 쪽만 남긴다.
+        # ('냉동과일'+'수입냉동과일', '키친타올'+'롤키친타올')
         _norm_all = [(k, k.lower().replace(" ", "")) for k in ordered]
         _drop = {k for k, kn in _norm_all
                  if any(kn != on and kn in on for _, on in _norm_all)}
@@ -862,7 +862,10 @@ def keyword_seo_name(ad_api_key, ad_secret, customer_id, seed, ai_key=None,
             ordered = [k for k in ordered if k not in _drop]
             front = [k for k in front if k not in _drop]
 
-    result = {"name": _seed, "front": front, "rep": plan["rep"],
+    # 대표어도 필터를 통과한 것만 보고한다 — 걸러낸 '담터율무차'가 화면에
+    # 대표어로 남아 있으면 실제로 뭐가 쓰였는지 알 수 없다.
+    _rep_final = plan["rep"] if plan["rep"] in ordered else None
+    result = {"name": _seed, "front": front, "rep": _rep_final,
               "candidates": plan["candidates"], "hints": _hints, "dropped": _dropped}
     if not ordered:
         return result, None
