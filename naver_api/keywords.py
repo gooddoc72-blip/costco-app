@@ -580,6 +580,16 @@ def is_promo_keyword(kw):
     return any(_w in _k for _w in _PROMO_WORDS)
 
 
+#: 상품 '본체'가 아니라 등급·포장을 나타내는 말. 본체어로 잡으면 엉뚱한 상품이 딸려온다.
+#  '제스프리 골드키위 특대과'의 마지막 토큰은 '특대과'인데, 이걸 본체어로 쓰면
+#  '복숭아 특대과', '물복 딱딱이 특대과'까지 관련 있다고 통과했다.
+_GRADE_WORDS = {
+    '특대과', '대과', '중과', '소과', '특과', '왕과', '특상품', '특상', '상품',
+    '점보', '왕특', '대용량', '소용량', '실속', '알뜰', '혼합', '랜덤',
+    '세트', '선물세트', '기획', '기획세트', '묶음', '박스', '벌크',
+}
+
+
 def core_terms(name, category=''):
     """상품의 '본체'를 가리키는 말들 — 제품 본체 토큰 + 카테고리 리프.
 
@@ -589,10 +599,13 @@ def core_terms(name, category=''):
     """
     _out = set()
     _toks = clean_search_seed(name).split()
-    if _toks:
-        _out.add(_toks[-1].lower())            # 한국어 상품명은 뒤쪽이 본체
+    # 한국어 상품명은 뒤쪽이 본체 — 단 등급·포장어는 건너뛰고 그 앞을 본다
+    for _t in reversed(_toks):
+        if _t.lower() not in _GRADE_WORDS:
+            _out.add(_t.lower())
+            break
     _cat = str(category or '').replace('>', ' ').split()
-    if _cat:
+    if _cat and _cat[-1].lower() not in _GRADE_WORDS:
         _out.add(_cat[-1].lower())
     _out.discard('')
     return _out
@@ -1121,12 +1134,18 @@ def seo_keyword_pool(ad_api_key, ad_secret, customer_id, seed, ai_key=None,
                                       ai_key=ai_key, gemini_key=gemini_key,
                                       n=max(4, int(n_front) + 3))
     _rejected += _drop
+    _cap = max(4, int(n_front) + 2)
     if _pick:
         _pn = {k.lower().replace(" ", "") for k in _pick}
         _sel = [r for r in _rel if str(r.get("키워드", "")).lower().replace(" ", "") in _pn]
         if _sel:
             _dropped += len(_rel) - len(_sel)
             _rel = _sel
+    elif len(_rel) > _cap:
+        # AI 선별이 실패해도 후보 전체를 그대로 쓰면 안 된다. 예전엔 28개가
+        # 통째로 남아 '복숭아 특대과'까지 상품명에 들어갔다. 점수 상위만 남긴다.
+        _dropped += len(_rel) - _cap
+        _rel = _rel[:_cap]
 
     # 남의 브랜드 제거
     _kws = [str(r.get("키워드", "")).strip() for r in _rel]
