@@ -12,6 +12,7 @@
 """
 import os
 import sqlite3
+from datetime import datetime, timedelta
 
 from db import get_user_db, get_all_users, get_all_products
 from services import (resolve_pack_factor, _token_score, is_costco_pno,
@@ -470,11 +471,13 @@ def allocate_dispatched_to_receipt(receipt_items, dispatch_date, users=None,
     ]
     return {'rows': rows, 'unmatched_receipt': unmatched,
             'unmatched_orders': unmatched_orders,
-            'user_summary': _summarize(rows)}
+            'user_summary': _summarize(rows),
+            'carry': _carry_stat}
 
 
 def allocate_receipt_to_orders(receipt_items, date_from, date_to, users=None,
-                               stock_pool=None, exclude_orders=None, basis='daily'):
+                               stock_pool=None, exclude_orders=None, basis='daily',
+                               carry_days=0):
     """영수증 품목을 기간 내 모든 사용자 주문에 코스트코 상품번호로 자동배치.
 
     basis:
@@ -492,12 +495,23 @@ def allocate_receipt_to_orders(receipt_items, date_from, date_to, users=None,
       oxo 일일주문 13건 → 9/1 4건뿐 (9/2 5 · 9/3 1 · history에 아예 없음 3)
     즉 28건은 영수증과 매칭될 기회조차 없었다.
 
+    carry_days:
+      0보다 크면 date_from 이전 carry_days 일까지의 **아직 정산 안 된** 주문도
+      후보에 넣는다(미정산 이월). 품절이라 며칠 뒤에 샀거나 주문이 밀린 건을
+      잡기 위한 것이다.
+      단 이월분은 **코스트코 상품번호가 정확히 일치할 때만** 붙인다.
+      이름 유사도와 재고 이월은 적용하지 않는다 — 오래된 주문까지 이름으로
+      붙이기 시작하면 오매칭이 급격히 는다. 이월분 미매칭은 부족분 목록에도
+      넣지 않는다(원래 정산 기간 밖이라 노이즈가 된다).
+
     Returns:
       {
         'rows': [{username, order_no, order_date, costco_no, naver_no,
-                  product_name, qty, unit_price, amount, prev_cost}, ...],
+                  product_name, qty, unit_price, amount, prev_cost, via}, ...],
         'unmatched_receipt': [{상품번호, 상품명, 단가}, ...],   # 주문 못 찾은 영수증 품목
         'user_summary': {username: {amount, qty, count}},
+        'carry': {'scanned': 훑은 이월 주문 수, 'matched': 이월로 붙은 수,
+                  'date_from': 이월 시작일},
       }
     """
     price_by_costco, name_by_costco = {}, {}
@@ -521,6 +535,17 @@ def allocate_receipt_to_orders(receipt_items, date_from, date_to, users=None,
                for c in price_by_costco]
 
     _excl = exclude_orders if exclude_orders is not None else set()
+    # 미정산 이월 조회 시작일 — date_from 하루 전부터 carry_days 만큼 거슬러 올라간다.
+    _carry_from = ''
+    if int(carry_days or 0) > 0:
+        try:
+            _d0 = datetime.strptime(str(date_from), "%Y-%m-%d").date()
+            _carry_from = str(_d0 - timedelta(days=int(carry_days)))
+            _carry_to = str(_d0 - timedelta(days=1))
+        except Exception:
+            _carry_from = ''
+    _carry_stat = {'scanned': 0, 'matched': 0, 'date_from': _carry_from}
+
     rows, matched_costco, unmatched_orders = [], set(), []
     for uname in users:
         nmap = _naver_to_product_map(uname)     # 네이버번호 → 사용자 제품레코드(정확한 코스트코번호)
@@ -541,11 +566,27 @@ def allocate_receipt_to_orders(receipt_items, date_from, date_to, users=None,
                     "WHERE order_date BETWEEN ? AND ? AND COALESCE(order_no,'') <> ''",
                     (date_from, date_to)
                 ).fetchall()
+            # 미정산 이월 — 정산 기간 이전의 아직 안 붙은 주문. 번호가 정확히
+            # 맞을 때만 붙이므로 오래된 주문을 훑어도 오매칭이 늘지 않는다.
+            _carry = []
+            if _carry_from and basis != 'payment':
+                _carry = conn.execute(
+                    "SELECT " + _cols + " FROM daily_orders "
+                    "WHERE order_date BETWEEN ? AND ? AND COALESCE(order_no,'') <> ''",
+                    (_carry_from, _carry_to)
+                ).fetchall()
+            elif _carry_from:
+                _carry = conn.execute(
+                    "SELECT " + _cols + " FROM order_history "
+                    "WHERE order_date BETWEEN ? AND ?",
+                    (_carry_from, _carry_to)
+                ).fetchall()
             conn.close()
         except Exception:
-            ords = []
+            ords, _carry = [], []
         _seen_ono = set()
-        for o in ords:
+        for _is_carry, o in ([(False, _o) for _o in ords]
+                             + [(True, _o) for _o in _carry]):
             _ono = _norm(o['order_no'])
             # 같은 주문이 기간 내 여러 날짜에 저장돼 있으면 한 번만 배치한다
             if _ono and _ono in _seen_ono:
@@ -563,8 +604,16 @@ def allocate_receipt_to_orders(receipt_items, date_from, date_to, users=None,
             costco_no = _norm((prod or {}).get('product_no'))
             if costco_no not in price_by_costco:
                 costco_no = onv if onv in price_by_costco else ''
+            if _is_carry:
+                # 이월분(정산 기간 밖)은 번호가 정확히 맞을 때만 붙인다.
+                # 이름 유사도까지 허용하면 오래된 주문에 엉뚱하게 붙는다.
+                _carry_stat['scanned'] += 1
+                if costco_no not in price_by_costco:
+                    continue                    # 부족분 목록에도 넣지 않는다
+                via = 'carry'
+                _carry_stat['matched'] += 1
             # ② 상품명 유사도 폴백 — 번호로 못 붙은 주문을 영수증 상품명과 매칭
-            if costco_no not in price_by_costco:
+            if not _is_carry and costco_no not in price_by_costco:
                 _best, _info = best_name_match(nm, _ritems)
                 if _best:
                     costco_no = _best['costco']
@@ -574,7 +623,7 @@ def allocate_receipt_to_orders(receipt_items, date_from, date_to, users=None,
             #    보면 그게 전부 미매칭으로 남았다. 찾으면 수량을 차감해 같은 재고가
             #    두 번 쓰이지 않게 한다.
             _from_stock = None
-            if costco_no not in price_by_costco and stock_pool:
+            if not _is_carry and costco_no not in price_by_costco and stock_pool:
                 _cand = _norm((prod or {}).get('product_no')) or onv
                 if _cand not in stock_pool:
                     _pool_cands = [{'_pn': _pn, 'name': _e.get('name') or ''}

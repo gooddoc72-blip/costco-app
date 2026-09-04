@@ -279,6 +279,13 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                  "이미 정산된 주문은 자동으로 제외되므로 중복 청구되지 않습니다.")
         d_to = d_day
         d_from = d_day - timedelta(days=int(_lookback))
+        _carry_days = st.number_input(
+            "미정산 이월 조회 (일) — 0이면 사용 안 함", value=14, min_value=0, max_value=60,
+            step=1, key="rs_carry",
+            help="품절이라 며칠 뒤에 샀거나 주문이 밀린 건을 잡습니다. 위 기간보다 "
+                 "더 이전의 **아직 정산 안 된** 주문까지 훑되, 코스트코 상품번호가 "
+                 "정확히 일치할 때만 붙입니다(이름 유사도·재고 이월은 적용하지 않음). "
+                 "그래서 기간을 넓혀도 오매칭이 늘지 않습니다.")
         _basis_word = "일일주문" if _by_daily else "결제"
         st.caption(f"**{d_from} ~ {d_to}** {_basis_word} 주문 중 **아직 정산되지 않은 건**에서 "
                    "위 영수증 상품번호와 일치하는 주문을 찾아 배치합니다.")
@@ -299,6 +306,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     receipt_items, str(d_from), str(d_to), stock_pool=_pool,
                     exclude_orders=_settled,
                     basis=('daily' if _by_daily else 'payment'),
+                    carry_days=int(_carry_days or 0),
                 )
         alloc['_settled_skipped'] = len(_settled)
         st.session_state['rs_alloc'] = alloc
@@ -329,6 +337,22 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         st.dataframe(pd.DataFrame(srows), use_container_width=True, hide_index=True)
         _tot = sum(s['amount'] for s in summary.values())
         st.markdown(f"### 합계 구매금액: **{fmt(_tot)}원**  ·  주문 {len(rows)}건  ·  사용자 {len(summary)}명")
+        # 매칭 경로 내역 — 어떤 근거로 붙었는지 보여야 오매칭을 잡을 수 있다
+        _via_lbl = {'number': '상품번호', 'name': '상품명 유사도', 'stock': '재고 이월',
+                    'carry': '미정산 이월(번호 일치)', 'shopping': '장보기 목록',
+                    'shopping-name': '장보기 이름', 'manual': '수동', 'ai': 'AI'}
+        _via_cnt = {}
+        for r in rows:
+            _k = str(r.get('via') or '')
+            _via_cnt[_k] = _via_cnt.get(_k, 0) + 1
+        if _via_cnt:
+            st.caption("매칭 경로 — " + " · ".join(
+                f"{_via_lbl.get(k, k or '기타')} {v}건"
+                for k, v in sorted(_via_cnt.items(), key=lambda kv: -kv[1])))
+        _cy = alloc.get('carry') or {}
+        if _cy.get('scanned'):
+            st.caption(f"↩️ 미정산 이월: {_cy['date_from']} 이후 미정산 주문 "
+                       f"{_cy['scanned']}건을 훑어 **{_cy['matched']}건**을 번호 일치로 붙였습니다.")
 
         with st.expander(f"🔍 배치 상세 ({len(rows)}건) — 주문별 구입가 반영 내역", expanded=False):
             drows = [{'사용자': dmap.get(r['username'], r['username']),
