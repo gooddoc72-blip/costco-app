@@ -14,13 +14,60 @@ import os
 import sqlite3
 
 from db import get_user_db, get_all_users, get_all_products
-from services import resolve_pack_factor, _token_score, is_costco_pno
+from services import (resolve_pack_factor, _token_score, is_costco_pno,
+                      _combined_match_score)
 
 #: 상품명 유사도 폴백 하한. 네이버 상품명은 SEO 키워드가 붙어 길고 영수증명은
 #  축약·영문이라 공통 토큰 비율이 구조적으로 낮다. 0.55에서는 명백히 같은 상품도
 #  0.50에서 걸려 탈락했다(8/19 실측: 미매칭 31건 중 14건이 0.50대).
 #  0.45·0.40까지 낮춰도 추가로 붙는 건 0건이라 0.50이 경계다.
 NAME_MATCH_MIN = 0.50
+
+#: 종합 점수 하한 — 토큰 포함율만으로는 브랜드·용량이 다른 상품을 못 거른다.
+#  9/1~9/3 실측에서 정매칭과 오매칭이 깨끗하게 갈렸다:
+#    정매칭  이디야 커피믹스 0.61 · 라페르미에르 요거트 0.61 · 라브아섬유탈취제 0.61
+#           부샤드 씨솔트 초콜릿 0.61 · 프로틴초코쉐이크 0.43
+#    오매칭  풀무원그릭요거트 -> 커클랜드 그릭요거트 0.33 (브랜드가 다른데 14건이 붙었다)
+#           트러플 크래커   -> ALLO 선식 크래커   0.28
+#           부샤드 씨솔트 초콜릿 -> 몰든 씨솔트 천일염 0.21
+#  토큰 점수도 정매칭 1.00 / 오매칭 0.50으로 갈리지만, 과거(8/19)엔 0.50대에도
+#  정매칭이 있었다는 기록이 있어 토큰 하한은 그대로 두고 종합 점수를 함께 요구한다.
+NAME_COMBINED_MIN = 0.40
+
+#: 1위와 2위가 이만큼도 안 벌어지면 애매한 것으로 보고 붙이지 않는다.
+#  억지로 붙이느니 미매칭으로 넘겨 사람이 확인하는 편이 낫다.
+NAME_MATCH_MARGIN = 0.08
+
+
+def best_name_match(order_name, candidates, name_key="name"):
+    """상품명으로 최선의 후보 하나 — 애매하면 붙이지 않는다.
+
+    candidates: [{name_key: 영수증 상품명, ...}, ...]
+    반환: (best|None, info).  info의 why가 안 붙인 이유다.
+    """
+    _nm = _norm(order_name)
+    if not _nm:
+        return None, {"why": "no_name"}
+    _scored = []
+    for _c in (candidates or []):
+        _rn = _norm((_c or {}).get(name_key))
+        if not _rn:
+            continue
+        _t = _token_score(_nm, _rn)
+        if _t < NAME_MATCH_MIN:
+            continue
+        _s = _combined_match_score(_nm, _rn)["total"]
+        _scored.append((_s, _t, _c))
+    if not _scored:
+        return None, {"why": "below_token_min"}
+    _scored.sort(key=lambda x: (-x[0], -x[1]))
+    _s0, _t0, _best = _scored[0]
+    if _s0 < NAME_COMBINED_MIN:
+        return None, {"why": "below_combined_min", "score": _s0, "token": _t0}
+    if len(_scored) > 1 and (_s0 - _scored[1][0]) < NAME_MATCH_MARGIN:
+        return None, {"why": "ambiguous", "score": _s0, "second": _scored[1][0]}
+    return _best, {"score": _s0, "token": _t0,
+                   "second": (_scored[1][0] if len(_scored) > 1 else 0.0)}
 
 
 def _norm(s):
@@ -352,14 +399,10 @@ def allocate_dispatched_to_receipt(receipt_items, dispatch_date, users=None,
                 costco_no, via = _c, 'shopping'
             # ①-b 장보기 항목 이름으로 코스트코번호 찾기 (네이버번호가 비어 있는 제출분)
             if not costco_no and ub['items']:
-                _b, _s = None, 0.0
-                for si in ub['items']:
-                    if not si['costco'] or si['costco'] not in price_by_costco:
-                        continue
-                    _sc = _token_score(nm, si['name'])
-                    if _sc > _s:
-                        _s, _b = _sc, si
-                if _b and _s >= NAME_MATCH_MIN:
+                _cands = [si for si in ub['items']
+                          if si['costco'] and si['costco'] in price_by_costco]
+                _b, _bi = best_name_match(nm, _cands)
+                if _b:
                     costco_no, via = _b['costco'], 'shopping-name'
             # ② 제품DB 매핑 → ③ 주문번호 자체
             if not costco_no:
@@ -370,12 +413,8 @@ def allocate_dispatched_to_receipt(receipt_items, dispatch_date, users=None,
                     costco_no, via = onv, 'number'
             # ③ 영수증 상품명 유사도
             if not costco_no:
-                _b, _s = None, 0.0
-                for ri in _ritems:
-                    _sc = _token_score(nm, ri['name'])
-                    if _sc > _s:
-                        _s, _b = _sc, ri
-                if _b and _s >= NAME_MATCH_MIN:
+                _b, _bi = best_name_match(nm, _ritems)
+                if _b:
                     costco_no, via = _b['costco'], 'name'
 
             qty = int(o.get('qty') or 1)
@@ -385,13 +424,10 @@ def allocate_dispatched_to_receipt(receipt_items, dispatch_date, users=None,
             if not costco_no and stock_pool:
                 _cand = _norm((prod or {}).get('product_no')) or onv
                 if _cand not in stock_pool:
-                    _cand, _s2 = None, 0.0
-                    for _pn, _e in stock_pool.items():
-                        _sc = _token_score(nm, _e.get('name') or '')
-                        if _sc > _s2:
-                            _s2, _cand = _sc, _pn
-                    if _s2 < NAME_MATCH_MIN:
-                        _cand = None
+                    _pool_cands = [{'_pn': _pn, 'name': _e.get('name') or ''}
+                                   for _pn, _e in stock_pool.items()]
+                    _pb, _pi = best_name_match(nm, _pool_cands)
+                    _cand = _pb['_pn'] if _pb else None
                 if _cand and stock_pool.get(_cand, {}).get('units', 0) > 0:
                     _need = qty * int(_pk or 1)
                     if stock_pool[_cand]['units'] >= _need:
@@ -529,12 +565,8 @@ def allocate_receipt_to_orders(receipt_items, date_from, date_to, users=None,
                 costco_no = onv if onv in price_by_costco else ''
             # ② 상품명 유사도 폴백 — 번호로 못 붙은 주문을 영수증 상품명과 매칭
             if costco_no not in price_by_costco:
-                _best, _sc = None, 0.0
-                for ri in _ritems:
-                    s = _token_score(nm, ri['name'])
-                    if s > _sc:
-                        _sc, _best = s, ri
-                if _best and _sc >= NAME_MATCH_MIN:
+                _best, _info = best_name_match(nm, _ritems)
+                if _best:
                     costco_no = _best['costco']
                     via = 'name'
             # ③ 재고 이월 — 당일 영수증에 없으면 과거 구매분(가용 재고)에서 찾는다.
@@ -545,13 +577,10 @@ def allocate_receipt_to_orders(receipt_items, date_from, date_to, users=None,
             if costco_no not in price_by_costco and stock_pool:
                 _cand = _norm((prod or {}).get('product_no')) or onv
                 if _cand not in stock_pool:
-                    _cand, _sc2 = None, 0.0
-                    for _pn, _e in stock_pool.items():
-                        _s = _token_score(nm, _e.get('name') or '')
-                        if _s > _sc2:
-                            _sc2, _cand = _s, _pn
-                    if _sc2 < NAME_MATCH_MIN:
-                        _cand = None
+                    _pool_cands = [{'_pn': _pn, 'name': _e.get('name') or ''}
+                                   for _pn, _e in stock_pool.items()]
+                    _pb, _pi = best_name_match(nm, _pool_cands)
+                    _cand = _pb['_pn'] if _pb else None
                 if _cand and stock_pool.get(_cand, {}).get('units', 0) > 0:
                     _need = int(o['qty'] or 1) * int(_split_pack(prod)[1] or 1)
                     if stock_pool[_cand]['units'] >= _need:
