@@ -880,7 +880,7 @@ def learn_costco_mappings(rows):
         cno = _norm(r.get('costco_no'))
         if not (u and nv and is_costco_pno(cno)):
             continue
-        pairs.setdefault(u, {}).setdefault(nv, cno)
+        pairs.setdefault(u, {}).setdefault(nv, (cno, _norm(r.get('product_name'))))
 
     filled, by_user = 0, {}
     for uname, m in pairs.items():
@@ -895,12 +895,35 @@ def learn_costco_mappings(rows):
                 continue
             _where = " OR ".join("TRIM(COALESCE(%s,''))=?" % c for c in key_cols)
             n = 0
-            for nv, cno in m.items():
+            _now = datetime.now().strftime("%Y-%m-%d %H:%M")
+            for nv, (cno, pname) in m.items():
                 cur = conn.execute(
                     "UPDATE products SET product_no=? "
                     "WHERE TRIM(COALESCE(product_no,''))='' AND (%s)" % _where,
                     [cno] + [nv] * len(key_cols))
-                n += cur.rowcount
+                if cur.rowcount:
+                    n += cur.rowcount
+                    continue
+                # 그 번호로 된 제품 레코드가 아예 없는 경우 — 쿠팡 상품이 대표적이다.
+                # UPDATE만 하던 예전 코드는 여기서 아무것도 못 배웠다.
+                # (clglobal0919는 9/3 주문 11개 번호 중 0개가 products에 있었다)
+                _exists = conn.execute(
+                    "SELECT 1 FROM products WHERE (%s)" % _where,
+                    [nv] * len(key_cols)).fetchone()
+                if _exists or not pname:
+                    continue          # 이미 코스트코번호가 있는 레코드는 건드리지 않는다
+                # match_keyword가 NOT NULL UNIQUE — 이름이 겹치면 번호를 붙여 피한다
+                for _mk in (pname[:180], ("%s#%s" % (pname[:170], nv))):
+                    try:
+                        conn.execute(
+                            "INSERT INTO products (product_no, store_product_name, costco_name,"
+                            " match_keyword, unit_price, split_qty, updated_at,"
+                            " naver_channel_pno) VALUES (?,?,?,?,0,1,?,?)",
+                            (cno, pname, pname, _mk, _now, nv))
+                        n += 1
+                        break
+                    except sqlite3.IntegrityError:
+                        continue
             conn.commit()
             if n:
                 by_user[uname] = n
