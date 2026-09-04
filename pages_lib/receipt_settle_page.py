@@ -411,6 +411,15 @@ def _render_leftover_section(receipt_items, alloc, dmap, d_day, USERNAME):
     st.divider()
     st.subheader("📦 남은 재고 확인")
 
+    # 직전 입고 결과 — 예전엔 st.success() 바로 뒤에 st.rerun()을 불러서
+    # 메시지가 그려지기도 전에 화면이 새로 그려졌다. 입고는 실제로 됐는데
+    # 아무 반응이 없어 보여서 "버튼이 안 먹는다"로 읽혔다.
+    _lf_msg = st.session_state.pop('_rs_lf_msg', None)
+    if _lf_msg:
+        (st.success if _lf_msg.get('ok') else st.warning)(_lf_msg.get('text', ''))
+        if _lf_msg.get('err'):
+            st.error(_lf_msg['err'])
+
     lefts = compute_leftovers(receipt_items, alloc.get('rows') or [])
     if not lefts:
         st.success("남은 수량이 없습니다 — 영수증 구매분이 모두 주문에 배치됐습니다.")
@@ -480,6 +489,16 @@ def _render_leftover_section(receipt_items, alloc, dmap, d_day, USERNAME):
         st.caption("입고할 행을 체크하세요.")
         return
 
+    _dup_picked = [r for r in _picked if str(r.get('상품번호') or '') in _already]
+    _force = False
+    if _dup_picked:
+        st.warning(f"⚠️ 선택한 {len(_dup_picked)}종은 이 날짜({d_day})로 **이미 입고돼 있습니다**. "
+                   "그대로 누르면 건너뜁니다 — 재고가 두 배로 잡히는 것을 막기 위해서입니다.")
+        _force = st.checkbox(
+            "이미 입고된 것도 다시 입고 (중복인 걸 확인했습니다)", key="rs_lf_force",
+            help="같은 날짜로 lot이 한 번 더 생깁니다. 앞의 입고가 잘못됐다면 "
+                 "'재고 관리' 탭에서 그 lot을 지운 뒤 다시 넣는 편이 안전합니다.")
+
     if st.button(f"📦 확인한 {len(_picked)}종 재고 입고", type="primary", key="rs_lf_apply"):
         _by_cno = {l['costco_no']: l for l in lefts}
         _ok, _skip, _fail = 0, 0, []
@@ -488,7 +507,7 @@ def _render_leftover_section(receipt_items, alloc, dmap, d_day, USERNAME):
             _l = _by_cno.get(_cno)
             if not _l:
                 continue
-            if _cno in _already:
+            if _cno in _already and not _force:
                 _skip += 1
                 continue
             _owner = _lbl2user.get(str(r.get('보유자') or ''), USERNAME)
@@ -497,19 +516,30 @@ def _render_leftover_section(receipt_items, alloc, dmap, d_day, USERNAME):
                     product_no=_cno, product_name=_l['name'], owner=_owner,
                     pack_unit_cost=_l['unit_price'], qty_units=_l['units_left'],
                     split_qty=_l['split_qty'], received_at=str(d_day),
-                    memo=f"{_memo_tag} · 영수증잔량")
+                    memo=f"{_memo_tag} · 영수증잔량"
+                         + (" · 재입고" if _cno in _already else ""))
                 if _lid:
                     _ok += 1
                 else:
                     _fail.append(f"{_l['name'][:20]} (수량 0)")
             except Exception as e:
                 _fail.append(f"{_l['name'][:20]} — {str(e)[:60]}")
-        _msg = f"✅ 재고 입고 {_ok}종"
-        if _skip:
-            _msg += f" · ⏭ 중복 {_skip}종"
-        if _fail:
-            st.error("❌ 실패: " + " / ".join(_fail))
-        st.success(_msg + " — '재고 관리' 탭에서 확인하세요.")
+        if _ok:
+            _text = f"✅ 재고 입고 {_ok}종"
+            if _skip:
+                _text += f" · ⏭ 이미 입고돼 건너뜀 {_skip}종"
+            _text += " — '재고 관리' 탭에서 확인하세요."
+        else:
+            _text = (f"입고된 항목이 없습니다 — 선택한 {_skip}종은 이 날짜({d_day})로 "
+                     "이미 입고돼 있습니다. 정말 한 번 더 넣으려면 위 "
+                     "'이미 입고된 것도 다시 입고'를 켜고 다시 누르세요.")
+        st.session_state['_rs_lf_msg'] = {
+            'ok': bool(_ok),
+            'text': _text,
+            'err': ("❌ 실패: " + " / ".join(_fail)) if _fail else '',
+        }
+        # 위젯 키는 생성된 뒤 '대입'하면 Streamlit이 예외를 던진다 — pop으로 초기화한다.
+        st.session_state.pop('rs_lf_force', None)
         st.rerun()
 
 
