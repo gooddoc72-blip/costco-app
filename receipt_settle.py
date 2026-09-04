@@ -438,8 +438,23 @@ def allocate_dispatched_to_receipt(receipt_items, dispatch_date, users=None,
 
 
 def allocate_receipt_to_orders(receipt_items, date_from, date_to, users=None,
-                               stock_pool=None, exclude_orders=None):
+                               stock_pool=None, exclude_orders=None, basis='daily'):
     """영수증 품목을 기간 내 모든 사용자 주문에 코스트코 상품번호로 자동배치.
+
+    basis:
+      'daily'   — daily_orders(일일 주문건). 사용자가 화면에서 보는 '그날 발송할
+                  주문'과 같은 집합이다. **기본값.**
+      'payment' — order_history(결제일 기준). 구버전 동작.
+
+    왜 기본을 바꿨나: 두 테이블의 order_date 의미가 다르다.
+      daily_orders   = 수집·저장한 날짜 (결제일 무시, db_orders.save_daily_orders)
+      order_history  = 결제일        (db_orders.save_order_history)
+    영수증은 '그날 장 본 것'이라 '그날 발송할 일일주문'에 대응하는데,
+    결제일로 잘라서 대상 집합이 어긋났다. 9/1 실측:
+      clglobal0919 일일주문 44건 → order_history에선 9/1 16건뿐
+        (나머지는 8/31 13 · 8/30 7 · 8/29 6 · 날짜 'nan' 2)
+      oxo 일일주문 13건 → 9/1 4건뿐 (9/2 5 · 9/3 1 · history에 아예 없음 3)
+    즉 28건은 영수증과 매칭될 기회조차 없었다.
 
     Returns:
       {
@@ -473,19 +488,36 @@ def allocate_receipt_to_orders(receipt_items, date_from, date_to, users=None,
     rows, matched_costco, unmatched_orders = [], set(), []
     for uname in users:
         nmap = _naver_to_product_map(uname)     # 네이버번호 → 사용자 제품레코드(정확한 코스트코번호)
+        _cols = ("order_no, order_date, recipient, product_no, product_name, qty, cost_price")
         try:
             conn = get_user_db(uname)
-            ords = conn.execute(
-                "SELECT order_no, order_date, recipient, product_no, product_name, qty, cost_price "
-                "FROM order_history WHERE order_date BETWEEN ? AND ?",
-                (date_from, date_to)
-            ).fetchall()
+            if basis == 'payment':
+                ords = conn.execute(
+                    "SELECT " + _cols + " FROM order_history "
+                    "WHERE order_date BETWEEN ? AND ?",
+                    (date_from, date_to)
+                ).fetchall()
+            else:
+                # 옛 행 중 order_no가 빈 것은 정산 대상에서 뺀다 — 이미 정산됐는지
+                # 판별할 키가 없어 매번 다시 배치돼 이중 청구가 된다.
+                ords = conn.execute(
+                    "SELECT " + _cols + " FROM daily_orders "
+                    "WHERE order_date BETWEEN ? AND ? AND COALESCE(order_no,'') <> ''",
+                    (date_from, date_to)
+                ).fetchall()
             conn.close()
         except Exception:
             ords = []
+        _seen_ono = set()
         for o in ords:
+            _ono = _norm(o['order_no'])
+            # 같은 주문이 기간 내 여러 날짜에 저장돼 있으면 한 번만 배치한다
+            if _ono and _ono in _seen_ono:
+                continue
+            if _ono:
+                _seen_ono.add(_ono)
             # 이미 정산된 주문은 후보에서 뺀다 (구입가 이중 반영 방지)
-            if _excl and (uname, _norm(o['order_no'])) in _excl:
+            if _excl and (uname, _ono) in _excl:
                 continue
             onv = _norm(o['product_no'])
             nm = _norm(o['product_name'])
@@ -824,6 +856,13 @@ def apply_receipt_settlement(rows):
             if not ono:
                 continue
             conn.execute("UPDATE order_history SET cost_price=? WHERE order_no=?", (amt, ono))
+            # 일일주문 기준으로 정산하면 order_history에 아예 없는 주문이 많다
+            # (clglobal0919 980건 · oxo 160건). daily_orders에도 반영해야
+            # 수익계산이 실제 매입가를 본다.
+            try:
+                conn.execute("UPDATE daily_orders SET cost_price=? WHERE order_no=?", (amt, ono))
+            except Exception:
+                pass
             try:
                 conn.execute("UPDATE profit_settlements SET cost_price=? WHERE order_no=?", (amt, ono))
             except Exception:

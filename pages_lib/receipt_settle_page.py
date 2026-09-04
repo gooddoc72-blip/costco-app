@@ -255,11 +255,17 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     # 그 주문들이 통째로 미매칭이 됐다(8/19 실측: 콩담백면은 8/17 주문과 100% 일치).
     # 이전 날짜는 '아직 정산 안 된 주문'만 후보로 넣어 이중 반영을 막는다.
     _basis = st.radio(
-        "정산 기준", ["🚚 출고 기준 (장보기 목록 + 영수증 + 일괄발송)", "📅 결제일 기준 (구버전)"],
-        key="rs_basis", horizontal=True,
-        help="출고 기준: 그날 일괄발송한 주문을 그날 영수증으로 정산합니다. "
-             "장보기 목록(코스트코번호↔네이버번호)을 브리지로 써 매칭률이 높습니다.")
+        "정산 기준",
+        ["📦 일일주문 기준 (권장)",
+         "🚚 출고 기준 (장보기 목록 + 영수증 + 일괄발송)",
+         "📅 결제일 기준 (구버전)"],
+        key="rs_basis2", horizontal=True,
+        help="일일주문 기준: 화면의 '일일 주문 수집'에 잡힌 그날 발송할 주문을 그날 "
+             "영수증으로 정산합니다. 결제일 기준은 order_history(결제일)를 봐서 "
+             "일일주문과 대상이 어긋납니다. "
+             "출고 기준: 그날 일괄발송한 주문을 장보기 목록을 브리지로 연결합니다.")
     _by_dispatch = _basis.startswith("🚚")
+    _by_daily = _basis.startswith("📦")
 
     if _by_dispatch:
         st.caption(f"**{d_day}** 에 일괄발송(출고)한 주문을, 같은 날 **장보기 목록**을 브리지로 "
@@ -273,7 +279,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                  "이미 정산된 주문은 자동으로 제외되므로 중복 청구되지 않습니다.")
         d_to = d_day
         d_from = d_day - timedelta(days=int(_lookback))
-        st.caption(f"**{d_from} ~ {d_to}** 결제 주문 중 **아직 정산되지 않은 건**에서 "
+        _basis_word = "일일주문" if _by_daily else "결제"
+        st.caption(f"**{d_from} ~ {d_to}** {_basis_word} 주문 중 **아직 정산되지 않은 건**에서 "
                    "위 영수증 상품번호와 일치하는 주문을 찾아 배치합니다.")
 
     if st.button("🔎 당일 자동배치 미리보기", type="primary", key="rs_preview_btn"):
@@ -291,6 +298,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 alloc = allocate_receipt_to_orders(
                     receipt_items, str(d_from), str(d_to), stock_pool=_pool,
                     exclude_orders=_settled,
+                    basis=('daily' if _by_daily else 'payment'),
                 )
         alloc['_settled_skipped'] = len(_settled)
         st.session_state['rs_alloc'] = alloc
