@@ -471,8 +471,7 @@ def allocate_dispatched_to_receipt(receipt_items, dispatch_date, users=None,
     ]
     return {'rows': rows, 'unmatched_receipt': unmatched,
             'unmatched_orders': unmatched_orders,
-            'user_summary': _summarize(rows),
-            'carry': _carry_stat}
+            'user_summary': _summarize(rows)}
 
 
 def allocate_receipt_to_orders(receipt_items, date_from, date_to, users=None,
@@ -678,7 +677,8 @@ def allocate_receipt_to_orders(receipt_items, date_from, date_to, users=None,
     ]
     return {'rows': rows, 'unmatched_receipt': unmatched,
             'unmatched_orders': unmatched_orders,
-            'user_summary': _summarize(rows)}
+            'user_summary': _summarize(rows),
+            'carry': _carry_stat}
 
 
 def compute_leftovers(receipt_items, rows):
