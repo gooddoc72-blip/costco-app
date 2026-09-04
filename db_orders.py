@@ -8,6 +8,26 @@ from datetime import datetime
 from db_core import get_user_db
 
 
+def _s(v) -> str:
+    """DataFrame 셀 → 문자열. pandas NaN·None은 빈 문자열로.
+
+    str(float('nan'))가 'nan'이라, 그동안 상품번호·옵션번호·결제일에
+    문자열 'nan'이 그대로 저장됐다. 그 행은 어떤 번호·날짜 조건에도 안 걸려
+    영구 미매칭이 된다 (clglobal0919: product_no 228건, order_date 63건 /
+    tblue 55건 · oxo 20건).
+    """
+    if v is None:
+        return ''
+    try:
+        import pandas as _pd
+        if _pd.isna(v):
+            return ''
+    except (TypeError, ValueError, ImportError):
+        pass
+    _t = str(v).strip()
+    return '' if _t.lower() in ('nan', 'none', 'nat', '<na>') else _t
+
+
 def _ship_settle_factor(conn):
     """고객배송비 정산 비율. 정책: 배송비는 네이버 수수료 차감 없이 전액 정산 → 1.0.
     (네이버 수수료 5.5%는 판매가에만 적용되며, 수집된 정산예정금액에 이미 반영됨)
@@ -63,14 +83,14 @@ def save_daily_orders(username, order_date, orders_df, shipping_cost, box_cost):
         # 구입가 미산정(0)인 행은 수익 0 처리 (페이지 합계가 제외하는 것과 동일).
         profit = ((settlement + round(ship_fee * _factor)) - (int(cost) + per_ship + per_box)
                   if int(cost) > 0 else 0)
-        p_no = r.get('상품번호', '')
+        p_no = _s(r.get('상품번호'))
         conn.execute("""INSERT INTO daily_orders
             (order_date,order_no,recipient,product_name,product_no,option_info,option_code,qty,
              order_amount,shipping_fee,extra_shipping,settlement,
              cost_price,delivery_cost,box_cost,profit,matched,created_at)
             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (order_date, _ono, r['수취인명'], r['상품명'], str(p_no), r.get('옵션정보', ''),
-             str(r.get('옵션번호', '') or ''),
+            (order_date, _ono, r['수취인명'], r['상품명'], p_no, r.get('옵션정보', ''),
+             _s(r.get('옵션번호')),
              int(r['수량']), int(r['최종 상품별 총 주문금액']), ship_fee,
              int(r.get('제주/도서 추가배송비', 0)), settlement,
              int(cost), per_ship, per_box, profit, 1 if cost > 0 else 0, now))
@@ -255,7 +275,7 @@ def save_order_history(username, full_df, cost_df=None):
             order_no = f"H{_hl.md5(raw.encode()).hexdigest()[:14]}"
         if order_no in _excluded:
             continue
-        order_date = str(r.get('결제일', '') or r.get('주문일', '') or now[:10])
+        order_date = _s(r.get('결제일')) or _s(r.get('주문일')) or now[:10]
         if 'T' in order_date:
             order_date = order_date[:10]
         # 주문시각 — 주문일시 → 결제일 → 주문일 중 'YYYY-MM-DD HH:MM' 형태인 첫 값
@@ -309,8 +329,8 @@ def save_order_history(username, full_df, cost_df=None):
                 """,
                 (order_no, str(r.get('주문번호', '') or ''), order_date,
                  str(r.get('수취인명', '') or ''), str(r.get('구매자명', '') or ''),
-                 str(r.get('상품명', '') or ''), str(r.get('상품번호', '') or ''),
-                 str(r.get('옵션정보', '') or ''), str(r.get('옵션번호', '') or ''),
+                 str(r.get('상품명', '') or ''), _s(r.get('상품번호')),
+                 str(r.get('옵션정보', '') or ''), _s(r.get('옵션번호')),
                  qty, unit_p, total, ship, settle,
                  str(r.get('주문상태', '') or ''), str(r.get('송장번호', '') or ''),
                  str(r.get('택배사', '') or ''), cost_price, profit, now, raw_json_str,

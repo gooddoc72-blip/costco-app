@@ -315,6 +315,10 @@ def _parse_order_and_excel(order: dict, seq_no: int) -> tuple:
                     or str(item.get("vendorItemId") or "").strip())
         unified_rows.append({
             "상품주문번호": f"{order.get('orderId')}-{_item_id}",
+            # 상품번호를 안 담아서 쿠팡 주문은 product_no가 통째로 비어 있었다.
+            # 번호 브리지가 아예 못 걸려 영수증 정산이 이름 유사도에만 의존했다.
+            # (clglobal0919는 8/20 이후 586건 중 580건이 번호 없음)
+            "상품번호":     _item_id,
             "수취인명":     recv_name,
             "상품명":       item_name,
             "옵션정보":     item.get("externalVendorSkuCode") or "",
