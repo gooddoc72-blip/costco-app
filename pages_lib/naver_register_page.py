@@ -65,6 +65,50 @@ try:
 except ImportError:
     naver_register_service = None
 
+def _save_costco_price(username, is_admin, costco_no, costco_name, price,
+                       naver_no='', naver_name=''):
+    """사진등록으로 알게 된 '코스트코 상품번호 ↔ 매장가'를 제품가격 DB에 남긴다.
+
+    사진등록은 가격사진에서 코스트코 상품번호와 매장가를 읽어 놓고도 그 값을
+    어디에도 저장하지 않았다. 그래서 그 상품 주문이 들어와도 매입가를 못 찾아
+    구매내역 정산이 0원으로 나왔다(9/4 기준 36건 중 20건).
+
+    · 공유 제품가격 DB: 이미 있으면 가격만 갱신(upsert). split_qty는 건드리지
+      않는다 — None이 '유지' 의미다(관리자가 지정한 소분수가 리셋되면 안 된다).
+    · 일반 사용자는 receipt_date 가드가 걸려 더 최신 매장가를 덮지 못한다.
+      관리자만 force_store로 덮어쓴다.
+    · 사용자 제품DB에도 네이버번호 ↔ 코스트코번호를 남겨 다음 주문이 번호로 붙게 한다.
+    반환: 화면에 보여줄 한 줄 (없으면 '')
+    """
+    from datetime import datetime as _dt
+    _cno = str(costco_no or '').strip()
+    _pr = int(price or 0)
+    _nm = str(costco_name or '').strip()
+    if not (_cno and _pr > 0 and _nm):
+        return ''
+    try:
+        from services import is_costco_pno
+        if not is_costco_pno(_cno):
+            return ''
+    except Exception:
+        pass
+    _today = _dt.now().strftime("%Y-%m-%d")
+    _out = []
+    try:
+        upsert_shared_store_price(
+            costco_name=_nm, keyword=_nm, price=_pr, product_no=_cno,
+            updated_by=username, receipt_date=_today, force_store=bool(is_admin))
+        _out.append(f"💰 제품가격 DB 등록 — {_cno} {fmt(_pr)}원")
+    except Exception as _e:
+        return f"⚠️ 제품가격 DB 저장 실패: {_e}"
+    if naver_no:
+        try:
+            upsert_user_private(username, _nm, _nm, naver_origin_pno=str(naver_no))
+        except Exception:
+            pass
+    return " · ".join(_out)
+
+
 def _load_json_preset(username, key):
     """settings에 JSON으로 저장된 프리셋(배송·혜택) 읽기. 상품DB 탭이 저장한 것과 동일 키."""
     from db import get_setting
@@ -856,6 +900,19 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                            f"— {_name_final[:20]} / {fmt(int(_es))}원 / 이미지 {len(_cdns)}장"
                                            + (f" / 태그 {len(_sel_tags)}개" if _sel_tags else ""))
                                 st.caption("🚚 적용된 배송: " + _delivery_label(_ph_delivery))
+                                # ── 제품가격 DB 등록·갱신 ────────────────────────
+                                #   사진등록은 코스트코 상품번호와 가격사진 판독가를
+                                #   둘 다 갖고 있는데 그동안 어디에도 남기지 않았다.
+                                #   그래서 나중에 주문이 들어와도 매입가를 못 찾아
+                                #   구매내역 정산이 0원으로 나왔다.
+                                _pr_msg = _save_costco_price(
+                                    USERNAME, IS_ADMIN, _costco_no.strip(),
+                                    (_pv.get('name_raw') or _pv.get('name') or _name_final),
+                                    int(_pv.get('cost') or 0),
+                                    naver_no=str((_res or {}).get('origin_product_no', '') or ''),
+                                    naver_name=_name_final)
+                                if _pr_msg:
+                                    st.caption(_pr_msg)
                                 if _re2:   # 태그만 거부되고 등록은 성공한 경우 경고
                                     st.warning(_re2)
                                 st.image(_cdns[0], width=220,
