@@ -206,14 +206,26 @@ def summarize(date_from, date_to, username=None):
     for r in rows:
         u = r['username']
         e = out.setdefault(u, {'amount': 0, 'count': 0, 'pending': 0,
-                               'confirmed': 0, 'invoiced': 0, 'canceled': 0})
+                               'confirmed': 0, 'invoiced': 0, 'canceled': 0,
+                               'no_price': 0})
         st = str(r.get('status') or 'pending')
         e[st] = e.get(st, 0) + 1
         if st == 'canceled':
             continue
+        # 아직 안 산 물건은 매입가가 없는 것이 정상이다. 다만 이대로 계산서를
+        # 끊으면 그만큼 덜 청구되므로 따로 센다.
+        if int(r.get('amount') or 0) <= 0:
+            e['no_price'] += 1
         e['amount'] += int(r.get('amount') or 0)
         e['count'] += 1
     return out
+
+
+def unpriced_rows(date_from, date_to, username=None):
+    """매입가가 아직 없는 행. 영수증이 올라오면 채워진다. 계산서 발행 전 확인용."""
+    return [r for r in get_ledger(date_from, date_to, username=username)
+            if str(r.get('status')) not in ('canceled', 'invoiced')
+            and int(r.get('amount') or 0) <= 0]
 
 
 def set_status(ids, status, memo=''):
