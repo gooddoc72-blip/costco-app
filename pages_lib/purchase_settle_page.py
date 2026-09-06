@@ -17,7 +17,7 @@ from db_purchase_settle import (
     month_fees_if_last_day, is_last_day_of_month,
     suggest_shared_matches, link_product_mapping,
     get_daily_summary, get_monthly_summary, get_period_rows,
-    get_order_dispatch_counts, get_dispatch_list,
+    get_order_dispatch_counts, get_dispatch_list, compute_month_fees,
 )
 from utils import fmt
 
@@ -28,6 +28,357 @@ def _disp_map():
 
 def _sellers():
     return [u['username'] for u in get_all_users() if not u.get('is_admin')]
+
+
+def _render_ledger(dmap, USERNAME):
+    """청구 원장 — 발송 1건 = 청구 근거 1행.
+
+    총액 한 줄만 있으면 반품 한 건을 빼낼 수도, 이미 발행한 계산서를 설명할 수도
+    없다. 건별 근거를 쌓아 계산서 발행의 바탕으로 쓴다.
+    """
+    import db_billing_ledger as bl
+
+    st.divider()
+    st.subheader("📒 청구 원장 — 발송건별 청구 근거")
+    c1, c2, c3 = st.columns([1, 1, 1.4])
+    _to = c2.date_input("종료일", value=date.today(), key="bl_to")
+    _from = c1.date_input("시작일", value=_to - timedelta(days=6), key="bl_from")
+    _stf = c3.selectbox("상태", ['(전체)', 'pending', 'confirmed', 'invoiced', 'canceled'],
+                        format_func=lambda k: {'pending': '예상(미확정)', 'confirmed': '확정',
+                                               'invoiced': '계산서 발행됨',
+                                               'canceled': '취소'}.get(k, k),
+                        key="bl_status")
+
+    _b1, _b2 = st.columns([1.6, 4])
+    if _b1.button("🔄 발송건에서 원장 만들기", key="bl_sync", type="primary",
+                  help="기간 내 발송 기록을 훑어 원장 행을 만들고, 영수증에서 확정된 건은 "
+                       "실단가로 채웁니다. 계산서가 발행된 행은 건드리지 않습니다."):
+        _c = _u = _s = 0
+        _d = _from
+        while _d <= _to:
+            for _un in _sellers():
+                _r = bl.sync_from_dispatch(_un, str(_d))
+                _c += _r['created']; _u += _r['updated']; _s += _r['skipped']
+            _d += timedelta(days=1)
+        st.session_state['_bl_msg'] = (
+            f"✅ 원장 갱신 — 신규 {_c}건 · 갱신 {_u}건"
+            + (f" · 발행돼 건너뜀 {_s}건" if _s else ""))
+        st.rerun()
+
+    _rows = bl.get_ledger(str(_from), str(_to),
+                          status=(None if _stf == '(전체)' else _stf))
+    if not _rows:
+        st.info("원장이 비어 있습니다 — 위 '발송건에서 원장 만들기'를 눌러 채우세요.")
+        return
+
+    _sum = bl.summarize(str(_from), str(_to))
+    st.dataframe(pd.DataFrame([{
+        '사용자': dmap.get(u, u), '청구건수': v['count'], '청구액': fmt(v['amount']),
+        '가격 미확인': v.get('no_price', 0),
+        '예상(미확정)': v['pending'], '확정': v['confirmed'],
+        '발행': v['invoiced'], '취소': v['canceled'],
+    } for u, v in sorted(_sum.items(), key=lambda kv: -kv[1]['amount'])]),
+        use_container_width=True, hide_index=True)
+    _tot = sum(v['amount'] for v in _sum.values())
+    _pend = sum(v['pending'] for v in _sum.values())
+    st.markdown(f"### 기간 청구액: **{fmt(_tot)}원**  ·  {sum(v['count'] for v in _sum.values())}건")
+    if _pend:
+        st.caption(f"⚠️ 아직 예상가인 행이 {_pend}건입니다 — 영수증 정산을 하면 "
+                   "실단가로 확정되고, 다시 '원장 만들기'를 누르면 반영됩니다.")
+    _np = bl.unpriced_rows(str(_from), str(_to))
+    if _np:
+        with st.expander(f"❗ 매입가가 아직 없는 행 {len(_np)}건 — 이대로 계산서를 끊으면 "
+                         "그만큼 덜 청구됩니다", expanded=False):
+            st.caption("아직 구매하지 않아 매입가를 모르는 건입니다(정상). "
+                       "영수증이 올라오면 채워집니다. "
+                       "제품가격 DB에 코스트코번호 연결이 없어 0원인 것도 여기 섞이므로, "
+                       "발행 전에 한 번 훑어보세요.")
+            st.dataframe(pd.DataFrame([{
+                '발송일': r['dispatched_at'],
+                '사용자': dmap.get(r['username'], r['username']),
+                '주문번호': r['order_no'],
+                '상품명': (r['product_name'] or '')[:40],
+                '수량': r['qty'],
+            } for r in _np[:200]]), use_container_width=True, hide_index=True)
+
+    with st.expander(f"📄 원장 상세 {len(_rows)}건", expanded=False):
+        st.dataframe(pd.DataFrame([{
+            '발송일': r['dispatched_at'],
+            '사용자': dmap.get(r['username'], r['username']),
+            '주문번호': r['order_no'],
+            '상품명': (r['product_name'] or '')[:32],
+            '수량': r['qty'], '소분': r['split_qty'],
+            '단가': fmt(int(r['unit_cost'] or 0)),
+            '청구액': fmt(int(r['amount'] or 0)),
+            '근거': bl.COST_SOURCES.get(r['cost_source'], r['cost_source']),
+            '상태': {'pending': '예상', 'confirmed': '확정',
+                     'invoiced': '발행', 'canceled': '취소'}.get(r['status'], r['status']),
+        } for r in _rows[:500]]), use_container_width=True, hide_index=True)
+
+
+def _render_dispatch_upload(dmap, USERNAME):
+    """발송 파일 업로드 — 주문번호로 사용자를 갈라 dispatch_log에 기록.
+
+    청구는 발송 기준인데 송장 등록을 안 하는 계정이 있으면 청구가 0원이 된다
+    (clglobal0919는 8/31~9/6 주문 205건에 발송 0건이었다).
+    관리자가 전체 발송 파일 하나를 올려 분류하면 그 의존이 사라진다.
+    """
+    import dispatch_upload as du
+
+    with st.expander("🚚 발송 파일 업로드 — 주문번호로 사용자 분류", expanded=False):
+        st.caption(
+            "전체 발송내역 파일(엑셀·CSV)을 올리면 **주문번호**로 각 사용자에게 나눠 "
+            "발송 기록에 넣습니다. 이후 영수증 정산이 그 발송건에 매입가를 채웁니다. "
+            "같은 파일을 두 번 올려도 중복 저장되지 않습니다.")
+        _f = st.file_uploader("발송 파일 (xlsx · xls · csv)", type=['xlsx', 'xls', 'csv'],
+                              key="du_file")
+        if not _f:
+            return
+        try:
+            if _f.name.lower().endswith('.csv'):
+                _df = pd.read_csv(_f, dtype=str)
+            else:
+                _df = pd.read_excel(_f, dtype=str)
+        except Exception as _e:
+            st.error(f"파일을 읽지 못했습니다: {_e}")
+            return
+        if _df is None or _df.empty:
+            st.warning("빈 파일입니다.")
+            return
+        _df = _df.fillna('')
+        st.caption(f"📄 {_f.name} — {len(_df)}행 · 열 {len(_df.columns)}개")
+
+        _cols = list(_df.columns)
+        _guess = du.guess_columns(_cols)
+        st.markdown("**열 매핑** — 자동으로 찾은 값이 맞는지 확인하세요")
+        _m1, _m2, _m3 = st.columns(3)
+        _opts = ['(없음)'] + [str(c) for c in _cols]
+
+        def _pick(col, label, key, need=False):
+            _d = _guess.get(key)
+            _i = _opts.index(str(_d)) if _d and str(_d) in _opts else 0
+            _v = col.selectbox(label + (" *" if need else ""), _opts, index=_i,
+                               key=f"du_col_{key}")
+            return None if _v == '(없음)' else _v
+
+        _cm = {
+            'order_no':     _pick(_m1, "주문번호", 'order_no', need=True),
+            'tracking_no':  _pick(_m2, "송장번호", 'tracking_no'),
+            'recipient':    _pick(_m3, "수취인", 'recipient'),
+            'product_name': _pick(_m1, "상품명", 'product_name'),
+            'qty':          _pick(_m2, "수량", 'qty'),
+            'courier':      _pick(_m3, "택배사", 'courier'),
+        }
+        if not _cm.get('order_no'):
+            st.error("⚠️ **주문번호** 열을 지정해야 분류할 수 있습니다.")
+            return
+
+        _dd = st.date_input("발송일 (청구 귀속일)", value=date.today(), key="du_date",
+                            help="이 날짜로 발송 기록이 남고, 그날 청구에 잡힙니다.")
+
+        _idx, _dup = du.build_order_owner_index()
+        if _dup:
+            st.warning(f"⚠️ 두 사용자에 걸친 주문번호 {len(_dup)}건이 있습니다 — "
+                       "그 건은 분류가 부정확할 수 있습니다.")
+        _by_user, _unknown = du.classify_rows(_df.to_dict('records'), _cm, _idx)
+
+        _tot = sum(len(v) for v in _by_user.values())
+        st.markdown(f"### 분류 결과 — {_tot}건 매칭 · {len(_unknown)}건 미분류")
+        if _by_user:
+            _sum = []
+            for _u, _rows in sorted(_by_user.items(), key=lambda kv: -len(kv[1])):
+                _ex = du.existing_dispatch(_u, [r['order_no'] for r in _rows])
+                _sum.append({'사용자': dmap.get(_u, _u), '건수': len(_rows),
+                             '이미 발송기록 있음': len(_ex),
+                             '새로 저장될 건': len(_rows) - len(_ex)})
+            st.dataframe(pd.DataFrame(_sum), use_container_width=True, hide_index=True)
+        if _unknown:
+            with st.expander(f"❓ 미분류 {len(_unknown)}건 — 어느 사용자 것인지 못 찾음",
+                             expanded=False):
+                st.caption("주문번호가 비었거나, 어느 사용자 DB에도 없는 번호입니다. "
+                           "주문 수집이 안 된 건일 수 있습니다.")
+                st.dataframe(pd.DataFrame([{
+                    '행': u['_row'], '주문번호': u['order_no'], '수취인': u['recipient'],
+                    '상품명': u['product_name'][:34], '사유': u.get('_why', '')}
+                    for u in _unknown[:200]]), use_container_width=True, hide_index=True)
+
+        _skip = st.checkbox("이미 발송 기록이 있는 주문은 건너뛰기", value=True,
+                            key="du_skip",
+                            help="끄면 같은 주문의 발송일을 이 날짜로 덮어씁니다.")
+        if st.button(f"💾 {_tot}건 발송 기록 저장", key="du_save", type="primary",
+                     disabled=not _by_user):
+            _saved, _skipped = du.save_dispatch(_by_user, str(_dd),
+                                                skip_existing=bool(_skip))
+            _n = sum(_saved.values())
+            st.session_state['_du_msg'] = (
+                f"✅ 발송 기록 {_n}건 저장 — "
+                + " · ".join(f"{dmap.get(u, u)} {c}건" for u, c in _saved.items())
+                + (f"  ·  ⏭ 이미 있어 건너뜀 {_skipped}건" if _skipped else ""))
+            st.rerun()
+
+
+def _render_period_summary(dmap):
+    """사용자별 일별·월별 — 주문수집 / 발송 건수와 청구금액.
+
+    금액은 청구 원장(billing_ledger)에서 온다. 원장은 발송 1건 = 1행이라
+    월 총액이 어느 발송건에서 나왔는지 되짚을 수 있다.
+    예전에는 예상 저장·확정을 눌러야 생기는 스냅샷을 봐서, 그 버튼을 안 누르면
+    표가 통째로 비어 있었다.
+    월 청구 총액 = 제품 구매금액(원장) + 택배비 + 포장비.
+    """
+    import db_billing_ledger as bl
+
+    st.divider()
+    st.subheader("📅 사용자별 정리 — 주문수집 · 발송 · 청구금액")
+    _t_day, _t_month = st.tabs(["일별", "월별"])
+    _users = _sellers()
+
+    with _t_day:
+        c1, c2 = st.columns(2)
+        _to = c2.date_input("종료일", value=date.today(), key="ps_sum_to")
+        _from = c1.date_input("시작일", value=_to - timedelta(days=13), key="ps_sum_from")
+
+        # 원장을 (날짜, 사용자)로 모아 둔다 — 취소분은 금액에서 뺀다
+        _led = {}
+        for _r in bl.get_ledger(str(_from), str(_to)):
+            if str(_r.get('status')) == 'canceled':
+                continue
+            _k = (_r['dispatched_at'], _r['username'])
+            _e = _led.setdefault(_k, {'amt': 0, 'cnt': 0, 'nop': 0})
+            _e['amt'] += int(_r.get('amount') or 0)
+            _e['cnt'] += 1
+            if int(_r.get('amount') or 0) <= 0:
+                _e['nop'] += 1
+
+        _rows = []
+        for _u in _users:
+            for _d, _c in get_order_dispatch_counts(_u, str(_from), str(_to)).items():
+                if not (_c['orders'] or _c['dispatch']):
+                    continue
+                _l = _led.get((_d, _u)) or {'amt': 0, 'cnt': 0, 'nop': 0}
+                _rows.append({
+                    '날짜': _d,
+                    '사용자': dmap.get(_u, _u),
+                    '주문수집': _c['orders'],
+                    '발송': _c['dispatch'],
+                    '미발송': max(0, _c['orders'] - _c['dispatch']),
+                    '청구건수': _l['cnt'],
+                    '청구금액': _l['amt'],
+                    '가격미확인': _l['nop'],
+                    '_u': _u,
+                })
+        if not _rows:
+            st.info(f"{_from} ~ {_to} 주문·발송 기록이 없습니다.")
+        else:
+            _rows.sort(key=lambda r: (r['날짜'], r['사용자']), reverse=True)
+            _df = pd.DataFrame(_rows)
+            _ev = st.dataframe(
+                _df.drop(columns=['_u']), use_container_width=True, hide_index=True,
+                on_select="rerun", selection_mode="single-row", key="ps_day_tbl",
+                column_config={'청구금액': st.column_config.NumberColumn('청구금액', format='%d')})
+            st.caption("👆 행을 클릭하면 그날 **발송 목록**이 아래에 열립니다.")
+            _sel = (_ev.selection.rows if getattr(_ev, 'selection', None) else []) or []
+            if _sel:
+                _r = _rows[_sel[0]]
+                _lst = get_dispatch_list(_r['_u'], _r['날짜'])
+                st.markdown(f"#### 🚚 {_r['사용자']} — {_r['날짜']} 발송 {len(_lst)}건")
+                if not _lst:
+                    st.caption("이 날짜에 발송처리된 주문이 없습니다.")
+                else:
+                    _amt = {str(x['order_no']): int(x.get('amount') or 0)
+                            for x in bl.get_ledger(_r['날짜'], _r['날짜'], username=_r['_u'])}
+                    st.dataframe(pd.DataFrame([{
+                        '주문번호': x.get('order_no'),
+                        '수취인': x.get('recipient'),
+                        '상품명': (x.get('product_name') or '')[:40],
+                        '수량': x.get('qty'),
+                        '택배사': x.get('courier') or '',
+                        '송장번호': x.get('tracking_no') or '',
+                        '청구금액': _amt.get(str(x.get('order_no')), 0),
+                    } for x in _lst]), use_container_width=True, hide_index=True)
+            _to_ = sum(r['주문수집'] for r in _rows)
+            _td = sum(r['발송'] for r in _rows)
+            _tc = sum(r['청구금액'] for r in _rows)
+            _tn = sum(r['가격미확인'] for r in _rows)
+            st.markdown(f"### 기간 합계 — 주문수집 **{_to_}건** · 발송 **{_td}건** · "
+                        f"청구금액 **{fmt(_tc)}원**")
+            if _to_ > _td:
+                st.caption(f"⚠️ 아직 안 나간 주문이 {_to_ - _td}건입니다.")
+            if _tn:
+                st.caption(f"⚠️ 매입가가 아직 없는 발송건이 {_tn}건 — 영수증이 올라오면 "
+                           "채워집니다. 아래 청구 원장에서 확인하세요.")
+
+    with _t_month:
+        _today = date.today()
+        _yms, _y, _m = [], _today.year, _today.month
+        for _ in range(12):
+            _yms.append('%04d-%02d' % (_y, _m))
+            _m -= 1
+            if _m == 0:
+                _y, _m = _y - 1, 12
+        _ym = st.selectbox("정산 월", _yms, key="ps_sum_ym")
+        import calendar as _cal
+        _last = _cal.monthrange(int(_ym[:4]), int(_ym[5:7]))[1]
+        _mf, _mt = '%s-01' % _ym, '%s-%02d' % (_ym, _last)
+
+        _incl_fee = st.checkbox("택배비·포장비 포함", value=True, key="ps_ym_fee",
+                                help="끄면 제품 구매금액만 봅니다.")
+        _msum = bl.summarize(_mf, _mt)
+        _mrows = []
+        for _u in _users:
+            _c = get_order_dispatch_counts(_u, _mf, _mt)
+            _o = sum(v['orders'] for v in _c.values())
+            _d = sum(v['dispatch'] for v in _c.values())
+            _l = _msum.get(_u) or {'amount': 0, 'count': 0, 'no_price': 0,
+                                   'pending': 0, 'confirmed': 0}
+            _fee = {'ship_total': 0, 'pkg_total': 0, 'fees_total': 0}
+            if _incl_fee:
+                try:
+                    _fee = compute_month_fees(_u, _ym) or _fee
+                except Exception:
+                    pass
+            if not (_o or _d or _l['amount']):
+                continue
+            _mrows.append({
+                '사용자': dmap.get(_u, _u),
+                '주문수집': _o, '발송': _d,
+                '청구건수': _l['count'],
+                '제품 구매금액': _l['amount'],
+                '택배비': int(_fee.get('ship_total') or 0),
+                '포장비': int(_fee.get('pkg_total') or 0),
+                '월 청구총액': _l['amount'] + int(_fee.get('fees_total') or 0),
+                '가격미확인': _l.get('no_price', 0),
+                '미확정': _l.get('pending', 0),
+            })
+        if not _mrows:
+            st.info(f"{_ym} 기록이 없습니다. 발송 기록이 있어야 청구 원장이 만들어집니다.")
+        else:
+            _mrows.sort(key=lambda r: -r['월 청구총액'])
+            st.dataframe(pd.DataFrame(_mrows), use_container_width=True, hide_index=True,
+                         column_config={
+                             '제품 구매금액': st.column_config.NumberColumn(format='%d'),
+                             '택배비': st.column_config.NumberColumn(format='%d'),
+                             '포장비': st.column_config.NumberColumn(format='%d'),
+                             '월 청구총액': st.column_config.NumberColumn(format='%d'),
+                         })
+            _g = sum(r['제품 구매금액'] for r in _mrows)
+            _t = sum(r['월 청구총액'] for r in _mrows)
+            st.markdown(f"### {_ym} 월 청구총액: **{fmt(_t)}원** "
+                        f"(제품 {fmt(_g)} + 택배·포장 {fmt(_t - _g)})  ·  "
+                        f"사용자 {len(_mrows)}명")
+            _nop = sum(r['가격미확인'] for r in _mrows)
+            _pend = sum(r['미확정'] for r in _mrows)
+            if _nop:
+                st.warning(f"❗ 매입가가 아직 없는 발송건이 {_nop}건입니다 — "
+                           "그만큼 **덜 청구**됩니다. 영수증을 올린 뒤 "
+                           "'발송건에서 원장 만들기'를 다시 누르세요.")
+            elif _pend:
+                st.caption(f"ℹ️ 예상가로 잡힌 건이 {_pend}건입니다 — 영수증 반영 후 "
+                           "원장을 다시 만들면 실단가로 바뀝니다.")
+            st.download_button(
+                "⬇️ 월별 내역 CSV",
+                pd.DataFrame(_mrows).to_csv(index=False).encode('utf-8-sig'),
+                file_name=f"청구내역_{_ym}.csv", mime="text/csv", key="ps_ym_csv")
 
 
 def _render_ledger(dmap, USERNAME):
