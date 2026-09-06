@@ -68,7 +68,8 @@ def _persist_receipt(username, items):
             upsert_shared_store_price(
                 costco_name=_it.get('상품명', ''), keyword=_it.get('상품명', ''),
                 price=_pr, product_no=_pno, updated_by=username,
-                receipt_date=str(_it.get('receipt_date', '') or ''), force_store=True)
+                receipt_date=str(_it.get('receipt_date', '') or ''), force_store=True,
+                source='receipt-settle')
             _pn += 1
         except Exception:
             pass

@@ -97,7 +97,8 @@ def _save_costco_price(username, is_admin, costco_no, costco_name, price,
     try:
         upsert_shared_store_price(
             costco_name=_nm, keyword=_nm, price=_pr, product_no=_cno,
-            updated_by=username, receipt_date=_today, force_store=bool(is_admin))
+            updated_by=username, receipt_date=_today, force_store=bool(is_admin),
+            source='photo-reg')
         _out.append(f"💰 제품가격 DB 등록 — {_cno} {fmt(_pr)}원")
     except Exception as _e:
         return f"⚠️ 제품가격 DB 저장 실패: {_e}"

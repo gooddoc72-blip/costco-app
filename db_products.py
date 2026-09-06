@@ -18,9 +18,82 @@ def get_shared_products():
     return [dict(r) for r in rows]
 
 
+#: 가격 변경 이력 — 값이 이상할 때 어디서 들어온 건지 추적하려면 필요하다.
+#  updated_by에는 사용자명만 남아 경로(영수증/사진등록/크롤러)를 구분할 수 없었다.
+PRICE_SOURCES = {
+    'receipt-settle': '영수증 정산',
+    'receipt': '영수증 등록',
+    'photo-reg': '사진 등록',
+    'barcode': '바코드·사진 수정',
+    'crawler': '크롤러',
+    'cafe24': '카페24',
+    'manual': '수동',
+}
+
+
+def _ensure_price_log(conn):
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS shared_price_log (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            product_no   TEXT DEFAULT '',
+            costco_name  TEXT DEFAULT '',
+            price        INTEGER DEFAULT 0,
+            prev_price   INTEGER DEFAULT 0,
+            price_type   TEXT DEFAULT '',
+            source       TEXT DEFAULT '',
+            updated_by   TEXT DEFAULT '',
+            receipt_date TEXT DEFAULT '',
+            created_at   TEXT DEFAULT ''
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_spl_at ON shared_price_log(created_at)")
+
+
+def _log_price_change(conn, product_no, costco_name, price, price_type,
+                      prev_price, source, updated_by, receipt_date, now):
+    """가격이 실제로 바뀐 경우만 남긴다. 안 바뀐 upsert까지 남기면 이력이 묻힌다."""
+    try:
+        if int(price or 0) == int(prev_price or 0):
+            return
+        _ensure_price_log(conn)
+        conn.execute(
+            "INSERT INTO shared_price_log (product_no, costco_name, price, prev_price,"
+            " price_type, source, updated_by, receipt_date, created_at)"
+            " VALUES (?,?,?,?,?,?,?,?,?)",
+            (str(product_no or ''), str(costco_name or ''), int(price or 0),
+             int(prev_price or 0), str(price_type or ''), str(source or ''),
+             str(updated_by or ''), str(receipt_date or ''), now))
+    except Exception:
+        pass          # 이력 실패가 가격 저장을 막으면 안 된다
+
+
+def get_price_log(limit=200, days=None, source=None, keyword=''):
+    """가격 변경 이력 조회 (최신순)."""
+    conn = get_auth_db()
+    conn.row_factory = sqlite3.Row
+    _ensure_price_log(conn)
+    sql = "SELECT * FROM shared_price_log WHERE 1=1"
+    args = []
+    if days:
+        sql += " AND created_at >= datetime('now', ?)"
+        args.append('-%d day' % int(days))
+    if source:
+        sql += " AND source=?"
+        args.append(str(source))
+    if str(keyword or '').strip():
+        sql += " AND (costco_name LIKE ? OR product_no LIKE ?)"
+        _k = '%' + str(keyword).strip() + '%'
+        args += [_k, _k]
+    sql += " ORDER BY id DESC LIMIT ?"
+    args.append(int(limit))
+    rows = [dict(r) for r in conn.execute(sql, args)]
+    conn.close()
+    return rows
+
+
 def _upsert_shared_internal(costco_name, keyword, store_price=None, online_price=None,
                             product_no=None, split_qty=None, updated_by='', image_url='',
-                            receipt_date='', force_store=False):
+                            receipt_date='', force_store=False, source=''):
     """공유상품 upsert.
 
     split_qty=None / product_no=None 은 '건드리지 말 것' 의미다.
@@ -84,6 +157,9 @@ def _upsert_shared_internal(costco_name, keyword, store_price=None, online_price
                      (costco_name, keep_pno, keep_sq, updated_by, now, image_url,
                       new_store, new_online, st_at, on_at,
                       new_unit, new_pt, existing['id']))
+        _log_price_change(conn, keep_pno, costco_name, new_unit, new_pt,
+                          (existing['unit_price'] or 0), source, updated_by,
+                          receipt_date, now)
     else:
         # 신규 등록 — None(=미지정)은 기본값으로 떨어뜨린다
         product_no = '' if product_no is None else product_no
@@ -106,25 +182,30 @@ def _upsert_shared_internal(costco_name, keyword, store_price=None, online_price
                      (product_no, costco_name, keyword, new_unit, split_qty,
                       updated_by, now, new_pt, image_url,
                       st, on, st_at, on_at))
+        _log_price_change(conn, product_no, costco_name, new_unit, new_pt,
+                          0, source, updated_by, receipt_date, now)
     conn.commit()
     conn.close()
 
 
 def upsert_shared_store_price(costco_name, keyword, price, product_no='', split_qty=None,
-                               updated_by='', image_url='', receipt_date='', force_store=False):
+                               updated_by='', image_url='', receipt_date='', force_store=False,
+                               source=''):
     _upsert_shared_internal(costco_name, keyword,
                             store_price=price, online_price=None,
                             product_no=product_no, split_qty=split_qty,
                             updated_by=updated_by, image_url=image_url,
-                            receipt_date=receipt_date, force_store=force_store)
+                            receipt_date=receipt_date, force_store=force_store,
+                            source=source)
 
 
 def upsert_shared_online_price(costco_name, keyword, price, product_no='', split_qty=None,
-                                updated_by='', image_url=''):
+                                updated_by='', image_url='', source=''):
     _upsert_shared_internal(costco_name, keyword,
                             store_price=None, online_price=price,
                             product_no=product_no, split_qty=split_qty,
-                            updated_by=updated_by, image_url=image_url)
+                            updated_by=updated_by, image_url=image_url,
+                            source=source)
 
 
 def upsert_shared_product(costco_name, keyword, price, product_no='', split_qty=1,

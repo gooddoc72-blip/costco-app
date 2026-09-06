@@ -10,7 +10,8 @@ import streamlit as st
 import pandas as pd
 
 from db import (get_all_users, get_shared_products,
-                get_split_rules, upsert_split_rule, delete_split_rule)
+                get_split_rules, upsert_split_rule, delete_split_rule,
+                get_price_log, PRICE_SOURCES)
 from db_purchase_settle import (
     compute_daily_purchase, save_estimate, finalize, get_snapshot, diff_against_snapshot,
     month_fees_if_last_day, is_last_day_of_month,
@@ -25,6 +26,51 @@ def _disp_map():
 
 def _sellers():
     return [u['username'] for u in get_all_users() if not u.get('is_admin')]
+
+
+def _render_price_log(dmap):
+    """제품가격 DB에 언제·어디서·얼마로 등록됐는지 확인하는 화면.
+
+    영수증 업로드나 사진등록으로 가격이 저장돼도 그 순간 메시지를 놓치면
+    확인할 데가 없었다. 3,895개 공유상품 중에서 찾아야 했다.
+    값이 이상할 때 어느 경로로 들어온 건지 봐야 원인을 잡을 수 있다.
+    """
+    with st.expander("💰 최근 가격 등록·갱신 확인", expanded=False):
+        c1, c2, c3 = st.columns([1, 1.4, 2])
+        _days = c1.selectbox("기간", [1, 3, 7, 30, 90], index=2,
+                             format_func=lambda d: f"최근 {d}일", key="ps_plog_days")
+        _src_opts = ['(전체)'] + list(PRICE_SOURCES.keys())
+        _src = c2.selectbox("출처", _src_opts,
+                            format_func=lambda k: PRICE_SOURCES.get(k, k), key="ps_plog_src")
+        _kw = c3.text_input("상품명·상품번호 검색", key="ps_plog_kw", placeholder="이디야")
+
+        _rows = get_price_log(limit=300, days=int(_days),
+                              source=(None if _src == '(전체)' else _src),
+                              keyword=_kw)
+        if not _rows:
+            st.caption("해당 조건의 가격 변경 이력이 없습니다. "
+                       "영수증을 업로드하거나 사진으로 상품을 등록하면 여기에 쌓입니다.")
+            return
+        _disp = [{
+            '시각': (r.get('created_at') or '')[:16],
+            '상품번호': r.get('product_no') or '',
+            '상품명': (r.get('costco_name') or '')[:34],
+            '이전': fmt(int(r.get('prev_price') or 0)) if r.get('prev_price') else '-',
+            '가격': fmt(int(r.get('price') or 0)),
+            '구분': r.get('price_type') or '',
+            '출처': PRICE_SOURCES.get(r.get('source') or '', r.get('source') or '-'),
+            '등록자': dmap.get(r.get('updated_by') or '', r.get('updated_by') or ''),
+            '영수증일': r.get('receipt_date') or '',
+        } for r in _rows]
+        st.dataframe(pd.DataFrame(_disp), use_container_width=True, hide_index=True,
+                     height=min(420, 40 + 28 * len(_disp)))
+        _by_src = {}
+        for r in _rows:
+            _k = PRICE_SOURCES.get(r.get('source') or '', r.get('source') or '기타')
+            _by_src[_k] = _by_src.get(_k, 0) + 1
+        st.caption(f"최근 {_days}일 {len(_rows)}건 — "
+                   + " · ".join(f"{k} {v}건" for k, v in
+                                sorted(_by_src.items(), key=lambda kv: -kv[1])))
 
 
 def _render_split_rules(USERNAME):
@@ -289,6 +335,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     else:
         st.markdown(f"### 총 구매금액: **{fmt(_tot)}원**  ·  사용자 {len(per_user)}명")
 
+    _render_price_log(dmap)
     _render_split_rules(USERNAME)
     _render_link_panel(per_user, dmap, ds, USERNAME)
 
