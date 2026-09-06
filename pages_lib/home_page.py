@@ -615,7 +615,8 @@ def _render_calendar(USERNAME: str, today: datetime, IS_ADMIN: bool = False):
     IS_ADMIN이면 날짜별 사용자 수·코스트코 구매금액 합계를 셀에 추가하고,
     달력 아래에 사용자별 주문건수·구매금액 상세 표를 표시한다.
     """
-    section_header("달력 (일별 주문 · 발송 · 수익 · 입금정산)",
+    section_header("달력 (일별 주문 · 발송 · 구입 · 수익 · 입금정산)",
+                   "🛒 구입 = 그날 발송한 물건의 매입가 합계 (청구 기준)  ·  "
                    "📋 입금정산 = 그날 실제 입금된 정산금(정산일 기준)", icon="📅")
 
     _months = [m['month'] for m in (get_monthly_stats(USERNAME) or [])]
@@ -634,6 +635,13 @@ def _render_calendar(USERNAME: str, today: datetime, IS_ADMIN: bool = False):
     by_date = {s['order_date']: s for s in stats}
     order_map = get_daily_order_counts(USERNAME, _d_from, _d_to)  # {주문일: 수집주문건수}
     disp_map = get_dispatch_counts(USERNAME, _d_from, _d_to)  # {date: 발송건수}
+    # 그날 내보낸 물건의 매입가 합계 = 그날 구입금액(청구 원장 기준).
+    # 원장이 발송 기준이라 '언제 얼마어치를 샀는지'가 달력에 그대로 보인다.
+    try:
+        from db_billing_ledger import daily_amounts as _bl_daily
+        buy_map = _bl_daily(USERNAME, _d_from, _d_to)
+    except Exception:
+        buy_map = {}
 
     # ── [관리자] 사용자별 장보기 제출 집계 (날짜별 사용자 수·코스트코 구매금액) ──
     adm_rows = []            # 상세표용 원본 행
@@ -692,6 +700,10 @@ def _render_calendar(USERNAME: str, today: datetime, IS_ADMIN: bool = False):
                 inner += f'<div style="font-size:14px;color:{pfcol};font-weight:600">💰 {pf:,}</div>'
             if dn > 0:
                 inner += f'<div style="font-size:14px;color:#3477eb">🚚 발송 {dn}</div>'
+            _buy = int(buy_map.get(ds, 0) or 0)
+            if _buy:
+                inner += (f'<div style="font-size:14px;color:#d35400;font-weight:600">'
+                          f'🛒 구입 {_buy:,}</div>')
             if has_dep:
                 _depcol = "#1D9E75" if dep >= 0 else "#E74C3C"
                 inner += f'<div style="font-size:14px;color:{_depcol}">📋 입금 {dep:,}</div>'

@@ -180,3 +180,113 @@ def save_dispatch(by_user, dispatched_at, platform='upload', skip_existing=True)
         if n:
             saved[uname] = n
     return saved, skipped
+
+
+# ── 화면 (Streamlit) ───────────────────────
+def render_panel(dmap, USERNAME):
+    """발송 파일 업로드 화면. 영수증 정산에서 호출한다.
+
+    영수증과 발송건을 함께 올려야 각 사용자의 주문건이 정리된다.
+    구매내역 정산은 그 결과를 확인·검수만 한다.
+    """
+    import streamlit as st
+    import pandas as pd
+    from datetime import date
+    from utils import fmt
+    """발송 파일 업로드 — 주문번호로 사용자를 갈라 dispatch_log에 기록.
+
+    청구는 발송 기준인데 송장 등록을 안 하는 계정이 있으면 청구가 0원이 된다
+    (clglobal0919는 8/31~9/6 주문 205건에 발송 0건이었다).
+    관리자가 전체 발송 파일 하나를 올려 분류하면 그 의존이 사라진다.
+    """
+
+    with st.expander("🚚 발송 파일 업로드 — 주문번호로 사용자 분류", expanded=False):
+        st.caption(
+            "전체 발송내역 파일(엑셀·CSV)을 올리면 **주문번호**로 각 사용자에게 나눠 "
+            "발송 기록에 넣습니다. 이후 영수증 정산이 그 발송건에 매입가를 채웁니다. "
+            "같은 파일을 두 번 올려도 중복 저장되지 않습니다.")
+        _f = st.file_uploader("발송 파일 (xlsx · xls · csv)", type=['xlsx', 'xls', 'csv'],
+                              key="du_file")
+        if not _f:
+            return
+        try:
+            if _f.name.lower().endswith('.csv'):
+                _df = pd.read_csv(_f, dtype=str)
+            else:
+                _df = pd.read_excel(_f, dtype=str)
+        except Exception as _e:
+            st.error(f"파일을 읽지 못했습니다: {_e}")
+            return
+        if _df is None or _df.empty:
+            st.warning("빈 파일입니다.")
+            return
+        _df = _df.fillna('')
+        st.caption(f"📄 {_f.name} — {len(_df)}행 · 열 {len(_df.columns)}개")
+
+        _cols = list(_df.columns)
+        _guess = guess_columns(_cols)
+        st.markdown("**열 매핑** — 자동으로 찾은 값이 맞는지 확인하세요")
+        _m1, _m2, _m3 = st.columns(3)
+        _opts = ['(없음)'] + [str(c) for c in _cols]
+
+        def _pick(col, label, key, need=False):
+            _d = _guess.get(key)
+            _i = _opts.index(str(_d)) if _d and str(_d) in _opts else 0
+            _v = col.selectbox(label + (" *" if need else ""), _opts, index=_i,
+                               key=f"du_col_{key}")
+            return None if _v == '(없음)' else _v
+
+        _cm = {
+            'order_no':     _pick(_m1, "주문번호", 'order_no', need=True),
+            'tracking_no':  _pick(_m2, "송장번호", 'tracking_no'),
+            'recipient':    _pick(_m3, "수취인", 'recipient'),
+            'product_name': _pick(_m1, "상품명", 'product_name'),
+            'qty':          _pick(_m2, "수량", 'qty'),
+            'courier':      _pick(_m3, "택배사", 'courier'),
+        }
+        if not _cm.get('order_no'):
+            st.error("⚠️ **주문번호** 열을 지정해야 분류할 수 있습니다.")
+            return
+
+        _dd = st.date_input("발송일 (청구 귀속일)", value=date.today(), key="du_date",
+                            help="이 날짜로 발송 기록이 남고, 그날 청구에 잡힙니다.")
+
+        _idx, _dup = build_order_owner_index()
+        if _dup:
+            st.warning(f"⚠️ 두 사용자에 걸친 주문번호 {len(_dup)}건이 있습니다 — "
+                       "그 건은 분류가 부정확할 수 있습니다.")
+        _by_user, _unknown = classify_rows(_df.to_dict('records'), _cm, _idx)
+
+        _tot = sum(len(v) for v in _by_user.values())
+        st.markdown(f"### 분류 결과 — {_tot}건 매칭 · {len(_unknown)}건 미분류")
+        if _by_user:
+            _sum = []
+            for _u, _rows in sorted(_by_user.items(), key=lambda kv: -len(kv[1])):
+                _ex = existing_dispatch(_u, [r['order_no'] for r in _rows])
+                _sum.append({'사용자': dmap.get(_u, _u), '건수': len(_rows),
+                             '이미 발송기록 있음': len(_ex),
+                             '새로 저장될 건': len(_rows) - len(_ex)})
+            st.dataframe(pd.DataFrame(_sum), use_container_width=True, hide_index=True)
+        if _unknown:
+            with st.expander(f"❓ 미분류 {len(_unknown)}건 — 어느 사용자 것인지 못 찾음",
+                             expanded=False):
+                st.caption("주문번호가 비었거나, 어느 사용자 DB에도 없는 번호입니다. "
+                           "주문 수집이 안 된 건일 수 있습니다.")
+                st.dataframe(pd.DataFrame([{
+                    '행': u['_row'], '주문번호': u['order_no'], '수취인': u['recipient'],
+                    '상품명': u['product_name'][:34], '사유': u.get('_why', '')}
+                    for u in _unknown[:200]]), use_container_width=True, hide_index=True)
+
+        _skip = st.checkbox("이미 발송 기록이 있는 주문은 건너뛰기", value=True,
+                            key="du_skip",
+                            help="끄면 같은 주문의 발송일을 이 날짜로 덮어씁니다.")
+        if st.button(f"💾 {_tot}건 발송 기록 저장", key="du_save", type="primary",
+                     disabled=not _by_user):
+            _saved, _skipped = save_dispatch(_by_user, str(_dd),
+                                                skip_existing=bool(_skip))
+            _n = sum(_saved.values())
+            st.session_state['_du_msg'] = (
+                f"✅ 발송 기록 {_n}건 저장 — "
+                + " · ".join(f"{dmap.get(u, u)} {c}건" for u, c in _saved.items())
+                + (f"  ·  ⏭ 이미 있어 건너뜀 {_skipped}건" if _skipped else ""))
+            st.rerun()

@@ -183,6 +183,15 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         st.session_state.pop('rs_alloc', None)   # 새 업로드 → 이전 미리보기 초기화
         st.session_state.pop('rs_day', None)     # 새 영수증 → 정산일을 새 영수증 날짜로 재설정
 
+    # ── 1-a) 🚚 발송 파일 업로드 — 주문번호로 사용자 분류 ──
+    #   영수증과 발송건을 함께 올려야 각 사용자의 주문건이 정리된다.
+    #   구매내역 정산은 그 결과를 확인·검수만 한다.
+    try:
+        import dispatch_upload as _du
+        _du.render_panel(_disp_map(), USERNAME)
+    except Exception as _e:
+        st.caption(f"⚠️ 발송 파일 업로드 화면을 열지 못했습니다: {_e}")
+
     # ── 1-b) 📱 영수증 사진 (휴대폰 촬영) — PDF가 없을 때 ──
     #   코스트코에서 장 본 직후 종이 영수증을 찍어 바로 정산할 수 있게 한다.
     #   판독 결과는 PDF와 같은 형태({상품번호,상품명,수량,단가})라 이후 배치 로직은 공용.

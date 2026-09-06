@@ -293,6 +293,23 @@ def get_ledger(date_from, date_to, username=None, status=None):
     return rows
 
 
+def daily_amounts(username, date_from, date_to):
+    """사용자의 날짜별 구입(청구)금액 — {발송일: 금액}. 취소분은 뺀다.
+
+    홈 달력에 그날 얼마어치를 샀는지 보여주기 위한 것이다. 원장이 발송 기준이라
+    '그날 내보낸 물건의 매입가 합계'가 된다.
+    """
+    conn = _conn()
+    _ensure(conn)
+    rows = conn.execute(
+        "SELECT dispatched_at, SUM(amount) FROM billing_ledger "
+        "WHERE username=? AND dispatched_at BETWEEN ? AND ? AND status<>'canceled' "
+        "GROUP BY dispatched_at",
+        (username, str(date_from), str(date_to))).fetchall()
+    conn.close()
+    return {str(r[0]): int(r[1] or 0) for r in rows if int(r[1] or 0)}
+
+
 def summarize(date_from, date_to, username=None):
     """사용자별 합계 — 취소분은 빼고, 상태별 건수도 함께."""
     rows = get_ledger(date_from, date_to, username=username)
