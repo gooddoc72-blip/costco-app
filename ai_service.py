@@ -691,9 +691,10 @@ def analyze_food_label(api_key, image_bytes, media_type, *, gemini_key=''):
 
 _PRICETAG_SYSTEM = (
     "너는 코스트코 매장 가격표(라벨) 판독 전문가다. 사진 속 가격표를 보고 JSON으로만 출력한다.\n"
-    '출력(JSON만): {"product_no":"상품번호","price":정수,"product_name":"상품명"}\n'
+    '출력(JSON만): {"product_no":"상품번호","barcode":"바코드숫자","price":정수,"product_name":"상품명"}\n'
     "규칙:\n"
     "- product_no: 라벨 좌측 상단의 코스트코 상품번호(보통 6자리 숫자, 예: 713160). 숫자만.\n"
+    "- barcode: 라벨 하단 바코드 **아래에 인쇄된 숫자**를 그대로 읽는다. 상품번호와 다를 수 있다. 숫자만. 안 보이면 ''.\n"
     "- price: 실제 지불 가격 = **가장 큰 최종 가격**(할인 적용가). 정가/할인액이 같이 있으면 "
     "맨 아래 큰 숫자(최종가)를 쓴다. 숫자만(콤마·원 제거).\n"
     "- product_name: 라벨의 영문/한글 상품명.\n"
@@ -715,6 +716,7 @@ def _parse_price_tag_json(txt):
         _price = 0
     return {
         "product_no": "".join(ch for ch in str(_d.get("product_no", "") or "") if ch.isdigit()),
+        "barcode": "".join(ch for ch in str(_d.get("barcode", "") or "") if ch.isdigit()),
         "price": _price,
         "product_name": str(_d.get("product_name", "") or "").strip(),
     }

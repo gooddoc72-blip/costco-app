@@ -31,6 +31,58 @@ PRICE_SOURCES = {
 }
 
 
+def _ensure_barcode_col(conn):
+    """shared_products.barcode 보장 — 매장에서 바코드만 찍어도 상품을 찾게 한다.
+
+    코스트코 진열 라벨의 바코드 숫자는 상품번호와 다를 수 있어, 상품번호만으로는
+    스캔 결과를 못 찾는다. 별도 칸에 담아 둘 다로 조회한다.
+    """
+    try:
+        conn.execute("ALTER TABLE shared_products ADD COLUMN barcode TEXT DEFAULT ''")
+    except Exception:
+        pass
+    try:
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_shared_barcode "
+                     "ON shared_products(barcode)")
+    except Exception:
+        pass
+
+
+def find_shared_by_code(code):
+    """상품번호 또는 바코드로 공유상품 1건 조회. 없으면 None.
+
+    매장에서 스캐너로 읽은 값이 상품번호인지 바코드인지 알 수 없으므로 둘 다 본다.
+    """
+    _c = ''.join(ch for ch in str(code or '') if ch.isdigit())
+    if not _c:
+        return None
+    conn = get_auth_db()
+    conn.row_factory = sqlite3.Row
+    _ensure_barcode_col(conn)
+    row = conn.execute("SELECT * FROM shared_products WHERE product_no=?", (_c,)).fetchone()
+    if not row:
+        row = conn.execute("SELECT * FROM shared_products WHERE TRIM(COALESCE(barcode,''))=?",
+                           (_c,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def set_shared_barcode(product_no, barcode, updated_by=''):
+    """이미 있는 상품에 바코드만 붙인다."""
+    _p = str(product_no or '').strip()
+    _b = ''.join(ch for ch in str(barcode or '') if ch.isdigit())
+    if not (_p and _b):
+        return False
+    conn = get_auth_db()
+    _ensure_barcode_col(conn)
+    conn.execute("UPDATE shared_products SET barcode=?, updated_at=?, updated_by=? "
+                 "WHERE product_no=?",
+                 (_b, datetime.now().strftime("%Y-%m-%d %H:%M"), str(updated_by or ''), _p))
+    conn.commit()
+    conn.close()
+    return True
+
+
 def _ensure_price_log(conn):
     conn.execute("""
         CREATE TABLE IF NOT EXISTS shared_price_log (
@@ -93,7 +145,7 @@ def get_price_log(limit=200, days=None, source=None, keyword=''):
 
 def _upsert_shared_internal(costco_name, keyword, store_price=None, online_price=None,
                             product_no=None, split_qty=None, updated_by='', image_url='',
-                            receipt_date='', force_store=False, source=''):
+                            receipt_date='', force_store=False, source='', barcode=None):
     """공유상품 upsert.
 
     split_qty=None / product_no=None 은 '건드리지 말 것' 의미다.
@@ -103,11 +155,16 @@ def _upsert_shared_internal(costco_name, keyword, store_price=None, online_price
     conn = get_auth_db()
     conn.row_factory = sqlite3.Row
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    _ensure_barcode_col(conn)
     _COLS = ("SELECT id, store_price, online_price, store_updated_at, online_updated_at, "
-             "price_type, unit_price, split_qty, product_no FROM shared_products ")
+             "price_type, unit_price, split_qty, product_no, barcode FROM shared_products ")
     existing = None
     if product_no:
         existing = conn.execute(_COLS + "WHERE product_no=?", (product_no,)).fetchone()
+    # 바코드로도 찾는다 — 매장에서 바코드만 찍었을 때 같은 상품에 붙어야 한다
+    if not existing and barcode:
+        existing = conn.execute(_COLS + "WHERE TRIM(COALESCE(barcode,''))=?",
+                                (str(barcode).strip(),)).fetchone()
     if not existing:
         existing = conn.execute(_COLS + "WHERE match_keyword=?", (keyword,)).fetchone()
 
@@ -147,16 +204,18 @@ def _upsert_shared_internal(costco_name, keyword, store_price=None, online_price
         # None으로 들어온 필드는 기존값 유지 (영수증 경로가 소분수를 지우지 않도록)
         keep_sq = int(existing['split_qty'] or 1) if split_qty is None else max(1, int(split_qty))
         keep_pno = (existing['product_no'] or '') if product_no is None else product_no
+        # barcode=None은 '건드리지 말 것'. 영수증 경로는 바코드를 모른다.
+        keep_bc = (existing['barcode'] or '') if barcode is None else str(barcode).strip()
         conn.execute("""UPDATE shared_products
                         SET costco_name=?, product_no=?, split_qty=?,
                             updated_by=?, updated_at=?, image_url=?,
                             store_price=?, online_price=?,
                             store_updated_at=?, online_updated_at=?,
-                            unit_price=?, price_type=?
+                            unit_price=?, price_type=?, barcode=?
                         WHERE id=?""",
                      (costco_name, keep_pno, keep_sq, updated_by, now, image_url,
                       new_store, new_online, st_at, on_at,
-                      new_unit, new_pt, existing['id']))
+                      new_unit, new_pt, keep_bc, existing['id']))
         _log_price_change(conn, keep_pno, costco_name, new_unit, new_pt,
                           (existing['unit_price'] or 0), source, updated_by,
                           receipt_date, now)
@@ -177,11 +236,12 @@ def _upsert_shared_internal(costco_name, keyword, store_price=None, online_price
         conn.execute("""INSERT INTO shared_products
                         (product_no, costco_name, match_keyword, unit_price, split_qty,
                          updated_by, updated_at, price_type, image_url,
-                         store_price, online_price, store_updated_at, online_updated_at)
-                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                         store_price, online_price, store_updated_at, online_updated_at,
+                         barcode)
+                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                      (product_no, costco_name, keyword, new_unit, split_qty,
                       updated_by, now, new_pt, image_url,
-                      st, on, st_at, on_at))
+                      st, on, st_at, on_at, ('' if barcode is None else str(barcode).strip())))
         _log_price_change(conn, product_no, costco_name, new_unit, new_pt,
                           0, source, updated_by, receipt_date, now)
     conn.commit()
@@ -190,13 +250,13 @@ def _upsert_shared_internal(costco_name, keyword, store_price=None, online_price
 
 def upsert_shared_store_price(costco_name, keyword, price, product_no='', split_qty=None,
                                updated_by='', image_url='', receipt_date='', force_store=False,
-                               source=''):
+                               source='', barcode=None):
     _upsert_shared_internal(costco_name, keyword,
                             store_price=price, online_price=None,
                             product_no=product_no, split_qty=split_qty,
                             updated_by=updated_by, image_url=image_url,
                             receipt_date=receipt_date, force_store=force_store,
-                            source=source)
+                            source=source, barcode=barcode)
 
 
 def upsert_shared_online_price(costco_name, keyword, price, product_no='', split_qty=None,

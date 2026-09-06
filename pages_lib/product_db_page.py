@@ -21,6 +21,7 @@ from db import (
     add_user, delete_user, change_password, get_user_info,
     create_session, get_session_user, delete_session,
     get_shared_products, upsert_shared_product, delete_shared_product, upsert_shared_store_price,
+    find_shared_by_code, set_shared_barcode,
     get_user_db, init_user_db, get_setting, set_setting, get_all_settings, get_all_products,
     upsert_user_private, get_all_products_merged, upsert_product,
     bulk_update_category, link_naver_to_shared, unlink_naver_from_shared,
@@ -490,13 +491,16 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             _sp_all = cached_shared_products() if callable(cached_shared_products) else get_shared_products()
             _sp_by_pno = {str(s.get('product_no', '')).strip(): s for s in _sp_all
                           if str(s.get('product_no', '')).strip()}
-            st.caption("코스트코 매장에서 가격표를 촬영하거나 바코드를 스캔/입력 → 그 상품의 **공유 매입가**를 수정합니다.")
+            st.caption("코스트코 매장에서 가격표를 촬영하거나 바코드를 스캔/입력 → 그 상품의 "
+                       "**공유 매입가**를 수정합니다. 사진에 **바코드 아래 숫자**가 함께 찍히면 "
+                       "그 바코드도 같이 저장돼, 다음부터는 바코드만 찍어도 상품을 찾습니다.")
 
-            def _save_price(pno, sp, price, name=''):
+            def _save_price(pno, sp, price, name='', barcode=None):
                 _cn = (sp or {}).get('costco_name') or name or pno
                 _kw = (sp or {}).get('match_keyword') or _cn
                 upsert_shared_store_price(costco_name=_cn, keyword=_kw, price=int(price),
-                                          product_no=pno, updated_by=USERNAME)
+                                          product_no=pno, updated_by=USERNAME,
+                                          source='barcode', barcode=barcode)
                 if callable(invalidate_data_cache):
                     invalidate_data_cache()
 
@@ -576,7 +580,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                             _n_pt = 0
                             for _k, _v in _ok_pt:
                                 _save_price(_v['product_no'], _sp_by_pno.get(_v['product_no']),
-                                            int(_v['price']), name=_v.get('product_name', ''))
+                                            int(_v['price']), name=_v.get('product_name', ''),
+                                            barcode=(_v.get('barcode') or None))
                                 _pt_cache[_k]['_saved'] = True
                                 _n_pt += 1
                             st.success(f"✅ {_n_pt}건 저장 완료")
@@ -587,7 +592,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     if _r:
                         _pno = _r['product_no']; _sp = _sp_by_pno.get(_pno)
                         st.markdown(f"**판독 결과** — 상품번호 `{_pno or '?'}` · 가격 **{fmt(_r['price'])}원** · "
-                                    f"{str(_r['product_name'])[:34]}")
+                                    f"{str(_r['product_name'])[:34]}"
+                                    + (f" · 바코드 `{_r.get('barcode')}`" if _r.get('barcode') else ""))
                         if not _pno:
                             st.warning("상품번호를 못 읽었습니다. 가격표(좌상단 번호)가 선명하게 나오도록 다시 촬영하세요.")
                         elif _sp:
@@ -595,7 +601,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                         f"{fmt(int(_sp.get('unit_price') or 0))}원")
                             _np = st.number_input("새 매입가", value=int(_r['price']), min_value=0, step=100, key="pt_np")
                             if st.button("💾 매입가 수정", key="pt_save", type="primary"):
-                                _save_price(_pno, _sp, _np)
+                                _save_price(_pno, _sp, _np, barcode=(_r.get('barcode') or None))
                                 st.session_state['_pt_multi'] = {}
                                 st.success(f"✅ {str(_sp['costco_name'])[:20]} 매입가 → {fmt(_np)}원"); st.rerun()
                         else:
@@ -603,7 +609,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                             _nm = st.text_input("상품명", value=_r['product_name'], key="pt_addname")
                             _np = st.number_input("매입가", value=int(_r['price']), min_value=0, step=100, key="pt_addprice")
                             if st.button("➕ 공유DB 신규 등록", key="pt_add", type="primary") and _np > 0:
-                                _save_price(_pno, None, _np, name=_nm)
+                                _save_price(_pno, None, _np, name=_nm,
+                                            barcode=(_r.get('barcode') or None))
                                 st.session_state['_pt_multi'] = {}
                                 st.success(f"✅ {_pno} 신규 등록 {fmt(_np)}원"); st.rerun()
 
@@ -613,22 +620,48 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                     placeholder="예: 713160 (스캔 시 자동입력)")
                 _sc = "".join(ch for ch in (_sc or '') if ch.isdigit())
                 if _sc:
-                    _sp = _sp_by_pno.get(_sc)
+                    # 상품번호로 먼저, 없으면 바코드로 찾는다. 코스트코 진열 라벨의
+                    # 바코드 숫자는 상품번호와 다를 수 있어 둘 다 봐야 한다.
+                    _sp = _sp_by_pno.get(_sc) or find_shared_by_code(_sc)
+                    if _sp and str(_sp.get('product_no') or '') != _sc:
+                        st.info(f"🏷 바코드 {_sc} → 상품번호 "
+                                f"**{_sp.get('product_no')}** 로 찾았습니다.")
                     if _sp:
                         st.markdown(f"**{str(_sp['costco_name'])[:34]}** · 현재 매입가 "
                                     f"{fmt(int(_sp.get('unit_price') or 0))}원")
                         _np = st.number_input("새 매입가", value=int(_sp.get('unit_price') or 0),
                                               min_value=0, step=100, key="pt_scan_np")
+                        _cur_bc = str(_sp.get('barcode') or '')
+                        _new_bc = st.text_input(
+                            "바코드 (비어 있으면 이번 스캔값을 저장)", value=_cur_bc,
+                            key="pt_scan_bc",
+                            help="다음부터 이 바코드만 찍어도 이 상품이 바로 나옵니다.")
                         if st.button("💾 매입가 수정", key="pt_scan_save", type="primary"):
-                            _save_price(_sc, _sp, _np)
-                            st.success(f"✅ 매입가 → {fmt(_np)}원"); st.rerun()
+                            _bc = "".join(ch for ch in (_new_bc or '') if ch.isdigit())
+                            if not _bc and _sc != str(_sp.get('product_no') or ''):
+                                _bc = _sc          # 스캔값이 상품번호가 아니면 바코드로 본다
+                            _save_price(str(_sp.get('product_no') or _sc), _sp, _np,
+                                        barcode=(_bc or None))
+                            st.success(f"✅ 매입가 → {fmt(_np)}원"
+                                       + (f" · 바코드 {_bc} 저장" if _bc else ""))
+                            st.rerun()
                     else:
-                        st.warning(f"공유DB에 상품번호 {_sc}가 없습니다 — 신규로 등록합니다.")
+                        st.warning(f"공유DB에 상품번호·바코드 {_sc}가 없습니다 — 신규로 등록합니다.")
                         _nm = st.text_input("상품명", key="pt_scan_name")
+                        _c1s, _c2s = st.columns(2)
+                        _pn_in = _c1s.text_input("코스트코 상품번호", value=_sc,
+                                                 key="pt_scan_pno",
+                                                 help="스캔값이 바코드라면 여기에 라벨 좌측 상단 "
+                                                      "상품번호를 넣으세요.")
+                        _bc_in = _c2s.text_input("바코드", value=_sc, key="pt_scan_bcnew")
                         _np = st.number_input("매입가", min_value=0, step=100, key="pt_scan_addprice")
                         if st.button("➕ 신규 등록", key="pt_scan_add", type="primary") and _np > 0:
-                            _save_price(_sc, None, _np, name=_nm)
-                            st.success(f"✅ {_sc} 신규 등록 {fmt(_np)}원"); st.rerun()
+                            _pn2 = "".join(ch for ch in (_pn_in or '') if ch.isdigit()) or _sc
+                            _bc2 = "".join(ch for ch in (_bc_in or '') if ch.isdigit())
+                            _save_price(_pn2, None, _np, name=_nm, barcode=(_bc2 or None))
+                            st.success(f"✅ {_pn2} 신규 등록 {fmt(_np)}원"
+                                       + (f" · 바코드 {_bc2}" if _bc2 else ""))
+                            st.rerun()
 
         # ── 🛒 카페24 상품 가격 수정 (라이브 스토어 반영) ────────────
         _cf_mall = _gs('cafe24_mall_id'); _cf_cid = _gs('cafe24_client_id'); _cf_tok = _gs('cafe24_access_token')
