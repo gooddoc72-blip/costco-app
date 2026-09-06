@@ -10,7 +10,7 @@ from services import parse_costco_receipt_pdf, render_pdf_to_images
 from receipt_settle import (
     allocate_receipt_to_orders, apply_receipt_settlement, cleanup_orphan_settlements,
     learn_costco_mappings,
-    build_manual_rows, ai_match_receipt_orders, _summarize, compute_leftovers,
+    build_manual_rows, build_memo_rows, ai_match_receipt_orders, _summarize, compute_leftovers,
     build_stock_pool, get_settle_start_date, get_stock_status, get_settled_order_keys,
     allocate_dispatched_to_receipt,
 )
@@ -341,7 +341,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         # 매칭 경로 내역 — 어떤 근거로 붙었는지 보여야 오매칭을 잡을 수 있다
         _via_lbl = {'number': '상품번호', 'name': '상품명 유사도', 'stock': '재고 이월',
                     'carry': '미정산 이월(번호 일치)', 'shopping': '장보기 목록',
-                    'shopping-name': '장보기 이름', 'manual': '수동', 'ai': 'AI'}
+                    'shopping-name': '장보기 이름', 'manual': '수동', 'ai': 'AI',
+                    'memo': '관리자 메모 배정(주문 없음)'}
         _via_cnt = {}
         for r in rows:
             _k = str(r.get('via') or '')
@@ -360,16 +361,67 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                       '주문번호': r['order_no'], '주문일': r['order_date'],
                       '상품명': r['product_name'], '수량': r['qty'],
                       '코스트코번호': r['costco_no'], '실단가': fmt(r['unit_price']),
-                      '기존구입가': fmt(r['prev_cost']), '→ 새구입가': fmt(r['amount'])}
+                      '기존구입가': fmt(r['prev_cost']), '→ 새구입가': fmt(r['amount']),
+                      '근거': _via_lbl.get(str(r.get('via') or ''), r.get('via') or ''),
+                      '메모': str(r.get('memo') or '')}
                      for r in rows]
             st.dataframe(pd.DataFrame(drows), use_container_width=True, hide_index=True)
 
     if unmatched:
         with st.expander(f"⚠️ 주문을 못 찾은 영수증 품목 {len(unmatched)}건", expanded=False):
-            st.caption("해당 상품의 주문이 당일 없거나, 제품 DB에 코스트코↔네이버 번호 매핑이 없어 배치 못 함.")
-            st.dataframe(pd.DataFrame([{'상품번호': u['상품번호'], '상품명': u['상품명'],
-                                        '단가': fmt(u['단가'])} for u in unmatched]),
-                         use_container_width=True, hide_index=True)
+            st.caption("해당 상품의 주문이 당일 없거나, 제품 DB에 코스트코↔네이버 번호 매핑이 없어 배치 못 함. "
+                       "**이전 주문의 교환·추가 발송분이라 주문 목록에 없는 경우**는 아래에서 "
+                       "사용자를 지정해 직접 배정하세요.")
+            _um_opts = sorted(dmap.keys(), key=lambda u: dmap.get(u, u))
+            _um_labels = [''] + [dmap.get(u, u) for u in _um_opts]
+            _um_l2u = {dmap.get(u, u): u for u in _um_opts}
+            _um_rows = [{'배정': False, '사용자': '', '수량(팩)': 1, '메모': '',
+                         '상품번호': u['상품번호'], '상품명': u['상품명'],
+                         '팩단가': int(u['단가'] or 0)} for u in unmatched]
+            _um_sig = hashlib.md5(
+                "|".join(str(u['상품번호']) for u in unmatched).encode()).hexdigest()[:8]
+            _um_ed = st.data_editor(
+                pd.DataFrame(_um_rows), use_container_width=True, hide_index=True,
+                key=f"rs_memo_editor_{d_day}_{_um_sig}",
+                disabled=['상품번호', '상품명', '팩단가'],
+                column_config={
+                    '배정': st.column_config.CheckboxColumn('배정', help='체크한 행만 배정됩니다'),
+                    '사용자': st.column_config.SelectboxColumn('사용자', options=_um_labels),
+                    '수량(팩)': st.column_config.NumberColumn('수량(팩)', min_value=1, step=1),
+                    '메모': st.column_config.TextColumn(
+                        '메모', help='예: 8/28 김OO 교환 발송 / 파손 재발송'),
+                    '팩단가': st.column_config.NumberColumn('팩단가', format='%d'),
+                })
+            _um_pick = [r for r in _um_ed.to_dict('records')
+                        if r.get('배정') and str(r.get('사용자') or '').strip()]
+            _um_bad = [r for r in _um_ed.to_dict('records')
+                       if r.get('배정') and not str(r.get('사용자') or '').strip()]
+            if _um_bad:
+                st.warning(f"⚠️ {len(_um_bad)}행은 사용자를 지정하지 않아 배정되지 않습니다.")
+            if _um_pick:
+                _um_amt = sum(int(r.get('팩단가') or 0) * int(r.get('수량(팩)') or 1)
+                              for r in _um_pick)
+                st.markdown(f"배정 **{len(_um_pick)}종** · 청구금액 **{fmt(_um_amt)}원**")
+                st.caption(" · ".join(
+                    f"{r.get('상품명')} → {r.get('사용자')} {r.get('수량(팩)')}팩"
+                    + (f" ({r.get('메모')})" if str(r.get('메모') or '').strip() else "")
+                    for r in _um_pick))
+            if st.button(f"🧑‍💼 선택한 {len(_um_pick)}종 사용자에게 배정",
+                         key="rs_memo_apply", disabled=not _um_pick):
+                _asg = [{'username': _um_l2u.get(str(r.get('사용자')), ''),
+                         'costco_no': str(r.get('상품번호') or ''),
+                         'product_name': str(r.get('상품명') or ''),
+                         'unit_price': int(r.get('팩단가') or 0),
+                         'qty': int(r.get('수량(팩)') or 1),
+                         'memo': str(r.get('메모') or '').strip()} for r in _um_pick]
+                _new = build_memo_rows(_asg, str(d_day))
+                if _new:
+                    _merge_matches(alloc, _new, [])
+                    st.success(f"✅ {len(_new)}종을 사용자에게 배정했습니다 — "
+                               "정산표에 반영됐습니다. '정산 적용'을 눌러 저장하세요.")
+                    st.rerun()
+                else:
+                    st.error("배정할 항목을 만들지 못했습니다 (사용자·상품번호 확인).")
 
     # ── 3.5) 미매칭 수동/AI 매칭 ──
     _render_match_section(alloc, dmap, settings, USERNAME)

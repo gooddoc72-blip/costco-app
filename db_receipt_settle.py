@@ -58,6 +58,12 @@ def _ensure(conn):
         conn.execute("ALTER TABLE receipt_settle_items ADD COLUMN via TEXT DEFAULT ''")
     except Exception:
         pass
+    # 메모 — 주문 없이 관리자가 직접 배정한 건의 사유(교환·추가 발송 등).
+    #   주문번호가 없으니 사유가 안 남으면 나중에 왜 청구했는지 알 길이 없다.
+    try:
+        conn.execute("ALTER TABLE receipt_settle_items ADD COLUMN memo TEXT DEFAULT ''")
+    except Exception:
+        pass
 
     # 부족분 — 그날 주문은 있는데 영수증에서 못 찾은 건 (안 샀거나 매칭 실패)
     conn.execute("""
@@ -128,13 +134,13 @@ def save_settlement_batch(label, date_from, date_to, receipt_dates,
         conn.execute(
             "INSERT INTO receipt_settle_items "
             "(batch_id,username,order_no,order_date,costco_no,naver_no,product_name,"
-            " qty,unit_price,amount,prev_cost,via,created_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            " qty,unit_price,amount,prev_cost,via,memo,created_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (bid, r.get('username', ''), r.get('order_no', ''), r.get('order_date', ''),
              r.get('costco_no', ''), r.get('naver_no', ''), r.get('product_name', ''),
              int(r.get('qty', 0) or 0), int(r.get('unit_price', 0) or 0),
              int(r.get('amount', 0) or 0), int(r.get('prev_cost', 0) or 0),
-             str(r.get('via', '') or ''), now),
+             str(r.get('via', '') or ''), str(r.get('memo', '') or ''), now),
         )
     for sh in (shortages or []):
         conn.execute(

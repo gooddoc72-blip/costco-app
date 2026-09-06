@@ -774,6 +774,59 @@ def build_manual_rows(pairs):
     return out
 
 
+def build_memo_rows(assignments, order_date):
+    """주문 없이 사용자에게 직접 청구하는 배치행 (관리자 메모 배정).
+
+    이전 주문의 **교환·추가 발송분**은 그날 주문 목록에 없다. 그래서 영수증에만
+    남고 어디에도 못 붙는데, 실제로는 특정 사용자를 위해 산 물건이라 청구해야 한다.
+    관리자가 사용자와 사유를 지정해 직접 배정할 수 있게 한다.
+
+    order_no는 MEMO-날짜-상품번호-사용자 로 만든다. 결정적이라 같은 배정을
+    두 번 해도 get_settled_order_keys()에 걸려 이중 청구가 되지 않는다.
+
+    assignments: [{'username','costco_no','product_name','unit_price',
+                   'qty'(팩 수),'memo'}]
+    """
+    from db import get_shared_products
+    _split = {}
+    try:
+        for _sp in (get_shared_products() or []):
+            _pn = _norm(_sp.get('product_no'))
+            if _pn:
+                _split[_pn] = max(1, int(_sp.get('split_qty') or 1))
+    except Exception:
+        _split = {}
+
+    out = []
+    for a in (assignments or []):
+        u = _norm(a.get('username'))
+        cno = _norm(a.get('costco_no'))
+        qty = max(1, int(a.get('qty', 1) or 1))
+        up = int(a.get('unit_price', 0) or 0)
+        if not (u and cno):
+            continue
+        sq = _split.get(cno, 1)
+        out.append({
+            'username': u,
+            'order_no': 'MEMO-%s-%s-%s' % (order_date, cno, u),
+            'order_date': _norm(order_date),
+            'costco_no': cno,
+            'naver_no': '',
+            'product_name': _norm(a.get('product_name')),
+            'qty': qty,
+            'unit_price': up,
+            # 팩 통째로 넘기는 배정이라 팩단가 x 팩수가 그대로 청구액이다
+            'amount': up * qty,
+            'prev_cost': 0,
+            'via': 'memo',
+            'memo': _norm(a.get('memo')),
+            # 남은 재고에서 팩 단위로 빠지도록 pack=split_qty (소비 units = qty x split)
+            'split_qty': sq,
+            'pack': sq,
+        })
+    return out
+
+
 def ai_match_receipt_orders(unmatched_receipt, unmatched_orders,
                             anthropic_key='', gemini_key=''):
     """AI로 미매칭 영수증 품목 ↔ 미매칭 주문을 상품명 의미 기준으로 매칭.
