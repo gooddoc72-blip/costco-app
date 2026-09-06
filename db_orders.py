@@ -54,9 +54,22 @@ def save_daily_orders(username, order_date, orders_df, shipping_cost, box_cost):
         conn.execute("ALTER TABLE daily_orders ADD COLUMN order_no TEXT DEFAULT ''")
     except Exception:
         pass
+    # 코스트코 상품번호 — 수집 시점에 확정해 두면 이후 영수증·정산이 번호로 붙는다.
+    # 예전엔 영수증 정산·청구 원장·구매내역 정산이 저마다 다시 매칭해서
+    # 같은 주문의 결과가 화면마다 달라질 수 있었다.
+    try:
+        conn.execute("ALTER TABLE daily_orders ADD COLUMN costco_no TEXT DEFAULT ''")
+    except Exception:
+        pass
 
     # 병합 저장: 설정 수집시간(예: 12시) 저장분을 보존하고 신규 주문만 추가 → 재수집이 줄이지 못함.
     #   (취소건은 수익계산 '선택 삭제'로 제거. 옛 order_no 없는 행은 전환 정리 후 재삽입.)
+    # 코스트코번호 해석용 — 주문마다 다시 읽으면 느리다
+    try:
+        from db_products import get_all_products, get_shared_products
+        _uprods, _sprods = get_all_products(username), get_shared_products()
+    except Exception:
+        _uprods, _sprods = None, None
     conn.execute("DELETE FROM daily_orders WHERE order_date=? AND COALESCE(order_no,'')=''", (order_date,))
     _existing_onos = {row[0] for row in conn.execute(
         "SELECT order_no FROM daily_orders WHERE order_date=? AND COALESCE(order_no,'')<>''",
@@ -84,16 +97,24 @@ def save_daily_orders(username, order_date, orders_df, shipping_cost, box_cost):
         profit = ((settlement + round(ship_fee * _factor)) - (int(cost) + per_ship + per_box)
                   if int(cost) > 0 else 0)
         p_no = _s(r.get('상품번호'))
+        # 확정된 코스트코번호만 넣는다. 이름 추정치를 굳히면 되돌리기 어렵다.
+        try:
+            from db_products import resolve_costco_no
+            _cno = resolve_costco_no(username, naver_no=p_no,
+                                     product_name=str(r.get('상품명', '') or ''),
+                                     _user_prods=_uprods, _shared_prods=_sprods)
+        except Exception:
+            _cno = ''
         conn.execute("""INSERT INTO daily_orders
             (order_date,order_no,recipient,product_name,product_no,option_info,option_code,qty,
              order_amount,shipping_fee,extra_shipping,settlement,
-             cost_price,delivery_cost,box_cost,profit,matched,created_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+             cost_price,delivery_cost,box_cost,profit,matched,created_at,costco_no)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (order_date, _ono, r['수취인명'], r['상품명'], p_no, r.get('옵션정보', ''),
              _s(r.get('옵션번호')),
              int(r['수량']), int(r['최종 상품별 총 주문금액']), ship_fee,
              int(r.get('제주/도서 추가배송비', 0)), settlement,
-             int(cost), per_ship, per_box, profit, 1 if cost > 0 else 0, now))
+             int(cost), per_ship, per_box, profit, 1 if cost > 0 else 0, now, _cno))
         if _ono:
             _existing_onos.add(_ono)  # 같은 배치 내 중복 방지
     conn.commit()

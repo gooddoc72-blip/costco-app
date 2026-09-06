@@ -959,6 +959,14 @@ def learn_costco_mappings(rows):
                     "UPDATE products SET product_no=? "
                     "WHERE TRIM(COALESCE(product_no,''))='' AND (%s)" % _where,
                     [cno] + [nv] * len(key_cols))
+                # 공유맵에도 남긴다 — 코스트코번호는 상품 고유값이라 한 사람이
+                # 이으면 전원이 쓸 수 있다. 각자 제품DB에만 두면 같은 상품을
+                # 사용자마다 다시 잇게 된다(확보율이 18~66%로 제각각이었다).
+                try:
+                    from db import upsert_shared_naver_map
+                    upsert_shared_naver_map(cno, uname, naver_pno=nv, product_name=pname)
+                except Exception:
+                    pass
                 if cur.rowcount:
                     n += cur.rowcount
                     continue

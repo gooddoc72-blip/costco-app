@@ -490,6 +490,93 @@ def upsert_shared_naver_map(costco_pno, username, naver_pno='', naver_origin_pno
     return True
 
 
+def collect_shared_naver_map(dry_run=False):
+    """사용자 제품DB에 흩어진 (네이버번호 -> 코스트코번호)를 공유맵으로 모은다.
+
+    코스트코 상품번호는 상품 고유값이라 모든 사용자에게 같다. 그런데 매핑이
+    각자 제품DB에만 있어서, oxo가 아는 상품을 tblue는 모르는 상태였다
+    (코스트코번호 확보율 18~66%로 제각각). 공유맵에 모으면 한 사람이 이은 것을
+    전원이 쓴다. shared_naver_map은 만들어져 있는데 0행이었다.
+
+    형식 검증(is_costco_pno)을 통과한 것만 넣는다 — 틀린 매핑이 퍼지면
+    되돌리기 어렵다.
+    반환: {'added', 'conflicts':[{naver, costco_a, costco_b, users}]}
+    """
+    import glob
+    import os
+    from db_core import DATA_DIR
+    from services import is_costco_pno
+
+    seen, conflicts, rows = {}, [], []
+    for path in sorted(glob.glob(os.path.join(DATA_DIR, '*.db'))):
+        u = os.path.basename(path)[:-3]
+        if u == 'auth' or '.bak' in u or '.backup' in u:
+            continue
+        try:
+            conn = sqlite3.connect('file:%s?mode=ro' % path, uri=True)
+            conn.row_factory = sqlite3.Row
+            rs = conn.execute(
+                "SELECT product_no, naver_channel_pno, naver_origin_pno, costco_name,"
+                " match_keyword FROM products"
+                " WHERE TRIM(COALESCE(product_no,'')) <> ''").fetchall()
+            conn.close()
+        except Exception:
+            continue
+        for r in rs:
+            cno = str(r['product_no'] or '').strip()
+            if not is_costco_pno(cno):
+                continue
+            nv = str(r['naver_channel_pno'] or '').strip()
+            og = str(r['naver_origin_pno'] or '').strip()
+            if not (nv or og):
+                continue
+            nm = (r['costco_name'] or r['match_keyword'] or '').strip()
+            key = (u, nv or og)
+            prev = seen.get(key)
+            if prev and prev != cno:
+                conflicts.append({'naver': nv or og, 'costco_a': prev,
+                                  'costco_b': cno, 'users': u})
+                continue
+            seen[key] = cno
+            rows.append((cno, u, nv, og, nm))
+
+    added = 0
+    if not dry_run:
+        for cno, u, nv, og, nm in rows:
+            if upsert_shared_naver_map(cno, u, naver_pno=nv,
+                                       naver_origin_pno=og, product_name=nm):
+                added += 1
+    return {'added': added if not dry_run else len(rows),
+            'candidates': len(rows), 'conflicts': conflicts}
+
+
+def resolve_costco_no(username, naver_no='', naver_origin_no='', product_name='',
+                      _user_prods=None, _shared_prods=None):
+    """네이버번호(또는 상품명)로 코스트코 상품번호를 찾는다. 없으면 ''.
+
+    순서: 공유맵 -> 사용자 제품DB -> 공유DB 이름매칭.
+    이름매칭은 확실할 때만 쓴다 — 틀린 번호가 주문 행에 굳으면 되돌리기 어렵다.
+    """
+    from services import is_costco_pno, get_shared_naver_map, match_product_to_db
+    for k in (str(naver_no or '').strip(), str(naver_origin_no or '').strip()):
+        if not k:
+            continue
+        try:
+            cno = str(get_shared_naver_map().get(k) or '').strip()
+        except Exception:
+            cno = ''
+        if is_costco_pno(cno):
+            return cno
+    try:
+        p = match_product_to_db(username, product_name or '',
+                                product_no=(naver_no or naver_origin_no or None),
+                                _user_prods=_user_prods, _shared_prods=_shared_prods)
+    except Exception:
+        p = None
+    cno = str((p or {}).get('product_no') or '').strip()
+    return cno if is_costco_pno(cno) else ''
+
+
 def get_shared_naver_map_rows():
     """공유 네이버↔코스트코 매핑 전체 행 조회 (관리/표시용)."""
     conn = get_auth_db()

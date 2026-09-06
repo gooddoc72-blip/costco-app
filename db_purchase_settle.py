@@ -251,6 +251,13 @@ def link_product_mapping(username, naver_no, product_name, costco_no, split_qty=
             return ''
     except Exception:
         pass
+    # 공유맵에도 남긴다 (코스트코번호는 상품 고유값)
+    if _nv:
+        try:
+            from db import upsert_shared_naver_map
+            upsert_shared_naver_map(_cno, username, naver_pno=_nv, product_name=_nm)
+        except Exception:
+            pass
     conn = get_user_db(username)
     try:
         _cols = {r[1] for r in conn.execute("PRAGMA table_info(products)")}
