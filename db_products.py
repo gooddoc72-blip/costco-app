@@ -152,6 +152,17 @@ def _upsert_shared_internal(costco_name, keyword, store_price=None, online_price
     영수증 경로는 소분수를 모르는데, 예전엔 기본값 1을 그대로 UPDATE에 실어서
     영수증을 올릴 때마다 관리자가 설정해 둔 소분수가 1로 리셋됐다.
     """
+    # 코스트코 상품번호는 4~7자리다. 네이버 상품번호(10~11자리)가 이 칸에 들어가면
+    # 영수증 번호와 영영 안 붙는다. 실제로 사용자DB 366건·공유DB 87건이 그렇게
+    # 오염돼 있었다. 형식이 아니면 저장하지 않고 비워 둔다 —
+    # 틀린 번호보다 빈 값이 낫다(영수증 등록 때 올바른 번호로 채워진다).
+    if product_no is not None and str(product_no).strip():
+        try:
+            from services import is_costco_pno
+            if not is_costco_pno(str(product_no).strip()):
+                product_no = ''
+        except Exception:
+            pass
     conn = get_auth_db()
     conn.row_factory = sqlite3.Row
     now = datetime.now().strftime("%Y-%m-%d %H:%M")

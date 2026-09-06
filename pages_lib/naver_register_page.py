@@ -66,7 +66,7 @@ except ImportError:
     naver_register_service = None
 
 def _save_costco_price(username, is_admin, costco_no, costco_name, price,
-                       naver_no='', naver_name=''):
+                       naver_no='', naver_name='', barcode=''):
     """사진등록으로 알게 된 '코스트코 상품번호 ↔ 매장가'를 제품가격 DB에 남긴다.
 
     사진등록은 가격사진에서 코스트코 상품번호와 매장가를 읽어 놓고도 그 값을
@@ -95,11 +95,13 @@ def _save_costco_price(username, is_admin, costco_no, costco_name, price,
     _today = _dt.now().strftime("%Y-%m-%d")
     _out = []
     try:
+        _bc = ''.join(ch for ch in str(barcode or '') if ch.isdigit())
         upsert_shared_store_price(
             costco_name=_nm, keyword=_nm, price=_pr, product_no=_cno,
             updated_by=username, receipt_date=_today, force_store=bool(is_admin),
-            source='photo-reg')
-        _out.append(f"💰 제품가격 DB 등록 — {_cno} {fmt(_pr)}원")
+            source='photo-reg', barcode=(_bc or None))
+        _out.append(f"💰 제품가격 DB 등록 — {_cno} {fmt(_pr)}원"
+                    + (f" · 바코드 {_bc}" if _bc else ""))
     except Exception as _e:
         return f"⚠️ 제품가격 DB 저장 실패: {_e}"
     if naver_no:
@@ -553,6 +555,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         'manufacturer': _i1.get('manufacturer', '') or _i1.get('brand', ''),
                         'model_name': _i1.get('model_name', ''),
                         'volume': _i1.get('volume', ''),
+                        # 가격사진에서 읽은 바코드 — 제품가격 DB에 함께 저장한다
+                        'barcode': (_i2 or {}).get('barcode', ''),
                     }
                     # ── SEO 상품명 자동 적용 ──
                     #  사진에서 읽은 이름은 '검색용'이 아니라 '표기용'이라 그대로 등록하면
@@ -911,7 +915,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                     (_pv.get('name_raw') or _pv.get('name') or _name_final),
                                     int(_pv.get('cost') or 0),
                                     naver_no=str((_res or {}).get('origin_product_no', '') or ''),
-                                    naver_name=_name_final)
+                                    naver_name=_name_final,
+                                    barcode=str(_pv.get('barcode') or ''))
                                 if _pr_msg:
                                     st.caption(_pr_msg)
                                 if _re2:   # 태그만 거부되고 등록은 성공한 경우 경고

@@ -244,6 +244,13 @@ def link_product_mapping(username, naver_no, product_name, costco_no, split_qty=
     _nm = str(product_name or '').strip()
     if not (username and _cno):
         return ''
+    # 네이버번호가 코스트코번호 칸에 들어가는 것을 막는다(4~7자리)
+    try:
+        from services import is_costco_pno
+        if not is_costco_pno(_cno):
+            return ''
+    except Exception:
+        pass
     conn = get_user_db(username)
     try:
         _cols = {r[1] for r in conn.execute("PRAGMA table_info(products)")}
