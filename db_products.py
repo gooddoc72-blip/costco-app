@@ -1115,15 +1115,25 @@ def delete_split_rule(keyword):
 def split_qty_by_name(product_name, rules=None):
     """상품명에 걸리는 소분 규칙의 소분수. 없으면 0.
 
-    키워드가 상품명에 통째로 들어 있으면 적용한다. 여러 개가 걸리면
-    **가장 긴 키워드**가 이긴다 — 더 구체적인 규칙이 우선이다
-    ('그릭요거트'보다 '커클랜드그릭요거트907g'이 우선).
+    키워드의 **낱말이 모두** 상품명에 있으면 적용한다. 통짜 부분문자열로 보면
+    '커클랜드 그릭요거트 907g' 규칙이 실제 상품명
+    '커클랜드 그릭요거트 플레인 무지방 907g 32oz'에 안 걸린다 — 사이에 다른
+    낱말이 끼기 때문이다. 낱말 단위로 봐야 쓸 수 있는 규칙이 된다.
+
+    여러 규칙이 걸리면 **맞은 낱말 길이 합이 큰 쪽**이 이긴다 — 더 구체적인
+    규칙이 우선이다('그릭요거트'(5)보다 '커클랜드 그릭요거트 907g'(13)이 우선).
+    띄어쓰기·대소문자는 무시한다.
     """
     nm = _norm_split_key(product_name)
     if not nm:
         return 0
+    best_sq, best_score = 0, -1
     for r in (rules if rules is not None else get_split_rules()):
-        kw = _norm_split_key(r.get('keyword'))
-        if kw and kw in nm:
-            return max(1, int(r.get('split_qty') or 1))
-    return 0
+        toks = [_norm_split_key(t) for t in str(r.get('keyword') or '').split()]
+        toks = [t for t in toks if t]
+        if not toks or not all(t in nm for t in toks):
+            continue
+        score = sum(len(t) for t in toks)
+        if score > best_score:
+            best_score, best_sq = score, max(1, int(r.get('split_qty') or 1))
+    return best_sq
