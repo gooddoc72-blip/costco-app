@@ -13,7 +13,7 @@ from db import (get_all_users, get_shared_products,
                 get_split_rules, upsert_split_rule, delete_split_rule,
                 get_price_log, PRICE_SOURCES,
                 collect_shared_naver_map, get_costco_conflicts,
-                resolve_costco_conflict)
+                resolve_costco_conflict, clear_costco_mapping)
 from db_purchase_settle import (
     compute_daily_purchase, save_estimate, finalize, get_snapshot, diff_against_snapshot,
     month_fees_if_last_day, is_last_day_of_month,
@@ -204,19 +204,40 @@ def _render_costco_map(dmap, USERNAME):
                 if _map[_lab] == _cur:
                     _idx = _j
                     break
+            _NONE = "❌ 둘 다 아님 — 번호 비우기"
+            _DIRECT = "✏️ 직접 입력"
             _k = f"cm_pick_{i}_{_u}_{_c['naver_no']}"
-            _sel = st.radio("맞는 코스트코 상품번호", _labels, index=_idx,
-                            key=_k, horizontal=False, label_visibility="collapsed")
+            _sel = st.radio("맞는 코스트코 상품번호", _labels + [_NONE, _DIRECT],
+                            index=_idx, key=_k, horizontal=False,
+                            label_visibility="collapsed")
+            _typed = ''
+            if _sel == _DIRECT:
+                _typed = st.text_input("코스트코 상품번호 (4~7자리)", key=f"{_k}_in",
+                                       placeholder="예: 667538")
             _cc1, _cc2 = st.columns([1.2, 4])
-            if _cc1.button("이 번호로 확정", key=f"{_k}_ok"):
-                if resolve_costco_conflict(_u, _c['naver_no'], _map[_sel],
-                                           _c.get('product_name', '')):
+            if _sel == _NONE:
+                # 후보가 둘 다 틀릴 수 있다. 틀린 번호를 남기면 그 단가로 계속
+                # 청구되므로, 맞는 게 없으면 비우는 편이 안전하다.
+                if _cc1.button("번호 비우기", key=f"{_k}_clear"):
+                    clear_costco_mapping(_u, _c['naver_no'])
                     st.session_state['_cm_msg'] = (
-                        f"✅ {dmap.get(_u, _u)} · {_c['naver_no']} → {_map[_sel]} 확정")
+                        f"🧹 {dmap.get(_u, _u)} · {_c['naver_no']} 매핑을 비웠습니다 — "
+                        "영수증을 등록하면 올바른 번호로 채워집니다.")
                     st.rerun()
-                else:
-                    st.error("확정하지 못했습니다.")
-            _cc2.caption("확정하면 공유맵과 그 사용자 제품DB가 함께 이 번호로 맞춰집니다.")
+                _cc2.caption("공유맵과 제품DB에서 이 상품의 코스트코번호를 지웁니다. "
+                             "단가·상품명은 그대로 둡니다.")
+            else:
+                _pick_no = _typed.strip() if _sel == _DIRECT else _map.get(_sel, '')
+                if _cc1.button("이 번호로 확정", key=f"{_k}_ok",
+                               disabled=(_sel == _DIRECT and not _pick_no)):
+                    if resolve_costco_conflict(_u, _c['naver_no'], _pick_no,
+                                               _c.get('product_name', '')):
+                        st.session_state['_cm_msg'] = (
+                            f"✅ {dmap.get(_u, _u)} · {_c['naver_no']} → {_pick_no} 확정")
+                        st.rerun()
+                    else:
+                        st.error("확정하지 못했습니다 — 코스트코번호는 4~7자리여야 합니다.")
+                _cc2.caption("확정하면 공유맵과 그 사용자 제품DB가 함께 이 번호로 맞춰집니다.")
             st.divider()
 
 

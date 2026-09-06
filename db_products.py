@@ -679,6 +679,40 @@ def resolve_costco_conflict(username, naver_no, costco_no, product_name=''):
     return True
 
 
+def clear_costco_mapping(username, naver_no):
+    """그 네이버 상품의 코스트코번호 매핑을 지운다.
+
+    후보가 둘 다 틀린 경우가 있다(베이비벨 치즈에 프로틴 바 두 개가 붙어 있었다).
+    틀린 번호를 남겨 두면 그 단가로 계속 청구되므로, 맞는 게 없으면 비우는 것이
+    맞다. 영수증을 등록하면 올바른 번호로 채워진다.
+    """
+    _nv = str(naver_no or '').strip()
+    if not (username and _nv):
+        return False
+    conn = get_auth_db()
+    _ensure_shared_naver_map(conn)
+    conn.execute("DELETE FROM shared_naver_map WHERE username=? AND "
+                 "(TRIM(COALESCE(naver_pno,''))=? OR TRIM(COALESCE(naver_origin_pno,''))=?)",
+                 (username, _nv, _nv))
+    conn.commit()
+    conn.close()
+    try:
+        c = get_user_db(username)
+        c.execute("UPDATE products SET product_no='' "
+                  "WHERE TRIM(COALESCE(naver_channel_pno,''))=? "
+                  "   OR TRIM(COALESCE(naver_origin_pno,''))=?", (_nv, _nv))
+        c.commit()
+        c.close()
+    except Exception:
+        pass
+    try:
+        from services import _SHARED_NAVER_MAP
+        _SHARED_NAVER_MAP['v'] = None
+    except Exception:
+        pass
+    return True
+
+
 def get_shared_naver_map_rows():
     """공유 네이버↔코스트코 매핑 전체 행 조회 (관리/표시용)."""
     conn = get_auth_db()
