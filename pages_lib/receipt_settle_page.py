@@ -420,56 +420,57 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             st.caption("해당 상품의 주문이 당일 없거나, 제품 DB에 코스트코↔네이버 번호 매핑이 없어 배치 못 함. "
                        "**이전 주문의 교환·추가 발송분이라 주문 목록에 없는 경우**는 아래에서 "
                        "사용자를 지정해 직접 배정하세요.")
+            # 사용자는 표 안에서 고르지 않는다. 표 안 SelectboxColumn은
+            #   · 기본값을 바꾸면 표 전체가 다시 그려져 체크와 행별 입력이 날아가고
+            #   · 옵션에 없는 값(빈 문자열)은 None으로 렌더돼 아예 못 고른다.
+            # 대신 '체크한 행을 이 사람에게 배정'으로 흐름을 단순화한다.
+            # 받는 사람이 서로 다르면 나눠서 두 번 배정하면 된다 —
+            # 배정한 품목은 목록에서 바로 빠지므로 자연스럽게 이어진다.
             _um_opts = sorted(dmap.keys(), key=lambda u: dmap.get(u, u))
-            # 옵션에 빈 값을 두면 안 된다. SelectboxColumn은 옵션에 없는 값을
-            # None으로 렌더해서, 초기값이 ''이면 칸이 None으로 보이고 고를 수도 없었다.
-            # 재고 입고 표와 같은 방식으로 '일괄 사용자'를 기본값으로 채운다.
-            # 목록이 비는 일은 없지만(관리자는 항상 있다), 여기서 return하면
-            # 아래 수동매칭·재고입고까지 통째로 사라진다. 폴백으로 둔다.
             _um_labels = [dmap.get(u, u) for u in _um_opts] or [USERNAME]
             _um_l2u = {dmap.get(u, u): u for u in _um_opts} or {USERNAME: USERNAME}
             _um_def = dmap.get(USERNAME, USERNAME)
             if _um_def not in _um_labels:
                 _um_def = _um_labels[0]
             _um_bulk = st.selectbox(
-                "일괄 사용자 (표에서 행별로 바꿀 수 있습니다)", _um_labels,
-                index=_um_labels.index(_um_def), key=f"rs_memo_bulk_{d_day}",
-                help="이 사람 앞으로 청구됩니다. 교환·추가 발송분을 실제로 받은 사용자를 고르세요.")
-            _um_rows = [{'배정': False, '사용자': _um_bulk, '수량(팩)': 1, '메모': '',
+                "배정할 사용자 — 아래에서 체크한 품목만 이 사람에게 청구됩니다",
+                _um_labels, index=_um_labels.index(_um_def),
+                key=f"rs_memo_bulk_{d_day}",
+                help="교환·추가 발송분을 실제로 받은 사용자를 고르세요. "
+                     "받는 사람이 서로 다르면 나눠서 두 번 배정하면 됩니다.")
+
+            _um_rows = [{'배정': False, '수량(팩)': 1, '메모': '',
                          '상품번호': u['상품번호'], '상품명': u['상품명'],
                          '팩단가': int(u['단가'] or 0)} for u in unmatched]
             _um_sig = hashlib.md5(
                 "|".join(str(u['상품번호']) for u in unmatched).encode()).hexdigest()[:8]
+            # 편집기 key에 사용자를 넣지 않는다 — 사용자를 바꿀 때마다 표가
+            # 초기화되면 체크해 둔 것이 사라진다.
             _um_ed = st.data_editor(
                 pd.DataFrame(_um_rows), use_container_width=True, hide_index=True,
-                key=f"rs_memo_editor_{d_day}_{_um_sig}_{_um_bulk}",
+                key=f"rs_memo_editor_{d_day}_{_um_sig}",
                 disabled=['상품번호', '상품명', '팩단가'],
                 column_config={
                     '배정': st.column_config.CheckboxColumn('배정', help='체크한 행만 배정됩니다'),
-                    '사용자': st.column_config.SelectboxColumn(
-                        '사용자', options=_um_labels, required=True),
                     '수량(팩)': st.column_config.NumberColumn('수량(팩)', min_value=1, step=1),
                     '메모': st.column_config.TextColumn(
                         '메모', help='예: 8/28 김OO 교환 발송 / 파손 재발송'),
                     '팩단가': st.column_config.NumberColumn('팩단가', format='%d'),
                 })
-            _um_pick = [r for r in _um_ed.to_dict('records')
-                        if r.get('배정') and str(r.get('사용자') or '').strip()]
-            _um_bad = [r for r in _um_ed.to_dict('records')
-                       if r.get('배정') and not str(r.get('사용자') or '').strip()]
-            if _um_bad:
-                st.warning(f"⚠️ {len(_um_bad)}행은 사용자를 지정하지 않아 배정되지 않습니다.")
+            _um_pick = [r for r in _um_ed.to_dict('records') if r.get('배정')]
             if _um_pick:
                 _um_amt = sum(int(r.get('팩단가') or 0) * int(r.get('수량(팩)') or 1)
                               for r in _um_pick)
-                st.markdown(f"배정 **{len(_um_pick)}종** · 청구금액 **{fmt(_um_amt)}원**")
+                st.markdown(f"**{_um_bulk}** 에게 배정 **{len(_um_pick)}종** · "
+                            f"청구금액 **{fmt(_um_amt)}원**")
                 st.caption(" · ".join(
-                    f"{r.get('상품명')} → {r.get('사용자')} {r.get('수량(팩)')}팩"
+                    f"{r.get('상품명')} {r.get('수량(팩)')}팩"
                     + (f" ({r.get('메모')})" if str(r.get('메모') or '').strip() else "")
                     for r in _um_pick))
-            if st.button(f"🧑‍💼 선택한 {len(_um_pick)}종 사용자에게 배정",
-                         key="rs_memo_apply", disabled=not _um_pick):
-                _asg = [{'username': _um_l2u.get(str(r.get('사용자')), ''),
+            if st.button(f"🧑‍💼 선택한 {len(_um_pick)}종을 {_um_bulk}에게 배정",
+                         key="rs_memo_apply", type="primary", disabled=not _um_pick):
+                _uname = _um_l2u.get(_um_bulk, '')
+                _asg = [{'username': _uname,
                          'costco_no': str(r.get('상품번호') or ''),
                          'product_name': str(r.get('상품명') or ''),
                          'unit_price': int(r.get('팩단가') or 0),
@@ -478,7 +479,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 _new = build_memo_rows(_asg, str(d_day))
                 if _new:
                     _merge_matches(alloc, _new, [])
-                    st.success(f"✅ {len(_new)}종을 사용자에게 배정했습니다 — "
+                    st.success(f"✅ {len(_new)}종을 {_um_bulk}에게 배정했습니다 — "
                                "정산표에 반영됐습니다. '정산 적용'을 눌러 저장하세요.")
                     st.rerun()
                 else:
