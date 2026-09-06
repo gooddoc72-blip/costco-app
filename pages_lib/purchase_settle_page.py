@@ -35,7 +35,17 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                "**확정**하면 예상 대비 변경금액이 사용자 화면에 배지로 표시됩니다.")
 
     dmap = _disp_map()
-    d = st.date_input("정산 날짜 (주문일 기준)", value=date.today())
+    # 업무 흐름이 '송장 등록으로 발송처리 → 다음날 영수증 등록 → 매칭 → 정산'이라
+    # 청구 대상은 그날 실제로 내보낸 물건(발송처리분)이어야 한다.
+    # 주문일 기준은 아직 안 나간 주문까지 청구해 버린다.
+    _pb = st.radio("정산 기준", ["🚚 발송일 기준 (권장)", "📅 주문일 기준 (구버전)"],
+                   key="ps_basis", horizontal=True,
+                   help="발송일 기준: 그날 송장을 등록해 발송처리한 주문을 청구합니다. "
+                        "영수증은 다음날 등록해도 됩니다 — 실단가는 공유DB 매입가로 "
+                        "반영되므로 등록 시점과 무관합니다.")
+    _basis = 'dispatch' if _pb.startswith("🚚") else 'order'
+    d = st.date_input("정산 날짜 (%s 기준)" % ('발송일' if _basis == 'dispatch' else '주문일'),
+                      value=date.today())
     ds = str(d)
 
     _is_last = is_last_day_of_month(ds)
@@ -44,19 +54,33 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 "(실배정 포장비 + 발송건수×택배비).")
 
     per_user = {}
+    _no_dispatch = []
     for u in _sellers():
-        items, total = compute_daily_purchase(u, ds)
+        items, total = compute_daily_purchase(u, ds, basis=_basis)
         if not items:
+            # 발송 이력이 없는데 주문은 있는 계정 — 발송처리를 안 했거나 외부에서
+            # 내보낸 경우다. 조용히 빠지면 청구가 통째로 누락되므로 알려준다.
+            if _basis == 'dispatch':
+                _oi, _ot = compute_daily_purchase(u, ds, basis='order')
+                if _oi:
+                    _no_dispatch.append((u, len(_oi), _ot))
             continue
         snap = get_snapshot(ds, u)
-        dd = diff_against_snapshot(ds, u) if snap else None
+        dd = diff_against_snapshot(ds, u, basis=_basis) if snap else None
         fees = month_fees_if_last_day(u, ds) if _is_last else None
         per_user[u] = {'items': items, 'total': total, 'snap': snap, 'diff': dd,
                        'matched': sum(1 for it in items if it['amount'] > 0),
                        'fees': fees, 'charge': total + (fees['fees_total'] if fees else 0)}
 
+    if _no_dispatch:
+        st.warning(
+            "⚠️ 이 날짜에 **발송 이력이 없어 청구에서 빠진** 사용자가 있습니다 — "
+            + " · ".join(f"{dmap.get(u, u)} (주문 {n}건 / {fmt(t)}원)"
+                         for u, n, t in _no_dispatch)
+            + "  ·  송장 등록으로 발송처리했는지 확인하거나, 위에서 '주문일 기준'을 선택하세요.")
+
     if not per_user:
-        st.info(f"{ds} 주문이 없습니다.")
+        st.info(f"{ds} {'발송처리된 주문' if _basis == 'dispatch' else '주문'}이 없습니다.")
         return
 
     # 요약 표
@@ -71,7 +95,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             chg = '동일'
         row = {
             '사용자': dmap.get(u, u),
-            '주문수': len(v['items']),
+            ('발송건수' if _basis == 'dispatch' else '주문수'): len(v['items']),
             '구매가 있음': v['matched'],
             '구매금액': fmt(v['total']),
         }
@@ -101,7 +125,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                  help="코스트코 영수증 업로드로 실단가가 반영된 뒤 클릭 → 예상 대비 변경 산출 + 확정."):
         n_changed = 0
         for u, v in per_user.items():
-            dd = diff_against_snapshot(ds, u)
+            dd = diff_against_snapshot(ds, u, basis=_basis)
             finalize(ds, u, v['total'], dd['changed'], created_by=USERNAME)
             if dd['changed']:
                 n_changed += 1

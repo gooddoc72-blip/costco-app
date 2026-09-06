@@ -78,14 +78,72 @@ def month_fees_if_last_day(username, date_str):
 
 
 # ── 구매가 계산 (예상/확정 공통) ──────────────────────────────
-def compute_daily_purchase(username, date):
+def _dispatched_records(username, date):
+    """그날 송장 등록(발송처리)한 주문 → compute_daily_purchase가 쓰는 형태.
+
+    dispatch_log는 order_history와 JOIN하는데, 쿠팡·엑셀 업로드 계정은
+    order_history가 비어 있는 경우가 많다(clglobal0919는 daily_orders에만
+    있는 주문이 980건). 그때는 daily_orders에서 상품번호·수량을 보충한다.
+    """
+    from db import get_dispatched_orders_with_details, get_user_db
+
+    rows = get_dispatched_orders_with_details(username, str(date)) or []
+    if not rows:
+        return []
+    _need = [str(r.get('order_no') or '') for r in rows
+             if not str(r.get('product_no') or '').strip()]
+    _fill = {}
+    if _need:
+        try:
+            conn = get_user_db(username)
+            CHUNK = 900                       # SQLite 변수 한도
+            for i in range(0, len(_need), CHUNK):
+                _c = _need[i:i + CHUNK]
+                _ph = ",".join("?" * len(_c))
+                for _r in conn.execute(
+                        "SELECT order_no, product_no, product_name, qty "
+                        "FROM daily_orders WHERE order_no IN (%s)" % _ph, _c):
+                    _fill[str(_r['order_no'])] = _r
+            conn.close()
+        except Exception:
+            _fill = {}
+    out = []
+    for r in rows:
+        _ono = str(r.get('order_no') or '')
+        _f = _fill.get(_ono)
+        out.append({
+            '_sk': _ono,
+            '수취인명': r.get('recipient') or '',
+            '상품명': (r.get('product_name') or (_f['product_name'] if _f else '') or ''),
+            'product_no': (str(r.get('product_no') or '').strip()
+                           or (str(_f['product_no'] or '') if _f else '')),
+            '수량': int(r.get('qty') or (_f['qty'] if _f else 1) or 1),
+        })
+    return out
+
+
+def compute_daily_purchase(username, date, basis='dispatch'):
     """(items, goods_total) 반환. 각 item: 주문 상품별 구매가(현재 공유/제품DB 기준).
-    영수증 반영 전=예상, 반영 후 재호출=확정. 순수 조회(저장 없음)."""
+    영수증 반영 전=예상, 반영 후 재호출=확정. 순수 조회(저장 없음).
+
+    basis:
+      'dispatch' — 그날 **송장 등록(발송처리)** 한 주문 기준. 기본값.
+                   실제 업무 흐름이 '발송처리 → 다음날 영수증 등록 → 매칭'이라
+                   청구 대상은 그날 내보낸 물건이어야 한다.
+      'order'    — 주문일 기준(구버전). 발송 이력이 없는 계정 확인용.
+    """
     from pages_lib.profit_calc.loader import build_settlement_df
     from services import match_product_to_db, resolve_pack_factor
     from db import get_all_products, get_shared_products
+    import pandas as _pd
 
-    df, _label, _kind = build_settlement_df(username, date)
+    if basis == 'dispatch':
+        _recs = _dispatched_records(username, date)
+        if not _recs:
+            return [], 0
+        df = _pd.DataFrame(_recs)
+    else:
+        df, _label, _kind = build_settlement_df(username, date)
     if df is None or df.empty:
         return [], 0
 
@@ -226,11 +284,14 @@ def get_snapshot(settle_date, username):
     return d
 
 
-def diff_against_snapshot(settle_date, username):
+def diff_against_snapshot(settle_date, username, basis='dispatch'):
     """현재 계산(확정 후보) vs 저장된 예상 baseline 상품별 차액.
+
+    basis는 예상을 저장할 때 쓴 기준과 같아야 한다. 다르면 대상 주문 자체가
+    달라져 없는 차액이 생긴다.
     Returns {changed:[...], total_prev, total_now, total_diff}."""
     snap = get_snapshot(settle_date, username)
-    cur_items, cur_total = compute_daily_purchase(username, settle_date)
+    cur_items, cur_total = compute_daily_purchase(username, settle_date, basis=basis)
     prev_by = {}
     if snap:
         for it in snap.get('est_items', []):
