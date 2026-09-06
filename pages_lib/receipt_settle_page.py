@@ -1,5 +1,6 @@
 """🧾 영수증 정산 (관리자) — 코스트코 영수증을 각 사용자 주문에 자동배치하고
 각 주문 구입가에 실단가를 반영 + 사용자별 정산표 생성."""
+import hashlib
 from datetime import date, datetime, timedelta
 
 import streamlit as st
@@ -479,7 +480,10 @@ def _render_leftover_section(receipt_items, alloc, dmap, d_day, USERNAME):
     for l in lefts:
         _dup = l['costco_no'] in _already
         _rows.append({
-            '입고': not _dup,
+            # 기본은 체크 해제. 예전엔 중복이 아닌 행을 전부 체크해 뒀는데,
+            # 한두 개만 고른 줄 알고 버튼을 누르면 목록 전체가 한꺼번에 들어갔다
+            # (9/3에 7종이 한 번의 클릭으로 모두 입고됐다).
+            '입고': False,
             '상품번호': l['costco_no'],
             '상품명': l['name'][:34],
             '영수증수량(팩)': l['qty_receipt'],
@@ -492,9 +496,14 @@ def _render_leftover_section(receipt_items, alloc, dmap, d_day, USERNAME):
             '상태': '이미 입고됨' if _dup else '',
         })
 
+    # 편집기 key에 행 구성을 섞는다. 같은 key를 쓰면 '0번 행 체크' 같은 편집 기록이
+    # 행 '순서'로 남아, 품목 목록이 바뀐 뒤 다른 상품에 체크가 옮겨 붙는다.
+    # (7종이던 목록이 4종으로 줄자 0번이던 부추고기순대의 체크가
+    #  새 0번 KS STRAWBERRIES로 넘어가 있었다)
+    _ed_sig = hashlib.md5("|".join(l['costco_no'] for l in lefts).encode()).hexdigest()[:8]
     _ed = st.data_editor(
         pd.DataFrame(_rows), use_container_width=True, hide_index=True,
-        key=f"rs_leftover_editor_{d_day}",
+        key=f"rs_leftover_editor_{d_day}_{_ed_sig}",
         disabled=['상품번호', '상품명', '영수증수량(팩)', '판매소비(소분)',
                   '남은수량(소분)', '남은(팩)', '팩단가', '재고금액', '상태'],
         column_config={
@@ -512,6 +521,9 @@ def _render_leftover_section(receipt_items, alloc, dmap, d_day, USERNAME):
     if not _picked:
         st.caption("입고할 행을 체크하세요.")
         return
+
+    st.caption("입고될 품목 — " + " · ".join(
+        f"{r.get('상품명')} {r.get('남은수량(소분)')}개" for r in _picked))
 
     _dup_picked = [r for r in _picked if str(r.get('상품번호') or '') in _already]
     _force = False
