@@ -1,0 +1,182 @@
+"""발송 파일 업로드 — 관리자가 전체 발송내역 파일 하나를 올리면
+주문번호로 각 사용자에게 분류해 dispatch_log에 기록한다.
+
+왜 필요한가:
+  청구는 '사용자가 송장 등록해 발송처리한 것' 기준인데, 그걸 안 하는 계정이 있으면
+  청구가 통째로 0원이 된다. 실측(8/31~9/6): clglobal0919는 주문 205건에 발송 0건이라
+  발송 기준으로는 한 푼도 청구되지 않았다.
+  관리자가 발송 파일 하나를 올려 분류하면 그 의존이 사라진다.
+
+분류 기준은 주문번호다. 전 사용자 DB의 주문번호 4,708개 중 두 사용자에 걸친 것이
+0개라 애매함이 없다(송장번호는 'nan' 오염값 하나가 겹쳤다).
+
+기록은 log_dispatch_success를 그대로 쓴다 — dispatch_log가 채워지면 그 뒤의
+발송 기준 정산·재고 차감이 손대지 않고 그대로 동작한다.
+UNIQUE(order_no, dispatched_at)라 같은 파일을 두 번 올려도 중복되지 않는다.
+"""
+import glob
+import os
+import sqlite3
+
+from db_core import DATA_DIR
+
+#: 업로드 파일에서 각 항목을 찾을 때 볼 헤더 후보 (앞에 있을수록 우선)
+COLUMN_HINTS = {
+    'order_no':    ('상품주문번호', '주문번호', '주문 번호', 'order_no', 'orderid', 'order id'),
+    'tracking_no': ('송장번호', '운송장번호', '운송장', 'tracking', 'invoice_no'),
+    'recipient':   ('수취인명', '수취인', '받는분', '수령인', 'recipient'),
+    'product_name': ('상품명', '제품명', 'product', 'item'),
+    'qty':         ('수량', 'qty', 'quantity'),
+    'courier':     ('택배사', '배송사', 'courier'),
+    'dispatched_at': ('발송일', '출고일', '발송처리일', '배송일'),
+}
+
+
+def _norm_no(v):
+    """주문번호 정규화 — 엑셀이 숫자로 읽어 '1.23e+13'이 되는 것까지 되돌린다."""
+    s = str(v if v is not None else '').strip()
+    if not s or s.lower() in ('nan', 'none', 'nat'):
+        return ''
+    if s.endswith('.0') and s[:-2].isdigit():
+        s = s[:-2]
+    if 'e+' in s.lower():                 # 지수 표기로 뭉개진 긴 번호 복원
+        try:
+            s = '%.0f' % float(s)
+        except (TypeError, ValueError):
+            pass
+    return s
+
+
+def build_order_owner_index():
+    """주문번호 → 사용자. daily_orders와 order_history를 모두 훑는다.
+
+    daily_orders에만 있는 주문이 많아(clglobal0919 980건) 한쪽만 보면 놓친다.
+    반환: (index, dup) — dup은 두 사용자에 걸린 주문번호(정상이면 비어 있다)
+    """
+    idx, seen = {}, {}
+    for path in sorted(glob.glob(os.path.join(DATA_DIR, '*.db'))):
+        u = os.path.basename(path)[:-3]
+        if u == 'auth' or '.bak' in u or '.backup' in u:
+            continue
+        try:
+            conn = sqlite3.connect('file:%s?mode=ro' % path, uri=True)
+        except Exception:
+            continue
+        for tbl in ('daily_orders', 'order_history'):
+            try:
+                rows = conn.execute(
+                    "SELECT order_no FROM %s WHERE COALESCE(order_no,'') <> ''" % tbl)
+            except Exception:
+                continue
+            for (o,) in rows:
+                o = _norm_no(o)
+                if not o:
+                    continue
+                seen.setdefault(o, set()).add(u)
+                idx[o] = u
+        conn.close()
+    dup = {o: sorted(us) for o, us in seen.items() if len(us) > 1}
+    return idx, dup
+
+
+def guess_columns(headers):
+    """업로드 파일 헤더 → {항목: 열이름}. 못 찾으면 그 항목은 빠진다."""
+    _h = [str(h) for h in (headers or [])]
+    _low = {h: str(h).strip().lower().replace(' ', '') for h in _h}
+    out = {}
+    for key, hints in COLUMN_HINTS.items():
+        for hint in hints:
+            _hi = hint.lower().replace(' ', '')
+            # 완전일치 우선, 없으면 부분일치
+            hit = next((h for h in _h if _low[h] == _hi), None) \
+                or next((h for h in _h if _hi in _low[h]), None)
+            if hit:
+                out[key] = hit
+                break
+    return out
+
+
+def classify_rows(records, colmap, owner_index):
+    """파일 행 → (분류된 것, 못 찾은 것).
+
+    주문번호만으로 가른다. 이름·수취인 유사도로 억지로 붙이지 않는다 —
+    영수증 매칭에서 그렇게 붙였다가 엉뚱한 사용자에게 청구될 뻔했다.
+    반환: (by_user, unknown)
+      by_user = {username: [{order_no, recipient, product_name, qty,
+                             tracking_no, courier}, ...]}
+      unknown = [{..., '_row': 원본행번호}]
+    """
+    _c = colmap or {}
+    by_user, unknown = {}, []
+    for i, rec in enumerate(records or []):
+        def _g(key):
+            col = _c.get(key)
+            return rec.get(col) if col else None
+
+        ono = _norm_no(_g('order_no'))
+        item = {
+            'order_no': ono,
+            'recipient': str(_g('recipient') or '').strip(),
+            'product_name': str(_g('product_name') or '').strip(),
+            'tracking_no': _norm_no(_g('tracking_no')),
+            'courier': str(_g('courier') or '').strip(),
+            '_row': i + 1,
+        }
+        try:
+            item['qty'] = max(1, int(float(_g('qty') or 1)))
+        except (TypeError, ValueError):
+            item['qty'] = 1
+        u = owner_index.get(ono) if ono else None
+        if u:
+            by_user.setdefault(u, []).append(item)
+        else:
+            item['_why'] = '주문번호 없음' if not ono else '어느 사용자에도 없는 주문번호'
+            unknown.append(item)
+    return by_user, unknown
+
+
+def existing_dispatch(username, order_nos):
+    """이미 발송 기록이 있는 주문번호 → 발송일. 중복 업로드를 알리기 위한 것."""
+    out = {}
+    _ons = [str(o).strip() for o in (order_nos or []) if str(o).strip()]
+    if not (username and _ons):
+        return out
+    from db import get_user_db
+    try:
+        conn = get_user_db(username)
+    except Exception:
+        return out
+    CHUNK = 900                            # SQLite 변수 한도
+    for i in range(0, len(_ons), CHUNK):
+        part = _ons[i:i + CHUNK]
+        ph = ','.join('?' * len(part))
+        try:
+            for o, d in conn.execute(
+                    "SELECT order_no, dispatched_at FROM dispatch_log "
+                    "WHERE order_no IN (%s)" % ph, part):
+                out[str(o)] = str(d)
+        except Exception:
+            break
+    conn.close()
+    return out
+
+
+def save_dispatch(by_user, dispatched_at, platform='upload', skip_existing=True):
+    """분류 결과를 dispatch_log에 기록. 반환: {username: 저장건수}, 건너뛴 수."""
+    from db import log_dispatch_success
+    saved, skipped = {}, 0
+    for uname, rows in (by_user or {}).items():
+        _rows = rows
+        if skip_existing:
+            _ex = existing_dispatch(uname, [r['order_no'] for r in rows])
+            _rows = [r for r in rows if r['order_no'] not in _ex]
+            skipped += len(rows) - len(_rows)
+        if not _rows:
+            continue
+        try:
+            n = log_dispatch_success(uname, _rows, str(dispatched_at), platform=platform)
+        except Exception:
+            n = 0
+        if n:
+            saved[uname] = n
+    return saved, skipped
