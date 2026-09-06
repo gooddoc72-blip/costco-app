@@ -397,6 +397,68 @@ def diff_against_snapshot(settle_date, username, basis='dispatch'):
             'total_now': cur_total, 'total_diff': cur_total - total_prev}
 
 
+def _snap_amount(r):
+    """그 날짜의 청구 기준액 — 확정됐으면 확정액, 아니면 예상액."""
+    return (int(r.get('final_total') or 0) if str(r.get('status')) == 'final'
+            else int(r.get('est_total') or 0))
+
+
+def get_period_rows(date_from, date_to, username=None):
+    """기간 내 저장된 정산 스냅샷 — [{settle_date, username, amount, fees_total, status}].
+
+    화면이 매번 compute_daily_purchase를 날짜 수만큼 돌면 느리다.
+    '예상 저장'·'확정' 때 남긴 스냅샷을 읽어 집계한다.
+    """
+    conn = _conn()
+    _ensure(conn)
+    sql = ("SELECT settle_date, username, est_total, final_total, fees_total, status, updated_at "
+           "FROM purchase_settle_snapshot WHERE settle_date BETWEEN ? AND ?")
+    args = [str(date_from), str(date_to)]
+    if username:
+        sql += " AND username=?"
+        args.append(username)
+    sql += " ORDER BY settle_date, username"
+    rows = [dict(r) for r in conn.execute(sql, args)]
+    conn.close()
+    for r in rows:
+        r['amount'] = _snap_amount(r)
+    return rows
+
+
+def get_daily_summary(date_from, date_to):
+    """일별 정리 — {날짜: {사용자: 금액}}, 사용자별 합계, 날짜별 합계."""
+    rows = get_period_rows(date_from, date_to)
+    by_date, by_user = {}, {}
+    for r in rows:
+        d, u, a = r['settle_date'], r['username'], int(r['amount'] or 0)
+        by_date.setdefault(d, {})[u] = by_date.setdefault(d, {}).get(u, 0) + a
+        by_user[u] = by_user.get(u, 0) + a
+    return {'rows': rows, 'by_date': by_date, 'by_user': by_user,
+            'total': sum(by_user.values())}
+
+
+def get_monthly_summary(year_month):
+    """월별 정리 — 사용자별 {구매금액, 월비용, 청구액, 일수, 확정일수}.
+
+    year_month: 'YYYY-MM'
+    """
+    _ym = str(year_month)[:7]
+    _last = calendar.monthrange(int(_ym[:4]), int(_ym[5:7]))[1]
+    rows = get_period_rows('%s-01' % _ym, '%s-%02d' % (_ym, _last))
+    out = {}
+    for r in rows:
+        u = r['username']
+        e = out.setdefault(u, {'goods': 0, 'fees': 0, 'days': 0, 'final_days': 0})
+        e['goods'] += int(r['amount'] or 0)
+        e['fees'] += int(r.get('fees_total') or 0)
+        e['days'] += 1
+        if str(r.get('status')) == 'final':
+            e['final_days'] += 1
+    for u, e in out.items():
+        e['charge'] = e['goods'] + e['fees']
+    return out
+
+
 def get_user_badge(settle_date, username):
     """사용자 화면 배지용 — 확정되어 예상과 다르면 변경 요약 반환, 아니면 None."""
     snap = get_snapshot(settle_date, username)

@@ -4,7 +4,7 @@
 '확정'하면 예상 대비 상품별 변경금액을 산출하고, 사용자 화면에 배지로 고지된다.
 매일=구매가만 / 월말=택배·포장비 추가(예정).
 """
-from datetime import date
+from datetime import date, timedelta
 
 import streamlit as st
 import pandas as pd
@@ -16,6 +16,7 @@ from db_purchase_settle import (
     compute_daily_purchase, save_estimate, finalize, get_snapshot, diff_against_snapshot,
     month_fees_if_last_day, is_last_day_of_month,
     suggest_shared_matches, link_product_mapping,
+    get_daily_summary, get_monthly_summary, get_period_rows,
 )
 from utils import fmt
 
@@ -26,6 +27,79 @@ def _disp_map():
 
 def _sellers():
     return [u['username'] for u in get_all_users() if not u.get('is_admin')]
+
+
+def _render_period_summary(dmap):
+    """사용자별 일별·월별 정리.
+
+    영수증 정산이 '그날 한 번'을 처리한다면, 여기는 그 결과를 기간으로 모아 본다.
+    매번 다시 계산하지 않고 '예상 저장'·'확정'이 남긴 스냅샷을 읽는다 —
+    날짜 수만큼 compute_daily_purchase를 돌리면 화면이 느려진다.
+    금액은 확정된 날은 확정액, 아직이면 예상액을 쓴다.
+    """
+    st.divider()
+    st.subheader("📅 사용자별 정리")
+    _t_day, _t_month = st.tabs(["일별", "월별"])
+
+    with _t_day:
+        c1, c2 = st.columns(2)
+        _to = c2.date_input("종료일", value=date.today(), key="ps_sum_to")
+        _from = c1.date_input("시작일", value=_to - timedelta(days=13), key="ps_sum_from")
+        _sum = get_daily_summary(str(_from), str(_to))
+        if not _sum['rows']:
+            st.info(f"{_from} ~ {_to} 저장된 정산이 없습니다. "
+                    "위에서 '예상 저장' 또는 '확정'을 눌러야 이 표에 쌓입니다.")
+        else:
+            _users = sorted(_sum['by_user'], key=lambda u: -_sum['by_user'][u])
+            _rows = []
+            for _d in sorted(_sum['by_date'], reverse=True):
+                _r = {'날짜': _d}
+                for _u in _users:
+                    _r[dmap.get(_u, _u)] = _sum['by_date'][_d].get(_u, 0)
+                _r['합계'] = sum(_sum['by_date'][_d].values())
+                _rows.append(_r)
+            _tot = {'날짜': '합계'}
+            for _u in _users:
+                _tot[dmap.get(_u, _u)] = _sum['by_user'][_u]
+            _tot['합계'] = _sum['total']
+            _rows.append(_tot)
+            st.dataframe(pd.DataFrame(_rows), use_container_width=True, hide_index=True)
+            st.markdown(f"### 기간 합계: **{fmt(_sum['total'])}원**  ·  "
+                        f"{len(_sum['by_date'])}일  ·  사용자 {len(_users)}명")
+            _nf = [r for r in _sum['rows'] if str(r.get('status')) != 'final']
+            if _nf:
+                st.caption(f"⚠️ 아직 확정되지 않은 날 {len(_nf)}건이 예상액으로 잡혀 있습니다 "
+                           "— 영수증 반영 후 '확정'을 누르면 실단가로 바뀝니다.")
+
+    with _t_month:
+        _today = date.today()
+        _yms = []
+        _y, _m = _today.year, _today.month
+        for _ in range(12):
+            _yms.append('%04d-%02d' % (_y, _m))
+            _m -= 1
+            if _m == 0:
+                _y, _m = _y - 1, 12
+        _ym = st.selectbox("정산 월", _yms, key="ps_sum_ym")
+        _mon = get_monthly_summary(_ym)
+        if not _mon:
+            st.info(f"{_ym} 저장된 정산이 없습니다.")
+        else:
+            _rows = [{'사용자': dmap.get(u, u),
+                      '구매금액': fmt(v['goods']),
+                      '택배·포장': fmt(v['fees']),
+                      '청구액': fmt(v['charge']),
+                      '정산일수': v['days'],
+                      '확정일수': v['final_days']}
+                     for u, v in sorted(_mon.items(), key=lambda kv: -kv[1]['charge'])]
+            st.dataframe(pd.DataFrame(_rows), use_container_width=True, hide_index=True)
+            _g = sum(v['goods'] for v in _mon.values())
+            _f = sum(v['fees'] for v in _mon.values())
+            st.markdown(f"### {_ym} 총 청구액: **{fmt(_g + _f)}원** "
+                        f"(구매 {fmt(_g)} + 택배·포장 {fmt(_f)})  ·  사용자 {len(_mon)}명")
+            _pend = sum(v['days'] - v['final_days'] for v in _mon.values())
+            if _pend:
+                st.caption(f"⚠️ 확정되지 않은 날이 {_pend}건 있습니다 — 예상액으로 집계됐습니다.")
 
 
 def _render_price_log(dmap):
@@ -335,6 +409,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     else:
         st.markdown(f"### 총 구매금액: **{fmt(_tot)}원**  ·  사용자 {len(per_user)}명")
 
+    _render_period_summary(dmap)
     _render_price_log(dmap)
     _render_split_rules(USERNAME)
     _render_link_panel(per_user, dmap, ds, USERNAME)
