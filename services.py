@@ -131,6 +131,27 @@ def resolve_pack_factor(product: dict, product_name: str) -> int:
     return pack_factor_from_name(product_name)
 
 
+def resolve_split_qty(product: dict, product_name: str = '') -> int:
+    """1팩을 몇 개로 나눠 파는지(소분수).
+
+    소분 여부는 코스트코 규격이 아니라 '내가 어떻게 파느냐'다. 상품명의 'x N'만
+    보면 신라면 30개들이 박스(내용물 설명)와 그릭요거트 2개입(소분 판매)을
+    구분할 수 없다. 그래서 관리자가 **상품명 키워드로 명시한 규칙**을 최우선으로 본다.
+    규칙이 없으면 제품 레코드의 split_qty를 쓴다(기존 동작).
+    """
+    try:
+        from db import split_qty_by_name
+        _by_name = int(split_qty_by_name(product_name) or 0)
+    except Exception:
+        _by_name = 0
+    if _by_name > 1:
+        return _by_name
+    try:
+        return max(1, int((product or {}).get('split_qty', 1) or 1))
+    except (TypeError, ValueError):
+        return 1
+
+
 # ── 비용 계산 (단일 공식) ──────────────────────────────────
 def calc_cost(product: dict, qty: int, pack_qty: int = 1) -> int:
     """제품 dict + 수량 → 매입가.
@@ -518,13 +539,20 @@ def match_product_to_db(username, store_product_name, product_no=None,
             _final_unit_price = _up_unit_price
         else:
             _final_unit_price = _sp_unit_price if _sp_unit_price > 0 else _up_unit_price
+        # 상품명 소분 규칙이 있으면 그것이 최우선 (관리자가 명시한 값)
+        _sq_rule = 0
+        try:
+            from db import split_qty_by_name
+            _sq_rule = int(split_qty_by_name(store_product_name) or 0)
+        except Exception:
+            _sq_rule = 0
         return {
             **sp,
             'unit_price':       _final_unit_price,
             'sale_price':       int(up.get('sale_price',   0) or 0) if up else 0,
             'shipping_fee':     int(up.get('shipping_fee', 0) or 0) if up else 0,
             'naver_product_no': up.get('product_no', '') if up else '',
-            'split_qty':        _sq,
+            'split_qty':        _sq_rule if _sq_rule > 1 else _sq,
         }
     products = _user_prods if _user_prods is not None else get_all_products(username)
     if not products:

@@ -133,7 +133,7 @@ def compute_daily_purchase(username, date, basis='dispatch'):
       'order'    — 주문일 기준(구버전). 발송 이력이 없는 계정 확인용.
     """
     from pages_lib.profit_calc.loader import build_settlement_df
-    from services import match_product_to_db, resolve_pack_factor
+    from services import match_product_to_db, resolve_pack_factor, resolve_split_qty
     from db import get_all_products, get_shared_products
     import pandas as _pd
 
@@ -168,7 +168,8 @@ def compute_daily_purchase(username, date, basis='dispatch'):
         pno = (str(rec.get('product_no', '') or '') if has_pno else '')
         p = _match(name, pno) or _match(name, '')
         if p:
-            sq = max(1, int(p.get('split_qty', 1) or 1))
+            # 상품명 소분 규칙 우선 — 사용자 제품DB 폴백 경로도 규칙이 걸리게 한다
+            sq = resolve_split_qty(p, name)
             sf = resolve_pack_factor(p, name)
             unit = int(p.get('unit_price') or 0)      # 공유 store_price(영수증 실단가) 우선 반영됨
             amount = (unit // sq) * qty * sf

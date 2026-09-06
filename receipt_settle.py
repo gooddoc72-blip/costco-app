@@ -94,11 +94,16 @@ def _split_pack(product):
     """(소분수 split_qty, 묶음배수 pack) — 수익계산과 동일 기준."""
     split, pack = 1, 1
     if product:
-        try:
-            split = max(1, int(product.get('split_qty', 1) or 1))
-        except (TypeError, ValueError):
-            split = 1
         name = product.get('store_product_name') or product.get('costco_name') or ''
+        # 상품명 소분 규칙 우선 (resolve_split_qty가 규칙 → 레코드 순으로 본다)
+        try:
+            from services import resolve_split_qty
+            split = resolve_split_qty(product, name)
+        except Exception:
+            try:
+                split = max(1, int(product.get('split_qty', 1) or 1))
+            except (TypeError, ValueError):
+                split = 1
         pack = resolve_pack_factor(product, name)
     return split, int(pack)
 

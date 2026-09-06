@@ -9,7 +9,8 @@ from datetime import date
 import streamlit as st
 import pandas as pd
 
-from db import get_all_users, get_shared_products
+from db import (get_all_users, get_shared_products,
+                get_split_rules, upsert_split_rule, delete_split_rule)
 from db_purchase_settle import (
     compute_daily_purchase, save_estimate, finalize, get_snapshot, diff_against_snapshot,
     month_fees_if_last_day, is_last_day_of_month,
@@ -24,6 +25,70 @@ def _disp_map():
 
 def _sellers():
     return [u['username'] for u in get_all_users() if not u.get('is_admin')]
+
+
+def _render_split_rules(USERNAME):
+    """소분 판매 상품을 상품명 키워드로 고정한다.
+
+    소분 여부는 코스트코 규격이 아니라 '내가 어떻게 파느냐'라, 상품명의 'x N'만
+    보고 자동 판정할 수 없다(신라면 30개들이 박스 vs 그릭요거트 2개입).
+    소분 품목은 많지 않으므로 여기에 키워드로 명시해 고정한다.
+    한 번 넣으면 이후 모든 정산·수익계산이 이 값을 쓴다.
+    """
+    _rules = get_split_rules(force=True)
+    with st.expander(f"🔪 소분 판매 상품 {len(_rules)}건 — 상품명으로 고정", expanded=False):
+        st.caption(
+            "코스트코 1팩을 몇 개로 나눠 파는지를 **상품명 키워드**로 지정합니다. "
+            "예: 키워드 `커클랜드 그릭요거트 907g` · 소분수 `2` → 그 이름이 들어간 주문은 "
+            "매입가가 **팩값 ÷ 2**로 잡힙니다. "
+            "키워드가 여러 개 걸리면 **가장 긴(구체적인) 것**이 이깁니다. "
+            "띄어쓰기·대소문자는 무시합니다.")
+
+        _rows = [{'삭제': False, '상품명 키워드': r['keyword'], '소분수': int(r['split_qty']),
+                  '메모': r.get('memo') or '', '수정': f"{r.get('updated_by') or ''} {r.get('updated_at') or ''}".strip()}
+                 for r in _rules]
+        if _rows:
+            _ed = st.data_editor(
+                pd.DataFrame(_rows), use_container_width=True, hide_index=True,
+                key="ps_split_editor", disabled=['상품명 키워드', '수정'],
+                column_config={
+                    '삭제': st.column_config.CheckboxColumn('삭제'),
+                    '소분수': st.column_config.NumberColumn('소분수', min_value=1, max_value=50, step=1),
+                })
+            c1, c2 = st.columns([1, 4])
+            if c1.button("💾 변경 저장", key="ps_split_save"):
+                _n = 0
+                for r in _ed.to_dict('records'):
+                    _kw = str(r.get('상품명 키워드') or '')
+                    if r.get('삭제'):
+                        delete_split_rule(_kw); _n += 1
+                    else:
+                        _old = next((x for x in _rules if x['keyword'] == _kw), None)
+                        if _old and (int(_old['split_qty']) != int(r.get('소분수') or 1)
+                                     or (_old.get('memo') or '') != str(r.get('메모') or '')):
+                            upsert_split_rule(_kw, int(r.get('소분수') or 1),
+                                              str(r.get('메모') or ''), USERNAME)
+                            _n += 1
+                st.success(f"✅ {_n}건 반영했습니다.") if _n else st.info("변경된 내용이 없습니다.")
+                if _n:
+                    st.rerun()
+        else:
+            st.caption("등록된 소분 규칙이 없습니다. 아래에서 추가하세요.")
+
+        st.markdown("**➕ 소분 규칙 추가**")
+        a1, a2, a3, a4 = st.columns([3, 1, 2.4, 1])
+        _kw = a1.text_input("상품명 키워드", key="ps_split_kw",
+                            placeholder="커클랜드 그릭요거트 907g")
+        _sq = a2.number_input("소분수", min_value=2, max_value=50, step=1, value=2,
+                              key="ps_split_sq")
+        _mm = a3.text_input("메모", key="ps_split_memo", placeholder="907g 2개입을 낱개로 판매")
+        with a4:
+            st.write("")
+            if st.button("추가", key="ps_split_add", use_container_width=True,
+                         disabled=not str(_kw).strip()):
+                upsert_split_rule(str(_kw).strip(), int(_sq), str(_mm or ''), USERNAME)
+                st.success(f"✅ '{str(_kw).strip()}' → 소분 {int(_sq)} 저장")
+                st.rerun()
 
 
 def _render_link_panel(per_user, dmap, ds, USERNAME):
@@ -224,6 +289,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     else:
         st.markdown(f"### 총 구매금액: **{fmt(_tot)}원**  ·  사용자 {len(per_user)}명")
 
+    _render_split_rules(USERNAME)
     _render_link_panel(per_user, dmap, ds, USERNAME)
 
     c1, c2, _ = st.columns([1.4, 1.6, 3])

@@ -1033,3 +1033,97 @@ def upsert_product(username, costco_name, keyword, price, product_no='', split_q
                                          int(price), split_qty, username, manual=True)
         except Exception:
             pass
+
+
+# ── 소분 판매 규칙 (상품명 고정) ─────────────────────────────
+#  소분 여부는 코스트코 규격이 아니라 '내가 어떻게 파느냐'다. 상품명의 'x N'만
+#  보면 신라면 30개들이 박스(내용물 설명)와 그릭요거트 2개입(소분 판매)을
+#  구분할 수 없다. 소분 품목은 많지 않으므로 상품명 키워드로 명시해 고정한다.
+#  auth.db에 두어 모든 사용자가 같은 규칙을 쓴다.
+def _ensure_split_rules(conn):
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS split_rules (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            keyword    TEXT NOT NULL UNIQUE,
+            split_qty  INTEGER NOT NULL DEFAULT 1,
+            memo       TEXT DEFAULT '',
+            updated_by TEXT DEFAULT '',
+            updated_at TEXT DEFAULT ''
+        )
+    """)
+    conn.commit()
+
+
+def _norm_split_key(s):
+    """규칙 비교용 정규화 — 공백 제거 + 소문자."""
+    return ''.join(str(s or '').split()).lower()
+
+
+_SPLIT_RULES_CACHE = {'rows': None}
+
+
+def get_split_rules(force=False):
+    """소분 규칙 목록 — [{keyword, split_qty, memo, updated_by, updated_at}].
+    주문 한 건마다 조회하면 느려서 캐시한다. 저장·삭제 시 무효화된다."""
+    if _SPLIT_RULES_CACHE['rows'] is not None and not force:
+        return _SPLIT_RULES_CACHE['rows']
+    conn = get_auth_db()
+    conn.row_factory = sqlite3.Row
+    _ensure_split_rules(conn)
+    rows = [dict(r) for r in conn.execute(
+        "SELECT keyword, split_qty, memo, updated_by, updated_at FROM split_rules "
+        "ORDER BY length(keyword) DESC")]
+    conn.close()
+    _SPLIT_RULES_CACHE['rows'] = rows
+    return rows
+
+
+def upsert_split_rule(keyword, split_qty, memo='', updated_by=''):
+    """소분 규칙 저장. split_qty<=1이면 규칙을 지운다(소분 아님)."""
+    kw = str(keyword or '').strip()
+    if not kw:
+        return False
+    sq = max(1, int(split_qty or 1))
+    conn = get_auth_db()
+    _ensure_split_rules(conn)
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    if sq <= 1:
+        conn.execute("DELETE FROM split_rules WHERE keyword=?", (kw,))
+    else:
+        conn.execute(
+            "INSERT INTO split_rules (keyword, split_qty, memo, updated_by, updated_at) "
+            "VALUES (?,?,?,?,?) ON CONFLICT(keyword) DO UPDATE SET "
+            "split_qty=excluded.split_qty, memo=excluded.memo, "
+            "updated_by=excluded.updated_by, updated_at=excluded.updated_at",
+            (kw, sq, str(memo or ''), str(updated_by or ''), now))
+    conn.commit()
+    conn.close()
+    _SPLIT_RULES_CACHE['rows'] = None
+    return True
+
+
+def delete_split_rule(keyword):
+    conn = get_auth_db()
+    _ensure_split_rules(conn)
+    conn.execute("DELETE FROM split_rules WHERE keyword=?", (str(keyword or '').strip(),))
+    conn.commit()
+    conn.close()
+    _SPLIT_RULES_CACHE['rows'] = None
+    return True
+
+
+def split_qty_by_name(product_name, rules=None):
+    """상품명에 걸리는 소분 규칙의 소분수. 없으면 0.
+
+    키워드가 상품명에 통째로 들어 있으면 적용한다. 여러 개가 걸리면
+    **가장 긴 키워드**가 이긴다 — 더 구체적인 규칙이 우선이다
+    ('그릭요거트'보다 '커클랜드그릭요거트907g'이 우선).
+    """
+    nm = _norm_split_key(product_name)
+    if not nm:
+        return 0
+    for r in (rules if rules is not None else get_split_rules()):
+        kw = _norm_split_key(r.get('keyword'))
+        if kw and kw in nm:
+            return max(1, int(r.get('split_qty') or 1))
+    return 0
