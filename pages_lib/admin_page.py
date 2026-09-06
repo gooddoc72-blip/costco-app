@@ -727,7 +727,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     if not is_costco_pno(_cp):
                         st.error(f"공유DB 상품번호가 코스트코 번호 형식(4~7자리)이 아닙니다: {_cp}")
                     elif upsert_shared_naver_map(_cp, _sub['username'],
-                                                 naver_pno=_nv, product_name=_nm):
+                                                 naver_pno=_nv, product_name=_nm,
+                                                 source='confirm'):
                         st.success(f"✅ {_nv} → {_cp} 연결 완료 "
                                    f"({_sel.get('costco_name')}) — 이후 자동 해석됩니다.")
                         st.rerun()

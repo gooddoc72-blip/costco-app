@@ -463,6 +463,18 @@ def allocate_dispatched_to_receipt(receipt_items, dispatch_date, users=None,
             continue
         nmap = _naver_to_product_map(uname)
         ub = bridge.get(uname) or {'nv2cno': {}, 'items': []}
+        # 주문 수집 시점에 확정해 행에 굳혀 둔 코스트코번호. 화면마다 다시
+        # 매칭하면 같은 주문이 화면마다 다르게 붙으므로 이걸 1순위로 쓴다.
+        _ono2cno = {}
+        try:
+            _c0 = get_user_db(uname)
+            for _r0 in _c0.execute(
+                    "SELECT order_no, COALESCE(costco_no,'') AS c FROM daily_orders "
+                    "WHERE TRIM(COALESCE(costco_no,''))<>''"):
+                _ono2cno[_norm(_r0['order_no'])] = _norm(_r0['c'])
+            _c0.close()
+        except Exception:
+            _ono2cno = {}
         for o in disp:
             ono = _norm(o.get('order_no'))
             if _excl and (uname, ono) in _excl:
@@ -472,8 +484,12 @@ def allocate_dispatched_to_receipt(receipt_items, dispatch_date, users=None,
             prod = nmap.get(onv)
             costco_no, via = '', ''
 
+            # ⓪ 주문 행에 굳어 있는 코스트코번호 — 수집 때 한 번 확정한 값
+            _c0v = _norm(_ono2cno.get(ono))
+            if _c0v and _c0v in price_by_costco:
+                costco_no, via = _c0v, 'order'
             # ① 장보기 목록 브리지 (그날 사야 했던 목록 = 영수증과 같은 근거)
-            _c = _norm(ub['nv2cno'].get(onv))
+            _c = _norm(ub['nv2cno'].get(onv)) if not costco_no else ''
             if _c and _c in price_by_costco:
                 costco_no, via = _c, 'shopping'
             # ①-b 장보기 항목 이름으로 코스트코번호 찾기 (네이버번호가 비어 있는 제출분)
@@ -1037,7 +1053,9 @@ def learn_costco_mappings(rows):
                 # 사용자마다 다시 잇게 된다(확보율이 18~66%로 제각각이었다).
                 try:
                     from db import upsert_shared_naver_map
-                    upsert_shared_naver_map(cno, uname, naver_pno=nv, product_name=pname)
+                    # 영수증은 코스트코가 직접 찍어 준 번호 — 유일한 정답지다
+                    upsert_shared_naver_map(cno, uname, naver_pno=nv,
+                                            product_name=pname, source='receipt')
                 except Exception:
                     pass
                 if cur.rowcount:

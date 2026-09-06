@@ -255,7 +255,8 @@ def link_product_mapping(username, naver_no, product_name, costco_no, split_qty=
     if _nv:
         try:
             from db import upsert_shared_naver_map
-            upsert_shared_naver_map(_cno, username, naver_pno=_nv, product_name=_nm)
+            upsert_shared_naver_map(_cno, username, naver_pno=_nv, product_name=_nm,
+                                    source='confirm')
         except Exception:
             pass
     conn = get_user_db(username)

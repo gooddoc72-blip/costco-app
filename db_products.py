@@ -443,6 +443,10 @@ def _ensure_shared_naver_map(conn):
         updated_at TEXT DEFAULT '',
         UNIQUE(username, naver_pno)
     )""")
+    try:
+        conn.execute("ALTER TABLE shared_naver_map ADD COLUMN source TEXT DEFAULT 'guess'")
+    except Exception:
+        pass
     for idx_sql in [
         "CREATE INDEX IF NOT EXISTS idx_snm_naver ON shared_naver_map(naver_pno)",
         "CREATE INDEX IF NOT EXISTS idx_snm_origin ON shared_naver_map(naver_origin_pno)",
@@ -454,10 +458,18 @@ def _ensure_shared_naver_map(conn):
             pass
 
 
+MAP_SOURCE_RANK = {'receipt': 3, 'confirm': 2, 'guess': 1, '': 1}
+
+
 def upsert_shared_naver_map(costco_pno, username, naver_pno='', naver_origin_pno='',
-                            product_name=''):
+                            product_name='', source='guess'):
     """공유DB에 (코스트코번호 ↔ 사용자 네이버번호) 매핑 저장/갱신.
-    수동매칭 시 호출 → 이후 그 네이버번호 주문이 오면 코스트코번호=공유가격으로 자동 해석."""
+
+    source는 그 매핑의 근거다 — receipt(영수증 확인) > confirm(관리자 확정) >
+    guess(이름 추정). **등급이 같거나 높을 때만 덮어쓴다.**
+    이름이 비슷하다는 이유만으로 영수증에서 확인한 번호를 밀어내면 안 된다.
+    그렇게 해서 닥터유 단백질바가 21,490원짜리 N.V 프로틴 바로 굳은 적이 있다.
+    """
     costco_pno = str(costco_pno or '').strip()
     naver_pno = str(naver_pno or '').strip()
     naver_origin_pno = str(naver_origin_pno or '').strip()
@@ -467,17 +479,30 @@ def upsert_shared_naver_map(costco_pno, username, naver_pno='', naver_origin_pno
     conn = get_auth_db()
     _ensure_shared_naver_map(conn)
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    _src = str(source or 'guess').strip().lower()
+    if _src not in MAP_SOURCE_RANK:
+        _src = 'guess'
+    _rank = MAP_SOURCE_RANK[_src]
+    _cur = conn.execute(
+        "SELECT costco_pno, COALESCE(source,'guess') AS source FROM shared_naver_map "
+        "WHERE username=? AND naver_pno=?", (str(username or ''), naver_pno)).fetchone()
+    if _cur and str(_cur['costco_pno'] or '').strip() != costco_pno:
+        if MAP_SOURCE_RANK.get(str(_cur['source'] or 'guess'), 1) > _rank:
+            conn.close()
+            return False        # 더 강한 근거가 이미 있다 — 추정이 밀어내지 못한다
     conn.execute(
         """INSERT INTO shared_naver_map
-           (costco_pno, username, naver_pno, naver_origin_pno, product_name, updated_at)
-           VALUES (?,?,?,?,?,?)
+           (costco_pno, username, naver_pno, naver_origin_pno, product_name,
+            updated_at, source)
+           VALUES (?,?,?,?,?,?,?)
            ON CONFLICT(username, naver_pno) DO UPDATE SET
                costco_pno=excluded.costco_pno,
                naver_origin_pno=excluded.naver_origin_pno,
                product_name=excluded.product_name,
-               updated_at=excluded.updated_at""",
+               updated_at=excluded.updated_at,
+               source=excluded.source""",
         (costco_pno, str(username or ''), naver_pno, naver_origin_pno,
-         str(product_name or ''), now)
+         str(product_name or ''), now, _src)
     )
     conn.commit()
     conn.close()
@@ -544,7 +569,8 @@ def collect_shared_naver_map(dry_run=False):
     if not dry_run:
         for cno, u, nv, og, nm in rows:
             if upsert_shared_naver_map(cno, u, naver_pno=nv,
-                                       naver_origin_pno=og, product_name=nm):
+                                       naver_origin_pno=og, product_name=nm,
+                                       source='guess'):
                 added += 1
     return {'added': added if not dry_run else len(rows),
             'candidates': len(rows), 'conflicts': conflicts}
@@ -664,7 +690,8 @@ def resolve_costco_conflict(username, naver_no, costco_no, product_name=''):
     _cno = str(costco_no or '').strip()
     if not (username and _nv and is_costco_pno(_cno)):
         return False
-    upsert_shared_naver_map(_cno, username, naver_pno=_nv, product_name=product_name)
+    upsert_shared_naver_map(_cno, username, naver_pno=_nv, product_name=product_name,
+                            source='confirm')
     try:
         conn = get_user_db(username)
         conn.execute(
@@ -1003,7 +1030,8 @@ def link_naver_to_shared(username: str, user_product_id: int, shared_id: int):
                 costco_pno, username,
                 naver_pno=str(_up['naver_channel_pno'] or ''),
                 naver_origin_pno=str(_up['naver_origin_pno'] or ''),
-                product_name=str(_up['costco_name'] or '')
+                product_name=str(_up['costco_name'] or ''),
+                source='confirm'
             )
         except Exception:
             pass
