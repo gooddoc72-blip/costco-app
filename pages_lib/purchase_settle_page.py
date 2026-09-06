@@ -74,6 +74,7 @@ def _render_ledger(dmap, USERNAME):
     _sum = bl.summarize(str(_from), str(_to))
     st.dataframe(pd.DataFrame([{
         '사용자': dmap.get(u, u), '청구건수': v['count'], '청구액': fmt(v['amount']),
+        '가격 미확인': v.get('no_price', 0),
         '예상(미확정)': v['pending'], '확정': v['confirmed'],
         '발행': v['invoiced'], '취소': v['canceled'],
     } for u, v in sorted(_sum.items(), key=lambda kv: -kv[1]['amount'])]),
@@ -84,6 +85,21 @@ def _render_ledger(dmap, USERNAME):
     if _pend:
         st.caption(f"⚠️ 아직 예상가인 행이 {_pend}건입니다 — 영수증 정산을 하면 "
                    "실단가로 확정되고, 다시 '원장 만들기'를 누르면 반영됩니다.")
+    _np = bl.unpriced_rows(str(_from), str(_to))
+    if _np:
+        with st.expander(f"❗ 매입가가 아직 없는 행 {len(_np)}건 — 이대로 계산서를 끊으면 "
+                         "그만큼 덜 청구됩니다", expanded=False):
+            st.caption("아직 구매하지 않아 매입가를 모르는 건입니다(정상). "
+                       "영수증이 올라오면 채워집니다. "
+                       "제품가격 DB에 코스트코번호 연결이 없어 0원인 것도 여기 섞이므로, "
+                       "발행 전에 한 번 훑어보세요.")
+            st.dataframe(pd.DataFrame([{
+                '발송일': r['dispatched_at'],
+                '사용자': dmap.get(r['username'], r['username']),
+                '주문번호': r['order_no'],
+                '상품명': (r['product_name'] or '')[:40],
+                '수량': r['qty'],
+            } for r in _np[:200]]), use_container_width=True, hide_index=True)
 
     with st.expander(f"📄 원장 상세 {len(_rows)}건", expanded=False):
         st.dataframe(pd.DataFrame([{
