@@ -190,6 +190,93 @@ def compute_daily_purchase(username, date, basis='dispatch'):
     return items, int(total)
 
 
+def suggest_shared_matches(product_name, shared_prods=None, top=5):
+    """상품명 → 공유DB 후보 상위 N. (코스트코번호 연결 도우미용)
+
+    싼 토큰 점수로 후보를 좁힌 뒤 종합 점수(용량·브랜드 반영)로 다시 세운다.
+    3,891개를 전부 종합 점수로 재면 화면이 눈에 띄게 느려진다.
+    반환: [{'product_no','costco_name','unit_price','split_qty','score'}]
+    """
+    from services import _token_score, _combined_match_score
+    from db import get_shared_products
+    _nm = str(product_name or '').strip()
+    if not _nm:
+        return []
+    _sp = shared_prods if shared_prods is not None else (get_shared_products() or [])
+    _pre = []
+    for _p in _sp:
+        _cn = str(_p.get('costco_name') or '')
+        if not _cn:
+            continue
+        _t = _token_score(_nm, _cn)
+        if _t > 0:
+            _pre.append((_t, _p))
+    _pre.sort(key=lambda x: -x[0])
+    _out = []
+    for _t, _p in _pre[:40]:
+        _sc = _combined_match_score(_nm, str(_p.get('costco_name') or ''))['total']
+        _out.append({'product_no': str(_p.get('product_no') or ''),
+                     'costco_name': str(_p.get('costco_name') or ''),
+                     'unit_price': int(_p.get('unit_price') or 0),
+                     'split_qty': max(1, int(_p.get('split_qty') or 1)),
+                     'score': round(_sc, 3)})
+    _out.sort(key=lambda x: -x['score'])
+    return _out[:int(top)]
+
+
+def link_product_mapping(username, naver_no, product_name, costco_no, split_qty=1):
+    """사용자 제품DB에 '네이버번호 → 코스트코번호 + 소분수'를 기입한다.
+
+    구매금액이 0원으로 나오는 근본 원인은 이 매핑이 없어서다. 주문은 네이버번호로
+    들어오는데 가격은 공유DB에 코스트코번호로 있어, 둘을 잇지 못하면 값을 못 찾는다.
+    (oxo 1,345개 중 코스트코번호가 있는 건 312개뿐)
+
+    소분수는 사용자 레코드에 쓴다 — match_product_to_db가 사용자 항목이 있으면
+    사용자 split_qty를 우선하도록 설계돼 있다(소분을 하는 사람과 안 하는 사람이
+    같은 상품을 다르게 팔 수 있어서다).
+    반환: 'updated' | 'inserted' | '' (실패)
+    """
+    from db import get_user_db
+    _nv = str(naver_no or '').strip()
+    _cno = str(costco_no or '').strip()
+    _sq = max(1, int(split_qty or 1))
+    _nm = str(product_name or '').strip()
+    if not (username and _cno):
+        return ''
+    conn = get_user_db(username)
+    try:
+        _cols = {r[1] for r in conn.execute("PRAGMA table_info(products)")}
+        _keys = [c for c in ('naver_channel_pno', 'naver_origin_pno') if c in _cols]
+        _now = datetime.now().strftime("%Y-%m-%d %H:%M")
+        if _nv and _keys:
+            _where = " OR ".join("TRIM(COALESCE(%s,''))=?" % c for c in _keys)
+            cur = conn.execute(
+                "UPDATE products SET product_no=?, split_qty=?, updated_at=? WHERE (%s)" % _where,
+                [_cno, _sq, _now] + [_nv] * len(_keys))
+            if cur.rowcount:
+                conn.commit()
+                return 'updated'
+        if not _nm:
+            return ''
+        for _mk in (_nm[:180], "%s#%s" % (_nm[:170], _nv or _cno)):
+            try:
+                conn.execute(
+                    "INSERT INTO products (product_no, store_product_name, costco_name,"
+                    " match_keyword, unit_price, split_qty, updated_at, naver_channel_pno)"
+                    " VALUES (?,?,?,?,0,?,?,?)",
+                    (_cno, _nm, _nm, _mk, _sq, _now, _nv))
+                conn.commit()
+                return 'inserted'
+            except sqlite3.IntegrityError:
+                continue
+        return ''
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
 # ── 스냅샷 저장/조회 (예상 기준선) ───────────────────────────
 def _conn():
     conn = get_auth_db()

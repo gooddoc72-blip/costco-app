@@ -9,10 +9,11 @@ from datetime import date
 import streamlit as st
 import pandas as pd
 
-from db import get_all_users
+from db import get_all_users, get_shared_products
 from db_purchase_settle import (
     compute_daily_purchase, save_estimate, finalize, get_snapshot, diff_against_snapshot,
     month_fees_if_last_day, is_last_day_of_month,
+    suggest_shared_matches, link_product_mapping,
 )
 from utils import fmt
 
@@ -25,11 +26,120 @@ def _sellers():
     return [u['username'] for u in get_all_users() if not u.get('is_admin')]
 
 
+def _render_link_panel(per_user, dmap, ds, USERNAME):
+    """구매가가 0원인 항목을 공유DB 상품에 연결하고 소분수를 지정한다.
+
+    0원의 원인은 값이 없어서가 아니라 **주문(네이버번호) ↔ 공유DB(코스트코번호)**를
+    잇는 매핑이 사용자 제품DB에 없어서다. 값은 공유DB에 이미 있다
+    (이디야 커피믹스 41,990원 등). 여기서 한 번 연결하면 이후로는 자동으로 붙는다.
+    소분수도 같이 받는다 — 공유DB 3,891개가 전부 split_qty=1이라
+    907g 2개들이를 낱개로 팔아도 팩 값을 통째로 청구하고 있었다.
+    """
+    _miss = []
+    for u, v in per_user.items():
+        for it in v['items']:
+            if int(it.get('unit_price') or 0) > 0:
+                continue
+            _miss.append({'username': u, 'item': it})
+    if not _miss:
+        return
+
+    with st.expander(f"🔗 구매가 없는 항목 연결 {len(_miss)}건 — 코스트코 상품·소분수 지정",
+                     expanded=False):
+        st.caption(
+            "값이 없는 게 아니라 **주문과 공유DB를 잇는 코스트코 상품번호가 없어서** 0원입니다. "
+            "아래에서 한 번 연결하면 다음부터 자동으로 붙습니다. "
+            "**소분**은 코스트코 묶음을 몇 개로 나눠 파는지입니다 "
+            "(907g 2개들이를 낱개로 팔면 2 → 단가가 절반으로 잡힙니다).")
+
+        _sp = get_shared_products() or []
+        _key = f"_ps_sugg_{ds}_{len(_miss)}"
+        if _key not in st.session_state:
+            with st.spinner("공유DB에서 후보 찾는 중..."):
+                _sg = {}
+                for m in _miss:
+                    _nm = str(m['item'].get('product_name') or '')
+                    if _nm not in _sg:
+                        _sg[_nm] = suggest_shared_matches(_nm, shared_prods=_sp, top=1)
+                st.session_state[_key] = _sg
+        _sugg = st.session_state[_key]
+
+        _rows = []
+        for m in _miss:
+            it = m['item']
+            _nm = str(it.get('product_name') or '')
+            _c = (_sugg.get(_nm) or [{}])[0]
+            _rows.append({
+                '연결': False,
+                '사용자': dmap.get(m['username'], m['username']),
+                '상품명': _nm[:42],
+                '네이버번호': str(it.get('product_no') or ''),
+                '추천': (f"{_c.get('costco_name','')[:26]} ({_c.get('unit_price',0):,}원 "
+                        f"· 유사도 {_c.get('score',0)})" if _c.get('product_no') else '후보 없음'),
+                '코스트코번호': str(_c.get('product_no') or ''),
+                '소분수': int(_c.get('split_qty') or 1),
+                '_u': m['username'],
+                '_full': _nm,
+            })
+        _ed = st.data_editor(
+            pd.DataFrame(_rows), use_container_width=True, hide_index=True,
+            key=f"ps_link_editor_{ds}_{len(_miss)}",
+            column_order=['연결', '사용자', '상품명', '네이버번호', '추천',
+                          '코스트코번호', '소분수'],
+            disabled=['사용자', '상품명', '네이버번호', '추천'],
+            column_config={
+                '연결': st.column_config.CheckboxColumn('연결', help='체크한 행만 저장합니다'),
+                '코스트코번호': st.column_config.TextColumn(
+                    '코스트코번호', help='추천이 틀리면 직접 고쳐 넣으세요'),
+                '소분수': st.column_config.NumberColumn(
+                    '소분수', min_value=1, max_value=50, step=1,
+                    help='코스트코 1팩을 몇 개로 나눠 파는지. 안 나누면 1'),
+            })
+
+        _recs = _ed.to_dict('records')
+        _pick = [r for r in _recs
+                 if r.get('연결') and str(r.get('코스트코번호') or '').strip()]
+        _bad = [r for r in _recs
+                if r.get('연결') and not str(r.get('코스트코번호') or '').strip()]
+        if _bad:
+            st.warning(f"⚠️ {len(_bad)}행은 코스트코번호가 비어 저장되지 않습니다.")
+        if _pick:
+            st.caption("저장될 연결 — " + " · ".join(
+                f"{r.get('상품명')} → {r.get('코스트코번호')}"
+                + (f" (소분 {r.get('소분수')})" if int(r.get('소분수') or 1) > 1 else "")
+                for r in _pick[:8]) + (" …" if len(_pick) > 8 else ""))
+        if st.button(f"🔗 선택한 {len(_pick)}건 연결 저장", key="ps_link_apply",
+                     type="primary", disabled=not _pick):
+            _ok, _ins, _fail = 0, 0, 0
+            for i, r in enumerate(_recs):
+                if not (r.get('연결') and str(r.get('코스트코번호') or '').strip()):
+                    continue
+                _src = _rows[i]
+                _res = link_product_mapping(
+                    _src['_u'], r.get('네이버번호'), _src['_full'],
+                    str(r.get('코스트코번호')).strip(), int(r.get('소분수') or 1))
+                if _res == 'inserted':
+                    _ins += 1
+                elif _res == 'updated':
+                    _ok += 1
+                else:
+                    _fail += 1
+            st.session_state.pop(_key, None)
+            _msg = f"✅ 연결 저장 — 갱신 {_ok}건 · 신규 {_ins}건"
+            if _fail:
+                _msg += f" · 실패 {_fail}건"
+            st.session_state['_ps_link_msg'] = _msg
+            st.rerun()
+
+
 def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     if not IS_ADMIN:
         st.error("관리자 전용 기능입니다.")
         return
     st.header("🧾 구매내역 정산")
+    _lm = st.session_state.pop('_ps_link_msg', None)
+    if _lm:
+        st.success(_lm + " — 아래 표에 구매가가 반영됐는지 확인하세요.")
     st.caption("각 사용자에게 청구할 **구매금액(구매가)**을 집계합니다. "
                "예상(제품·공유DB 구매가) 저장 → 코스트코 영수증 업로드로 실단가 반영 후 "
                "**확정**하면 예상 대비 변경금액이 사용자 화면에 배지로 표시됩니다.")
@@ -113,6 +223,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     f"(구매 {fmt(_tot)} + 월 택배·포장 {fmt(_charge - _tot)})  ·  사용자 {len(per_user)}명")
     else:
         st.markdown(f"### 총 구매금액: **{fmt(_tot)}원**  ·  사용자 {len(per_user)}명")
+
+    _render_link_panel(per_user, dmap, ds, USERNAME)
 
     c1, c2, _ = st.columns([1.4, 1.6, 3])
     if c1.button("💾 예상 저장 (기준선)", type="primary", key="ps_save_est",
