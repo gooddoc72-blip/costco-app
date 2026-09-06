@@ -421,20 +421,33 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                        "**이전 주문의 교환·추가 발송분이라 주문 목록에 없는 경우**는 아래에서 "
                        "사용자를 지정해 직접 배정하세요.")
             _um_opts = sorted(dmap.keys(), key=lambda u: dmap.get(u, u))
-            _um_labels = [''] + [dmap.get(u, u) for u in _um_opts]
-            _um_l2u = {dmap.get(u, u): u for u in _um_opts}
-            _um_rows = [{'배정': False, '사용자': '', '수량(팩)': 1, '메모': '',
+            # 옵션에 빈 값을 두면 안 된다. SelectboxColumn은 옵션에 없는 값을
+            # None으로 렌더해서, 초기값이 ''이면 칸이 None으로 보이고 고를 수도 없었다.
+            # 재고 입고 표와 같은 방식으로 '일괄 사용자'를 기본값으로 채운다.
+            # 목록이 비는 일은 없지만(관리자는 항상 있다), 여기서 return하면
+            # 아래 수동매칭·재고입고까지 통째로 사라진다. 폴백으로 둔다.
+            _um_labels = [dmap.get(u, u) for u in _um_opts] or [USERNAME]
+            _um_l2u = {dmap.get(u, u): u for u in _um_opts} or {USERNAME: USERNAME}
+            _um_def = dmap.get(USERNAME, USERNAME)
+            if _um_def not in _um_labels:
+                _um_def = _um_labels[0]
+            _um_bulk = st.selectbox(
+                "일괄 사용자 (표에서 행별로 바꿀 수 있습니다)", _um_labels,
+                index=_um_labels.index(_um_def), key=f"rs_memo_bulk_{d_day}",
+                help="이 사람 앞으로 청구됩니다. 교환·추가 발송분을 실제로 받은 사용자를 고르세요.")
+            _um_rows = [{'배정': False, '사용자': _um_bulk, '수량(팩)': 1, '메모': '',
                          '상품번호': u['상품번호'], '상품명': u['상품명'],
                          '팩단가': int(u['단가'] or 0)} for u in unmatched]
             _um_sig = hashlib.md5(
                 "|".join(str(u['상품번호']) for u in unmatched).encode()).hexdigest()[:8]
             _um_ed = st.data_editor(
                 pd.DataFrame(_um_rows), use_container_width=True, hide_index=True,
-                key=f"rs_memo_editor_{d_day}_{_um_sig}",
+                key=f"rs_memo_editor_{d_day}_{_um_sig}_{_um_bulk}",
                 disabled=['상품번호', '상품명', '팩단가'],
                 column_config={
                     '배정': st.column_config.CheckboxColumn('배정', help='체크한 행만 배정됩니다'),
-                    '사용자': st.column_config.SelectboxColumn('사용자', options=_um_labels),
+                    '사용자': st.column_config.SelectboxColumn(
+                        '사용자', options=_um_labels, required=True),
                     '수량(팩)': st.column_config.NumberColumn('수량(팩)', min_value=1, step=1),
                     '메모': st.column_config.TextColumn(
                         '메모', help='예: 8/28 김OO 교환 발송 / 파손 재발송'),
