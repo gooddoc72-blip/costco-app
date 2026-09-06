@@ -397,6 +397,49 @@ def diff_against_snapshot(settle_date, username, basis='dispatch'):
             'total_now': cur_total, 'total_diff': cur_total - total_prev}
 
 
+def get_order_dispatch_counts(username, date_from, date_to):
+    """사용자의 날짜별 {주문수집 건수, 발송 건수}.
+
+    구매내역 정산은 '무엇을 얼마에 청구했나'만이 아니라 '몇 건 받아 몇 건 내보냈나'를
+    같이 봐야 한다. 수집만 되고 안 나간 건이 쌓이면 청구가 어긋난다.
+      주문수집 = daily_orders(수집·저장한 날짜 기준)
+      발송     = dispatch_log(송장 등록으로 발송처리한 날짜 기준)
+    반환: {날짜: {'orders': n, 'dispatch': n}}
+    """
+    out = {}
+    try:
+        conn = get_user_db(username)
+    except Exception:
+        return out
+    try:
+        for d, n in conn.execute(
+                "SELECT order_date, count(*) FROM daily_orders "
+                "WHERE order_date BETWEEN ? AND ? GROUP BY order_date",
+                (str(date_from), str(date_to))):
+            out.setdefault(str(d), {'orders': 0, 'dispatch': 0})['orders'] = int(n or 0)
+    except Exception:
+        pass
+    try:
+        for d, n in conn.execute(
+                "SELECT dispatched_at, count(*) FROM dispatch_log "
+                "WHERE dispatched_at BETWEEN ? AND ? GROUP BY dispatched_at",
+                (str(date_from), str(date_to))):
+            out.setdefault(str(d), {'orders': 0, 'dispatch': 0})['dispatch'] = int(n or 0)
+    except Exception:
+        pass
+    conn.close()
+    return out
+
+
+def get_dispatch_list(username, date):
+    """그 날짜에 발송처리한 주문 목록 — 화면에서 건수를 눌렀을 때 보여줄 내역."""
+    from db import get_dispatched_orders_with_details
+    try:
+        return get_dispatched_orders_with_details(username, str(date)) or []
+    except Exception:
+        return []
+
+
 def _snap_amount(r):
     """그 날짜의 청구 기준액 — 확정됐으면 확정액, 아니면 예상액."""
     return (int(r.get('final_total') or 0) if str(r.get('status')) == 'final'
