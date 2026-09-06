@@ -368,6 +368,11 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         st.caption(f"**{d_from} ~ {d_to}** {_basis_word} 주문 중 **아직 정산되지 않은 건**에서 "
                    "위 영수증 상품번호와 일치하는 주문을 찾아 배치합니다.")
 
+    _auto_ai = st.checkbox(
+        "🤖 남은 미매칭은 AI가 바로 매칭", value=True, key="rs_auto_ai",
+        help="영수증 상품명(축약어)과 네이버 상품명(검색용 긴 이름)은 겹치는 단어가 "
+             "거의 없어 규칙만으로는 안 붙습니다. 한 번 이어 두면 다음부터는 "
+             "번호로 바로 붙으므로 AI 비용은 상품마다 한 번만 듭니다.")
     if st.button("🔎 당일 자동배치 미리보기", type="primary", key="rs_preview_btn"):
         with st.spinner("주문을 조회해 배치 중..."):
             # 재고 이월 — 당일 영수증에 없는 주문을 과거 구매분(가용 재고)에서 찾는다.
@@ -387,9 +392,31 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     carry_days=int(_carry_days or 0),
                 )
         alloc['_settled_skipped'] = len(_settled)
+        if _auto_ai and alloc.get('unmatched_orders') and alloc.get('unmatched_receipt'):
+            _ak2 = _resolve_ai_key('anthropic_api_key', settings)
+            _gk2 = _resolve_ai_key('gemini_api_key', settings)
+            if _ak2 or _gk2:
+                with st.spinner("남은 미매칭을 AI가 확인 중..."):
+                    _pr, _perr2 = ai_match_receipt_orders(
+                        alloc['unmatched_receipt'], alloc['unmatched_orders'],
+                        anthropic_key=_ak2, gemini_key=_gk2)
+                if _pr:
+                    _new2 = build_manual_rows([
+                        {'order': alloc['unmatched_orders'][x['order_index']],
+                         'costco_no': x['costco_no'], 'unit_price': x['unit_price'],
+                         'via': 'ai'} for x in _pr])
+                    _merge_matches(alloc, _new2, [x['order_index'] for x in _pr])
+                    alloc['_auto_ai'] = len(_new2)
+                elif _perr2:
+                    alloc['_auto_ai_err'] = _perr2
         st.session_state['rs_alloc'] = alloc
 
     alloc = st.session_state.get('rs_alloc')
+    if alloc and alloc.get('_auto_ai'):
+        st.success(f"🤖 규칙으로 못 붙은 {alloc['_auto_ai']}건을 AI가 이었습니다 — "
+                   "정산을 확정하면 이 연결이 저장돼 다음부터는 번호로 바로 붙습니다.")
+    if alloc and alloc.get('_auto_ai_err'):
+        st.warning(f"⚠️ AI 자동매칭 실패: {alloc['_auto_ai_err']} — 아래 수동 매칭을 쓰세요.")
     if not alloc:
         _render_stock_status()
         _render_history(_disp_map(), USERNAME)
@@ -722,6 +749,24 @@ def _render_leftover_section(receipt_items, alloc, dmap, d_day, USERNAME):
         st.rerun()
 
 
+def _resolve_ai_key(name, settings=None):
+    """AI 키 찾기 — AI 키는 공유 인프라라 관리자가 어느 계정에 넣었든 쓴다.
+
+    관리자가 자기 계정이 아닌 다른 계정 설정에 넣어 둔 경우가 있어 폴백 스캔한다.
+    """
+    v = (settings.get(name) if settings else '') or ''
+    if v:
+        return v
+    try:
+        for _u in get_all_users():
+            vv = (get_all_settings(_u['username']) or {}).get(name) or ''
+            if vv:
+                return vv
+    except Exception:
+        pass
+    return ''
+
+
 def _merge_matches(alloc, new_rows, matched_order_indices):
     alloc['rows'].extend(new_rows)
     idxset = set(matched_order_indices)
@@ -743,21 +788,8 @@ def _render_match_section(alloc, dmap, settings, USERNAME):
     st.subheader(f"🔗 미매칭 매칭 — 주문 {len(u_ords)}건 · 영수증 {len(u_rcpt)}종")
     st.caption("자동으로 못 붙은 주문을 영수증 품목과 AI 또는 수동으로 연결합니다.")
 
-    # AI 키는 공유 인프라 — 관리자가 다른 계정 설정에 저장했어도 찾도록 폴백 스캔.
-    def _resolve_ai_key(name):
-        v = (settings.get(name) if settings else '') or ''
-        if v:
-            return v
-        try:
-            for _u in get_all_users():
-                vv = (get_all_settings(_u['username']) or {}).get(name) or ''
-                if vv:
-                    return vv
-        except Exception:
-            pass
-        return ''
-    _anthropic_key = _resolve_ai_key('anthropic_api_key')
-    _gemini_key = _resolve_ai_key('gemini_api_key')
+    _anthropic_key = _resolve_ai_key('anthropic_api_key', settings)
+    _gemini_key = _resolve_ai_key('gemini_api_key', settings)
     _has_ai = bool(_anthropic_key or _gemini_key)
     _ai_label = "🤖 AI 자동매칭" + (" (Gemini)" if _gemini_key else "")
     if st.button(_ai_label, key="rs_ai_match", disabled=not _has_ai,
