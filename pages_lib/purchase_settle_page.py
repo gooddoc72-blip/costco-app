@@ -30,6 +30,130 @@ def _sellers():
     return [u['username'] for u in get_all_users() if not u.get('is_admin')]
 
 
+def _render_receipt_match(dmap, USERNAME, date_from, date_to):
+    """발송 상품 <-> 영수증 품목 매칭.
+
+    상품주문번호는 '어느 판매자의 주문인가'만 가른다. 청구금액은 그 발송 상품이
+    영수증의 어느 품목인지 물려야 나온다. 자동 매칭이 못 붙인 건을 여기서
+    사람이 직접 잇는다. 한 번 이으면 제품DB에 코스트코번호가 남아 다음부터 자동이다.
+    """
+    import db_billing_ledger as bl
+
+    _np = bl.unpriced_rows(str(date_from), str(date_to))
+    _pd_rows = [r for r in bl.get_ledger(str(date_from), str(date_to), status='pending')
+                if int(r.get('amount') or 0) > 0]
+    _targets = _np + _pd_rows
+    if not _targets:
+        st.success("✅ 이 기간 발송건은 모두 영수증 단가로 확정됐습니다.")
+        return
+
+    with st.expander(f"🔗 발송 상품 ↔ 영수증 품목 매칭 {len(_targets)}건 "
+                     f"(가격없음 {len(_np)} · 예상가 {len(_pd_rows)})", expanded=False):
+        st.caption(
+            "상품주문번호는 **어느 판매자의 주문인지**만 가릅니다. "
+            "청구금액은 그 발송 상품이 **영수증의 어느 품목인지** 물려야 나옵니다. "
+            "아래에서 이으면 영수증 실단가로 확정되고, 제품DB에도 코스트코번호가 남아 "
+            "다음부터는 자동으로 붙습니다.")
+
+        _cands = bl.receipt_items_in_range(
+            str(pd.Timestamp(date_from) - pd.Timedelta(days=14))[:10], str(date_to))
+        if not _cands:
+            st.warning("이 기간(발송일 기준 2주 전까지) 영수증 품목이 없습니다 — "
+                       "영수증 정산에서 영수증을 먼저 올려주세요.")
+            return
+        st.caption(f"영수증 품목 후보 {len(_cands)}종")
+
+        _key = f"_rm_sugg_{date_from}_{date_to}_{len(_targets)}"
+        if _key not in st.session_state:
+            with st.spinner("영수증 품목에서 후보 찾는 중..."):
+                _sg = {}
+                for _t in _targets:
+                    _n = str(_t.get('product_name') or '')
+                    if _n not in _sg:
+                        _sg[_n] = bl.suggest_receipt_for(_n, _cands, top=1)
+                st.session_state[_key] = _sg
+        _sugg = st.session_state[_key]
+
+        _bylabel = {f"{c['costco_no']} · {c['name'][:28]} · {fmt(c['unit_price'])}원": c
+                    for c in _cands}
+        _labels = ['(선택 안 함)'] + list(_bylabel.keys())
+
+        _rows = []
+        for _t in _targets:
+            _n = str(_t.get('product_name') or '')
+            _c = (_sugg.get(_n) or [{}])[0]
+            _lab = '(선택 안 함)'
+            if _c.get('costco_no'):
+                _cand_lab = f"{_c['costco_no']} · {_c['name'][:28]} · {fmt(_c['unit_price'])}원"
+                if _cand_lab in _bylabel:
+                    _lab = _cand_lab
+            _rows.append({
+                '확정': False,
+                '사용자': dmap.get(_t['username'], _t['username']),
+                '발송일': _t['dispatched_at'],
+                '발송 상품명': _n[:38],
+                '수량': int(_t.get('qty') or 1),
+                '소분': int(_t.get('split_qty') or 1),
+                '현재 청구액': int(_t.get('amount') or 0),
+                '영수증 품목': _lab,
+                '유사도': _c.get('score', 0),
+                '_id': int(_t['id']),
+                '_u': _t['username'],
+                '_name': _n,
+            })
+        _ed = st.data_editor(
+            pd.DataFrame(_rows), use_container_width=True, hide_index=True,
+            key=f"rm_editor_{date_from}_{date_to}_{len(_targets)}",
+            column_order=['확정', '사용자', '발송일', '발송 상품명', '수량', '소분',
+                          '현재 청구액', '영수증 품목', '유사도'],
+            disabled=['사용자', '발송일', '발송 상품명', '수량', '소분',
+                      '현재 청구액', '유사도'],
+            column_config={
+                '확정': st.column_config.CheckboxColumn('확정', help='체크한 행만 반영됩니다'),
+                '영수증 품목': st.column_config.SelectboxColumn('영수증 품목', options=_labels),
+                '현재 청구액': st.column_config.NumberColumn('현재 청구액', format='%d'),
+            })
+
+        _recs = _ed.to_dict('records')
+        _pick = [(i, r) for i, r in enumerate(_recs)
+                 if r.get('확정') and str(r.get('영수증 품목')) in _bylabel]
+        _bad = [r for r in _recs
+                if r.get('확정') and str(r.get('영수증 품목')) not in _bylabel]
+        if _bad:
+            st.warning(f"⚠️ {len(_bad)}행은 영수증 품목을 고르지 않아 반영되지 않습니다.")
+        if _pick:
+            _prev = []
+            for _i, _r in _pick[:8]:
+                _c = _bylabel[str(_r['영수증 품목'])]
+                _amt = (_c['unit_price'] // max(1, int(_r['소분']))) * int(_r['수량'])
+                _prev.append(f"{_r['발송 상품명'][:18]} → {fmt(_amt)}원")
+            st.caption("확정될 금액 — " + " · ".join(_prev)
+                       + (" …" if len(_pick) > 8 else ""))
+        _link = st.checkbox("제품DB에 코스트코번호도 함께 저장 (다음부터 자동 매칭)",
+                            value=True, key="rm_link")
+        if st.button(f"✅ 선택한 {len(_pick)}건 영수증 단가로 확정", key="rm_apply",
+                     type="primary", disabled=not _pick):
+            _n_ok = _n_link = 0
+            for _i, _r in _pick:
+                _src = _rows[_i]
+                _c = _bylabel[str(_r['영수증 품목'])]
+                if bl.confirm_with_receipt(_src['_id'], _c['costco_no'],
+                                           _c['unit_price'], _c['receipt_date']):
+                    _n_ok += 1
+                    if _link:
+                        try:
+                            link_product_mapping(_src['_u'], '', _src['_name'],
+                                                 _c['costco_no'], int(_src['소분']))
+                            _n_link += 1
+                        except Exception:
+                            pass
+            st.session_state.pop(_key, None)
+            st.session_state['_rm_msg'] = (
+                f"✅ {_n_ok}건을 영수증 단가로 확정했습니다"
+                + (f" · 제품DB 연결 {_n_link}건" if _n_link else ""))
+            st.rerun()
+
+
 def _render_ledger(dmap, USERNAME):
     """청구 원장 — 발송 1건 = 청구 근거 1행.
 
@@ -100,6 +224,8 @@ def _render_ledger(dmap, USERNAME):
                 '상품명': (r['product_name'] or '')[:40],
                 '수량': r['qty'],
             } for r in _np[:200]]), use_container_width=True, hide_index=True)
+
+    _render_receipt_match(dmap, USERNAME, _from, _to)
 
     with st.expander(f"📄 원장 상세 {len(_rows)}건", expanded=False):
         st.dataframe(pd.DataFrame([{
@@ -908,6 +1034,9 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     _bm = st.session_state.pop('_bl_msg', None)
     if _bm:
         st.success(_bm)
+    _rm = st.session_state.pop('_rm_msg', None)
+    if _rm:
+        st.success(_rm)
     _lm = st.session_state.pop('_ps_link_msg', None)
     if _lm:
         st.success(_lm + " — 아래 표에 구매가가 반영됐는지 확인하세요.")

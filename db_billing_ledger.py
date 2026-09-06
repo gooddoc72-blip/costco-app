@@ -182,6 +182,100 @@ def sync_from_dispatch(username, date, dry_run=False):
     return {'created': created, 'updated': updated, 'skipped': skipped, 'rows': out}
 
 
+def receipt_items_in_range(date_from, date_to):
+    """기간 내 영수증 품목 — [{costco_no, name, unit_price, receipt_date, qty}].
+
+    영수증은 관리자가 올리므로 전 사용자 DB의 receipt_items를 훑는다.
+    같은 상품이 여러 날 찍혔으면 가장 최근 영수증 단가를 쓴다.
+    """
+    import glob
+    import os
+    from db_core import DATA_DIR
+    out = {}
+    for path in sorted(glob.glob(os.path.join(DATA_DIR, '*.db'))):
+        u = os.path.basename(path)[:-3]
+        if u == 'auth' or '.bak' in u or '.backup' in u:
+            continue
+        try:
+            conn = sqlite3.connect('file:%s?mode=ro' % path, uri=True)
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT product_no, product_name, unit_price, qty, receipt_date "
+                "FROM receipt_items WHERE receipt_date BETWEEN ? AND ?",
+                (str(date_from), str(date_to))).fetchall()
+            conn.close()
+        except Exception:
+            continue
+        for r in rows:
+            cno = str(r['product_no'] or '').strip()
+            if not cno or int(r['unit_price'] or 0) <= 0:
+                continue
+            prev = out.get(cno)
+            if prev and str(prev['receipt_date']) >= str(r['receipt_date']):
+                continue
+            out[cno] = {'costco_no': cno,
+                        'name': str(r['product_name'] or ''),
+                        'unit_price': int(r['unit_price'] or 0),
+                        'qty': int(r['qty'] or 0),
+                        'receipt_date': str(r['receipt_date'] or '')}
+    return sorted(out.values(), key=lambda x: x['name'])
+
+
+def suggest_receipt_for(product_name, candidates, top=3):
+    """발송 상품명 -> 영수증 품목 후보 상위 N.
+
+    싼 토큰 점수로 좁힌 뒤 종합 점수(용량·브랜드 반영)로 다시 세운다.
+    추천일 뿐이라 확정은 사람이 한다 — 이름만 겹쳐 붙였다가 엉뚱한 단가가
+    청구된 적이 있다.
+    """
+    from services import _token_score, _combined_match_score
+    nm = str(product_name or '').strip()
+    if not nm:
+        return []
+    pre = []
+    for c in (candidates or []):
+        t = _token_score(nm, c.get('name') or '')
+        if t > 0:
+            pre.append((t, c))
+    pre.sort(key=lambda x: -x[0])
+    out = []
+    for t, c in pre[:40]:
+        sc = _combined_match_score(nm, c.get('name') or '')['total']
+        out.append(dict(c, score=round(sc, 3)))
+    out.sort(key=lambda x: -x['score'])
+    return out[:int(top)]
+
+
+def confirm_with_receipt(ledger_id, costco_no, unit_price, receipt_date='', memo=''):
+    """원장 행을 영수증 품목으로 확정한다.
+
+    청구액 = (영수증 팩단가 // 소분수) x 수량. 소분·묶음은 원장 행에 저장된 값을 쓴다.
+    발행된 행은 건드리지 않는다.
+    """
+    conn = _conn()
+    _ensure(conn)
+    r = conn.execute("SELECT * FROM billing_ledger WHERE id=?", (int(ledger_id),)).fetchone()
+    if not r:
+        conn.close()
+        return False
+    if str(r['status']) == 'invoiced':
+        conn.close()
+        return False
+    sq = max(1, int(r['split_qty'] or 1))
+    qty = max(1, int(r['qty'] or 1))
+    up = int(unit_price or 0)
+    amount = (up // sq) * qty
+    conn.execute(
+        "UPDATE billing_ledger SET product_no=?, unit_cost=?, amount=?, cost_source='receipt',"
+        " ref_id=?, status='confirmed', confirmed_at=?, memo=COALESCE(NULLIF(?,''), memo)"
+        " WHERE id=?",
+        (str(costco_no or ''), up, int(amount), str(receipt_date or ''), _now(),
+         str(memo or ''), int(ledger_id)))
+    conn.commit()
+    conn.close()
+    return True
+
+
 def get_ledger(date_from, date_to, username=None, status=None):
     conn = _conn()
     _ensure(conn)
