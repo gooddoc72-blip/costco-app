@@ -204,24 +204,58 @@ def render_panel(dmap, USERNAME):
         st.caption(
             "전체 발송내역 파일(엑셀·CSV)을 올리면 **주문번호**로 각 사용자에게 나눠 "
             "발송 기록에 넣습니다. 이후 영수증 정산이 그 발송건에 매입가를 채웁니다. "
-            "같은 파일을 두 번 올려도 중복 저장되지 않습니다.")
-        _f = st.file_uploader("발송 파일 (xlsx · xls · csv)", type=['xlsx', 'xls', 'csv'],
-                              key="du_file")
-        if not _f:
+            "**여러 개를 한 번에** 올릴 수 있고, 같은 파일을 두 번 올려도 "
+            "중복 저장되지 않습니다.")
+        _fs = st.file_uploader("발송 파일 (xlsx · xls · csv · 여러 개 가능)",
+                               type=['xlsx', 'xls', 'csv'], key="du_file",
+                               accept_multiple_files=True)
+        if not _fs:
             return
-        try:
-            if _f.name.lower().endswith('.csv'):
-                _df = pd.read_csv(_f, dtype=str)
-            else:
-                _df = pd.read_excel(_f, dtype=str)
-        except Exception as _e:
-            st.error(f"파일을 읽지 못했습니다: {_e}")
+
+        # 택배사·몰마다 양식이 달라 파일마다 헤더가 다를 수 있다.
+        # 같으면 그대로 합치고, 다르면 파일별로 열을 추정해 표준 열로 맞춘 뒤 합친다.
+        _frames, _bad = [], []
+        for _f in _fs:
+            try:
+                if _f.name.lower().endswith('.csv'):
+                    _d = pd.read_csv(_f, dtype=str)
+                else:
+                    _d = pd.read_excel(_f, dtype=str)
+            except Exception as _e:
+                _bad.append((_f.name, str(_e)[:60]))
+                continue
+            if _d is None or _d.empty:
+                _bad.append((_f.name, '빈 파일'))
+                continue
+            _frames.append((_f.name, _d.fillna('')))
+        for _n, _e in _bad:
+            st.error(f"⚠️ {_n} — {_e}")
+        if not _frames:
             return
-        if _df is None or _df.empty:
-            st.warning("빈 파일입니다.")
-            return
-        _df = _df.fillna('')
-        st.caption(f"📄 {_f.name} — {len(_df)}행 · 열 {len(_df.columns)}개")
+
+        _same = len({tuple(str(c) for c in _d.columns) for _, _d in _frames}) == 1
+        st.caption("📄 " + " · ".join(f"{_n} {len(_d)}행" for _n, _d in _frames)
+                   + (f"  ·  합계 {sum(len(_d) for _, _d in _frames)}행"
+                      if len(_frames) > 1 else "")
+                   + ("" if _same else "  ·  ⚠️ 파일마다 열이 달라 각각 자동 인식합니다"))
+
+        _STD = ('order_no', 'tracking_no', 'recipient', 'product_name', 'qty', 'courier')
+        if _same:
+            _df = pd.concat([_d for _, _d in _frames], ignore_index=True)
+        else:
+            _norm = []
+            for _n, _d in _frames:
+                _g = guess_columns(list(_d.columns))
+                if not _g.get('order_no'):
+                    st.error(f"⚠️ {_n} — 주문번호 열을 찾지 못해 제외합니다.")
+                    continue
+                _one = pd.DataFrame(
+                    {_k: (_d[_g[_k]] if _g.get(_k) in _d.columns else '')
+                     for _k in _STD})
+                _norm.append(_one)
+            if not _norm:
+                return
+            _df = pd.concat(_norm, ignore_index=True).fillna('')
 
         _cols = list(_df.columns)
         _guess = guess_columns(_cols)

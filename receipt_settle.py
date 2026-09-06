@@ -129,6 +129,79 @@ def get_settle_start_date():
         return ""
 
 
+def _digit_neighbors(no):
+    """숫자 1자리를 바꾸거나 이웃 두 자리를 뒤바꾼 후보들.
+
+    AI 오독은 대부분 이 두 가지다 — 획이 비슷한 한 자리를 틀리거나(6↔8, 3↔9)
+    이웃 자리를 뒤집는다. 자릿수는 그대로 유지한다.
+    """
+    _s = str(no or '')
+    _out = set()
+    for _i in range(len(_s)):
+        for _c in '0123456789':
+            if _c != _s[_i]:
+                _out.add(_s[:_i] + _c + _s[_i + 1:])
+    for _i in range(len(_s) - 1):
+        if _s[_i] != _s[_i + 1]:
+            _out.add(_s[:_i] + _s[_i + 1] + _s[_i] + _s[_i + 2:])
+    return _out
+
+
+def snap_items_to_catalog(items, min_score=0.55):
+    """영수증 품목의 상품번호를 이미 아는 코스트코 상품에 맞춘다.
+
+    번호 한 자리를 잘못 읽으면 그 품목은 어떤 주문과도 안 붙고, 상품DB에도
+    엉뚱한 새 번호로 들어가 다음부터 계속 어긋난다. 판독 직후 한 번 바로잡는 게
+    가장 싸다. 사람이 아니라 **이미 산 적 있는 상품 목록**이 정답지 역할을 한다.
+
+    고치는 경우는 둘뿐이다.
+      · 번호가 목록에 없는데, 한 자리만 다른 번호가 목록에 있고 상품명까지 맞을 때
+      · 번호를 아예 못 읽었는데 상품명이 목록의 한 상품과 뚜렷이 맞을 때
+    확신이 없으면 손대지 않는다. 반환: (고친 목록, 기록)
+    """
+    try:
+        from db import get_shared_products
+        _rows = get_shared_products() or []
+    except Exception:
+        return items, []
+    _by_no, _cands = {}, []
+    for _r in _rows:
+        _no = str(_r.get('product_no') or '').strip()
+        _nm = str(_r.get('costco_name') or '').strip()
+        if _no and is_costco_pno(_no):
+            _by_no[_no] = _nm
+        if _nm:
+            _cands.append({'no': _no, 'name': _nm})
+    if not _by_no:
+        return items, []
+
+    _log = []
+    for _it in items or []:
+        _no = str(_it.get('상품번호') or '').strip()
+        _nm = str(_it.get('상품명') or '').strip()
+        if not _nm:
+            continue
+        if _no and _no in _by_no:
+            continue                                  # 이미 아는 번호 — 손대지 않는다
+        if _no and is_costco_pno(_no):
+            _hits = [_c for _c in _digit_neighbors(_no) if _c in _by_no]
+            _best, _bs = '', 0.0
+            for _c in _hits:
+                _sc = _token_score(_nm, _by_no[_c])
+                if _sc > _bs:
+                    _best, _bs = _c, _sc
+            if _best and _bs >= min_score:
+                _log.append(f"{_nm[:18]} · {_no} → {_best} (한 자리 오독, 이름 일치 {_bs:.2f})")
+                _it['상품번호'] = _best
+            continue
+        if not _no:
+            _m = best_name_match(_nm, _cands, name_key='name')
+            if _m and str(_m.get('no') or '').strip():
+                _log.append(f"{_nm[:18]} · 번호 없음 → {_m['no']} (이름으로 찾음)")
+                _it['상품번호'] = str(_m['no']).strip()
+    return items, _log
+
+
 def build_stock_pool(date_upto, exclude_dates=None):
     """지정일까지의 '가용 재고'를 계산한다 — {코스트코번호: {units, price, name}}.
 

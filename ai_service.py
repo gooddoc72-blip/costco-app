@@ -991,7 +991,146 @@ def validate_receipt(data, tolerance=1):
     return (not _critical), _issues
 
 
-def parse_receipt_photo(api_key, image_bytes, media_type, max_tokens=4000, *, gemini_key=''):
+def prep_receipt_image(image_bytes, media_type):
+    """영수증 사진 전처리 — 회전 보정 + 흑백 + 대비 확장 + 선명화.
+
+    폰으로 찍은 감열지 영수증은 (1) 종이가 누렇고 잉크가 흐려 대비가 낮고
+    (2) 손그림자·형광등 반사로 밝기가 고르지 않다. 컬러 그대로 축소하면
+    작은 숫자가 뭉개져 6과 8, 3과 9를 뒤바꿔 읽는다.
+    흑백으로 바꿔 대비를 끝까지 늘리고 윤곽을 세우면 같은 해상도에서도
+    숫자 획이 살아난다. 실패해도 원본을 그대로 돌려주므로 안전하다.
+    반환: (bytes, media_type)
+    """
+    try:
+        from PIL import Image, ImageOps, ImageFilter
+        import io as _io
+        with Image.open(_io.BytesIO(image_bytes)) as im0:
+            im = ImageOps.exif_transpose(im0) or im0
+            im = im.convert("L")
+            im = ImageOps.autocontrast(im, cutoff=1)
+            im = im.filter(ImageFilter.UnsharpMask(radius=1.6, percent=140, threshold=3))
+            buf = _io.BytesIO()
+            im.convert("RGB").save(buf, "JPEG", quality=92)
+            return buf.getvalue(), "image/jpeg"
+    except Exception:
+        return image_bytes, media_type
+
+
+def receipt_tiles(image_bytes, media_type, max_edge=1568, overlap=0.14, max_tiles=4):
+    """긴 영수증을 세로로 겹쳐 자른 조각들로 나눈다. 반환: [(bytes, media_type), ...]
+
+    핵심 문제: 코스트코 영수증은 세로로 아주 길다(폰 사진 3000~4000px).
+    통째로 1568px에 맞춰 줄이면 글자 높이가 30px에서 12px로 떨어져 판독
+    한계선 아래로 내려간다. 품목이 많을수록 더 심하다.
+    세로로 2~4조각을 내면 조각마다 1568px을 다 쓰므로 글자가 2~3배 커진다.
+    조각 경계에서 품목 줄이 잘리지 않도록 14%를 겹쳐 자르고,
+    합칠 때 중복을 지운다.
+
+    자를 필요가 없으면(짧거나 가로로 넓으면) 빈 리스트를 돌려준다 — 통판독으로 충분.
+    """
+    try:
+        from PIL import Image, ImageOps
+        import io as _io
+        with Image.open(_io.BytesIO(image_bytes)) as im0:
+            im = ImageOps.exif_transpose(im0) or im0
+            im = im.convert("RGB")
+            w, h = im.size
+            if h < w * 1.5 or h <= max_edge * 1.25:
+                return []                      # 세로로 길지 않거나 이미 작다
+            n = min(max_tiles, max(2, int(round(h / float(max_edge)))))
+            step = h / float(n)
+            pad = step * overlap
+            out = []
+            for i in range(n):
+                top = max(0, int(step * i - pad))
+                bot = min(h, int(step * (i + 1) + pad))
+                t = im.crop((0, top, w, bot))
+                tw, th = t.size
+                sc = min(1.0, max_edge / float(max(tw, th)))
+                if sc < 1.0:
+                    t = t.resize((max(1, round(tw * sc)), max(1, round(th * sc))),
+                                 Image.LANCZOS)
+                buf = _io.BytesIO()
+                t.save(buf, "JPEG", quality=92)
+                out.append((buf.getvalue(), "image/jpeg"))
+            return out
+    except Exception:
+        return []
+
+
+_TILE_USER = (
+    "이 사진은 **긴 영수증을 세로로 자른 조각**이다. 여기 보이는 품목 줄만 빠짐없이 읽어라. "
+    "잘려서 반만 보이는 줄은 넣지 마라. "
+    "구매일자·매장·합계·총수량 등 헤더/푸터 값은 이 조각에 보일 때만 채우고 "
+    "안 보이면 빈 문자열이나 0으로 둔다."
+)
+
+
+def _merge_tile_results(parts):
+    """조각별 판독 결과를 하나로 합친다. 겹친 구간의 중복 품목은 지운다.
+
+    같은 품목이 두 조각에 걸쳐 나오므로 (상품번호·상품명·수량·금액)이 같으면
+    같은 줄로 본다. 다만 영수증에는 **똑같은 품목을 두 번 산 줄**도 실제로
+    있으므로, 바로 앞 조각의 꼬리에서 본 것만 중복으로 처리한다.
+    """
+    if not parts:
+        return None
+    _out = {"items": []}
+    _seen_tail = set()
+    for _idx, _d in enumerate(parts):
+        if not _d:
+            continue
+        for _k in ("purchase_date", "purchase_time", "store_type", "store_name",
+                   "card_last4", "cash_receipt_no"):
+            if not _out.get(_k) and _d.get(_k):
+                _out[_k] = _d[_k]
+        for _k in ("total_amount", "discount_amount", "coupon_total",
+                   "total_qty", "item_kinds"):
+            if not _out.get(_k) and int(_d.get(_k) or 0):
+                _out[_k] = int(_d[_k])
+        _new = []
+        for _it in (_d.get("items") or []):
+            _key = (str(_it.get("상품번호") or ""), str(_it.get("상품명") or "").strip(),
+                    int(_it.get("수량") or 0), int(_it.get("금액") or 0))
+            if _idx and _key in _seen_tail:
+                continue                        # 앞 조각과 겹친 줄
+            _new.append(_it)
+        _out["items"].extend(_new)
+        # 다음 조각과 겹칠 수 있는 건 이 조각의 뒤쪽 절반
+        _tail = (_d.get("items") or [])[len(_d.get("items") or []) // 2:]
+        _seen_tail = {(str(i.get("상품번호") or ""), str(i.get("상품명") or "").strip(),
+                       int(i.get("수량") or 0), int(i.get("금액") or 0)) for i in _tail}
+    return _out if _out["items"] else None
+
+
+def repair_receipt_math(data, tolerance=1):
+    """단가×수량 ≠ 금액인 줄을 금액 기준으로 바로잡는다.
+
+    영수증에서 **금액이 가장 크고 진하게** 찍히고 단가는 작게 찍힌다.
+    그래서 셋 중 하나가 틀렸다면 틀린 쪽은 대개 단가다.
+    금액÷수량이 정수로 떨어지면 그 값을 단가로 고친다(떨어지지 않으면 손대지 않는다).
+    청구는 단가로 계산되므로 이 한 줄이 매입가를 통째로 어긋나게 한다.
+    반환: 고친 줄 수
+    """
+    if not data:
+        return 0
+    _n = 0
+    for _i in (data.get("items") or []):
+        _q = int(_i.get("수량") or 0)
+        _u = int(_i.get("단가") or 0)
+        _a = int(_i.get("금액") or 0)
+        if not (_q and _a) or abs(_q * _u - _a) <= tolerance:
+            continue
+        if _a % _q == 0:
+            _i["단가"] = _a // _q
+            _n += 1
+        elif _u and _a == 0:
+            _i["금액"] = _q * _u
+            _n += 1
+    return _n
+
+
+def _parse_receipt_whole(api_key, image_bytes, media_type, max_tokens=4000, *, gemini_key=''):
     """코스트코/트레이더스 영수증 사진 → 매입 정보 dict. 반환: (dict, error).
 
     비용/정확도 전략: Gemini로 먼저 읽고 validate_receipt로 자가검증 →
@@ -1058,6 +1197,83 @@ def parse_receipt_photo(api_key, image_bytes, media_type, max_tokens=4000, *, ge
         if _gok or len(_giss) < len(_ciss):
             return _tag(_g_data, 'gemini', _giss, _gok), None
     return _tag(_c_data, 'claude', _ciss, _cok), None
+
+
+
+def _read_one_tile(api_key, gemini_key, b, mt, max_tokens):
+    """조각 1장 판독 — Gemini 우선, 없거나 실패하면 Claude."""
+    if gemini_key:
+        _t, _e = gemini_vision(gemini_key, b, mt, _RECEIPT_SYSTEM, _TILE_USER,
+                               max_tokens=max_tokens, max_edge=1568,
+                               model=GEMINI_VISION_MODEL, thinking=True)
+        _d = _parse_receipt_json(_t) if _t else None
+        if _d:
+            return _d
+    if api_key:
+        _t, _e = claude_vision(api_key, b, mt, _RECEIPT_SYSTEM, _TILE_USER,
+                               max_tokens=max_tokens, max_edge=1568)
+        return _parse_receipt_json(_t) if _t else None
+    return None
+
+
+def parse_receipt_photo(api_key, image_bytes, media_type, max_tokens=4000, *, gemini_key=''):
+    """코스트코/트레이더스 영수증 사진 → 매입 정보 dict. 반환: (dict, error).
+
+    정확도 3단: 값이 맞을 때까지만 비용을 더 쓴다.
+      1) 전처리(흑백·대비·선명화) 후 통판독 → 검산 통과하면 끝 (대부분 여기서 끝난다)
+      2) 검산 실패 → 산술 보정(금액÷수량으로 단가 교정) 후 재검산
+      3) 그래도 실패하고 사진이 세로로 길면 → 세로 조각내기 재판독
+         조각마다 1568px을 다 쓰므로 글자가 2~3배 커진다. 이게 흐린 사진에
+         가장 크게 듣는다. 조각 결과가 더 나을 때만 바꾼다.
+
+    부가 키: _provider · _check(경고) · _verified · _tiled(조각판독 여부) · _repaired(보정 줄 수)
+    """
+    _b, _mt = prep_receipt_image(image_bytes, media_type)
+
+    _data, _err = _parse_receipt_whole(api_key, _b, _mt, max_tokens, gemini_key=gemini_key)
+    if _data is not None:
+        _fix = repair_receipt_math(_data)
+        if _fix:
+            _ok, _iss = validate_receipt(_data)
+            _data["_verified"], _data["_check"] = _ok, _iss
+        _data["_repaired"] = _fix
+        _data["_tiled"] = False
+        if _data.get("_verified"):
+            return _data, None
+
+    # ── 3단: 조각 판독 ────────────────────────────────────────
+    _tiles = receipt_tiles(_b, _mt, max_edge=1568)
+    if not _tiles or not (api_key or gemini_key):
+        return (_data, None) if _data is not None else (None, _err)
+
+    _parts = [_read_one_tile(api_key, gemini_key, _tb, _tm, max_tokens)
+              for _tb, _tm in _tiles]
+    _merged = _merge_tile_results([x for x in _parts if x])
+    if not _merged:
+        return (_data, None) if _data is not None else (None, _err)
+
+    # 조각에는 합계/일자가 안 보일 수 있다 — 통판독에서 읽은 헤더로 채운다
+    if _data:
+        for _k in ("purchase_date", "purchase_time", "store_type", "store_name",
+                   "card_last4", "cash_receipt_no"):
+            if not _merged.get(_k) and _data.get(_k):
+                _merged[_k] = _data[_k]
+        for _k in ("total_amount", "discount_amount", "coupon_total",
+                   "total_qty", "item_kinds"):
+            if not int(_merged.get(_k) or 0) and int(_data.get(_k) or 0):
+                _merged[_k] = int(_data[_k])
+    _mfix = repair_receipt_math(_merged)
+    _mok, _miss = validate_receipt(_merged)
+    _merged.update({"_provider": "gemini" if gemini_key else "claude",
+                    "_check": _miss, "_verified": _mok,
+                    "_tiled": True, "_repaired": _mfix})
+
+    if _data is None:
+        return _merged, None
+    # 조각 결과가 검산을 통과했거나 경고가 더 적을 때만 바꾼다
+    if _mok or len(_miss) < len(_data.get("_check") or []):
+        return _merged, None
+    return _data, None
 
 
 _CAT_SYSTEM = (

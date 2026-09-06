@@ -7,6 +7,7 @@ import streamlit as st
 import pandas as pd
 
 from services import parse_costco_receipt_pdf, render_pdf_to_images
+import receipt_settle as _rs
 from receipt_settle import (
     allocate_receipt_to_orders, apply_receipt_settlement, cleanup_orphan_settlements,
     learn_costco_mappings,
@@ -168,6 +169,11 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                             "값이 맞는지 아래 표에서 확인하세요.")
                 else:
                     fails.append((f.name, f"{err or '인식 실패'} · AI 이미지 판독도 품목을 못 찾음"))
+        parsed, _snap0 = _rs.snap_items_to_catalog(parsed)
+        if _snap0:
+            with st.expander(f"🔧 상품번호 자동 교정 {len(_snap0)}건", expanded=False):
+                for _l in _snap0:
+                    st.caption("· " + _l)
         merged = {}
         for p in parsed:
             k = _n(p.get('상품번호')) or _n(p.get('상품명'))
@@ -232,11 +238,24 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         '단가': int(_it.get('단가') or 0),
                         'receipt_date': _rdate,
                     })
+                _note = []
+                if _data.get('_tiled'):
+                    _note.append("세로로 잘라 다시 읽음")
+                if _data.get('_repaired'):
+                    _note.append(f"단가 {_data['_repaired']}줄 보정")
+                if _note:
+                    st.caption(f"🔍 {_pf.name} — " + " · ".join(_note))
                 if not _data.get('_verified', True):
                     _pfails.append((_pf.name,
                                     "금액·수량 자가검증 불일치 — 아래 표에서 값을 확인하세요: "
                                     + " / ".join((_data.get('_check') or [])[:2])))
             _pbar.empty()
+            # 이미 산 적 있는 상품 목록을 정답지로 삼아 번호 오독을 바로잡는다
+            _pparsed, _snap = _rs.snap_items_to_catalog(_pparsed)
+            if _snap:
+                with st.expander(f"🔧 상품번호 자동 교정 {len(_snap)}건", expanded=False):
+                    for _l in _snap:
+                        st.caption("· " + _l)
             if _pparsed:
                 _merged_p = {_n(x.get('상품번호')) or _n(x.get('상품명')): x for x in _pparsed}
                 _prev = {_n(x.get('상품번호')) or _n(x.get('상품명')): x
