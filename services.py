@@ -609,10 +609,25 @@ def match_product_to_db(username, store_product_name, product_no=None,
     return matched
 
 
+#: 이름 매칭 시 종합 점수(용량·브랜드 반영) 하한.
+#  토큰 점수 0.5만으로는 낱말 몇 개가 겹치면 통과해 엉뚱한 상품이 붙는다.
+#  9/1 이후 실측 — 종합 0.22 미만은 전부 오매칭이었고, 일부는 **틀린 가격을
+#  자신 있게 넣고 있었다**:
+#    이디야 커피믹스 400개      → 보헤미안 박이추 커피스틱   0.01
+#    커클랜드 캡슐세제          → 퍼실 디스크 캡슐세제       0.04  22,990원 적용
+#    깨끗한나라 화장지          → KS프리미엄화장지          0.19  22,490원 적용
+#    커클랜드 메이플시럽        → KS유기농살사소스          0.19  16,990원 적용
+#    몰든 씨솔트               → BOUCHARD씨솔트          0.19  31,990원 적용
+#  0.30을 넘기지 못하면 붙이지 않는다. 못 붙으면 구매가 0원으로 남고
+#  '구매가 없는 항목 연결'에 뜬다 — 틀린 값을 조용히 쓰는 것보다 안전하다.
+NAME_MATCH_MIN_COMBINED = 0.30
+
+
 def match_shared_product(product_name, product_no=None, return_score=False,
                          _shared_prods=None):
     """이름·번호로 공유 제품 검색.
-    product_no가 있으면 정확 일치 우선 (score=1.0), 그 외에는 강화된 토큰 점수 ≥ 0.6 필요.
+    product_no가 있으면 정확 일치 우선 (score=1.0), 그 외에는
+    토큰 점수 ≥ 0.5 **이면서** 종합 점수 ≥ NAME_MATCH_MIN_COMBINED 여야 한다.
     return_score=True면 (product, score) 튜플 반환.
     _shared_prods: 배치 처리 시 미리 로드된 리스트 (N+1 방지용).
     """
@@ -639,8 +654,12 @@ def match_shared_product(product_name, product_no=None, return_score=False,
             score = _token_score(product_name, p.get(field) or '')
             if score > best_score:
                 best_score, best_p = score, p
-    if best_score >= 0.5:
-        return (best_p, best_score) if return_score else best_p
+    if best_score >= 0.5 and best_p is not None:
+        # 낱말이 겹친다고 같은 상품은 아니다 — 용량·브랜드까지 보는 종합 점수로 한 번 더 건다.
+        _cn = best_p.get('costco_name') or best_p.get('match_keyword') or ''
+        if _combined_match_score(product_name, _cn)['total'] >= NAME_MATCH_MIN_COMBINED:
+            return (best_p, best_score) if return_score else best_p
+        return (None, best_score) if return_score else None
     return (None, best_score) if return_score else None
 
 
