@@ -11,7 +11,9 @@ import pandas as pd
 
 from db import (get_all_users, get_shared_products,
                 get_split_rules, upsert_split_rule, delete_split_rule,
-                get_price_log, PRICE_SOURCES)
+                get_price_log, PRICE_SOURCES,
+                collect_shared_naver_map, get_costco_conflicts,
+                resolve_costco_conflict)
 from db_purchase_settle import (
     compute_daily_purchase, save_estimate, finalize, get_snapshot, diff_against_snapshot,
     month_fees_if_last_day, is_last_day_of_month,
@@ -240,6 +242,70 @@ def _render_ledger(dmap, USERNAME):
             '상태': {'pending': '예상', 'confirmed': '확정',
                      'invoiced': '발행', 'canceled': '취소'}.get(r['status'], r['status']),
         } for r in _rows[:500]]), use_container_width=True, hide_index=True)
+
+
+def _render_costco_map(dmap, USERNAME):
+    """코스트코 상품번호 공유맵 — 수집과 충돌 해소.
+
+    코스트코 상품번호는 상품 고유값이라 모든 사용자에게 같아야 한다.
+    한 네이버 상품에 두 개의 코스트코번호가 붙었다면 둘 중 하나가 틀린 것이므로,
+    자동으로 고르지 않고 근거를 보여주고 관리자가 정한다.
+    """
+    with st.expander("🔢 코스트코 상품번호 공유맵 — 수집 · 충돌 해소", expanded=False):
+        st.caption(
+            "코스트코 상품번호는 **상품 고유값**이라 사용자가 달라도 같아야 합니다. "
+            "각 사용자 제품DB에 흩어진 매핑을 공유맵에 모으면 **한 사람이 이은 것을 "
+            "전원이 씁니다.** 아래에서 수집하고, 값이 갈리는 건만 골라주세요.")
+
+        c1, c2 = st.columns([1.4, 4])
+        if c1.button("🔄 매핑 수집", key="cm_collect",
+                     help="사용자 제품DB의 확정 매핑을 공유맵으로 모읍니다. "
+                          "형식 검증을 통과한 것만 넣고, 값이 갈리는 건은 건드리지 않습니다."):
+            _r = collect_shared_naver_map()
+            st.session_state['_cm_msg'] = (
+                f"✅ 공유맵에 {_r['added']}건 저장 · 충돌 {len(_r['conflicts'])}건은 "
+                "아래에서 골라주세요.")
+            st.rerun()
+
+        _cf = get_costco_conflicts()
+        if not _cf:
+            st.success("✅ 값이 갈리는 매핑이 없습니다.")
+            return
+
+        st.markdown(f"### ⚠️ 값이 갈리는 매핑 {len(_cf)}건")
+        st.caption("같은 네이버 상품에 코스트코번호가 둘 붙었습니다 — **하나는 틀린 값**입니다. "
+                   "상품명과 매입가를 보고 맞는 쪽을 고르세요.")
+
+        for i, _c in enumerate(_cf):
+            _u = _c['username']
+            st.markdown(f"**{dmap.get(_u, _u)}** · 네이버 `{_c['naver_no']}` · "
+                        f"{(_c['product_name'] or '')[:44]}")
+            _labels, _map = [], {}
+            for _o in _c['options']:
+                _lab = (f"{_o['costco_no']} · {(_o['name'] or '(공유DB에 없음)')[:30]}"
+                        + (f" · {fmt(_o['price'])}원" if _o['price'] else " · 가격없음"))
+                _labels.append(_lab)
+                _map[_lab] = _o['costco_no']
+            _cur = _c.get('chosen') or ''
+            _idx = 0
+            for _j, _lab in enumerate(_labels):
+                if _map[_lab] == _cur:
+                    _idx = _j
+                    break
+            _k = f"cm_pick_{i}_{_u}_{_c['naver_no']}"
+            _sel = st.radio("맞는 코스트코 상품번호", _labels, index=_idx,
+                            key=_k, horizontal=False, label_visibility="collapsed")
+            _cc1, _cc2 = st.columns([1.2, 4])
+            if _cc1.button("이 번호로 확정", key=f"{_k}_ok"):
+                if resolve_costco_conflict(_u, _c['naver_no'], _map[_sel],
+                                           _c.get('product_name', '')):
+                    st.session_state['_cm_msg'] = (
+                        f"✅ {dmap.get(_u, _u)} · {_c['naver_no']} → {_map[_sel]} 확정")
+                    st.rerun()
+                else:
+                    st.error("확정하지 못했습니다.")
+            _cc2.caption("확정하면 공유맵과 그 사용자 제품DB가 함께 이 번호로 맞춰집니다.")
+            st.divider()
 
 
 def _render_dispatch_upload(dmap, USERNAME):
@@ -1037,6 +1103,9 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     _rm = st.session_state.pop('_rm_msg', None)
     if _rm:
         st.success(_rm)
+    _cmm = st.session_state.pop('_cm_msg', None)
+    if _cmm:
+        st.success(_cmm)
     _lm = st.session_state.pop('_ps_link_msg', None)
     if _lm:
         st.success(_lm + " — 아래 표에 구매가가 반영됐는지 확인하세요.")
@@ -1124,6 +1193,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     else:
         st.markdown(f"### 총 구매금액: **{fmt(_tot)}원**  ·  사용자 {len(per_user)}명")
 
+    _render_costco_map(dmap, USERNAME)
     _render_dispatch_upload(dmap, USERNAME)
     _render_period_summary(dmap)
     _render_ledger(dmap, USERNAME)

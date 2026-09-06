@@ -577,6 +577,108 @@ def resolve_costco_no(username, naver_no='', naver_origin_no='', product_name=''
     return cno if is_costco_pno(cno) else ''
 
 
+def get_costco_conflicts():
+    """같은 네이버 상품번호에 서로 다른 코스트코번호가 붙은 건.
+
+    코스트코 상품번호는 상품 고유값이라, 한 네이버 상품에 두 번호가 붙었다는 건
+    **둘 중 하나가 틀렸다**는 뜻이다. 자동으로 고르지 않고 근거를 모아 보여준다.
+    반환: [{username, naver_no, product_name, options:[{costco_no, name, price, where}]}]
+    """
+    import glob
+    import os
+    from db_core import DATA_DIR
+    from services import is_costco_pno
+
+    # 공유DB 정보 — 각 코스트코번호가 무슨 상품인지 판단 근거
+    info = {}
+    conn = get_auth_db()
+    conn.row_factory = sqlite3.Row
+    for r in conn.execute("SELECT product_no, costco_name, store_price, unit_price "
+                          "FROM shared_products WHERE TRIM(COALESCE(product_no,''))<>''"):
+        info[str(r['product_no']).strip()] = {
+            'name': (r['costco_name'] or '').strip(),
+            'price': int(r['store_price'] or r['unit_price'] or 0)}
+    # 공유맵에 이미 정해진 값
+    cur_map = {}
+    _ensure_shared_naver_map(conn)
+    for r in conn.execute("SELECT naver_pno, naver_origin_pno, costco_pno, username "
+                          "FROM shared_naver_map"):
+        for k in (r['naver_pno'], r['naver_origin_pno']):
+            k = str(k or '').strip()
+            if k:
+                cur_map[(str(r['username'] or ''), k)] = str(r['costco_pno'] or '').strip()
+    conn.close()
+
+    seen = {}
+    for path in sorted(glob.glob(os.path.join(DATA_DIR, '*.db'))):
+        u = os.path.basename(path)[:-3]
+        if u == 'auth' or '.bak' in u or '.backup' in u:
+            continue
+        try:
+            c = sqlite3.connect('file:%s?mode=ro' % path, uri=True)
+            c.row_factory = sqlite3.Row
+            rs = c.execute(
+                "SELECT product_no, naver_channel_pno, naver_origin_pno, costco_name,"
+                " match_keyword FROM products"
+                " WHERE TRIM(COALESCE(product_no,'')) <> ''").fetchall()
+            c.close()
+        except Exception:
+            continue
+        for r in rs:
+            cno = str(r['product_no'] or '').strip()
+            if not is_costco_pno(cno):
+                continue
+            nv = str(r['naver_channel_pno'] or '').strip() or str(r['naver_origin_pno'] or '').strip()
+            if not nv:
+                continue
+            nm = (r['costco_name'] or r['match_keyword'] or '').strip()
+            e = seen.setdefault((u, nv), {'names': set(), 'nos': {}})
+            e['names'].add(nm)
+            e['nos'].setdefault(cno, set()).add(nm)
+
+    out = []
+    for (u, nv), e in seen.items():
+        if len(e['nos']) < 2:
+            continue
+        chosen = cur_map.get((u, nv), '')
+        out.append({
+            'username': u, 'naver_no': nv,
+            'product_name': sorted(e['names'], key=len, reverse=True)[0] if e['names'] else '',
+            'chosen': chosen,
+            'options': [{
+                'costco_no': cno,
+                'name': (info.get(cno, {}).get('name')
+                         or (sorted(nms, key=len, reverse=True)[0] if nms else '')),
+                'price': int(info.get(cno, {}).get('price') or 0),
+                'in_shared': cno in info,
+            } for cno, nms in sorted(e['nos'].items())],
+        })
+    out.sort(key=lambda x: (x['username'], x['naver_no']))
+    return out
+
+
+def resolve_costco_conflict(username, naver_no, costco_no, product_name=''):
+    """충돌을 관리자가 고른 값으로 확정한다 — 공유맵과 사용자 제품DB를 함께 맞춘다."""
+    from services import is_costco_pno
+    _nv = str(naver_no or '').strip()
+    _cno = str(costco_no or '').strip()
+    if not (username and _nv and is_costco_pno(_cno)):
+        return False
+    upsert_shared_naver_map(_cno, username, naver_pno=_nv, product_name=product_name)
+    try:
+        conn = get_user_db(username)
+        conn.execute(
+            "UPDATE products SET product_no=? "
+            "WHERE TRIM(COALESCE(naver_channel_pno,''))=? "
+            "   OR TRIM(COALESCE(naver_origin_pno,''))=?",
+            (_cno, _nv, _nv))
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
+    return True
+
+
 def get_shared_naver_map_rows():
     """공유 네이버↔코스트코 매핑 전체 행 조회 (관리/표시용)."""
     conn = get_auth_db()
