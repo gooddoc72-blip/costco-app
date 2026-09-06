@@ -30,6 +30,76 @@ def _sellers():
     return [u['username'] for u in get_all_users() if not u.get('is_admin')]
 
 
+def _render_ledger(dmap, USERNAME):
+    """청구 원장 — 발송 1건 = 청구 근거 1행.
+
+    총액 한 줄만 있으면 반품 한 건을 빼낼 수도, 이미 발행한 계산서를 설명할 수도
+    없다. 건별 근거를 쌓아 계산서 발행의 바탕으로 쓴다.
+    """
+    import db_billing_ledger as bl
+
+    st.divider()
+    st.subheader("📒 청구 원장 — 발송건별 청구 근거")
+    c1, c2, c3 = st.columns([1, 1, 1.4])
+    _to = c2.date_input("종료일", value=date.today(), key="bl_to")
+    _from = c1.date_input("시작일", value=_to - timedelta(days=6), key="bl_from")
+    _stf = c3.selectbox("상태", ['(전체)', 'pending', 'confirmed', 'invoiced', 'canceled'],
+                        format_func=lambda k: {'pending': '예상(미확정)', 'confirmed': '확정',
+                                               'invoiced': '계산서 발행됨',
+                                               'canceled': '취소'}.get(k, k),
+                        key="bl_status")
+
+    _b1, _b2 = st.columns([1.6, 4])
+    if _b1.button("🔄 발송건에서 원장 만들기", key="bl_sync", type="primary",
+                  help="기간 내 발송 기록을 훑어 원장 행을 만들고, 영수증에서 확정된 건은 "
+                       "실단가로 채웁니다. 계산서가 발행된 행은 건드리지 않습니다."):
+        _c = _u = _s = 0
+        _d = _from
+        while _d <= _to:
+            for _un in _sellers():
+                _r = bl.sync_from_dispatch(_un, str(_d))
+                _c += _r['created']; _u += _r['updated']; _s += _r['skipped']
+            _d += timedelta(days=1)
+        st.session_state['_bl_msg'] = (
+            f"✅ 원장 갱신 — 신규 {_c}건 · 갱신 {_u}건"
+            + (f" · 발행돼 건너뜀 {_s}건" if _s else ""))
+        st.rerun()
+
+    _rows = bl.get_ledger(str(_from), str(_to),
+                          status=(None if _stf == '(전체)' else _stf))
+    if not _rows:
+        st.info("원장이 비어 있습니다 — 위 '발송건에서 원장 만들기'를 눌러 채우세요.")
+        return
+
+    _sum = bl.summarize(str(_from), str(_to))
+    st.dataframe(pd.DataFrame([{
+        '사용자': dmap.get(u, u), '청구건수': v['count'], '청구액': fmt(v['amount']),
+        '예상(미확정)': v['pending'], '확정': v['confirmed'],
+        '발행': v['invoiced'], '취소': v['canceled'],
+    } for u, v in sorted(_sum.items(), key=lambda kv: -kv[1]['amount'])]),
+        use_container_width=True, hide_index=True)
+    _tot = sum(v['amount'] for v in _sum.values())
+    _pend = sum(v['pending'] for v in _sum.values())
+    st.markdown(f"### 기간 청구액: **{fmt(_tot)}원**  ·  {sum(v['count'] for v in _sum.values())}건")
+    if _pend:
+        st.caption(f"⚠️ 아직 예상가인 행이 {_pend}건입니다 — 영수증 정산을 하면 "
+                   "실단가로 확정되고, 다시 '원장 만들기'를 누르면 반영됩니다.")
+
+    with st.expander(f"📄 원장 상세 {len(_rows)}건", expanded=False):
+        st.dataframe(pd.DataFrame([{
+            '발송일': r['dispatched_at'],
+            '사용자': dmap.get(r['username'], r['username']),
+            '주문번호': r['order_no'],
+            '상품명': (r['product_name'] or '')[:32],
+            '수량': r['qty'], '소분': r['split_qty'],
+            '단가': fmt(int(r['unit_cost'] or 0)),
+            '청구액': fmt(int(r['amount'] or 0)),
+            '근거': bl.COST_SOURCES.get(r['cost_source'], r['cost_source']),
+            '상태': {'pending': '예상', 'confirmed': '확정',
+                     'invoiced': '발행', 'canceled': '취소'}.get(r['status'], r['status']),
+        } for r in _rows[:500]]), use_container_width=True, hide_index=True)
+
+
 def _render_dispatch_upload(dmap, USERNAME):
     """발송 파일 업로드 — 주문번호로 사용자를 갈라 dispatch_log에 기록.
 
@@ -468,6 +538,9 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     _dm = st.session_state.pop('_du_msg', None)
     if _dm:
         st.success(_dm)
+    _bm = st.session_state.pop('_bl_msg', None)
+    if _bm:
+        st.success(_bm)
     _lm = st.session_state.pop('_ps_link_msg', None)
     if _lm:
         st.success(_lm + " — 아래 표에 구매가가 반영됐는지 확인하세요.")
@@ -557,6 +630,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
 
     _render_dispatch_upload(dmap, USERNAME)
     _render_period_summary(dmap)
+    _render_ledger(dmap, USERNAME)
     _render_price_log(dmap)
     _render_split_rules(USERNAME)
     _render_link_panel(per_user, dmap, ds, USERNAME)
