@@ -22,7 +22,7 @@ from db_receipt_settle import (
 )
 from db import (
     get_all_users, get_all_settings, add_lot_units, find_lots_by_memo,
-    set_global_setting,
+    set_global_setting, save_receipt_items, upsert_shared_store_price,
 )
 from utils import fmt
 
@@ -32,6 +32,47 @@ invalidate_data_cache = None
 def _set_cache_helpers(shared_fn=None, user_fn=None, merged_fn=None, invalidate_fn=None, **kwargs):
     global invalidate_data_cache
     invalidate_data_cache = invalidate_fn
+
+
+def _persist_receipt(username, items):
+    """영수증 품목을 DB에 남긴다 — receipt_items + 공유DB 매장 매입가.
+
+    영수증 정산 화면에서 올린 영수증이 그동안 어디에도 저장되지 않았다. 그래서
+      · 재고 이월(build_stock_pool)이 늘 비어 있었고
+      · 구매내역 정산의 단가가 영수증 실단가로 갱신되지 않았다
+    (admin의 receipt_items는 8/19에서 멈춰 있었다).
+    별도 '영수증' 페이지에서만 저장하고 있었는데, 정산은 이 화면에서 하니
+    실제로는 저장 없이 정산만 돌아간 셈이다.
+    저장 실패가 화면 흐름을 끊지는 않는다.
+    반환: (신규, 갱신, 매입가반영)
+    """
+    _rows = [it for it in (items or [])
+             if str(it.get('상품명', '') or '').strip()
+             and str(it.get('receipt_date', '') or '').strip()]
+    if not _rows:
+        return 0, 0, 0
+    _saved = _updated = _pn = 0
+    try:
+        _saved, _updated = save_receipt_items(username, _rows)
+    except Exception as _e:
+        st.caption(f"⚠️ 영수증 DB 저장 실패: {_e}")
+    for _it in _rows:
+        _pno = str(_it.get('상품번호', '') or '').strip()
+        try:
+            _pr = int(float(_it.get('단가') or 0))
+        except (TypeError, ValueError):
+            _pr = 0
+        if not _pno or _pr <= 0:
+            continue
+        try:
+            upsert_shared_store_price(
+                costco_name=_it.get('상품명', ''), keyword=_it.get('상품명', ''),
+                price=_pr, product_no=_pno, updated_by=username,
+                receipt_date=str(_it.get('receipt_date', '') or ''), force_store=True)
+            _pn += 1
+        except Exception:
+            pass
+    return _saved, _updated, _pn
 
 
 def _disp_map():
@@ -133,6 +174,9 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             if ex is None or (p.get('receipt_date', '') or '') >= (ex.get('receipt_date', '') or ''):
                 merged[k] = p
         st.session_state['rs_receipt_items'] = list(merged.values())
+        _sv, _up, _pn = _persist_receipt(USERNAME, list(merged.values()))
+        if _sv or _up or _pn:
+            st.caption(f"💾 영수증 DB 저장 — 신규 {_sv} · 갱신 {_up} · 공유DB 매입가 반영 {_pn}종")
         st.session_state['_rs_fkey'] = _fkey
         st.session_state['_rs_fails'] = fails
         st.session_state.pop('rs_alloc', None)   # 새 업로드 → 이전 미리보기 초기화
@@ -189,6 +233,10 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                          for x in (st.session_state.get('rs_receipt_items') or [])}
                 _prev.update(_merged_p)          # PDF로 올린 게 있으면 합친다
                 st.session_state['rs_receipt_items'] = list(_prev.values())
+                _sv, _up, _pn = _persist_receipt(USERNAME, list(_prev.values()))
+                if _sv or _up or _pn:
+                    st.caption(f"💾 영수증 DB 저장 — 신규 {_sv} · 갱신 {_up} · "
+                               f"공유DB 매입가 반영 {_pn}종")
                 st.session_state.pop('rs_alloc', None)
                 st.session_state.pop('rs_day', None)
                 st.success(f"📱 사진 {len(_ph)}장에서 {len(_merged_p)}품목 인식")
