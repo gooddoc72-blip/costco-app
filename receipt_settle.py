@@ -280,6 +280,67 @@ def build_stock_pool(date_upto, exclude_dates=None):
     return {k: v for k, v in pool.items() if v['units'] > 0}
 
 
+def unapplied_receipt_dates(date_upto=None, days=45):
+    """영수증은 올렸는데 정산이 적용되지 않은 날짜들. [(날짜, 품목수), ...]
+
+    '정산 적용'을 누르지 않으면 receipt_settle_items에 아무것도 안 남고,
+    그날 산 것이 통째로 재고로 잡힌다. 재고가 실제보다 부풀어 보이는 원인 1위다.
+    """
+    import glob
+    from datetime import datetime as _dt, timedelta as _td
+
+    _upto = str(date_upto or _dt.now().strftime("%Y-%m-%d"))
+    _from = (_dt.strptime(_upto, "%Y-%m-%d") - _td(days=int(days))).strftime("%Y-%m-%d")
+    _start = get_settle_start_date()
+    if _start and _start > _from:
+        _from = _start
+
+    _rc = {}
+    for f in sorted(glob.glob(os.path.join(DATA_DIR, "*.db"))):
+        u = os.path.basename(f)[:-3]
+        if u == "auth" or ".bak" in u or ".backup" in u:
+            continue
+        try:
+            conn = sqlite3.connect("file:%s?mode=ro" % f, uri=True)
+            for d, n in conn.execute(
+                    "SELECT receipt_date, COUNT(*) FROM receipt_items "
+                    "WHERE receipt_date BETWEEN ? AND ? GROUP BY receipt_date",
+                    (_from, _upto)):
+                _rc[_norm(d)] = _rc.get(_norm(d), 0) + int(n or 0)
+            conn.close()
+        except Exception:
+            continue
+    if not _rc:
+        return []
+
+    # 출고 기준 정산은 주문일이 영수증일과 하루쯤 어긋난다(마감 후 주문이
+    # 다음날 출고). 그래서 ±1일 안에 적용 기록이 있으면 적용된 것으로 본다.
+    _sd = set()
+    try:
+        from db_receipt_settle import _conn as _rs_conn, _ensure as _rs_ensure
+        from datetime import timedelta as _td2
+        c = _rs_conn(); _rs_ensure(c)
+        for (d,) in c.execute(
+                "SELECT DISTINCT order_date FROM receipt_settle_items "
+                "WHERE order_date BETWEEN ? AND ?",
+                ((_dt.strptime(_from, "%Y-%m-%d") - _td2(days=2)).strftime("%Y-%m-%d"),
+                 (_dt.strptime(_upto, "%Y-%m-%d") + _td2(days=2)).strftime("%Y-%m-%d"))):
+            _s = _norm(d)
+            if not _s:
+                continue
+            try:
+                _b = _dt.strptime(_s, "%Y-%m-%d")
+            except ValueError:
+                continue
+            for _k in (-1, 0, 1):
+                _sd.add((_b + _td2(days=_k)).strftime("%Y-%m-%d"))
+        c.close()
+    except Exception:
+        return []
+
+    return sorted(((d, n) for d, n in _rc.items() if d and d not in _sd), reverse=True)
+
+
 def get_stock_status(date_upto=None):
     """현재 구입재고 현황 — 입고·사용·잔량·재고금액.
 

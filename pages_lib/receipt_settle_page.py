@@ -896,6 +896,22 @@ def _render_stock_status():
         st.info("현재 재고가 없습니다. 영수증을 업로드하면 구입분이 재고로 잡힙니다.")
         return
 
+    # 재고가 부풀어 보이는 원인 1위 — 미리보기에서 매칭만 하고 '정산 적용'을
+    # 누르지 않으면 사용량이 0이라 산 것이 통째로 재고로 남는다. 화면에는
+    # '사용 0'만 보여 매칭이 안 된 것처럼 읽힌다 — 매칭은 됐고 저장이 안 된 것이다.
+    try:
+        _unap = _rs.unapplied_receipt_dates()
+    except Exception:
+        _unap = []
+    if _unap:
+        _msg = ["🚨 **정산이 적용되지 않은 영수증이 있습니다** — 그날 산 것이 "
+                "통째로 재고로 잡혀 있습니다.", ""]
+        _msg += [f"- **{d}** 영수증 {n}종 · 정산 적용 0건" for d, n in _unap[:6]]
+        _msg += ["", "미리보기에서 매칭만 하고 **'정산 적용'을 누르지 않으면** "
+                 "사용량이 0으로 남습니다. 위 날짜로 영수증 정산을 다시 열어 "
+                 "매칭 후 **정산 적용**까지 누르면 이 재고에서 빠집니다."]
+        st.error("\n".join(_msg))
+
     _left = [r for r in rows if r['units_left'] > 0]
     _neg = [r for r in rows if r['units_left'] < 0]
     _amt = sum(r['amount'] for r in _left)
