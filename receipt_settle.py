@@ -288,6 +288,7 @@ def unapplied_receipt_dates(date_upto=None, days=45):
     """
     import glob
     from datetime import datetime as _dt, timedelta as _td
+    from db_core import DATA_DIR
 
     _upto = str(date_upto or _dt.now().strftime("%Y-%m-%d"))
     _from = (_dt.strptime(_upto, "%Y-%m-%d") - _td(days=int(days))).strftime("%Y-%m-%d")

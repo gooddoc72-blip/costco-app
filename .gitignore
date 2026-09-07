@@ -38,3 +38,4 @@ Desktop.ini
 # 로컬판 빌드 산출물(대용량)
 local_build/_build/
 .costcobiz_license.json
+_*.py
