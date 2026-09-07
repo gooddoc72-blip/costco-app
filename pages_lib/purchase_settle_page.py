@@ -346,12 +346,17 @@ def _render_period_summary(dmap):
         _from = c1.date_input("시작일", value=_to - timedelta(days=13), key="ps_sum_from")
         _snap = {(r['settle_date'], r['username']): r
                  for r in get_period_rows(str(_from), str(_to))}
-        _rows = []
+        _rows, _live_need = [], []
         for _u in _users:
             for _d, _c in get_order_dispatch_counts(_u, str(_from), str(_to)).items():
                 if not (_c['orders'] or _c['dispatch']):
                     continue
                 _sn = _snap.get((_d, _u))
+                # 스냅샷이 없으면 즉석 계산한다. '예상 저장'을 안 눌렀다는 이유로
+                # 0원이 뜨면 계산서를 0원으로 끊게 된다 — 안 판 것과 구분이 안 된다.
+                # 발송이 있는 날만 계산한다(발송 0이면 청구도 0이라 계산이 무의미).
+                if _sn is None and _c['dispatch']:
+                    _live_need.append((_u, _d))
                 _rows.append({
                     '날짜': _d,
                     '사용자': dmap.get(_u, _u),
@@ -363,6 +368,24 @@ def _render_period_summary(dmap):
                         str((_sn or {}).get('status')), '-'),
                     '_u': _u,
                 })
+        if _live_need:
+            _live = {}
+            with st.spinner(f"저장 전인 {len(_live_need)}건을 계산 중..."):
+                for _lu, _ld in _live_need[:120]:      # 폭주 방지
+                    try:
+                        _live[(_lu, _ld)] = int(compute_daily_purchase(
+                            _lu, _ld, basis='dispatch')[1] or 0)
+                    except Exception:
+                        pass
+            for _r in _rows:
+                _k = (_r['_u'], _r['날짜'])
+                if _k in _live:
+                    _r['청구액'] = _live[_k]
+                    _r['상태'] = '미저장'
+            if _live:
+                st.caption("ℹ️ **미저장** 은 '예상 저장'을 아직 안 누른 날입니다 — "
+                           "금액은 지금 값으로 계산해 보여줍니다. "
+                           "영수증 정산을 적용하면 이 값이 실제 매입가로 바뀝니다.")
         if not _rows:
             st.info(f"{_from} ~ {_to} 주문·발송 기록이 없습니다.")
         else:
@@ -413,20 +436,37 @@ def _render_period_summary(dmap):
         _last = _cal.monthrange(int(_ym[:4]), int(_ym[5:7]))[1]
         _mf, _mt = '%s-01' % _ym, '%s-%02d' % (_ym, _last)
         _mon = get_monthly_summary(_ym)
-        _mrows = []
+        # 세금계산서는 월 전체금액으로 끊는다. '예상 저장'을 안 누른 날이
+        # 0원으로 빠지면 계산서가 그만큼 모자라게 나간다 — 저장 여부와
+        # 실제 매입은 별개다. 발송이 있는데 스냅샷이 없는 날은 즉석 계산한다.
+        _msnap = {(r['settle_date'], r['username'])
+                  for r in get_period_rows(_mf, _mt)}
+        _mrows, _mlive_tot = [], 0
         for _u in _users:
             _c = get_order_dispatch_counts(_u, _mf, _mt)
             _o = sum(v['orders'] for v in _c.values())
             _d = sum(v['dispatch'] for v in _c.values())
             _v = _mon.get(_u) or {'goods': 0, 'fees': 0, 'charge': 0,
                                   'days': 0, 'final_days': 0}
-            if not (_o or _d or _v['charge']):
+            _live_days = [_dd for _dd, _vv in _c.items()
+                          if _vv['dispatch'] and (_dd, _u) not in _msnap]
+            _live_amt = 0
+            for _dd in _live_days[:60]:
+                try:
+                    _live_amt += int(compute_daily_purchase(
+                        _u, _dd, basis='dispatch')[1] or 0)
+                except Exception:
+                    pass
+            _mlive_tot += len(_live_days)
+            if not (_o or _d or _v['charge'] or _live_amt):
                 continue
             _mrows.append({'사용자': dmap.get(_u, _u), '주문수집': _o, '발송': _d,
                            '미발송': max(0, _o - _d),
-                           '구매금액': _v['goods'], '택배·포장': _v['fees'],
-                           '청구액': _v['charge'],
-                           '정산일수': _v['days'], '확정일수': _v['final_days']})
+                           '구매금액': _v['goods'] + _live_amt,
+                           '택배·포장': _v['fees'],
+                           '청구액': _v['charge'] + _live_amt,
+                           '정산일수': _v['days'], '미저장일수': len(_live_days),
+                           '확정일수': _v['final_days']})
         if not _mrows:
             st.info(f"{_ym} 기록이 없습니다.")
         else:
@@ -439,6 +479,11 @@ def _render_period_summary(dmap):
             _pend = sum(r['정산일수'] - r['확정일수'] for r in _mrows)
             if _pend:
                 st.caption(f"⚠️ 확정되지 않은 날이 {_pend}건 있습니다 — 예상액으로 집계됐습니다.")
+            _unsaved = sum(r.get('미저장일수', 0) for r in _mrows)
+            if _unsaved:
+                st.caption(f"ℹ️ '예상 저장'을 안 누른 날 {_unsaved}건은 지금 값으로 "
+                           "계산해 합계에 넣었습니다 — 계산서 금액이 모자라지 않게 합니다. "
+                           "영수증 정산을 적용하면 실제 매입가로 바뀝니다.")
 
 
 def _render_price_log(dmap):
