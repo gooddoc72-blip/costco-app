@@ -542,7 +542,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     st.error("배정할 항목을 만들지 못했습니다 (사용자·상품번호 확인).")
 
     # ── 3.5) 미매칭 수동/AI 매칭 ──
-    _render_match_section(alloc, dmap, settings, USERNAME)
+    _render_match_section(alloc, dmap, settings, USERNAME, bill_date=str(d_day))
 
     # ── 3.7) 남은 재고 확인·입고 ──
     _render_leftover_section(receipt_items, alloc, dmap, d_day, USERNAME)
@@ -631,6 +631,11 @@ def _render_leftover_section(receipt_items, alloc, dmap, d_day, USERNAME):
         f"영수증 구매수량에서 **배치된 주문 소비량**을 뺀 잔량입니다. "
         f"수량은 재고원장과 같은 **소분 단위**입니다(소분 상품은 1팩 = split개). "
         f"보유자를 지정하고 체크한 행만 입고됩니다.")
+    # 여기 남은 것이 전부 재고는 아니다. 이전 미배송건을 오늘 사서 바로 보낸
+    # 물건은 실물이 이미 나갔으므로 입고하면 안 되고 그 사용자에게 청구해야 한다.
+    st.info("📦 여기 있는 것이 전부 재고는 아닙니다. **이전 미배송건을 오늘 사서 바로 "
+            "보낸 품목**은 입고하지 말고, 위 **✋ 수동 매칭 → 👤 주문 없이 사용자에게 "
+            "직접 청구**에서 그 사용자에게 청구하세요. 청구한 만큼은 이 표에서 빠집니다.")
 
     _opts = sorted(dmap.keys(), key=lambda u: dmap.get(u, u))
     _labels = [dmap.get(u, u) for u in _opts]
@@ -779,7 +784,7 @@ def _merge_matches(alloc, new_rows, matched_order_indices):
     st.session_state['rs_alloc'] = alloc
 
 
-def _render_match_section(alloc, dmap, settings, USERNAME):
+def _render_match_section(alloc, dmap, settings, USERNAME, bill_date=None):
     u_ords = alloc.get('unmatched_orders') or []
     u_rcpt = alloc.get('unmatched_receipt') or []
     if not u_ords or not u_rcpt:
@@ -832,6 +837,43 @@ def _render_match_section(alloc, dmap, settings, USERNAME):
             _merge_matches(alloc, new, list(ois))
             st.success(f"✋ {len(new)}건 매칭 추가")
             st.rerun()
+
+        # ── 붙일 주문이 아예 없는 경우 ──────────────────────────
+        # 이전 미배송건을 오늘 사서 바로 보낸 물건은 오늘 주문 목록에 없다.
+        # 재고로 넣으면 안 된다 — 실물은 이미 나갔고 돈은 받아야 한다.
+        st.divider()
+        st.markdown("**👤 주문 없이 사용자에게 직접 청구**")
+        st.caption("이전 미배송건을 오늘 사서 바로 보낸 경우처럼 **오늘 주문 목록에 없는** "
+                   "품목입니다. 재고로 입고하지 않고 그 사용자에게 바로 청구합니다.")
+        _bi = st.selectbox("청구할 영수증 품목", options=list(_ri_opts),
+                           format_func=lambda i: _ri_opts[i], key="rs_bill_ri")
+        _bu_opts = sorted(dmap.keys(), key=lambda u: dmap.get(u, u))
+        _bu_labels = [dmap.get(u, u) for u in _bu_opts] or [USERNAME]
+        _bu_l2u = {dmap.get(u, u): u for u in _bu_opts} or {USERNAME: USERNAME}
+        _bc1, _bc2 = st.columns([2, 1])
+        _bu = _bc1.selectbox("청구받을 사용자", _bu_labels, key="rs_bill_user")
+        _bq = _bc2.number_input("수량(팩)", min_value=1, step=1, value=1, key="rs_bill_qty")
+        _bm = st.text_input("사유 메모", key="rs_bill_memo",
+                            placeholder="예: 8/28 주문 미배송분 오늘 구매 후 발송")
+        _bit = u_rcpt[_bi]
+        st.caption(f"청구금액 **{fmt(int(_bit['단가'] or 0) * int(_bq))}원** "
+                   f"= {fmt(_bit['단가'])}원 × {int(_bq)}팩")
+        if st.button(f"🧑‍💼 {_bu}에게 청구 추가", key="rs_bill_add", type="primary"):
+            _rows = build_memo_rows([{
+                'username': _bu_l2u.get(_bu, ''),
+                'costco_no': str(_bit['상품번호'] or ''),
+                'product_name': str(_bit['상품명'] or ''),
+                'unit_price': int(_bit['단가'] or 0),
+                'qty': int(_bq),
+                'memo': (_bm.strip() or '주문 없음 — 이전 미배송분 발송'),
+            }], str(bill_date))
+            if _rows:
+                _merge_matches(alloc, _rows, [])
+                st.success(f"✅ {_bu}에게 {_bit['상품명']} {int(_bq)}팩을 청구 추가했습니다 — "
+                           "정산표에 반영됐습니다. '정산 적용'을 눌러 저장하세요.")
+                st.rerun()
+            else:
+                st.error("청구행을 만들지 못했습니다 (사용자·상품번호를 확인하세요).")
 
 
 def _render_stock_status():
