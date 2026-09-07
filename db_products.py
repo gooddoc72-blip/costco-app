@@ -230,6 +230,10 @@ def _upsert_shared_internal(costco_name, keyword, store_price=None, online_price
         _log_price_change(conn, keep_pno, costco_name, new_unit, new_pt,
                           (existing['unit_price'] or 0), source, updated_by,
                           receipt_date, now)
+        _prev = int(existing['unit_price'] or 0)
+        _result = {'status': ('same' if _prev == int(new_unit or 0) else 'changed'),
+                   'product_no': keep_pno, 'name': costco_name,
+                   'prev': _prev, 'price': int(new_unit or 0)}
     else:
         # 신규 등록 — None(=미지정)은 기본값으로 떨어뜨린다
         product_no = '' if product_no is None else product_no
@@ -255,14 +259,22 @@ def _upsert_shared_internal(costco_name, keyword, store_price=None, online_price
                       st, on, st_at, on_at, ('' if barcode is None else str(barcode).strip())))
         _log_price_change(conn, product_no, costco_name, new_unit, new_pt,
                           0, source, updated_by, receipt_date, now)
+        _result = {'status': 'new', 'product_no': product_no, 'name': costco_name,
+                   'prev': 0, 'price': int(new_unit or 0)}
     conn.commit()
     conn.close()
+    return _result
 
 
 def upsert_shared_store_price(costco_name, keyword, price, product_no='', split_qty=None,
                                updated_by='', image_url='', receipt_date='', force_store=False,
                                source='', barcode=None):
-    _upsert_shared_internal(costco_name, keyword,
+    """매장 매입가 저장. 반환: {status:'new'|'changed'|'same', prev, price, ...} 또는 None.
+
+    상태를 돌려줘야 화면이 '저장됐다'를 말할 수 있다. 같은 값으로 다시 올리면
+    가격 이력에 아무것도 안 남아서, 저장 안 된 것과 구분이 안 됐다.
+    """
+    return _upsert_shared_internal(costco_name, keyword,
                             store_price=price, online_price=None,
                             product_no=product_no, split_qty=split_qty,
                             updated_by=updated_by, image_url=image_url,

@@ -53,28 +53,71 @@ def _persist_receipt(username, items):
     if not _rows:
         return 0, 0, 0
     _saved = _updated = _pn = 0
+    _detail, _skip = [], []
     try:
         _saved, _updated = save_receipt_items(username, _rows)
     except Exception as _e:
         st.caption(f"⚠️ 영수증 DB 저장 실패: {_e}")
     for _it in _rows:
         _pno = str(_it.get('상품번호', '') or '').strip()
+        _nm = str(_it.get('상품명', '') or '')
         try:
             _pr = int(float(_it.get('단가') or 0))
         except (TypeError, ValueError):
             _pr = 0
-        if not _pno or _pr <= 0:
+        # 상품번호나 단가가 없으면 가격DB에 넣을 수 없다. 조용히 건너뛰면
+        # '왜 저장이 안 되지'가 되므로 이유를 남긴다.
+        if not _pno:
+            _skip.append((_nm, '코스트코 상품번호를 못 읽음'))
+            continue
+        if _pr <= 0:
+            _skip.append((_nm, '단가를 못 읽음'))
             continue
         try:
-            upsert_shared_store_price(
-                costco_name=_it.get('상품명', ''), keyword=_it.get('상품명', ''),
+            _r = upsert_shared_store_price(
+                costco_name=_nm, keyword=_nm,
                 price=_pr, product_no=_pno, updated_by=username,
                 receipt_date=str(_it.get('receipt_date', '') or ''), force_store=True,
                 source='receipt-settle')
             _pn += 1
-        except Exception:
-            pass
+            _detail.append({'상품번호': _pno, '상품명': _nm,
+                            '이전가': int((_r or {}).get('prev') or 0),
+                            '저장가': _pr,
+                            '결과': {'new': '신규 등록', 'changed': '가격 변경',
+                                     'same': '동일(확인)'}.get(
+                                         str((_r or {}).get('status')), '저장')})
+        except Exception as _e:
+            _skip.append((_nm, f'저장 실패: {str(_e)[:40]}'))
+    st.session_state['_rs_price_detail'] = {'rows': _detail, 'skip': _skip}
     return _saved, _updated, _pn
+
+
+def _render_price_result():
+    """직전 영수증 업로드가 가격DB에 무엇을 했는지 편다.
+
+    '반영 N종'이라는 숫자 하나로는 저장 여부를 확인할 수 없다. 같은 값으로
+    다시 올리면 가격 이력에도 아무것도 안 남아서(변동분만 기록) 안 된 것처럼
+    보인다. 품목별로 이전가/저장가/결과를 보여줘야 확인이 끝난다.
+    """
+    _d = st.session_state.get('_rs_price_detail') or {}
+    _rows, _skip = _d.get('rows') or [], _d.get('skip') or []
+    if not (_rows or _skip):
+        return
+    _new = sum(1 for r in _rows if r['결과'] == '신규 등록')
+    _chg = sum(1 for r in _rows if r['결과'] == '가격 변경')
+    _sam = sum(1 for r in _rows if r['결과'] == '동일(확인)')
+    _title = (f"💰 가격DB 반영 결과 — 신규 {_new} · 변경 {_chg} · 동일 {_sam}"
+              + (f" · 건너뜀 {len(_skip)}" if _skip else ""))
+    with st.expander(_title, expanded=bool(_skip)):
+        if _rows:
+            st.dataframe(pd.DataFrame(_rows), use_container_width=True, hide_index=True)
+            st.caption("**동일(확인)** 은 이미 같은 값이 들어 있어 바꿀 게 없었다는 뜻입니다 — "
+                       "저장은 정상입니다. 가격 이력에는 값이 바뀐 것만 남습니다.")
+        if _skip:
+            st.warning("가격DB에 넣지 못한 품목 — " + " · ".join(
+                f"{n}({why})" for n, why in _skip[:8]))
+            st.caption("상품번호를 못 읽은 품목은 위 표에서 번호를 채운 뒤 다시 올리면 "
+                       "가격이 저장됩니다.")
 
 
 def _disp_map():
@@ -184,6 +227,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         _sv, _up, _pn = _persist_receipt(USERNAME, list(merged.values()))
         if _sv or _up or _pn:
             st.caption(f"💾 영수증 DB 저장 — 신규 {_sv} · 갱신 {_up} · 공유DB 매입가 반영 {_pn}종")
+        _render_price_result()
         st.session_state['_rs_fkey'] = _fkey
         st.session_state['_rs_fails'] = fails
         st.session_state.pop('rs_alloc', None)   # 새 업로드 → 이전 미리보기 초기화
@@ -266,6 +310,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 if _sv or _up or _pn:
                     st.caption(f"💾 영수증 DB 저장 — 신규 {_sv} · 갱신 {_up} · "
                                f"공유DB 매입가 반영 {_pn}종")
+                _render_price_result()
                 st.session_state.pop('rs_alloc', None)
                 st.session_state.pop('rs_day', None)
                 st.success(f"📱 사진 {len(_ph)}장에서 {len(_merged_p)}품목 인식")
