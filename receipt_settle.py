@@ -1198,6 +1198,61 @@ def learn_costco_mappings(rows):
             'pairs': sum(len(v) for v in pairs.values())}
 
 
+def price_shortages(shortages):
+    """부족분에 매길 단가를 찾는다. 반환: [{...부족분, 'unit_price','amount','via'}]
+
+    영수증에서 못 찾았으니 실단가가 없다. 아는 값 중 가장 나은 것을 쓴다.
+      ① prev_cost — 이전 정산에서 확정된 그 주문의 구입가
+      ② 제품DB·공유DB 매입가 — 같은 상품을 산 적이 있으면 그 단가
+    둘 다 없으면 0으로 둔다. 없는 값을 지어내면 과청구가 된다.
+    """
+    from services import match_product_to_db
+    out = []
+    _cache = {}
+    for x in (shortages or []):
+        u = _norm(x.get('username'))
+        qty = max(1, int(x.get('qty') or 1))
+        prev = int(x.get('prev_cost') or 0)
+        unit, amount, via = 0, 0, ''
+        if prev > 0:
+            unit, amount, via = prev, prev, 'prev'      # prev_cost는 그 주문의 총 구입가다
+        else:
+            if u not in _cache:
+                try:
+                    _cache[u] = get_all_products(u)
+                except Exception:
+                    _cache[u] = []
+            try:
+                p = match_product_to_db(u, x.get('product_name') or '',
+                                        product_no=(x.get('naver_no') or None),
+                                        _user_prods=_cache[u])
+            except Exception:
+                p = None
+            if p:
+                _sq, _pk = _split_pack(p)
+                unit = int(p.get('unit_price') or 0)
+                amount = (unit // max(1, _sq)) * qty * max(1, _pk)
+                via = 'db' if unit else ''
+        out.append({**x, 'unit_price': unit, 'amount': int(amount), 'via': via})
+    return out
+
+
+def apply_shortage_billing(shortages):
+    """청구포함으로 판정한 부족분의 구입가를 주문에 채운다.
+
+    반환: {'priced': 단가를 찾은 건, 'updated': 주문에 반영된 건,
+           'zero': 단가를 못 찾은 건, 'amount': 반영 합계}
+    """
+    rows = price_shortages(shortages)
+    _ok = [r for r in rows if int(r.get('amount') or 0) > 0]
+    _zero = [r for r in rows if int(r.get('amount') or 0) <= 0]
+    _upd = apply_receipt_settlement([
+        {'username': r['username'], 'order_no': r['order_no'],
+         'amount': int(r['amount'])} for r in _ok]) if _ok else 0
+    return {'priced': len(_ok), 'updated': _upd, 'zero': len(_zero),
+            'amount': sum(int(r['amount']) for r in _ok), 'zero_rows': _zero}
+
+
 def apply_receipt_settlement(rows):
     """배치행 amount를 각 사용자 order_history.cost_price(+ profit_settlements)에 반영.
     Returns: 갱신된 주문 수."""

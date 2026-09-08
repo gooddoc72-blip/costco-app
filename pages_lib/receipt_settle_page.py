@@ -1509,6 +1509,10 @@ def _render_history(dmap, USERNAME=''):
                             + (f" · 미확인 {len(_undec)}건" if _undec else " · 전부 확인됨"))
                 st.caption("실제로 **샀는데 매칭만 실패**한 건은 청구에 포함하고, "
                            "**정말 못 산 건**은 제외하세요. 제외한 건은 청구서에서 빠집니다.")
+                _shm = st.session_state.pop('_rs_sh_msg', None)
+                if _shm:
+                    {'ok': st.success, 'warn': st.warning,
+                     'err': st.error}.get(_shm[0], st.info)(_shm[1])
                 _DEC_LABEL = {'bill': '✅ 청구포함', 'exclude': '🚫 청구제외', '': '⬜ 미확인'}
                 _pick = []
                 for x in _sh:
@@ -1525,7 +1529,24 @@ def _render_history(dmap, USERNAME=''):
                 _b1, _b2, _b3 = st.columns(3)
                 if _b1.button(f"✅ 선택 청구포함 ({len(_pick)})", key=f"rs_shb_{b['id']}",
                               disabled=not _pick, use_container_width=True):
-                    set_shortage_decision(_pick, 'bill', USERNAME); st.rerun()
+                    set_shortage_decision(_pick, 'bill', USERNAME)
+                    # 판정만 저장하면 청구가 그대로다 — '샀는데 매칭만 실패'라는
+                    # 뜻이므로 아는 값 중 가장 나은 단가로 구입가를 채워야 청구된다.
+                    _sel_rows = [x for x in _sh if x['id'] in set(_pick)]
+                    try:
+                        _r = _rs.apply_shortage_billing(_sel_rows)
+                    except Exception as _e:
+                        _r = None
+                        st.session_state['_rs_sh_msg'] = ('err', f"구입가 반영 실패: {_e}")
+                    if _r:
+                        _m = (f"✅ 청구포함 {len(_pick)}건 — 구입가 {_r['updated']}건 반영 "
+                              f"(합계 {fmt(_r['amount'])}원)")
+                        if _r['zero']:
+                            _m += (f" · ⚠️ {_r['zero']}건은 **단가를 못 찾아 0원**입니다 — "
+                                   "제품DB에 코스트코 단가를 채운 뒤 다시 누르세요.")
+                        st.session_state['_rs_sh_msg'] = (
+                            'warn' if _r['zero'] else 'ok', _m)
+                    st.rerun()
                 if _b2.button(f"🚫 선택 청구제외 ({len(_pick)})", key=f"rs_shx_{b['id']}",
                               disabled=not _pick, use_container_width=True):
                     set_shortage_decision(_pick, 'exclude', USERNAME); st.rerun()
