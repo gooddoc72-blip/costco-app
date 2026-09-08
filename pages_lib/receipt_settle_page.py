@@ -552,6 +552,42 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         st.caption(f"**{d_from} ~ {d_to}** {_basis_word} 주문 중 **아직 정산되지 않은 건**에서 "
                    "위 영수증 상품번호와 일치하는 주문을 찾아 배치합니다.")
 
+    # 영수증↔발송 매칭은 발송 기록이 있어야 성립한다. 없으면 매칭이 아니라
+    # 관리자 수작업이 되므로, 어느 사용자가 비어 있는지 먼저 보여준다.
+    try:
+        _cov = _rs.dispatch_coverage(str(d_day))
+    except Exception:
+        _cov = []
+    if _cov:
+        _none = [c for c in _cov if c['orders'] and not c['dispatched']]
+        _c_tot_o = sum(c['orders'] for c in _cov)
+        _c_tot_d = sum(c['dispatched'] for c in _cov)
+        st.markdown(f"**🚚 {d_day} 발송 기록** — 주문 {_c_tot_o}건 중 "
+                    f"발송 **{_c_tot_d}건**")
+        st.dataframe(pd.DataFrame([{
+            '사용자': dmap.get(c['username'], c['username']),
+            '주문': c['orders'], '발송': c['dispatched'],
+            '미발송': max(0, c['orders'] - c['dispatched']),
+            '상태': '✅' if c['dispatched'] else ('⚠️ 발송 기록 없음' if c['orders'] else '-'),
+        } for c in _cov]), use_container_width=True, hide_index=True)
+        if _none:
+            # 사용자들은 대개 오후 6~7시에 송장을 등록한다. 그 전에 정산을 돌리면
+            # 발송이 비어 매칭이 안 되는데, 이건 고장이 아니라 아직 이른 것이다.
+            from datetime import datetime as _dtn
+            _now = _dtn.now()
+            _early = (str(d_day) == _now.strftime('%Y-%m-%d') and _now.hour < 19)
+            st.warning(
+                "⚠️ **발송 기록이 없어 영수증과 매칭할 수 없는 사용자** — "
+                + " · ".join(f"{dmap.get(c['username'], c['username'])} "
+                             f"(주문 {c['orders']}건)" for c in _none[:8])
+                + ("  ·  🕕 사용자들은 보통 **오후 6~7시**에 송장을 등록합니다. "
+                   "지금은 그 전이라 비어 있는 것이 정상입니다 — "
+                   "등록이 끝난 뒤 다시 미리보기를 누르세요."
+                   if _early else
+                   "  ·  위 **🚚 발송 파일 업로드**에 송장 파일을 올리거나 "
+                   "각 사용자가 송장 등록으로 발송처리하면 매칭 대상이 됩니다. "
+                   "그 전에는 아래에서 손으로 배정할 수밖에 없습니다."))
+
     _auto_ai = st.checkbox(
         "🤖 남은 미매칭은 AI가 바로 매칭", value=True, key="rs_auto_ai",
         help="영수증 상품명(축약어)과 네이버 상품명(검색용 긴 이름)은 겹치는 단어가 "

@@ -417,6 +417,35 @@ def get_settled_order_keys():
         return set()
 
 
+def dispatch_coverage(the_date, users=None):
+    """그날 사용자별 (주문 수, 발송 수). 매칭의 입력이 있는지 보는 값이다.
+
+    영수증↔발송 매칭은 발송 기록이 있어야 성립한다. 없으면 매칭이 아니라
+    관리자 수작업이 된다. 어느 사용자가 비어 있는지 먼저 보여야 한다.
+    반환: [{'username','orders','dispatched'}] — 주문이나 발송이 있는 사용자만
+    """
+    if users is None:
+        users = [u['username'] for u in get_all_users()]
+    out = []
+    for u in users:
+        try:
+            conn = get_user_db(u)
+            _o = conn.execute("SELECT COUNT(*) FROM daily_orders WHERE order_date=?",
+                              (str(the_date),)).fetchone()[0]
+            try:
+                _d = conn.execute(
+                    "SELECT COUNT(*) FROM dispatch_log "
+                    "WHERE substr(dispatched_at,1,10)=?", (str(the_date),)).fetchone()[0]
+            except Exception:
+                _d = 0
+            conn.close()
+        except Exception:
+            continue
+        if _o or _d:
+            out.append({'username': u, 'orders': int(_o or 0), 'dispatched': int(_d or 0)})
+    return sorted(out, key=lambda x: -x['orders'])
+
+
 def build_shopping_bridge(order_date, users=None):
     """그날 장보기 제출목록 → {username: {네이버번호: 코스트코번호}} + 이름 후보.
 
