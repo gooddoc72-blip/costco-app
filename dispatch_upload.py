@@ -96,6 +96,29 @@ def guess_columns(headers):
     return out
 
 
+def order_columns(records, headers, owner_index, sample=400, min_hit=1):
+    """값이 실제 주문번호와 맞는 열들을 적중순으로 돌려준다. [(열, 적중수)]
+
+    헤더 이름으로 고르면 택배사 관리번호 열을 '주문번호'로 잡는다. 우리는 이미
+    전 사용자의 주문번호를 아니까 열마다 몇 개나 들어맞는지 세는 편이 확실하다.
+    스토어(네이버·쿠팡)가 섞이면 번호 열도 여럿일 수 있어 하나만 고르지 않는다.
+    """
+    _rows = list(records or [])[:int(sample)]
+    if not _rows or not owner_index:
+        return []
+    out = []
+    for h in (headers or []):
+        hit = 0
+        for r in _rows:
+            v = _norm_no(r.get(h))
+            if v and v in owner_index:
+                hit += 1
+        if hit >= int(min_hit):
+            out.append((h, hit))
+    out.sort(key=lambda x: -x[1])
+    return out
+
+
 def classify_rows(records, colmap, owner_index):
     """파일 행 → (분류된 것, 못 찾은 것).
 
@@ -107,13 +130,24 @@ def classify_rows(records, colmap, owner_index):
       unknown = [{..., '_row': 원본행번호}]
     """
     _c = colmap or {}
+    # 주문번호는 여러 열에 흩어질 수 있다(네이버 상품주문번호 / 쿠팡 주문번호).
+    # 지정된 열을 먼저 보고, 안 맞으면 나머지 후보 열을 차례로 본다.
+    _ocols = [_c.get('order_no')] + list(_c.get('order_no_alt') or [])
+    _ocols = [c for c in _ocols if c]
     by_user, unknown = {}, []
     for i, rec in enumerate(records or []):
         def _g(key):
             col = _c.get(key)
             return rec.get(col) if col else None
 
-        ono = _norm_no(_g('order_no'))
+        ono = ''
+        for _oc in _ocols:
+            _v = _norm_no(rec.get(_oc))
+            if _v and (not owner_index or _v in owner_index):
+                ono = _v
+                break
+        if not ono and _ocols:
+            ono = _norm_no(rec.get(_ocols[0]))
         item = {
             'order_no': ono,
             'recipient': str(_g('recipient') or '').strip(),
@@ -259,6 +293,30 @@ def render_panel(dmap, USERNAME):
 
         _cols = list(_df.columns)
         _guess = guess_columns(_cols)
+        # 주문번호 열은 이름이 아니라 **값**으로 고른다. 택배사 파일은
+        # '주문번호'라는 이름을 자기 관리번호에 붙여 놓는 일이 흔하고,
+        # 스토어(네이버·쿠팡)가 섞이면 번호 열이 여럿일 수도 있다.
+        _idx0, _dup0 = build_order_owner_index()
+        _recs0 = _df.to_dict('records')
+        _ranked = order_columns(_recs0, _cols, _idx0)
+        _alt = []
+        if _ranked:
+            _best, _bh = _ranked[0]
+            _alt = [c for c, _ in _ranked[1:]]
+            if _guess.get('order_no') != _best:
+                st.info(f"🔎 주문번호 열을 **{_best}** 로 잡았습니다 — "
+                        f"그 열의 값이 실제 주문과 {_bh}건 일치합니다."
+                        + (f" (헤더 이름으로는 '{_guess.get('order_no')}'가 잡혔는데 "
+                           "그 열에는 맞는 번호가 없습니다.)"
+                           if _guess.get('order_no') else ""))
+            _guess['order_no'] = _best
+            if _alt:
+                st.caption("🛒 스토어가 섞여 있어 보조 열도 함께 봅니다 — "
+                           + " · ".join(f"{c}({h}건)" for c, h in _ranked[1:4]))
+        elif _idx0:
+            st.warning("⚠️ 이 파일의 어느 열도 우리 주문번호와 맞지 않습니다 — "
+                       "**상품주문번호**가 들어 있는 열인지, 그리고 그 주문들이 "
+                       "일일 주문 수집으로 들어와 있는지 확인하세요.")
         st.markdown("**열 매핑** — 자동으로 찾은 값이 맞는지 확인하세요")
         _m1, _m2, _m3 = st.columns(3)
         _opts = ['(없음)'] + [str(c) for c in _cols]
@@ -277,6 +335,7 @@ def render_panel(dmap, USERNAME):
             'product_name': _pick(_m1, "상품명", 'product_name'),
             'qty':          _pick(_m2, "수량", 'qty'),
             'courier':      _pick(_m3, "택배사", 'courier'),
+            'order_no_alt': _alt,          # 스토어가 섞였을 때 함께 볼 열
         }
         if not _cm.get('order_no'):
             st.error("⚠️ **주문번호** 열을 지정해야 분류할 수 있습니다.")
@@ -285,11 +344,11 @@ def render_panel(dmap, USERNAME):
         _dd = st.date_input("발송일 (청구 귀속일)", value=date.today(), key="du_date",
                             help="이 날짜로 발송 기록이 남고, 그날 청구에 잡힙니다.")
 
-        _idx, _dup = build_order_owner_index()
+        _idx, _dup = _idx0, _dup0
         if _dup:
             st.warning(f"⚠️ 두 사용자에 걸친 주문번호 {len(_dup)}건이 있습니다 — "
                        "그 건은 분류가 부정확할 수 있습니다.")
-        _by_user, _unknown = classify_rows(_df.to_dict('records'), _cm, _idx)
+        _by_user, _unknown = classify_rows(_recs0, _cm, _idx)
 
         _tot = sum(len(v) for v in _by_user.values())
         st.markdown(f"### 분류 결과 — {_tot}건 매칭 · {len(_unknown)}건 미분류")
