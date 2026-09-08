@@ -124,13 +124,33 @@ def save_settlement_batch(label, date_from, date_to, receipt_dates,
     _ensure(conn)
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     total = sum(int(r.get('amount', 0) or 0) for r in rows)
-    cur = conn.execute(
-        "INSERT INTO receipt_settle_batches "
-        "(label,date_from,date_to,receipt_dates,order_count,total_amount,created_by,created_at) "
-        "VALUES (?,?,?,?,?,?,?,?)",
-        (label, date_from, date_to, receipt_dates, len(rows), total, created_by, now),
-    )
-    bid = cur.lastrowid
+    # 같은 정산일의 이력이 이미 있으면 그것을 갱신한다. 회차마다 새로 쌓으면
+    # 9/7에만 이력이 5개가 되고, 어느 것이 지금 값인지 알 수 없다.
+    _prev = conn.execute(
+        "SELECT id FROM receipt_settle_batches WHERE date_from=? AND date_to=? "
+        "AND receipt_dates=? ORDER BY id DESC LIMIT 1",
+        (date_from, date_to, receipt_dates)).fetchone()
+    if _prev:
+        bid = int(_prev[0])
+        conn.execute(
+            "UPDATE receipt_settle_batches SET label=?, order_count=?, total_amount=?, "
+            "created_by=?, created_at=? WHERE id=?",
+            (label, len(rows), total, created_by, now, bid))
+        # 그 이력의 옛 내용은 통째로 비운다 — 새로 만든 결과가 전부다
+        for _t in ('receipt_settle_items', 'receipt_settle_shortages',
+                   'receipt_settle_leftovers'):
+            try:
+                conn.execute("DELETE FROM %s WHERE batch_id=?" % _t, (bid,))
+            except Exception:
+                pass
+    else:
+        cur = conn.execute(
+            "INSERT INTO receipt_settle_batches "
+            "(label,date_from,date_to,receipt_dates,order_count,total_amount,created_by,created_at) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            (label, date_from, date_to, receipt_dates, len(rows), total, created_by, now),
+        )
+        bid = cur.lastrowid
     # 같은 주문이 옛 배치에 남아 있으면 지운다. 정산을 다시 돌리는 건 '그날
     # 결과를 다시 만드는' 일이라 같은 주문은 마지막 값 하나만 있어야 한다.
     # 안 지우면 날짜별 누적이 배치 수만큼 부풀어 과청구가 된다.
