@@ -9,6 +9,7 @@ import sqlite3
 from datetime import datetime, timedelta
 
 import streamlit as st
+import hashlib
 import pandas as pd
 import plotly.graph_objects as go
 try:
@@ -753,11 +754,48 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         st.caption("사용자마다 따로 찍으면 3종짜리 목록도 한 장을 통째로 씁니다. "
                    "여기서는 작은 목록끼리 같은 장에 이어 붙여 종이를 아낍니다.")
 
-        _opts = [f"{_s['order_date']} · {_s['username']} ({_s['total_items']}종)"
-                 for _s in _subs]
-        _pick = st.multiselect("인쇄할 제출건 — 비워 두면 전체", _opts,
-                               default=[], key="shop_combo_pick")
-        _sel = [_subs[_opts.index(_o)] for _o in _pick] if _pick else list(_subs)
+        # 체크박스로 고른다 — 주문이 적은 사용자만 골라 한 장에 몰아 찍는 게
+        # 실제 쓰임이라, 목록에서 바로 보고 체크하는 편이 빠르다.
+        # 표시이름 대응표 — 이 화면은 dmap을 따로 갖고 있지 않다
+        try:
+            _dn = {u['username']: (u.get('display_name') or u['username'])
+                   for u in get_all_users()}
+        except Exception:
+            _dn = {}
+        _cnt_by = []
+        for _s in _subs:
+            try:
+                _nn = len(json.loads(_s.get('items_json') or '[]'))
+            except Exception:
+                _nn = int(_s.get('total_items') or 0)
+            _cnt_by.append(_nn)
+        _small = st.number_input(
+            "이 종수 이하만 자동 체크 (0 = 전체 체크)", min_value=0, max_value=200,
+            value=0, step=1, key="shop_combo_small",
+            help="예: 5를 넣으면 5종 이하인 사용자만 체크됩니다. "
+                 "주문이 적은 사용자끼리 한 장에 몰아 찍을 때 씁니다.")
+        _pick_rows = [{'인쇄': (True if not _small else _cnt_by[i] <= _small),
+                       '날짜': _s['order_date'],
+                       '사용자': _dn.get(_s['username'], _s['username']),
+                       '종수': _cnt_by[i],
+                       '매장금액': int(_s.get('total_amount') or 0)}
+                      for i, _s in enumerate(_subs)]
+        _pk_sig = hashlib.md5(
+            f"{_small}|" + "|".join(f"{r['날짜']}{r['사용자']}{r['종수']}"
+                                    for r in _pick_rows).encode()).hexdigest()[:8]
+        _pk_ed = st.data_editor(
+            pd.DataFrame(_pick_rows), use_container_width=True, hide_index=True,
+            key=f"shop_combo_tbl_{_pk_sig}",
+            disabled=['날짜', '사용자', '종수', '매장금액'],
+            column_config={
+                '인쇄': st.column_config.CheckboxColumn('인쇄', help='체크한 사용자만 찍습니다'),
+                '종수': st.column_config.NumberColumn('종수', format='%d'),
+                '매장금액': st.column_config.NumberColumn('매장금액', format='%d'),
+            })
+        _sel = [_subs[i] for i, r in enumerate(_pk_ed.to_dict('records')) if r.get('인쇄')]
+        if not _sel:
+            st.caption("인쇄할 사용자를 체크하세요.")
+            return
 
         _cc1, _cc2, _cc3 = st.columns([1.3, 1.3, 1.4])
         _per_page = _cc1.checkbox("사용자마다 새 장", value=False, key="shop_combo_break",

@@ -393,6 +393,29 @@ def clear_match_draft(settle_date):
     return True
 
 
+def user_totals_by_date(date_from, date_to=None):
+    """정산에 적용된 사용자별 금액 — {(날짜, 사용자): 금액}
+
+    한 날짜에 정산을 여러 번 돌릴 수 있다(영수증을 나눠 올리거나 일부만 먼저
+    매칭해 보내는 경우). 실제 청구액은 그 회차 합계가 아니라 **누적 합계**다.
+    """
+    conn = _conn()
+    _ensure(conn)
+    _to = str(date_to or date_from)
+    try:
+        rows = conn.execute(
+            "SELECT order_date, username, SUM(amount) AS amt, SUM(qty) AS q, "
+            "COUNT(*) AS n FROM receipt_settle_items "
+            "WHERE order_date BETWEEN ? AND ? GROUP BY order_date, username",
+            (str(date_from), _to)).fetchall()
+    except Exception:
+        rows = []
+    conn.close()
+    return {(str(r['order_date']), str(r['username'])):
+            {'amount': int(r['amt'] or 0), 'qty': int(r['q'] or 0),
+             'count': int(r['n'] or 0)} for r in rows}
+
+
 def save_daily_billing(bill_date, rows, created_by):
     """일일 판매자 청구서 저장 (덮어쓰기). rows: [{username, order_count, amount}]."""
     conn = _conn()

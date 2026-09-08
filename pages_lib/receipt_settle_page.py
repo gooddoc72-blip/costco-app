@@ -917,9 +917,16 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             _sent = 0
             try:
                 from db_purchase_settle import finalize as _finalize
-                for _su, _sv in (summary or {}).items():
-                    _finalize(str(d_day), _su, int(_sv.get('amount') or 0), [],
-                              created_by=USERNAME)
+                from db_receipt_settle import user_totals_by_date
+                # 이 회차 합계가 아니라 그날 **누적 배치 전체**로 확정한다.
+                # 하루에 여러 번 돌리면(영수증을 나눠 올리거나 일부만 먼저 보내면)
+                # 회차 합계로 덮어써서 마지막 회차 금액만 남는다.
+                _acc = user_totals_by_date(str(d_day))
+                _tg = {u for (dd, u) in _acc if dd == str(d_day)} | set(summary or {})
+                for _su in _tg:
+                    _amt = int((_acc.get((str(d_day), _su)) or {}).get('amount')
+                               or (summary.get(_su) or {}).get('amount') or 0)
+                    _finalize(str(d_day), _su, _amt, [], created_by=USERNAME)
                     _sent += 1
             except Exception as _fe:
                 st.caption(f"⚠️ 사용자 확정 표시 실패: {_fe}")
