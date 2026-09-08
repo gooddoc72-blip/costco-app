@@ -7,6 +7,7 @@
 주문 자체의 cost_price 갱신은 services.apply_receipt_settlement 가 각 사용자
 DB(order_history/profit_settlements)에서 수행한다. 이 모듈은 '정산 이력'만 담는다.
 """
+import json
 import sqlite3
 from datetime import datetime
 
@@ -300,6 +301,96 @@ def _ensure_billing(conn):
         )
     """)
     conn.commit()
+
+
+def _ensure_draft(conn):
+    conn.execute("""CREATE TABLE IF NOT EXISTS receipt_match_draft (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        settle_date TEXT NOT NULL,
+        username TEXT NOT NULL,
+        order_no TEXT NOT NULL,
+        row_json TEXT NOT NULL,
+        created_by TEXT DEFAULT '',
+        updated_at TEXT DEFAULT '',
+        UNIQUE(settle_date, username, order_no)
+    )""")
+
+
+def save_match_draft(settle_date, rows, created_by=''):
+    """매칭 결과를 초안으로 저장한다(그 날짜 것은 통째로 교체).
+
+    왜 DB인가: 배정·수동매칭은 사람이 한 건씩 판단해 넣는 값이라 다시 만들기
+    비싸다(27종을 하나씩 배정한 적이 있다). 세션에만 두면 창을 닫거나 서버가
+    재시작하는 순간 사라진다. 아직 청구로 확정할 단계는 아니므로 정산 테이블과
+    분리해 둔다 — 저장과 전송은 다른 결정이다.
+    반환: 저장한 행 수
+    """
+    conn = _conn()
+    _ensure_draft(conn)
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    conn.execute("DELETE FROM receipt_match_draft WHERE settle_date=?", (str(settle_date),))
+    n = 0
+    for r in (rows or []):
+        _u = str(r.get('username') or '')
+        _o = str(r.get('order_no') or '')
+        if not (_u and _o):
+            continue
+        try:
+            conn.execute(
+                "INSERT OR REPLACE INTO receipt_match_draft "
+                "(settle_date, username, order_no, row_json, created_by, updated_at) "
+                "VALUES (?,?,?,?,?,?)",
+                (str(settle_date), _u, _o, json.dumps(r, ensure_ascii=False),
+                 str(created_by or ''), now))
+            n += 1
+        except Exception:
+            continue
+    conn.commit()
+    conn.close()
+    return n
+
+
+def get_match_draft(settle_date):
+    """저장해 둔 매칭 초안 행들. 없으면 []."""
+    conn = _conn()
+    _ensure_draft(conn)
+    try:
+        rows = conn.execute(
+            "SELECT row_json FROM receipt_match_draft WHERE settle_date=? "
+            "ORDER BY id", (str(settle_date),)).fetchall()
+    except Exception:
+        rows = []
+    conn.close()
+    out = []
+    for r in rows:
+        try:
+            out.append(json.loads(r['row_json']))
+        except Exception:
+            continue
+    return out
+
+
+def draft_dates(limit=30):
+    """초안이 남아 있는 날짜들 — [(날짜, 행수)]. 하다 만 정산을 놓치지 않게."""
+    conn = _conn()
+    _ensure_draft(conn)
+    try:
+        rows = conn.execute(
+            "SELECT settle_date, COUNT(*) c FROM receipt_match_draft "
+            "GROUP BY settle_date ORDER BY settle_date DESC LIMIT ?", (int(limit),)).fetchall()
+    except Exception:
+        rows = []
+    conn.close()
+    return [(r['settle_date'], r['c']) for r in rows]
+
+
+def clear_match_draft(settle_date):
+    conn = _conn()
+    _ensure_draft(conn)
+    conn.execute("DELETE FROM receipt_match_draft WHERE settle_date=?", (str(settle_date),))
+    conn.commit()
+    conn.close()
+    return True
 
 
 def save_daily_billing(bill_date, rows, created_by):

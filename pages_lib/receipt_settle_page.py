@@ -8,6 +8,8 @@ import pandas as pd
 
 from services import parse_costco_receipt_pdf, render_pdf_to_images
 import receipt_settle as _rs
+from db_receipt_settle import (save_match_draft, get_match_draft,
+                               clear_match_draft, draft_dates)
 from receipt_settle import (
     allocate_receipt_to_orders, apply_receipt_settlement, cleanup_orphan_settlements,
     learn_costco_mappings,
@@ -438,7 +440,14 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 )
         alloc['_settled_skipped'] = len(_settled)
         # 손으로 한 배정·매칭을 다시 얹는다. 재계산이 사람의 판단을 지우면 안 된다.
-        _sticky = (st.session_state.get('rs_sticky') or {}).get(str(d_day)) or []
+        # 세션 것과 DB 초안을 합친다 — 창을 닫았다 열어도 이어서 할 수 있어야 한다.
+        _sticky = list((st.session_state.get('rs_sticky') or {}).get(str(d_day)) or [])
+        try:
+            _seen_k = {(r.get('username'), r.get('order_no')) for r in _sticky}
+            _sticky += [r for r in (get_match_draft(str(d_day)) or [])
+                        if (r.get('username'), r.get('order_no')) not in _seen_k]
+        except Exception:
+            pass
         if _sticky:
             _have = {(r.get('username'), r.get('order_no')) for r in alloc['rows']}
             _re = [r for r in _sticky if (r.get('username'), r.get('order_no')) not in _have]
@@ -614,11 +623,40 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     # ── 3.7) 남은 재고 확인·입고 ──
     _render_leftover_section(receipt_items, alloc, dmap, d_day, USERNAME)
 
-    # ── 4) 적용 ──
+    # ── 4) 저장 / 전송 ──
+    #   둘은 다른 결정이다. 저장은 '여기까지 했다', 전송은 '이 금액으로 청구한다'.
+    #   중간에 저장할 데가 없어서 창을 닫으면 배정이 통째로 날아갔다.
     if rows:
         st.divider()
-        st.warning("⚠️ 적용하면 각 주문의 구입가가 영수증 실단가로 **덮어써집니다**. (되돌리려면 정산 이력에서 삭제 후 재수집)")
-        if st.button("✅ 정산 적용 (구입가 반영 + 정산표 저장)", type="primary", key="rs_apply_btn"):
+        st.subheader("💾 저장 · 📤 전송")
+        _sv1, _sv2 = st.columns([1, 2])
+        if _sv1.button("💾 매칭 저장 (전송 안 함)", key="rs_save_draft",
+                       use_container_width=True):
+            try:
+                _n = save_match_draft(str(d_day), rows, created_by=USERNAME)
+                st.success(f"💾 매칭 {_n}건을 저장했습니다 — 창을 닫아도 남습니다. "
+                           "아직 사용자에게 청구되지 않았습니다.")
+            except Exception as _e:
+                st.error(f"저장 실패: {_e}")
+        _sv2.caption("**저장**은 여기까지 한 매칭을 붙들어 둘 뿐 사용자에게 아무것도 "
+                     "보내지 않습니다. 나중에 이어서 하거나 다른 사람이 검수할 때 씁니다.")
+        try:
+            _dd = [(_d, _c) for _d, _c in (draft_dates() or []) if _d != str(d_day)]
+        except Exception:
+            _dd = []
+        if _dd:
+            st.caption("📌 저장만 하고 전송하지 않은 날 — "
+                       + " · ".join(f"**{_d}** {_c}건" for _d, _c in _dd[:6]))
+
+        st.warning("⚠️ 전송하면 각 주문의 구입가가 영수증 실단가로 **덮어써지고** "
+                   "각 사용자에게 청구금액으로 보입니다. "
+                   "(되돌리려면 정산 이력에서 삭제 후 재수집)")
+        _amt_by_u = {u: v['amount'] for u, v in (summary or {}).items()}
+        st.caption("전송 대상 — " + " · ".join(
+            f"{dmap.get(u, u)} {fmt(a)}원" for u, a in
+            sorted(_amt_by_u.items(), key=lambda kv: -kv[1])[:8]))
+        if st.button(f"📤 각 사용자에게 전송 ({len(_amt_by_u)}명 · {fmt(sum(_amt_by_u.values()))}원)",
+                     type="primary", key="rs_apply_btn"):
             with st.spinner("적용 중..."):
                 n = apply_receipt_settlement(rows)
                 # 매칭 결과(네이버번호↔코스트코번호)를 제품DB에 저장 → 다음 정산부터
@@ -651,8 +689,23 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 pass
             st.session_state.pop('rs_alloc', None)
             _st = st.session_state.get('rs_sticky') or {}
-            _st.pop(str(d_day), None)      # 저장됐으니 더 붙들 이유가 없다
+            _st.pop(str(d_day), None)      # 전송됐으니 더 붙들 이유가 없다
             st.session_state['rs_sticky'] = _st
+            try:
+                clear_match_draft(str(d_day))
+            except Exception:
+                pass
+            # 사용자 화면에 '확정'으로 뜨게 한다 — 전송은 여기까지 가야 끝난다.
+            # 이게 없으면 관리자만 아는 정산이 되어 사용자는 청구를 모른다.
+            _sent = 0
+            try:
+                from db_purchase_settle import finalize as _finalize
+                for _su, _sv in (summary or {}).items():
+                    _finalize(str(d_day), _su, int(_sv.get('amount') or 0), [],
+                              created_by=USERNAME)
+                    _sent += 1
+            except Exception as _fe:
+                st.caption(f"⚠️ 사용자 확정 표시 실패: {_fe}")
             _lmsg = ""
             if (_learn or {}).get('filled'):
                 _lu = ", ".join(f"{k} {v}건" for k, v in (_learn.get('by_user') or {}).items())
@@ -660,7 +713,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                          + (f" · 주문 {_learn['orders']}건에 번호 기입"
                             if _learn.get('orders') else "")
                          + " — 다음 정산부터 자동 매칭됩니다.")
-            st.success(f"✅ 정산 적용 완료 — 주문 {n}건 구입가 반영, 정산 배치 #{bid} 저장. "
+            st.success(f"📤 전송 완료 — 주문 {n}건 구입가 반영, 정산 배치 #{bid} 저장, "
+                       f"사용자 {_sent}명에게 청구 확정. "
                        "각 사용자 수익계산에 즉시 반영됩니다." + _lmsg)
             st.rerun()
 
