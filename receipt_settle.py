@@ -417,6 +417,35 @@ def get_settled_order_keys():
         return set()
 
 
+SELF_PURCHASE_KEY = 'self_purchase'      # '1' = 직접구매(대행 아님)
+
+
+def is_self_purchase(username):
+    """직접 매장에서 사는 계정인가 — 구매대행이 아니라 정산·청구 대상이 아니다."""
+    try:
+        from db import get_setting
+        return str(get_setting(username, SELF_PURCHASE_KEY) or '').strip() == '1'
+    except Exception:
+        return False
+
+
+def billable_users():
+    """구매대행 정산·청구 대상 사용자.
+
+    관리자와 '직접구매' 계정은 뺀다. 직접 사는 사람의 발송건을 영수증에
+    맞추려 하면 영원히 미매칭으로 남고, 어쩌다 이름이 겹쳐 붙으면
+    사지도 않은 물건이 청구된다.
+    """
+    out = []
+    for u in (get_all_users() or []):
+        if u.get('is_admin'):
+            continue
+        if is_self_purchase(u['username']):
+            continue
+        out.append(u['username'])
+    return out
+
+
 def dispatch_coverage(the_date, users=None):
     """그날 사용자별 (주문 수, 발송 수). 매칭의 입력이 있는지 보는 값이다.
 
@@ -425,7 +454,7 @@ def dispatch_coverage(the_date, users=None):
     반환: [{'username','orders','dispatched'}] — 주문이나 발송이 있는 사용자만
     """
     if users is None:
-        users = [u['username'] for u in get_all_users()]
+        users = billable_users()      # 직접구매 계정은 정산 대상이 아니다
     out = []
     for u in users:
         try:
@@ -531,7 +560,7 @@ def allocate_dispatched_to_receipt(receipt_items, dispatch_date, users=None,
             name_by_costco[cno] = _norm(it.get('상품명'))
 
     if users is None:
-        users = [u['username'] for u in get_all_users()]
+        users = billable_users()      # 직접구매 계정은 정산 대상이 아니다
     bridge = build_shopping_bridge(shopping_date or dispatch_date, users=users)
     _ritems = [{'costco': c, 'name': name_by_costco.get(c, ''), 'price': price_by_costco[c]}
                for c in price_by_costco]
@@ -762,7 +791,7 @@ def allocate_receipt_to_orders(receipt_items, date_from, date_to, users=None,
             name_by_costco[cno] = _norm(it.get('상품명'))
 
     if users is None:
-        users = [u['username'] for u in get_all_users()]
+        users = billable_users()      # 직접구매 계정은 정산 대상이 아니다
 
     # 이름 폴백용 영수증 목록
     _ritems = [{'costco': c, 'name': name_by_costco.get(c, ''), 'price': price_by_costco[c]}
@@ -933,7 +962,7 @@ def dispatch_consumption(dispatch_date, receipt_nos, matched_keys=None, users=No
     _nos = {str(x) for x in (receipt_nos or [])}
     _mk = set(matched_keys or ())
     if users is None:
-        users = [u['username'] for u in get_all_users()]
+        users = billable_users()      # 직접구매 계정은 정산 대상이 아니다
     used, rows = {}, []
     for uname in users:
         try:

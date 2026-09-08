@@ -29,7 +29,13 @@ def _disp_map():
 
 
 def _sellers():
-    return [u['username'] for u in get_all_users() if not u.get('is_admin')]
+    """정산·청구 대상 사용자 — 관리자와 '직접구매' 계정은 뺀다.
+
+    직접 매장에서 사는 계정(주문건도 관리자에게 보내지 않는다)을 넣으면
+    발송건이 전부 미매칭으로 쌓이고, 어쩌다 붙으면 사지도 않은 물건이 청구된다.
+    """
+    from receipt_settle import billable_users
+    return billable_users()
 
 
 def _render_receipt_match(dmap, USERNAME, date_from, date_to):
@@ -154,6 +160,51 @@ def _render_receipt_match(dmap, USERNAME, date_from, date_to):
                 f"✅ {_n_ok}건을 영수증 단가로 확정했습니다"
                 + (f" · 제품DB 연결 {_n_link}건" if _n_link else ""))
             st.rerun()
+
+
+def _render_billing_scope(dmap, USERNAME):
+    """계정별로 구매대행 대상인지 지정한다.
+
+    모든 사용자가 대행 대상은 아니다. 직접 매장에서 사고 주문건도 관리자에게
+    보내지 않는 계정이 있는데, 그런 계정을 정산에 넣으면 발송건이 전부
+    미매칭으로 쌓이고(9/7 미매칭 35건 중 23건) 어쩌다 이름이 겹쳐 붙으면
+    사지도 않은 물건이 청구된다(9/7 23,970원).
+    """
+    from db import get_all_users, get_setting, set_setting
+    from receipt_settle import SELF_PURCHASE_KEY
+
+    with st.expander("👥 정산 대상 계정 — 구매대행 / 직접구매", expanded=False):
+        st.caption("**구매대행**: 관리자가 대신 사서 보내는 계정 → 영수증 매칭·청구 대상입니다."
+                   " / **직접구매**: 본인이 매장에서 사는 계정 → 정산·청구에서 **제외**됩니다. "
+                   "발송건이 미매칭으로 쌓이지 않고, 청구도 잡히지 않습니다.")
+        _us = [u for u in (get_all_users() or []) if not u.get('is_admin')]
+        if not _us:
+            st.caption("사용자가 없습니다.")
+            return
+        _rows = []
+        for u in _us:
+            _self = str(get_setting(u['username'], SELF_PURCHASE_KEY) or '').strip() == '1'
+            _rows.append({'직접구매(제외)': _self,
+                          '사용자': dmap.get(u['username'], u['username']),
+                          '계정': u['username']})
+        _ed = st.data_editor(
+            pd.DataFrame(_rows), use_container_width=True, hide_index=True,
+            key="ps_scope_ed", disabled=['사용자', '계정'],
+            column_config={'직접구매(제외)': st.column_config.CheckboxColumn(
+                '직접구매(제외)',
+                help='체크하면 이 계정은 영수증 매칭·청구에서 빠집니다')})
+        if st.button("💾 정산 대상 저장", key="ps_scope_save", type="primary"):
+            _n = 0
+            for _old, _new in zip(_rows, _ed.to_dict('records')):
+                if bool(_old['직접구매(제외)']) != bool(_new.get('직접구매(제외)')):
+                    set_setting(_old['계정'], SELF_PURCHASE_KEY,
+                                '1' if _new.get('직접구매(제외)') else '')
+                    _n += 1
+            st.success(f"✅ {_n}개 계정 설정을 저장했습니다." if _n else "변경된 계정이 없습니다.")
+            st.rerun()
+        _excl = [r['사용자'] for r in _rows if r['직접구매(제외)']]
+        if _excl:
+            st.info("🚫 정산·청구 제외 중 — " + " · ".join(_excl))
 
 
 def _render_costco_map(dmap, USERNAME):
@@ -860,6 +911,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         st.markdown(f"### 총 구매금액: **{fmt(_tot)}원**  ·  사용자 {len(per_user)}명"
                     f"  ·  {_period}")
 
+    _render_billing_scope(dmap, USERNAME)
     _render_costco_map(dmap, USERNAME)
     _render_period_summary(dmap)
     _render_ledger(dmap, USERNAME)
