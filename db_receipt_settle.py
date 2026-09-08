@@ -131,6 +131,22 @@ def save_settlement_batch(label, date_from, date_to, receipt_dates,
         (label, date_from, date_to, receipt_dates, len(rows), total, created_by, now),
     )
     bid = cur.lastrowid
+    # 같은 주문이 옛 배치에 남아 있으면 지운다. 정산을 다시 돌리는 건 '그날
+    # 결과를 다시 만드는' 일이라 같은 주문은 마지막 값 하나만 있어야 한다.
+    # 안 지우면 날짜별 누적이 배치 수만큼 부풀어 과청구가 된다.
+    _touched = set()
+    for r in rows:
+        _u = str(r.get('username', '') or '')
+        _o = str(r.get('order_no', '') or '')
+        if not (_u and _o):
+            continue
+        for _b in conn.execute(
+                "SELECT DISTINCT batch_id FROM receipt_settle_items "
+                "WHERE username=? AND order_no=?", (_u, _o)):
+            if _b[0] is not None:
+                _touched.add(int(_b[0]))
+        conn.execute("DELETE FROM receipt_settle_items WHERE username=? AND order_no=?",
+                     (_u, _o))
     for r in rows:
         conn.execute(
             "INSERT INTO receipt_settle_items "
@@ -152,6 +168,8 @@ def save_settlement_batch(label, date_from, date_to, receipt_dates,
              sh.get('recipient', ''), sh.get('naver_no', ''), sh.get('product_name', ''),
              int(sh.get('qty', 0) or 0), int(sh.get('prev_cost', 0) or 0), now),
         )
+    if _touched:
+        _recompute_batches(conn, _touched)
     for lf in (leftovers or []):
         conn.execute(
             "INSERT INTO receipt_settle_leftovers "
@@ -402,11 +420,17 @@ def user_totals_by_date(date_from, date_to=None):
     conn = _conn()
     _ensure(conn)
     _to = str(date_to or date_from)
+    # 같은 주문이 옛 배치에 남아 있을 수 있다(예전 저장분). 주문별로 **가장
+    # 최근 행 하나만** 세어 중복 청구를 막는다.
     try:
         rows = conn.execute(
             "SELECT order_date, username, SUM(amount) AS amt, SUM(qty) AS q, "
-            "COUNT(*) AS n FROM receipt_settle_items "
-            "WHERE order_date BETWEEN ? AND ? GROUP BY order_date, username",
+            "COUNT(*) AS n FROM ("
+            "  SELECT order_date, username, order_no, amount, qty FROM receipt_settle_items"
+            "  WHERE order_date BETWEEN ? AND ?"
+            "    AND id IN (SELECT MAX(id) FROM receipt_settle_items"
+            "               GROUP BY order_date, username, order_no)"
+            ") GROUP BY order_date, username",
             (str(date_from), _to)).fetchall()
     except Exception:
         rows = []
