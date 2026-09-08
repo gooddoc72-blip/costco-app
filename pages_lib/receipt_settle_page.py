@@ -564,9 +564,12 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             _pool = build_stock_pool(str(d_to), exclude_dates=[str(d_day)])
             _settled = get_settled_order_keys()
             if _by_dispatch:
+                # 재고 이월은 마지막 수단이다. 먼저 물어 가면 오늘 영수증에
+                # 있는 물건까지 과거 재고로 처리돼 그때 단가로 청구된다.
+                # AI까지 돌린 뒤 남은 것에만 이월을 적용한다.
                 alloc = allocate_dispatched_to_receipt(
                     receipt_items, str(d_day), stock_pool=_pool,
-                    exclude_orders=_settled,
+                    exclude_orders=_settled, defer_stock=True,
                 )
             else:
                 alloc = allocate_receipt_to_orders(
@@ -608,6 +611,14 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     alloc['_auto_ai'] = len(_new2)
                 elif _perr2:
                     alloc['_auto_ai_err'] = _perr2
+        # AI까지 끝난 뒤 남은 것만 과거 재고에서 메꾼다
+        if _by_dispatch and _pool:
+            try:
+                _nc = _rs.apply_stock_carry(alloc, _pool)
+                if _nc:
+                    alloc['_stock_carry'] = _nc
+            except Exception as _e:
+                st.caption(f"⚠️ 재고 이월 계산 실패: {_e}")
         st.session_state['rs_alloc'] = alloc
 
     st.session_state['rs_sticky_date'] = str(d_day)
@@ -628,6 +639,9 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     if alloc and alloc.get('_auto_ai'):
         st.success(f"🤖 규칙으로 못 붙은 {alloc['_auto_ai']}건을 AI가 이었습니다 — "
                    "정산을 확정하면 이 연결이 저장돼 다음부터는 번호로 바로 붙습니다.")
+    if alloc and alloc.get('_stock_carry'):
+        st.info(f"📦 남은 {alloc['_stock_carry']}건은 **과거 구매분(재고)**에서 메꿨습니다 — "
+                "오늘 영수증에 없는 상품이라 그때 산 단가로 청구됩니다.")
     if alloc and alloc.get('_auto_ai_err'):
         st.warning(f"⚠️ AI 자동매칭 실패: {alloc['_auto_ai_err']} — 아래 수동 매칭을 쓰세요.")
     if not alloc:

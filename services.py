@@ -848,6 +848,10 @@ def render_pdf_to_images(uploaded_pdf, max_pages=6, max_edge=2000):
 
 _RCPT_NUM_ROW = re.compile(
     r'^(\d{1,7})\s+(\d+)\s+([\d,]+)\s+(-\s*)?([\d,]+)\s*(-)?\s*[TFN]?\s*$')
+# 페이지 머리글·꼬리글 — 인쇄본에서 품목 사이에 끼어든다
+_RCPT_PAGE_NOISE = re.compile(
+    r'^(\d+\s*/\s*\d+|\d{2}\.\s*\d{1,2}\.\s*\d{1,2}\.|.*my-account.*|'
+    r'.*costco\.co\.kr.*|.*오전\s*\d|.*오후\s*\d).*$')
 _RCPT_SKIP_NAME = ('코스트코코리아', '대표자', '부산시', '서울시', '경기도', '판매', '닫기',
                    'costco', 'http', '합계', '면세', '과세', '부가세', '카드', '잔돈',
                    '쿠폰합계', '승인', '거래구분', 'REG#')
@@ -884,12 +888,20 @@ def parse_receipt_lines(lines, receipt_date=''):
         m = _RCPT_NUM_ROW.match(line)
         if not m:
             continue                       # 이름 줄 — 숫자 줄에서 뒤돌아본다
+        # 상품명은 윗줄에 있는데, 페이지가 넘어가면 그 사이에 머리글·꼬리글이
+        # 낀다(`costco.co.kr/my-account/receipts`, `1/2`, 출력 일시).
+        # 예전엔 바로 윗줄만 보고 꼬리글을 이름으로 잡아 품목을 통째로 버렸다
+        # (2026-09-04 `매콤달콤보리멸 676141`이 그렇게 사라졌다).
+        # 머리글·꼬리글은 건너뛰고 더 위로 올라가 진짜 이름을 찾는다.
         name = ''
-        for j in range(i - 1, max(-1, i - 4), -1):
+        for j in range(i - 1, max(-1, i - 9), -1):
             _c = (lines[j] or '').strip()
-            if _c and not _c.startswith('***') and not _RCPT_NUM_ROW.match(_c):
-                name = _c
-                break
+            if not _c or _c.startswith('***') or _RCPT_NUM_ROW.match(_c):
+                continue
+            if any(x in _c for x in _RCPT_SKIP_NAME) or _RCPT_PAGE_NOISE.match(_c):
+                continue                      # 머리글·꼬리글 — 더 위를 본다
+            name = _c
+            break
         no, qty = m.group(1), int(m.group(2))
         unit = int(m.group(3).replace(',', ''))
         amt = int(m.group(5).replace(',', ''))

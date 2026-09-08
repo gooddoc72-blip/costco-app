@@ -462,7 +462,7 @@ def build_shopping_bridge(order_date, users=None):
 
 def allocate_dispatched_to_receipt(receipt_items, dispatch_date, users=None,
                                    shopping_date=None, exclude_orders=None,
-                                   stock_pool=None):
+                                   stock_pool=None, defer_stock=False):
     """오늘 출고된 주문 × 오늘 영수증 × 그날 장보기 목록 — 3자 매칭.
 
     정산 대상은 '오늘 일괄발송(출고)한 주문'이다. 돈이 나가는 시점이 발송이고,
@@ -474,6 +474,9 @@ def allocate_dispatched_to_receipt(receipt_items, dispatch_date, users=None,
       ② 제품DB 매핑   — products.naver_* → product_no
       ③ 이름 유사도   — 출고 상품명 ↔ 영수증 상품명 (≥ NAME_MATCH_MIN)
       ④ 재고 이월     — 과거 구매분(stock_pool)에서 차감
+                       (defer_stock=True면 건너뛴다 — 화면이 AI 매칭을 돌린 뒤
+                        남은 것에만 이월을 적용한다. 오늘 영수증이 과거 재고보다
+                        먼저여야 엉뚱한 단가가 붙지 않는다.)
 
     Returns: allocate_receipt_to_orders와 동일한 형태(rows/unmatched_*/user_summary).
     """
@@ -567,8 +570,14 @@ def allocate_dispatched_to_receipt(receipt_items, dispatch_date, users=None,
             qty = int(o.get('qty') or 1)
             _sq, _pk = _split_pack(prod)
 
-            # ④ 재고 이월 — 오늘 영수증에 없으면 과거 구매분에서 찾는다
-            if not costco_no and stock_pool:
+            # ④ 재고 이월 — 오늘 영수증에 없으면 과거 구매분에서 찾는다.
+            #   defer_stock이면 건너뛴다. 이월이 여기서 먼저 물어 가면 AI가
+            #   오늘 영수증에서 찾아낼 건까지 과거 재고로 처리돼 **엉뚱한 단가**가
+            #   붙는다. 실측(9/4): '오리온 닥터유 단백질바'가 영수증의
+            #   닥터유프로틴바(634767·11,790원)를 두고 잘못 매핑된
+            #   N.V 프로틴 바(627908·21,490원) 재고로 붙었다.
+            #   오늘 영수증이 언제나 과거 재고보다 먼저다.
+            if not costco_no and stock_pool and not defer_stock:
                 _cand = _norm((prod or {}).get('product_no')) or onv
                 if _cand not in stock_pool:
                     _pool_cands = [{'_pn': _pn, 'name': _e.get('name') or ''}
@@ -619,6 +628,50 @@ def allocate_dispatched_to_receipt(receipt_items, dispatch_date, users=None,
     return {'rows': rows, 'unmatched_receipt': unmatched,
             'unmatched_orders': unmatched_orders,
             'user_summary': _summarize(rows)}
+
+
+def apply_stock_carry(alloc, stock_pool, users=None):
+    """AI까지 돌린 뒤 **남은** 미매칭 주문만 과거 재고에서 메꾼다.
+
+    이월은 마지막 수단이어야 한다. 먼저 물어 가면 오늘 영수증에 있는 물건까지
+    과거 재고로 처리돼 그때 단가로 청구된다.
+    반환: 이월로 붙인 건수
+    """
+    if not (alloc and stock_pool):
+        return 0
+    _left = []
+    _added = 0
+    for o in (alloc.get('unmatched_orders') or []):
+        nm = _norm(o.get('product_name'))
+        qty = max(1, int(o.get('qty') or 1))
+        _sq = max(1, int(o.get('split_qty') or 1))
+        _cands = [{'costco': _pn, 'name': _e.get('name', ''), 'price': _e.get('price', 0)}
+                  for _pn, _e in stock_pool.items() if _e.get('units', 0) > 0]
+        _b, _bi = best_name_match(nm, _cands)
+        _cand = _b['costco'] if _b else ''
+        if not _cand:
+            _left.append(o)
+            continue
+        _need = qty
+        if stock_pool[_cand]['units'] < _need:
+            _left.append(o)
+            continue
+        stock_pool[_cand]['units'] -= _need
+        _price = int(stock_pool[_cand].get('price') or 0)
+        alloc.setdefault('rows', []).append({
+            'username': o.get('username', ''), 'order_no': o.get('order_no', ''),
+            'order_date': o.get('order_date', ''), 'costco_no': _cand,
+            'naver_no': o.get('naver_no', ''), 'product_name': o.get('product_name', ''),
+            'qty': qty, 'unit_price': _price,
+            'amount': (_price // _sq) * qty,
+            'prev_cost': int(o.get('prev_cost') or 0), 'via': 'stock',
+            'split_qty': _sq, 'pack': 1,
+        })
+        _added += 1
+    alloc['unmatched_orders'] = _left
+    if _added:
+        alloc['user_summary'] = _summarize(alloc['rows'])
+    return _added
 
 
 def allocate_receipt_to_orders(receipt_items, date_from, date_to, users=None,
