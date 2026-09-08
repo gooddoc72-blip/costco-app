@@ -25,6 +25,7 @@ from db_receipt_settle import (
 )
 from db import (
     get_all_users, get_all_settings, add_lot_units, find_lots_by_memo,
+    get_receipt_items_by_date, receipt_dates_with_items,
     set_global_setting, save_receipt_items, upsert_shared_store_price,
 )
 from utils import fmt
@@ -202,7 +203,17 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         "코스트코 영수증 PDF (여러 개 가능)", type=['pdf'],
         key="rs_pdf", accept_multiple_files=True
     )
-    _fkey = tuple(sorted(f.name for f in files)) if files else ()
+    # 파일 이름만으로 키를 만들면, 판독 로직을 고친 뒤 같은 파일을 다시 올려도
+    # '이미 읽은 파일'로 보고 건너뛴다. 크기와 '다시 읽기' 횟수를 함께 넣는다.
+    _reparse = int(st.session_state.get('_rs_reparse') or 0)
+    _fkey = (tuple(sorted((f.name, getattr(f, 'size', 0)) for f in files)), _reparse) \
+        if files else ()
+    if files and st.button("🔄 올린 영수증 다시 읽기", key="rs_reparse_btn",
+                           help="판독이 틀렸거나 프로그램이 바뀐 뒤 같은 파일을 "
+                                "다시 읽습니다."):
+        st.session_state['_rs_reparse'] = _reparse + 1
+        st.session_state.pop('_rs_fkey', None)
+        st.rerun()
     if files and st.session_state.get('_rs_fkey') != _fkey:
         parsed, fails = [], []
         import ai_service as _ais
@@ -361,6 +372,30 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     st.subheader("🧾 영수증 품목")
     st.caption("자동 인식되면 표에 채워집니다. 인식이 안 되거나 빠진 게 있으면 **코스트코 상품번호·상품명·단가를 직접 입력**하세요. (행 추가 가능)")
     _seed = st.session_state.get('rs_receipt_items') or []
+    if not _seed:
+        # 세션이 비었다고 영수증이 없는 건 아니다 — 새로고침·재시작이면 DB에 있다.
+        # 지난 날짜를 다시 열어 검수하려면 여기서 되읽어야 한다.
+        try:
+            _rdates = receipt_dates_with_items(limit=30)
+        except Exception:
+            _rdates = []
+        if _rdates:
+            _dopts = [f"{_d} ({_c}종)" for _d, _c in _rdates]
+            _dc1, _dc2 = st.columns([2, 1])
+            _dpick = _dc1.selectbox("저장된 영수증 불러오기", ['(선택)'] + _dopts,
+                                    key="rs_load_date")
+            _dc2.write("")
+            if _dpick != '(선택)' and _dc2.button("📂 불러오기", key="rs_load_btn",
+                                                use_container_width=True):
+                _dsel = _rdates[_dopts.index(_dpick)][0]
+                _got = get_receipt_items_by_date(USERNAME, _dsel)
+                if _got:
+                    st.session_state['rs_receipt_items'] = _got
+                    st.session_state.pop('rs_alloc', None)
+                    st.rerun()
+                else:
+                    st.warning(f"{_dsel} 영수증을 찾지 못했습니다.")
+        _seed = st.session_state.get('rs_receipt_items') or []
     _rd_by_cno = {_n(p.get('상품번호')): (p.get('receipt_date', '') or '')
                   for p in _seed if _n(p.get('상품번호'))}
     _list_by_cno = {_n(p.get('상품번호')): int(p.get('정가단가') or 0) for p in _seed}
@@ -373,7 +408,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                        '정가': 0, '할인': 0, '단가': 0}]
     edited = st.data_editor(
         pd.DataFrame(_seed_rows), num_rows='dynamic', use_container_width=True,
-        key=f"rs_item_editor_{abs(hash(_fkey)) % 100000}",
+        key=f"rs_item_editor_{hashlib.md5(str(_seed_rows).encode()).hexdigest()[:8]}",
         column_config={
             '상품번호': st.column_config.TextColumn('코스트코 상품번호'),
             '상품명': st.column_config.TextColumn('상품명'),
@@ -415,6 +450,16 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                   '정가단가': _lp or up, '할인': _dc,
                                   'receipt_date': _rd_by_cno.get(cno, '')})
     if receipt_items:
+        # 표에서 고친 값은 세션에만 있다 — 판독이 틀려 고쳤다면 그게 진짜 값이다.
+        _ec1, _ec2 = st.columns([1, 3])
+        if _ec1.button("💾 표 내용 저장", key="rs_items_save", use_container_width=True):
+            st.session_state['rs_receipt_items'] = list(receipt_items)
+            _s2, _u2, _p2 = _persist_receipt(USERNAME, list(receipt_items))
+            st.session_state.pop('rs_alloc', None)
+            st.success(f"💾 영수증 {len(receipt_items)}종 저장 — 신규 {_s2} · 갱신 {_u2} · "
+                       f"가격DB 반영 {_p2}종")
+        _ec2.caption("표에서 **정가·할인·수량**을 고쳤다면 저장하세요 — 저장해야 "
+                     "다음에 열 때도 남고, 배치·청구에도 그 값이 쓰입니다.")
         _t_qty = sum(int(x.get('수량') or 1) for x in receipt_items)
         _t_list = sum(int(x.get('정가단가') or x.get('단가') or 0) * int(x.get('수량') or 1)
                       for x in receipt_items)

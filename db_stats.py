@@ -2,6 +2,7 @@
 통계 / 영수증 / 가격 이력 레이어
 daily_orders 집계, 영수증 raw 저장, 가격 변동 이력
 """
+import sqlite3
 from datetime import datetime, timedelta
 
 from db_core import get_user_db
@@ -186,10 +187,63 @@ def get_price_change_history(username, limit=50):
 
 # ── 영수증 raw 항목 ────────────────────────────────────────
 
+def _ensure_receipt_cols(conn):
+    """할인·정가 칸 보강. 없으면 할인이 저장될 데가 없어 새로고침에 사라진다."""
+    for _sql in ("ALTER TABLE receipt_items ADD COLUMN discount INTEGER DEFAULT 0",
+                 "ALTER TABLE receipt_items ADD COLUMN list_price INTEGER DEFAULT 0"):
+        try:
+            conn.execute(_sql)
+        except Exception:
+            pass
+
+
+def get_receipt_items_by_date(username, receipt_date):
+    """그 날짜의 영수증 품목 — 화면 표를 DB에서 되살릴 때 쓴다."""
+    conn = get_user_db(username)
+    _ensure_receipt_cols(conn)
+    try:
+        rows = conn.execute(
+            "SELECT product_no, product_name, qty, unit_price, "
+            "COALESCE(discount,0) AS discount, COALESCE(list_price,0) AS list_price, "
+            "receipt_date FROM receipt_items WHERE receipt_date=? ORDER BY id",
+            (str(receipt_date),)).fetchall()
+    except Exception:
+        rows = []
+    conn.close()
+    return [{'상품번호': str(r['product_no'] or ''), '상품명': r['product_name'] or '',
+             '수량': int(r['qty'] or 1), '단가': int(r['unit_price'] or 0),
+             '할인': int(r['discount'] or 0),
+             '정가단가': int(r['list_price'] or 0) or int(r['unit_price'] or 0),
+             'receipt_date': r['receipt_date'] or ''} for r in rows]
+
+
+def receipt_dates_with_items(limit=60):
+    """영수증이 저장된 날짜들(최신순) — 어느 날을 다시 열 수 있는지 보여준다."""
+    import glob
+    import os
+    from db_core import DATA_DIR
+    out = {}
+    for f in sorted(glob.glob(os.path.join(DATA_DIR, '*.db'))):
+        u = os.path.basename(f)[:-3]
+        if u == 'auth' or '.bak' in u or '.backup' in u:
+            continue
+        try:
+            c = sqlite3.connect('file:%s?mode=ro' % f, uri=True)
+            for d, n in c.execute("SELECT receipt_date, COUNT(*) FROM receipt_items "
+                                  "GROUP BY receipt_date"):
+                if d:
+                    out[str(d)] = out.get(str(d), 0) + int(n or 0)
+            c.close()
+        except Exception:
+            continue
+    return sorted(out.items(), reverse=True)[:int(limit)]
+
+
 def save_receipt_items(username, items):
     if not items:
         return 0, 0
     conn = get_user_db(username)
+    _ensure_receipt_cols(conn)
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     saved = 0
     updated = 0
@@ -199,6 +253,8 @@ def save_receipt_items(username, items):
         name = (it.get('상품명') or '').strip()
         qty = int(it.get('수량') or 1)
         price = int(it.get('단가') or 0)
+        disc = int(it.get('할인') or 0)
+        listp = int(it.get('정가단가') or 0) or price
         if not name or not rd:
             continue
         existing = conn.execute(
@@ -207,15 +263,17 @@ def save_receipt_items(username, items):
         ).fetchone()
         if existing:
             conn.execute(
-                "UPDATE receipt_items SET qty=?, unit_price=?, created_at=? WHERE id=?",
-                (qty, price, now, existing['id'])
+                "UPDATE receipt_items SET qty=?, unit_price=?, discount=?, "
+                "list_price=?, created_at=? WHERE id=?",
+                (qty, price, disc, listp, now, existing['id'])
             )
             updated += 1
         else:
             conn.execute(
-                "INSERT INTO receipt_items (receipt_date, product_no, product_name, qty, unit_price, created_at) "
-                "VALUES (?,?,?,?,?,?)",
-                (rd, pno, name, qty, price, now)
+                "INSERT INTO receipt_items (receipt_date, product_no, product_name, "
+                "qty, unit_price, discount, list_price, created_at) "
+                "VALUES (?,?,?,?,?,?,?,?)",
+                (rd, pno, name, qty, price, disc, listp, now)
             )
             saved += 1
     conn.commit()

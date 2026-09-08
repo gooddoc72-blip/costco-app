@@ -93,7 +93,7 @@ from db_stats import (
     get_price_history_monthly,
     save_price_changes_to_history,
     get_price_change_history,
-    save_receipt_items,
+    save_receipt_items, get_receipt_items_by_date, receipt_dates_with_items,
     get_recent_receipt_items,
     delete_receipt_items_by_date,
     get_receipt_dates,
