@@ -570,15 +570,18 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             '미발송': max(0, c['orders'] - c['dispatched']),
             '상태': '✅' if c['dispatched'] else ('⚠️ 발송 기록 없음' if c['orders'] else '-'),
         } for c in _cov]), use_container_width=True, hide_index=True)
-        # 송장 미등록 주문 — 관리자가 그 자리에서 발송처리할 수 있게 한다.
+        # 주문은 있는데 송장등록이 안 된 건 — **보여주기만** 한다.
+        # 송장등록은 사용자가 자기 스토어에서 하는 일이라 관리자가 대신 누르면
+        # 실제 상태와 어긋난다. 관리자에게 필요한 건 '누가 아직 안 했나'다.
         _pend = [c for c in _cov if c['orders'] > c['dispatched']]
         if _pend:
-            with st.expander(
-                    f"📝 송장 미등록 주문 {sum(c['orders'] - c['dispatched'] for c in _pend)}건 "
-                    "— 관리자가 직접 발송처리", expanded=False):
-                st.caption("송장을 올리지 않은 계정의 주문입니다. 실제로 나갔다면 여기서 "
-                           "발송처리하세요 — 그래야 영수증과 매칭됩니다. "
-                           "**송장번호는 없어도 됩니다**(나중에 송장 파일을 올리면 채워집니다).")
+            _pend_n = sum(c['orders'] - c['dispatched'] for c in _pend)
+            with st.expander(f"📮 송장등록 안 된 주문 {_pend_n}건 — 어느 건인지 보기",
+                             expanded=False):
+                st.caption("송장등록은 **각 사용자가 자기 스토어에서** 하는 일입니다. "
+                           "여기서는 아직 안 된 주문이 무엇인지 확인해 해당 사용자에게 "
+                           "알려주세요. 등록이 끝나면 자동으로 발송으로 잡혀 "
+                           "영수증과 매칭됩니다.")
                 _plabels = [f"{dmap.get(c['username'], c['username'])} "
                             f"— 미등록 {c['orders'] - c['dispatched']}건" for c in _pend]
                 _pk = st.selectbox("사용자", _plabels, key=f"rs_md_u_{d_day}")
@@ -591,35 +594,19 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 if not _ulist:
                     st.caption("미등록 주문이 없습니다.")
                 else:
-                    _all = st.checkbox(f"전체 선택 ({len(_ulist)}건)", value=False,
-                                       key=f"rs_md_all_{d_day}_{_pu}")
-                    _mrows = [{'발송처리': _all, '주문번호': o['order_no'],
-                               '수취인': o['recipient'],
-                               '상품명': o['product_name'][:40],
-                               '수량': o['qty'], '코스트코번호': o['costco_no']}
-                              for o in _ulist]
-                    _msig = hashlib.md5(
-                        f"{_pu}{d_day}{_all}{len(_ulist)}".encode()).hexdigest()[:8]
-                    _med = st.data_editor(
-                        pd.DataFrame(_mrows), use_container_width=True, hide_index=True,
-                        key=f"rs_md_ed_{_msig}",
-                        disabled=['주문번호', '수취인', '상품명', '수량', '코스트코번호'],
-                        column_config={'발송처리': st.column_config.CheckboxColumn(
-                            '발송처리', help='체크한 주문을 이 날짜로 발송처리합니다')})
-                    _mpick = [_ulist[i] for i, r in enumerate(_med.to_dict('records'))
-                              if r.get('발송처리')]
-                    if st.button(f"🚚 선택한 {len(_mpick)}건을 {d_day}로 발송처리",
-                                 key=f"rs_md_go_{d_day}", type="primary",
-                                 disabled=not _mpick):
-                        try:
-                            _n = _rs.mark_dispatched(_pu, _mpick, str(d_day),
-                                                     by=USERNAME)
-                            st.session_state.pop('rs_alloc', None)
-                            st.success(f"🚚 {dmap.get(_pu, _pu)} {_n}건을 발송처리했습니다 — "
-                                       "미리보기를 다시 눌러 매칭하세요.")
-                            st.rerun()
-                        except Exception as _e:
-                            st.error(f"발송처리 실패: {_e}")
+                    st.dataframe(pd.DataFrame([{
+                        '주문번호': o['order_no'], '수취인': o['recipient'],
+                        '상품명': o['product_name'][:44], '수량': o['qty'],
+                        '코스트코번호': o['costco_no'] or '',
+                    } for o in _ulist]), use_container_width=True, hide_index=True)
+                    st.caption(f"{dmap.get(_pu, _pu)} · {len(_ulist)}건 미등록")
+                    try:
+                        _csv = pd.DataFrame(_ulist).to_csv(index=False).encode('utf-8-sig')
+                        st.download_button("📥 미등록 목록 CSV", data=_csv,
+                                           file_name=f"미등록_{_pu}_{d_day}.csv",
+                                           mime="text/csv", key=f"rs_md_dl_{d_day}_{_pu}")
+                    except Exception:
+                        pass
 
         if _none:
             # 사용자들은 대개 오후 6~7시에 송장을 등록한다. 그 전에 정산을 돌리면
