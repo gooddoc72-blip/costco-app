@@ -251,6 +251,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                             '상품명': _it.get('상품명', ''),
                             '수량': int(_it.get('수량') or 1),
                             '단가': int(_it.get('단가') or 0),
+                            '금액': int(_it.get('금액') or 0),
+                            '할인': int(_it.get('할인') or 0),
                             'receipt_date': _rd,
                         })
                         _got += 1
@@ -327,8 +329,18 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         '상품명': _it.get('상품명', ''),
                         '수량': int(_it.get('수량') or 1),
                         '단가': int(_it.get('단가') or 0),
+                        '금액': int(_it.get('금액') or 0),
+                        '할인': int(_it.get('할인') or 0),
                         'receipt_date': _rdate,
                     })
+                _da = int(_data.get('discount_amount') or 0)
+                _di = sum(int(x.get('할인') or 0) for x in (_data.get('items') or []))
+                if _da and _da > _di:
+                    st.warning(
+                        f"⚠️ {_pf.name} — 할인 **{fmt(_da)}원**을 읽었지만 어느 품목 "
+                        f"것인지 가르지 못했습니다(품목별 합계 {fmt(_di)}원). "
+                        "아래 표의 **할인** 칸에 직접 넣어 주세요 — 안 넣으면 "
+                        "할인 전 가격으로 청구됩니다.")
                 _note = []
                 if _data.get('_tiled'):
                     _note.append("세로로 잘라 다시 읽음")
