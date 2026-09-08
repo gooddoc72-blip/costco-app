@@ -37,6 +37,42 @@ def _set_cache_helpers(shared_fn=None, user_fn=None, merged_fn=None, invalidate_
     invalidate_data_cache = invalidate_fn
 
 
+def _merge_receipt_lines(parsed):
+    """영수증 줄들을 (상품번호, 날짜)로 합친다. 반환: {키: 품목}
+
+    같은 상품이 영수증에 **따로 두 줄**로 찍히는 일이 흔하다
+    (2026-09-07: 995554 초콜릿아몬드 1개짜리 두 줄, 617031 유연제 두 줄,
+     660569 피타브레드 두 줄, 741114 버터 두 줄).
+    예전에는 나중 줄이 앞 줄을 덮어써서 절반이 사라졌다 — 2개 산 물건이
+    1개로 청구됐다. 수량·금액·할인을 더한다.
+
+    단가는 **실제 지불한 단가**로 다시 계산한다((금액-할인)/수량).
+    청구는 실제 낸 돈으로 해야 한다. 영수증에 찍힌 정가는 '정가단가'로 남겨
+    가격DB에 쓴다 — 일회성 쿠폰가를 상품 표준가로 굳히면 안 된다.
+    """
+    out = {}
+    for p in (parsed or []):
+        k = (_n(p.get('상품번호')) or _n(p.get('상품명')), _n(p.get('receipt_date')))
+        _q = max(1, int(p.get('수량') or 1))
+        _u = int(p.get('단가') or 0)
+        _a = int(p.get('금액') or 0) or _u * _q
+        _d = int(p.get('할인') or 0)
+        e = out.get(k)
+        if e is None:
+            out[k] = {'상품번호': p.get('상품번호', ''), '상품명': p.get('상품명', ''),
+                      '수량': _q, '금액': _a, '할인': _d, '정가단가': _u,
+                      'receipt_date': p.get('receipt_date', '')}
+        else:
+            e['수량'] += _q
+            e['금액'] += _a
+            e['할인'] += _d
+            e['정가단가'] = e['정가단가'] or _u
+    for e in out.values():
+        _q = max(1, int(e['수량']))
+        e['단가'] = max(0, int(e['금액']) - int(e['할인'])) // _q
+    return out
+
+
 def _persist_receipt(username, items):
     """영수증 품목을 DB에 남긴다 — receipt_items + 공유DB 매장 매입가.
 
@@ -76,9 +112,12 @@ def _persist_receipt(username, items):
             _skip.append((_nm, '단가를 못 읽음'))
             continue
         try:
+            # 가격DB에는 **정가**를 넣는다. 쿠폰으로 싸게 산 값을 상품 표준가로
+            # 굳히면, 쿠폰이 끝난 뒤의 예상 구매가가 실제보다 낮게 잡힌다.
+            _list = int(_it.get('정가단가') or 0) or _pr
             _r = upsert_shared_store_price(
                 costco_name=_nm, keyword=_nm,
-                price=_pr, product_no=_pno, updated_by=username,
+                price=_list, product_no=_pno, updated_by=username,
                 receipt_date=str(_it.get('receipt_date', '') or ''), force_store=True,
                 source='receipt-settle')
             _pn += 1
@@ -219,12 +258,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             with st.expander(f"🔧 상품번호 자동 교정 {len(_snap0)}건", expanded=False):
                 for _l in _snap0:
                     st.caption("· " + _l)
-        merged = {}
-        for p in parsed:
-            k = _n(p.get('상품번호')) or _n(p.get('상품명'))
-            ex = merged.get(k)
-            if ex is None or (p.get('receipt_date', '') or '') >= (ex.get('receipt_date', '') or ''):
-                merged[k] = p
+        merged = _merge_receipt_lines(parsed)
         st.session_state['rs_receipt_items'] = list(merged.values())
         _sv, _up, _pn = _persist_receipt(USERNAME, list(merged.values()))
         if _sv or _up or _pn:
@@ -303,10 +337,11 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     for _l in _snap:
                         st.caption("· " + _l)
             if _pparsed:
-                _merged_p = {_n(x.get('상품번호')) or _n(x.get('상품명')): x for x in _pparsed}
-                _prev = {_n(x.get('상품번호')) or _n(x.get('상품명')): x
-                         for x in (st.session_state.get('rs_receipt_items') or [])}
-                _prev.update(_merged_p)          # PDF로 올린 게 있으면 합친다
+                # 이미 올린 것(PDF 등)과 합친다. 키 규칙이 다르면 같은 품목이
+                # 두 번 들어가므로 양쪽 다 _merge_receipt_lines로 만든다.
+                _prev = _merge_receipt_lines(
+                    (st.session_state.get('rs_receipt_items') or []) + _pparsed)
+                _merged_p = _merge_receipt_lines(_pparsed)
                 st.session_state['rs_receipt_items'] = list(_prev.values())
                 _sv, _up, _pn = _persist_receipt(USERNAME, list(_prev.values()))
                 if _sv or _up or _pn:
@@ -328,9 +363,14 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     _seed = st.session_state.get('rs_receipt_items') or []
     _rd_by_cno = {_n(p.get('상품번호')): (p.get('receipt_date', '') or '')
                   for p in _seed if _n(p.get('상품번호'))}
+    _list_by_cno = {_n(p.get('상품번호')): int(p.get('정가단가') or 0) for p in _seed}
     _seed_rows = [{'상품번호': _n(p.get('상품번호')), '상품명': _n(p.get('상품명')),
-                   '수량': int(p.get('수량') or 1), '단가': int(float(p.get('단가') or 0))}
-                  for p in _seed] or [{'상품번호': '', '상품명': '', '수량': 1, '단가': 0}]
+                   '수량': int(p.get('수량') or 1),
+                   '정가': int(p.get('정가단가') or p.get('단가') or 0),
+                   '할인': int(p.get('할인') or 0),
+                   '단가': int(float(p.get('단가') or 0))}
+                  for p in _seed] or [{'상품번호': '', '상품명': '', '수량': 1,
+                                       '정가': 0, '할인': 0, '단가': 0}]
     edited = st.data_editor(
         pd.DataFrame(_seed_rows), num_rows='dynamic', use_container_width=True,
         key=f"rs_item_editor_{abs(hash(_fkey)) % 100000}",
@@ -338,9 +378,20 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             '상품번호': st.column_config.TextColumn('코스트코 상품번호'),
             '상품명': st.column_config.TextColumn('상품명'),
             '수량': st.column_config.NumberColumn('수량', min_value=1, step=1),
-            '단가': st.column_config.NumberColumn('실단가(원)', min_value=0, step=100),
+            '정가': st.column_config.NumberColumn(
+                '정가(원)', min_value=0, step=100,
+                help='영수증에 찍힌 단가. 가격DB에는 이 값이 들어갑니다.'),
+            '할인': st.column_config.NumberColumn(
+                '할인(원)', min_value=0, step=100,
+                help='그 품목에 붙은 쿠폰(CPN) 합계. 수량 전체에 대한 금액입니다.'),
+            '단가': st.column_config.NumberColumn(
+                '실단가(원)', min_value=0, step=100,
+                help='실제로 낸 단가 = (정가×수량 − 할인) ÷ 수량. 청구는 이 값으로 합니다.'),
         },
     )
+    st.caption("**실단가**로 청구합니다 — 쿠폰(CPN) 할인을 뺀 실제 지불 단가입니다. "
+               "**정가**는 가격DB에 저장돼 다음 예상가로 쓰입니다(일회성 쿠폰가를 "
+               "상품 표준가로 굳히지 않기 위해서입니다).")
     receipt_items = []
     for r in edited.to_dict('records'):
         cno = _n(r.get('상품번호'))
@@ -349,8 +400,19 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         except (TypeError, ValueError):
             up = 0
         if cno and up > 0:
+            # 관리자가 정가·할인·수량을 고치면 실단가를 다시 계산한다.
+            # 표에 손을 대는 이유가 대개 '판독이 틀려서'인데, 실단가만 남겨 두면
+            # 고친 값이 청구에 반영되지 않는다.
+            _lp = int(float(r.get('정가') or 0))
+            _dc = int(float(r.get('할인') or 0))
+            _qy = max(1, int(r.get('수량') or 1))
+            if _lp > 0 and (_dc or _lp * _qy != up * _qy):
+                _calc = max(0, _lp * _qy - _dc) // _qy
+                if _calc > 0:
+                    up = _calc
             receipt_items.append({'상품번호': cno, '상품명': _n(r.get('상품명')),
-                                  '수량': int(r.get('수량') or 1), '단가': up,
+                                  '수량': _qy, '단가': up,
+                                  '정가단가': _lp or up, '할인': _dc,
                                   'receipt_date': _rd_by_cno.get(cno, '')})
     if not receipt_items:
         st.info("정산하려면 표에 **코스트코 상품번호 + 실단가(>0)** 가 있는 항목이 최소 1개 필요합니다.")

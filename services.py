@@ -846,6 +846,68 @@ def render_pdf_to_images(uploaded_pdf, max_pages=6, max_edge=2000):
     return _out, None
 
 
+_RCPT_NUM_ROW = re.compile(
+    r'^(\d{1,7})\s+(\d+)\s+([\d,]+)\s+(-\s*)?([\d,]+)\s*(-)?\s*[TFN]?\s*$')
+_RCPT_SKIP_NAME = ('코스트코코리아', '대표자', '부산시', '서울시', '경기도', '판매', '닫기',
+                   'costco', 'http', '합계', '면세', '과세', '부가세', '카드', '잔돈',
+                   '쿠폰합계', '승인', '거래구분', 'REG#')
+
+
+def parse_receipt_lines(lines, receipt_date=''):
+    """영수증 텍스트 줄 -> [{상품번호,상품명,수량,단가,금액,할인,receipt_date}]
+
+    영수증 구조(2026-09-07 부산점 실물로 검증):
+        KS종이타월
+        1768085  1  26,490  26,490 T          <- 품목
+        *** CPN
+        꽃담초유연제5.7L
+        5234     1   3,500  - 3,500 T         <- 할인. 금액에 '-'가 붙는다.
+
+    · 할인 줄의 앞 숫자는 상품번호가 아니라 **쿠폰코드**다. 품목으로 세면
+      있지도 않은 상품이 생기고 총수량이 어긋난다. 바로 위 품목에 붙인다.
+    · 같은 상품이 **따로 두 줄**로 찍히기도 한다(995554 초콜릿아몬드 1개 x 2줄).
+      줄을 그대로 내보내고 합치는 일은 호출부가 한다.
+    · 단가는 영수증에 찍힌 정가다. 실제 지불액은 금액 - 할인이다.
+
+    검증(2026-09-07 부산점): 수량합 35 = '총 판매 상품 수 35',
+    할인합 62,000 = '쿠폰합계 62,000', 순액 783,280 = '합계(VAT 포함) 783,280'.
+    """
+    items = []
+    pending_cpn = False
+    for i, raw in enumerate(lines):
+        line = (raw or '').strip()
+        if not line:
+            continue
+        if line.startswith('***'):
+            pending_cpn = 'CPN' in line.upper()
+            continue
+        m = _RCPT_NUM_ROW.match(line)
+        if not m:
+            continue                       # 이름 줄 — 숫자 줄에서 뒤돌아본다
+        name = ''
+        for j in range(i - 1, max(-1, i - 4), -1):
+            _c = (lines[j] or '').strip()
+            if _c and not _c.startswith('***') and not _RCPT_NUM_ROW.match(_c):
+                name = _c
+                break
+        no, qty = m.group(1), int(m.group(2))
+        unit = int(m.group(3).replace(',', ''))
+        amt = int(m.group(5).replace(',', ''))
+        neg = bool(m.group(4) or m.group(6))
+        if neg or pending_cpn or 'IRC' in name.upper() or 'CPN' in name.upper():
+            if items:
+                items[-1]['할인'] = int(items[-1].get('할인') or 0) + amt
+            pending_cpn = False
+            continue
+        pending_cpn = False
+        if not name or len(name) < 2 or any(x in name for x in _RCPT_SKIP_NAME):
+            continue
+        items.append({'상품번호': no, '상품명': name, '수량': qty,
+                      '단가': unit, '금액': amt, '할인': 0,
+                      'receipt_date': receipt_date})
+    return items
+
+
 def parse_costco_receipt_pdf(uploaded_pdf):
     try:
         import pdfplumber
@@ -892,32 +954,7 @@ def parse_costco_receipt_pdf(uploaded_pdf):
             except Exception:
                 pass
 
-    items, skip_next = [], False
-    for i in range(len(lines) - 1):
-        if skip_next:
-            skip_next = False
-            continue
-        line, next_line = lines[i].strip(), lines[i + 1].strip()
-        if line == '*** CPN':
-            skip_next = True
-            continue
-        if 'CPN' in line or 'IRC' in line:
-            continue
-        m = re.match(r'^(\d{4,7})\s+(\d+)\s+([\d,]+)\s+([\d,\-\s]+)\s*[TFN]?\s*$', next_line)
-        if m:
-            name = line
-            if any(x in name for x in ['코스트코코리아', '대표자', '부산시', '판매', '닫기', 'costco', 'http']):
-                continue
-            if not name or len(name) < 2:
-                continue
-            items.append({
-                '상품번호': m.group(1),
-                '상품명': name,
-                '수량': int(m.group(2)),
-                '단가': int(m.group(3).replace(',', '')),
-                'receipt_date': receipt_date,
-            })
-            skip_next = True
+    items = parse_receipt_lines(lines, receipt_date)
     if items:
         return items, None
     preview = full_text[:800].strip()
