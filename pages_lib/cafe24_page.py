@@ -4,7 +4,7 @@ import pandas as pd
 
 from db import (
     get_global_setting, set_global_setting,
-    get_all_users, get_all_settings, get_shared_products,
+    get_all_users, get_all_settings, get_shared_products, set_setting,
 )
 from utils import fmt, calc_match_score
 
@@ -161,7 +161,74 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         _ag_delivery = _dp
                         break
                 _ag_dv = naver_api.merge_delivery(_ag_delivery)
-                _ag_ship_in_price = 0 if _ag_dv['fee_type'] == 'CHARGE' else _ag_dv['ship_cost']
+
+                # 카페24 대행등록에서도 배송 정책을 바로 바꿀 수 있게 한다.
+                # 저장 위치는 대상 사용자 설정이며, 다음 등록부터 같은 정책을 쓴다.
+                with st.expander("🚚 배송비 설정", expanded=not bool(_ag_delivery)):
+                    st.caption("이 설정은 선택한 대상 사용자의 네이버 등록 상품에 적용됩니다.")
+                    _ag_types = list(naver_api.FEE_TYPES)
+                    _ag_d1, _ag_d2 = st.columns(2)
+                    _ag_fee_type = _ag_d1.selectbox(
+                        "배송비 유형", _ag_types,
+                        index=_ag_types.index(_ag_dv['fee_type']),
+                        format_func=lambda t: naver_api.FEE_TYPE_LABELS.get(t, t),
+                        key="ag_dv_type")
+                    _ag_comp_codes = list(naver_api.DELIVERY_COMPANIES.keys())
+                    _ag_comp = _ag_d2.selectbox(
+                        "택배사", _ag_comp_codes,
+                        index=(_ag_comp_codes.index(_ag_dv['company'])
+                               if _ag_dv['company'] in _ag_comp_codes else 0),
+                        format_func=lambda c: f"{naver_api.DELIVERY_COMPANIES[c]} ({c})",
+                        key="ag_dv_comp")
+
+                    _ag_ship_cost, _ag_base_fee = 0, 0
+                    _ag_repeat = int(_ag_dv['repeat_quantity'])
+                    _ag_free_amt = int(_ag_dv['free_conditional_amount'])
+                    _ag_f1, _ag_f2 = st.columns(2)
+                    if _ag_fee_type == 'FREE':
+                        _ag_ship_cost = _ag_f1.number_input(
+                            "택배비 (판매가에 포함)", min_value=0, max_value=50000,
+                            step=500, value=int(_ag_dv['ship_cost']), key="ag_dv_ship")
+                    else:
+                        _ag_base_fee = _ag_f1.number_input(
+                            "구매자 부담 배송비", min_value=10, max_value=50000,
+                            step=500, value=max(10, int(_ag_dv['base_fee'] or 3000)),
+                            key="ag_dv_base")
+                        if _ag_fee_type == 'UNIT_QUANTITY_PAID':
+                            _ag_repeat = _ag_f2.number_input(
+                                "반복부과 수량", min_value=1, max_value=1000, step=1,
+                                value=max(1, _ag_repeat), key="ag_dv_repeat")
+                        elif _ag_fee_type == 'CONDITIONAL_FREE':
+                            _ag_free_amt = _ag_f2.number_input(
+                                "무료 조건금액", min_value=0, max_value=10000000,
+                                step=1000, value=int(_ag_free_amt or 50000),
+                                key="ag_dv_free")
+                    _ag_f3, _ag_f4 = st.columns(2)
+                    _ag_return = _ag_f3.number_input(
+                        "반품 배송비", min_value=0, max_value=50000, step=500,
+                        value=int(_ag_dv['return_fee']), key="ag_dv_return")
+                    _ag_exchange = _ag_f4.number_input(
+                        "교환 배송비", min_value=0, max_value=50000, step=500,
+                        value=int(_ag_dv['exchange_fee']), key="ag_dv_exchange")
+                    _ag_new_delivery = {
+                        'ship_cost': int(_ag_ship_cost), 'fee_type': _ag_fee_type,
+                        'base_fee': int(_ag_base_fee), 'repeat_quantity': int(_ag_repeat),
+                        'free_conditional_amount': int(_ag_free_amt),
+                        'return_fee': int(_ag_return), 'exchange_fee': int(_ag_exchange),
+                        'company': _ag_comp,
+                    }
+                    if _ag_fee_type == 'FREE' and int(_ag_ship_cost) == 0:
+                        st.warning("무료배송이며 판매가에도 택배비가 포함되지 않습니다.")
+                    if st.button("💾 배송비 설정 저장", key="ag_dv_save"):
+                        set_setting(_ag_tuser, 'naver_delivery_preset',
+                                    _json_bn.dumps(_ag_new_delivery, ensure_ascii=False))
+                        _ag_delivery = _ag_new_delivery
+                        st.success("배송비 설정을 저장했습니다. 다음 등록부터 적용됩니다.")
+                        st.rerun()
+                    _ag_delivery = _ag_new_delivery
+                _ag_dv = naver_api.merge_delivery(_ag_delivery)
+                _ag_ship_in_price = (_ag_dv['ship_cost']
+                                     if _ag_dv['fee_type'] == 'FREE' else 0)
                 _dv_kind = naver_api.FEE_TYPE_LABELS.get(_ag_dv['fee_type'], _ag_dv['fee_type'])
                 if _ag_dv['fee_type'] == 'UNIT_QUANTITY_PAID':
                     _dv_kind += " %s원/%d개마다" % (format(_ag_dv['base_fee'], ','),

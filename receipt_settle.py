@@ -1154,7 +1154,33 @@ def learn_costco_mappings(rows):
                 conn.close()
             except Exception:
                 pass
-    return {'filled': filled, 'by_user': by_user,
+    # 주문 행에도 박는다 — 다음 정산이 ⓪단계(주문행 번호)로 곧장 붙는다.
+    # 실측(9/7): 미매칭 주문 26건 중 18건(69%)이 코스트코번호가 없어서 못 붙었다.
+    # 매칭율은 알고리즘이 아니라 '주문에 번호가 붙어 있느냐'로 결정된다.
+    stamped = 0
+    for uname, m in pairs.items():
+        try:
+            conn = get_user_db(uname)
+            _cols = {r[1] for r in conn.execute("PRAGMA table_info(daily_orders)")}
+            if 'costco_no' not in _cols:
+                conn.execute("ALTER TABLE daily_orders ADD COLUMN costco_no TEXT DEFAULT ''")
+            _keys = [c for c in ('product_no', 'naver_origin_pno') if c in _cols]
+            if not _keys:
+                conn.close()
+                continue
+            _w = " OR ".join("TRIM(COALESCE(%s,''))=?" % c for c in _keys)
+            for nv, (cno, _pn) in m.items():
+                cur = conn.execute(
+                    "UPDATE daily_orders SET costco_no=? "
+                    "WHERE TRIM(COALESCE(costco_no,''))='' AND (%s)" % _w,
+                    [cno] + [nv] * len(_keys))
+                stamped += cur.rowcount or 0
+            conn.commit()
+            conn.close()
+        except Exception:
+            pass
+
+    return {'filled': filled, 'by_user': by_user, 'orders': stamped,
             'pairs': sum(len(v) for v in pairs.values())}
 
 

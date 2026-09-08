@@ -437,6 +437,14 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     carry_days=int(_carry_days or 0),
                 )
         alloc['_settled_skipped'] = len(_settled)
+        # 손으로 한 배정·매칭을 다시 얹는다. 재계산이 사람의 판단을 지우면 안 된다.
+        _sticky = (st.session_state.get('rs_sticky') or {}).get(str(d_day)) or []
+        if _sticky:
+            _have = {(r.get('username'), r.get('order_no')) for r in alloc['rows']}
+            _re = [r for r in _sticky if (r.get('username'), r.get('order_no')) not in _have]
+            if _re:
+                _merge_matches(alloc, _re, [], sticky=False)
+                alloc['_restored'] = len(_re)
         if _auto_ai and alloc.get('unmatched_orders') and alloc.get('unmatched_receipt'):
             _ak2 = _resolve_ai_key('anthropic_api_key', settings)
             _gk2 = _resolve_ai_key('gemini_api_key', settings)
@@ -456,7 +464,21 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     alloc['_auto_ai_err'] = _perr2
         st.session_state['rs_alloc'] = alloc
 
+    st.session_state['rs_sticky_date'] = str(d_day)
     alloc = st.session_state.get('rs_alloc')
+    _sk_now = (st.session_state.get('rs_sticky') or {}).get(str(d_day)) or []
+    if _sk_now:
+        _sc1, _sc2 = st.columns([3, 1])
+        _sc1.info(f"📌 손으로 넣은 배정·매칭 **{len(_sk_now)}건**을 붙들고 있습니다 — "
+                  "미리보기를 다시 눌러도 유지됩니다."
+                  + (f" (이번에 {alloc['_restored']}건 복원)"
+                     if alloc and alloc.get('_restored') else ""))
+        if _sc2.button("🧹 배정 지우기", key="rs_sticky_clear"):
+            _st = st.session_state.get('rs_sticky') or {}
+            _st.pop(str(d_day), None)
+            st.session_state['rs_sticky'] = _st
+            st.session_state.pop('rs_alloc', None)
+            st.rerun()
     if alloc and alloc.get('_auto_ai'):
         st.success(f"🤖 규칙으로 못 붙은 {alloc['_auto_ai']}건을 AI가 이었습니다 — "
                    "정산을 확정하면 이 연결이 저장돼 다음부터는 번호로 바로 붙습니다.")
@@ -628,11 +650,16 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             except Exception:
                 pass
             st.session_state.pop('rs_alloc', None)
+            _st = st.session_state.get('rs_sticky') or {}
+            _st.pop(str(d_day), None)      # 저장됐으니 더 붙들 이유가 없다
+            st.session_state['rs_sticky'] = _st
             _lmsg = ""
             if (_learn or {}).get('filled'):
                 _lu = ", ".join(f"{k} {v}건" for k, v in (_learn.get('by_user') or {}).items())
-                _lmsg = (f" 🧠 코스트코번호 매핑 {_learn['filled']}건 학습({_lu}) — "
-                         "다음 정산부터 자동 매칭됩니다.")
+                _lmsg = (f" 🧠 코스트코번호 매핑 {_learn['filled']}건 학습({_lu})"
+                         + (f" · 주문 {_learn['orders']}건에 번호 기입"
+                            if _learn.get('orders') else "")
+                         + " — 다음 정산부터 자동 매칭됩니다.")
             st.success(f"✅ 정산 적용 완료 — 주문 {n}건 구입가 반영, 정산 배치 #{bid} 저장. "
                        "각 사용자 수익계산에 즉시 반영됩니다." + _lmsg)
             st.rerun()
@@ -817,7 +844,20 @@ def _resolve_ai_key(name, settings=None):
     return ''
 
 
-def _merge_matches(alloc, new_rows, matched_order_indices):
+def _merge_matches(alloc, new_rows, matched_order_indices, sticky=True):
+    """매칭 결과를 alloc에 얹는다.
+
+    sticky=True면 그 행을 날짜별로 따로 보관해, '미리보기'를 다시 눌러
+    alloc을 새로 만들어도 다시 얹는다. 사람이 판단해서 넣은 배정이
+    기계 재계산으로 사라지면 안 된다.
+    """
+    if sticky and new_rows:
+        _st = st.session_state.get('rs_sticky') or {}
+        _d = str(st.session_state.get('rs_sticky_date') or '')
+        _keys = {(r.get('username'), r.get('order_no')) for r in (_st.get(_d) or [])}
+        _st[_d] = (_st.get(_d) or []) + [
+            r for r in new_rows if (r.get('username'), r.get('order_no')) not in _keys]
+        st.session_state['rs_sticky'] = _st
     alloc['rows'].extend(new_rows)
     idxset = set(matched_order_indices)
     alloc['unmatched_orders'] = [o for i, o in enumerate(alloc.get('unmatched_orders', []))
