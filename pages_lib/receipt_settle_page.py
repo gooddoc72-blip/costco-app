@@ -414,6 +414,24 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                   '수량': _qy, '단가': up,
                                   '정가단가': _lp or up, '할인': _dc,
                                   'receipt_date': _rd_by_cno.get(cno, '')})
+    if receipt_items:
+        _t_qty = sum(int(x.get('수량') or 1) for x in receipt_items)
+        _t_list = sum(int(x.get('정가단가') or x.get('단가') or 0) * int(x.get('수량') or 1)
+                      for x in receipt_items)
+        _t_disc = sum(int(x.get('할인') or 0) for x in receipt_items)
+        _t_pay = sum(int(x.get('단가') or 0) * int(x.get('수량') or 1)
+                     for x in receipt_items)
+        _line = (f"🧾 **{len(receipt_items)}종 · 총수량 {_t_qty}개** · "
+                 f"정가 {fmt(_t_list)}원")
+        if _t_disc:
+            _line += (f" − 할인 **{fmt(_t_disc)}원** = "
+                      f"실지불 **{fmt(_t_pay)}원**")
+        else:
+            _line += f" = 실지불 **{fmt(_t_pay)}원**"
+        st.markdown(_line)
+        if _t_disc:
+            st.caption(f"영수증의 '쿠폰합계'와 이 할인액이 같아야 맞게 읽은 것입니다. "
+                       f"총수량은 영수증의 '총 판매 상품 수'와 같아야 합니다.")
     if not receipt_items:
         st.info("정산하려면 표에 **코스트코 상품번호 + 실단가(>0)** 가 있는 항목이 최소 1개 필요합니다.")
         _render_stock_status()
@@ -562,6 +580,9 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
 
     dmap = _disp_map()
     rows = alloc['rows']
+    # 정가 표는 rows가 비어도 필요하다(미매칭 배정 표에서 쓴다) — 밖에서 만든다.
+    _list_by = {_n(x.get('상품번호')): int(x.get('정가단가') or x.get('단가') or 0)
+                for x in receipt_items}
     summary = alloc['user_summary']
     unmatched = alloc['unmatched_receipt']
 
@@ -574,12 +595,31 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     else:
         # ── 3) 사용자별 정산표 ──
         st.subheader("💰 사용자별 정산표")
+        # 행마다 '정가로 샀다면 얼마였나'를 계산해 할인액을 사용자별로 가른다.
+        # 쿠폰은 상품에 붙지만 청구는 사람별이라, 누가 얼마를 덜 냈는지 보여야 한다.
+        _disc_by_user = {}
+        for r in rows:
+            _lu = _list_by.get(_n(r.get('costco_no')), 0)
+            if not _lu or _lu <= int(r.get('unit_price') or 0):
+                continue
+            _sp = max(1, int(r.get('split_qty') or 1))
+            _full = (_lu // _sp) * int(r.get('qty') or 1)
+            _d = _full - int(r.get('amount') or 0)
+            if _d > 0:
+                _disc_by_user[r['username']] = _disc_by_user.get(r['username'], 0) + _d
         srows = [{'사용자': dmap.get(u, u), '품목수': s['count'], '총수량': s['qty'],
+                  '할인액': fmt(_disc_by_user.get(u, 0)),
                   '구매금액(정산)': fmt(s['amount'])} for u, s in
                  sorted(summary.items(), key=lambda kv: -kv[1]['amount'])]
         st.dataframe(pd.DataFrame(srows), use_container_width=True, hide_index=True)
         _tot = sum(s['amount'] for s in summary.values())
-        st.markdown(f"### 합계 구매금액: **{fmt(_tot)}원**  ·  주문 {len(rows)}건  ·  사용자 {len(summary)}명")
+        _tot_d = sum(_disc_by_user.values())
+        st.markdown(f"### 합계 구매금액: **{fmt(_tot)}원**  ·  주문 {len(rows)}건  ·  "
+                    f"사용자 {len(summary)}명"
+                    + (f"  ·  할인 반영 **{fmt(_tot_d)}원**" if _tot_d else ""))
+        if _tot_d:
+            st.caption("**할인액**은 쿠폰(CPN)으로 덜 낸 금액입니다 — 구매금액에는 이미 "
+                       "빠져 있습니다. 사용자에게 청구 근거를 설명할 때 쓰세요.")
         # 매칭 경로 내역 — 어떤 근거로 붙었는지 보여야 오매칭을 잡을 수 있다
         _via_lbl = {'number': '상품번호', 'name': '상품명 유사도', 'stock': '재고 이월',
                     'carry': '미정산 이월(번호 일치)', 'shopping': '장보기 목록',
@@ -599,14 +639,23 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                        f"{_cy['scanned']}건을 훑어 **{_cy['matched']}건**을 번호 일치로 붙였습니다.")
 
         with st.expander(f"🔍 배치 상세 ({len(rows)}건) — 주문별 구입가 반영 내역", expanded=False):
-            drows = [{'사용자': dmap.get(r['username'], r['username']),
-                      '주문번호': r['order_no'], '주문일': r['order_date'],
-                      '상품명': r['product_name'], '수량': r['qty'],
-                      '코스트코번호': r['costco_no'], '실단가': fmt(r['unit_price']),
-                      '기존구입가': fmt(r['prev_cost']), '→ 새구입가': fmt(r['amount']),
-                      '근거': _via_lbl.get(str(r.get('via') or ''), r.get('via') or ''),
-                      '메모': str(r.get('memo') or '')}
-                     for r in rows]
+            drows = []
+            for r in rows:
+                _lu = _list_by.get(_n(r.get('costco_no')), 0)
+                _sp = max(1, int(r.get('split_qty') or 1))
+                _full = (_lu // _sp) * int(r.get('qty') or 1) if _lu else 0
+                _d = max(0, _full - int(r.get('amount') or 0)) if _lu else 0
+                drows.append({
+                    '사용자': dmap.get(r['username'], r['username']),
+                    '주문번호': r['order_no'], '주문일': r['order_date'],
+                    '상품명': r['product_name'], '수량': r['qty'],
+                    '코스트코번호': r['costco_no'],
+                    '정가': fmt(_lu) if _lu else '',
+                    '실단가': fmt(r['unit_price']),
+                    '할인': fmt(_d) if _d else '',
+                    '기존구입가': fmt(r['prev_cost']), '→ 새구입가': fmt(r['amount']),
+                    '근거': _via_lbl.get(str(r.get('via') or ''), r.get('via') or ''),
+                    '메모': str(r.get('memo') or '')})
             st.dataframe(pd.DataFrame(drows), use_container_width=True, hide_index=True)
 
     if unmatched:
@@ -641,6 +690,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                          '상품번호': u['상품번호'], '상품명': u['상품명'],
                          '영수증수량': int(u.get('영수증수량') or 1),
                          '남은수량': int(u.get('남은수량') or u.get('영수증수량') or 1),
+                         '정가': _list_by.get(_n(u['상품번호']), 0),
                          '팩단가': int(u['단가'] or 0)} for u in unmatched]
             # key에 남은수량을 넣는다 — 배정 뒤 남은수량이 줄었는데 표가 옛 값을
             # 그대로 들고 있으면 남은 만큼을 다시 줄 수가 없다.
@@ -652,13 +702,17 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             _um_ed = st.data_editor(
                 pd.DataFrame(_um_rows), use_container_width=True, hide_index=True,
                 key=f"rs_memo_editor_{d_day}_{_um_sig}",
-                disabled=['상품번호', '상품명', '팩단가', '영수증수량', '남은수량'],
+                disabled=['상품번호', '상품명', '팩단가', '영수증수량', '남은수량', '정가'],
                 column_config={
                     '배정': st.column_config.CheckboxColumn('배정', help='체크한 행만 배정됩니다'),
                     '수량(팩)': st.column_config.NumberColumn('수량(팩)', min_value=1, step=1),
                     '메모': st.column_config.TextColumn(
                         '메모', help='예: 8/28 김OO 교환 발송 / 파손 재발송'),
-                    '팩단가': st.column_config.NumberColumn('팩단가', format='%d'),
+                    '정가': st.column_config.NumberColumn(
+                        '정가', format='%d', help='영수증에 찍힌 단가(할인 전)'),
+                    '팩단가': st.column_config.NumberColumn(
+                        '팩단가', format='%d',
+                        help='쿠폰 할인을 뺀 실제 지불 단가. 이 값으로 청구됩니다.'),
                     '영수증수량': st.column_config.NumberColumn(
                         '영수증수량', format='%d', help='영수증에 찍힌 구매 팩 수'),
                     '남은수량': st.column_config.NumberColumn(
@@ -702,6 +756,9 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     st.rerun()
                 else:
                     st.error("배정할 항목을 만들지 못했습니다 (사용자·상품번호 확인).")
+
+    # ── 3.4) 잘못 붙은 매칭 끊기 (수동 매칭 바로 위) ──
+    _render_unmatch_panel(alloc, dmap, receipt_items)
 
     # ── 3.5) 미매칭 수동/AI 매칭 ──
     _render_match_section(alloc, dmap, settings, USERNAME, bill_date=str(d_day))
@@ -1046,6 +1103,126 @@ def _merge_matches(alloc, new_rows, matched_order_indices, sticky=True):
     alloc['unmatched_receipt'] = _keep
     alloc['user_summary'] = _summarize(alloc['rows'])
     st.session_state['rs_alloc'] = alloc
+
+
+def _unmatch_rows(alloc, keys, receipt_items):
+    """선택한 배치행을 끊어 미매칭으로 되돌린다. keys: {(username, order_no)}
+
+    끊을 때 세 곳을 함께 고쳐야 한다 — 안 그러면 미리보기를 다시 누르는 순간
+    되살아나거나, 영수증 품목이 이미 쓰인 것으로 남아 다시 붙일 수가 없다.
+      · alloc['rows']에서 제거
+      · 붙들어 둔 수동 배정(sticky)에서도 제거 — 여기 남으면 재계산 때 부활한다
+      · 주문은 미매칭 주문으로, 영수증 품목은 미매칭 영수증으로 되돌린다
+    반환: 끊은 행 수
+    """
+    if not keys:
+        return 0
+    _drop = [r for r in alloc.get('rows', []) if (r.get('username'), r.get('order_no')) in keys]
+    if not _drop:
+        return 0
+    alloc['rows'] = [r for r in alloc.get('rows', [])
+                     if (r.get('username'), r.get('order_no')) not in keys]
+
+    _st = st.session_state.get('rs_sticky') or {}
+    _d = str(st.session_state.get('rs_sticky_date') or '')
+    if _st.get(_d):
+        _st[_d] = [r for r in _st[_d] if (r.get('username'), r.get('order_no')) not in keys]
+        st.session_state['rs_sticky'] = _st
+
+    # 주문 되돌리기 — 관리자 메모 배정(memo)은 원래 주문이 없으므로 뺀다
+    _have = {(o.get('username'), o.get('order_no'))
+             for o in alloc.get('unmatched_orders', [])}
+    for r in _drop:
+        if str(r.get('via') or '') == 'memo':
+            continue
+        _k = (r.get('username'), r.get('order_no'))
+        if _k in _have:
+            continue
+        alloc.setdefault('unmatched_orders', []).append({
+            'username': r.get('username', ''), 'order_no': r.get('order_no', ''),
+            'order_date': r.get('order_date', ''), 'recipient': r.get('recipient', ''),
+            'product_name': r.get('product_name', ''), 'naver_no': r.get('naver_no', ''),
+            'qty': int(r.get('qty') or 1), 'prev_cost': int(r.get('prev_cost') or 0),
+            'split_qty': max(1, int(r.get('split_qty') or 1)),
+        })
+        _have.add(_k)
+
+    # 영수증 품목 되돌리기 — 아직 아무 행도 안 쓰는 번호만 목록에 되살린다
+    _used = {str(r.get('costco_no') or '') for r in alloc['rows']}
+    _cur = {str(u['상품번호']) for u in alloc.get('unmatched_receipt', [])}
+    for _it in (receipt_items or []):
+        _c = _n(_it.get('상품번호'))
+        if not _c or _c in _used or _c in _cur:
+            continue
+        alloc.setdefault('unmatched_receipt', []).append({
+            '상품번호': _c, '상품명': _n(_it.get('상품명')),
+            '단가': int(_it.get('단가') or 0),
+            '영수증수량': int(_it.get('수량') or 1)})
+        _cur.add(_c)
+
+    alloc['user_summary'] = _summarize(alloc['rows'])
+    st.session_state['rs_alloc'] = alloc
+    return len(_drop)
+
+
+def _render_unmatch_panel(alloc, dmap, receipt_items):
+    """잘못 붙은 매칭을 골라 끊는다.
+
+    AI·이름 유사도 매칭은 틀릴 수 있다. 틀린 채로 전송하면 그 단가로 청구되고,
+    learn_costco_mappings가 그 매핑을 '영수증 확인됨'으로 굳혀 다음부터 계속
+    틀린다. 전송 전에 끊을 수 있어야 한다.
+    """
+    _rows = alloc.get('rows') or []
+    if not _rows:
+        return
+    _via_lbl = {'number': '상품번호', 'name': '상품명 유사도', 'stock': '재고 이월',
+                'carry': '미정산 이월', 'shopping': '장보기 목록',
+                'shopping-name': '장보기 이름', 'manual': '수동', 'ai': 'AI',
+                'order': '주문 코스트코번호', 'memo': '직접 배정'}
+    # 기계가 추측한 것부터 보여준다 — 사람이 고른 건 확인할 이유가 적다
+    _risky = {'ai', 'name', 'shopping-name', 'stock'}
+    _n_risky = sum(1 for r in _rows if str(r.get('via') or '') in _risky)
+    with st.expander(f"✏️ 매칭 수정 — 잘못 붙은 건 끊기 "
+                     f"({len(_rows)}건 중 확인 권장 {_n_risky}건)", expanded=False):
+        st.caption("AI·상품명 유사도로 붙인 것은 틀릴 수 있습니다. 끊으면 그 주문은 "
+                   "미매칭으로 돌아가고, 아래 **수동 매칭**에서 다시 이을 수 있습니다. "
+                   "틀린 채로 전송하면 그 단가로 청구되고 매핑까지 굳어집니다.")
+        _only = st.checkbox("추측으로 붙은 것만 보기 (AI·이름·재고)", value=bool(_n_risky),
+                            key="rs_um_only")
+        _view = [r for r in _rows if (not _only or str(r.get('via') or '') in _risky)]
+        if not _view:
+            st.caption("해당하는 행이 없습니다.")
+            return
+        _tbl = [{'끊기': False,
+                 '사용자': dmap.get(r.get('username'), r.get('username')),
+                 '상품명': str(r.get('product_name') or '')[:38],
+                 '수량': int(r.get('qty') or 1),
+                 '코스트코번호': str(r.get('costco_no') or ''),
+                 '실단가': int(r.get('unit_price') or 0),
+                 '청구액': int(r.get('amount') or 0),
+                 '근거': _via_lbl.get(str(r.get('via') or ''), r.get('via') or ''),
+                 '_u': r.get('username'), '_o': r.get('order_no')} for r in _view]
+        _sig = hashlib.md5(
+            "|".join(f"{t['_u']}:{t['_o']}" for t in _tbl).encode()).hexdigest()[:8]
+        _ed = st.data_editor(
+            pd.DataFrame(_tbl).drop(columns=['_u', '_o']),
+            use_container_width=True, hide_index=True, key=f"rs_um_ed_{_sig}",
+            disabled=['사용자', '상품명', '수량', '코스트코번호', '실단가', '청구액', '근거'],
+            column_config={
+                '끊기': st.column_config.CheckboxColumn('끊기', help='체크한 행의 매칭을 해제합니다'),
+                '실단가': st.column_config.NumberColumn('실단가', format='%d'),
+                '청구액': st.column_config.NumberColumn('청구액', format='%d'),
+            })
+        _picked = [_tbl[i] for i, rr in enumerate(_ed.to_dict('records')) if rr.get('끊기')]
+        if _picked:
+            st.caption("끊을 행 — " + " · ".join(
+                f"{t['사용자']} {t['상품명'][:16]} {fmt(t['청구액'])}원" for t in _picked[:6]))
+        if st.button(f"↩️ 선택한 {len(_picked)}건 매칭 끊기", key="rs_um_apply",
+                     disabled=not _picked):
+            _k = {(t['_u'], t['_o']) for t in _picked}
+            _cnt = _unmatch_rows(alloc, _k, receipt_items)
+            st.success(f"↩️ {_cnt}건을 끊었습니다 — 아래 수동 매칭에서 다시 이으세요.")
+            st.rerun()
 
 
 def _render_match_section(alloc, dmap, settings, USERNAME, bill_date=None):
