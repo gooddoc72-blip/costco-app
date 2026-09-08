@@ -446,6 +446,66 @@ def billable_users():
     return out
 
 
+def undispatched_orders(username, the_date):
+    """그날 주문 중 아직 발송 기록이 없는 건. [{order_no, recipient, product_name, qty, ...}]
+
+    송장을 안 올리는 계정이 있어 그 사람 몫이 통째로 매칭에서 빠진다.
+    관리자가 직접 발송처리할 수 있게 목록을 낸다.
+    """
+    try:
+        conn = get_user_db(username)
+    except Exception:
+        return []
+    try:
+        _done = {str(r[0]) for r in conn.execute(
+            "SELECT order_no FROM dispatch_log WHERE substr(dispatched_at,1,10)=?",
+            (str(the_date),))}
+    except Exception:
+        _done = set()
+    try:
+        _cols = {r[1] for r in conn.execute("PRAGMA table_info(daily_orders)")}
+        _sel = ["order_no", "product_name"]
+        for _c in ("recipient", "qty", "settlement", "costco_no", "product_no"):
+            _sel.append(_c if _c in _cols else "'' AS %s" % _c)
+        rows = conn.execute(
+            "SELECT %s FROM daily_orders WHERE order_date=? ORDER BY id"
+            % ", ".join(_sel), (str(the_date),)).fetchall()
+    except Exception:
+        rows = []
+    conn.close()
+    out = []
+    for r in rows:
+        _o = str(r['order_no'] or '').strip()
+        if not _o or _o in _done:
+            continue
+        out.append({'order_no': _o, 'recipient': str(r['recipient'] or ''),
+                    'product_name': str(r['product_name'] or ''),
+                    'qty': int(r['qty'] or 1) if str(r['qty'] or '').strip() else 1,
+                    'settlement': int(r['settlement'] or 0)
+                    if str(r['settlement'] or '').strip() else 0,
+                    'costco_no': str(r['costco_no'] or '')})
+    return out
+
+
+def mark_dispatched(username, orders, the_date, by=''):
+    """관리자가 직접 발송처리한다. 반환: 저장 건수
+
+    송장번호가 없어도 된다 — 매칭에 필요한 건 '그날 나갔다'는 사실이다.
+    나중에 송장 파일을 올리면 같은 주문번호에 번호가 채워진다(멱등).
+    """
+    from db import log_dispatch_success
+    _rows = [{'order_no': o.get('order_no'), 'recipient': o.get('recipient', ''),
+              'product_name': o.get('product_name', ''),
+              'expected_settlement': int(o.get('settlement') or 0),
+              'tracking_no': str(o.get('tracking_no') or ''),
+              'courier': str(o.get('courier') or '')}
+             for o in (orders or []) if o.get('order_no')]
+    if not _rows:
+        return 0
+    return int(log_dispatch_success(username, _rows, str(the_date),
+                                    platform='admin-manual') or 0)
+
+
 def dispatch_coverage(the_date, users=None):
     """그날 사용자별 (주문 수, 발송 수). 매칭의 입력이 있는지 보는 값이다.
 
