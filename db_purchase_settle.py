@@ -480,6 +480,32 @@ def get_period_rows(date_from, date_to, username=None):
     conn.close()
     for r in rows:
         r['amount'] = _snap_amount(r)
+
+    # 청구액의 정본은 정산 원장(receipt_settle_items) 하나다. 스냅샷은 화면을
+    # 빨리 그리기 위한 사본일 뿐인데, 예전엔 둘이 따로 놀아 화면마다 금액이
+    # 달랐다(9/7 oxo: 원장 780,720 vs 스냅샷 184,560).
+    # 원장에 값이 있으면 그것을 쓰고, 스냅샷에만 있는 날은 그대로 둔다.
+    try:
+        from db_receipt_settle import user_totals_by_date
+        _led = user_totals_by_date(str(date_from), str(date_to))
+    except Exception:
+        _led = {}
+    if _led:
+        _idx = {(r['settle_date'], r['username']): r for r in rows}
+        for (d, u), v in _led.items():
+            if username and u != username:
+                continue
+            _r = _idx.get((d, u))
+            if _r is None:
+                rows.append({'settle_date': d, 'username': u, 'est_total': 0,
+                             'final_total': int(v['amount']), 'fees_total': 0,
+                             'status': 'final', 'updated_at': '',
+                             'amount': int(v['amount'])})
+            else:
+                _r['amount'] = int(v['amount'])
+                _r['final_total'] = int(v['amount'])
+                _r['status'] = 'final'
+        rows.sort(key=lambda r: (r['settle_date'], r['username']))
     return rows
 
 

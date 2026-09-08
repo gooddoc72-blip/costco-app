@@ -835,7 +835,62 @@ def allocate_receipt_to_orders(receipt_items, date_from, date_to, users=None,
             'carry': _carry_stat}
 
 
-def compute_leftovers(receipt_items, rows):
+def dispatch_consumption(dispatch_date, receipt_nos, matched_keys=None, users=None):
+    """그날 발송했는데 정산에 안 붙은 주문의 소비량. 반환: ({코스트코번호: units}, 목록)
+
+    실물은 이미 나갔는데 정산에서 매칭에 실패했다는 이유로 재고에 그대로
+    남아 있었다. 그러면 재고가 실제보다 부풀고, 다음 날 그 재고로 다른 주문을
+    메꿨다고 계산해 이중으로 쓰이게 된다.
+    발송은 '물건이 나갔다'는 사실이라 매칭 성공 여부와 무관하게 차감해야 한다.
+
+    주문 단위로 세므로 매칭된 건과 겹쳐 두 번 빠지지 않는다(matched_keys로 제외).
+    코스트코번호는 주문 행에 굳혀 둔 daily_orders.costco_no를 쓴다 — 번호를
+    모르는 주문은 어느 품목을 먹었는지 알 수 없으므로 세지 않는다.
+    """
+    from db import get_dispatched_orders_with_details
+    _nos = {str(x) for x in (receipt_nos or [])}
+    _mk = set(matched_keys or ())
+    if users is None:
+        users = [u['username'] for u in get_all_users()]
+    used, rows = {}, []
+    for uname in users:
+        try:
+            disp = get_dispatched_orders_with_details(uname, str(dispatch_date)) or []
+        except Exception:
+            disp = []
+        if not disp:
+            continue
+        try:
+            conn = get_user_db(uname)
+            _cno = {_norm(r['order_no']): _norm(r['c']) for r in conn.execute(
+                "SELECT order_no, COALESCE(costco_no,'') AS c FROM daily_orders "
+                "WHERE TRIM(COALESCE(costco_no,''))<>''")}
+            conn.close()
+        except Exception:
+            _cno = {}
+        _prods = None
+        for o in disp:
+            ono = _norm(o.get('order_no'))
+            if (uname, ono) in _mk:
+                continue                      # 정산에 이미 붙은 건 — 거기서 뺀다
+            c = _cno.get(ono, '')
+            if not c or c not in _nos:
+                continue
+            if _prods is None:
+                try:
+                    _prods = _naver_to_product_map(uname)
+                except Exception:
+                    _prods = {}
+            _p = _prods.get(_norm(o.get('product_no'))) or _prods.get(c)
+            _sq, _pk = _split_pack(_p)
+            _q = int(o.get('qty') or 1) * max(1, _pk)
+            used[c] = used.get(c, 0) + _q
+            rows.append({'username': uname, 'order_no': ono, 'costco_no': c,
+                         'product_name': _norm(o.get('product_name')), 'units': _q})
+    return used, rows
+
+
+def compute_leftovers(receipt_items, rows, extra_used=None):
     """영수증 구매수량에서 배치된 주문 소비량을 빼 '남은 수량'을 낸다.
 
     단위는 재고원장(db_inventory)과 같은 **소분 단위**:
@@ -856,6 +911,11 @@ def compute_leftovers(receipt_items, rows):
         # 같은 상품인데 사용자마다 소분 수가 다르면 큰 값을 기준으로 잡는다.
         # 작게 잡으면 입고량이 과소계산돼 있지도 않은 부족분이 생긴다.
         split_by[c] = max(split_by.get(c, 1), int(r.get('split_qty') or 1))
+    # 발송은 했는데 정산에 못 붙은 건도 실물은 나간 것이다 — 재고에서 뺀다.
+    for c, u in (extra_used or {}).items():
+        c = _norm(c)
+        if c:
+            used_by[c] = used_by.get(c, 0) + int(u or 0)
 
     # 같은 상품번호가 표에 여러 줄로 들어올 수 있어 먼저 합산한다.
     agg = {}

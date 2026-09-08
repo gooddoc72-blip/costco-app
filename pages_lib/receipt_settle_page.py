@@ -970,7 +970,29 @@ def _render_leftover_section(receipt_items, alloc, dmap, d_day, USERNAME):
         if _lf_msg.get('err'):
             st.error(_lf_msg['err'])
 
-    lefts = compute_leftovers(receipt_items, alloc.get('rows') or [])
+    # 발송은 했는데 정산에 못 붙은 건도 실물은 나갔다 — 재고에서 빼야 한다.
+    # 안 빼면 재고가 부풀고, 다음 날 그 재고로 다른 주문을 메꿨다고 계산해
+    # 같은 물건이 두 번 쓰인다.
+    _rows_now = alloc.get('rows') or []
+    _extra, _extra_rows = {}, []
+    try:
+        _extra, _extra_rows = _rs.dispatch_consumption(
+            str(d_day), [x.get('상품번호') for x in (receipt_items or [])],
+            matched_keys={(r.get('username'), r.get('order_no')) for r in _rows_now})
+    except Exception as _e:
+        st.caption(f"⚠️ 발송분 차감 계산 실패: {_e}")
+    lefts = compute_leftovers(receipt_items, _rows_now, extra_used=_extra)
+    if _extra_rows:
+        with st.expander(f"🚚 정산에 안 붙었지만 발송된 {len(_extra_rows)}건 "
+                         "— 재고에서 뺐습니다", expanded=False):
+            st.caption("영수증 매칭에는 실패했지만 송장이 등록돼 실제로 나간 주문입니다. "
+                       "물건이 나갔으니 재고에는 없어야 합니다. "
+                       "**청구는 별개**입니다 — 위 부족분에서 판정하세요.")
+            st.dataframe(pd.DataFrame([{
+                '사용자': dmap.get(r['username'], r['username']),
+                '주문번호': r['order_no'], '상품명': r['product_name'][:40],
+                '코스트코번호': r['costco_no'], '차감(소분)': r['units'],
+            } for r in _extra_rows]), use_container_width=True, hide_index=True)
     if not lefts:
         st.success("남은 수량이 없습니다 — 영수증 구매분이 모두 주문에 배치됐습니다.")
         return
