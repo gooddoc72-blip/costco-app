@@ -552,6 +552,9 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         st.caption(f"**{d_from} ~ {d_to}** {_basis_word} 주문 중 **아직 정산되지 않은 건**에서 "
                    "위 영수증 상품번호와 일치하는 주문을 찾아 배치합니다.")
 
+    # 표시이름 대응표 — 아래 발송 현황부터 쓴다. (예전엔 훨씬 뒤에서 만들어
+    # 'dmap referenced before assignment' 로 페이지가 죽었다.)
+    dmap = _disp_map()
     # 영수증↔발송 매칭은 발송 기록이 있어야 성립한다. 없으면 매칭이 아니라
     # 관리자 수작업이 되므로, 어느 사용자가 비어 있는지 먼저 보여준다.
     try:
@@ -723,7 +726,6 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         _render_history(_disp_map(), USERNAME)
         return
 
-    dmap = _disp_map()
     rows = alloc['rows']
     # 정가 표는 rows가 비어도 필요하다(미매칭 배정 표에서 쓴다) — 밖에서 만든다.
     _list_by = {_n(x.get('상품번호')): int(x.get('정가단가') or x.get('단가') or 0)
