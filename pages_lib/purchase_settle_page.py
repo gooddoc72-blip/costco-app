@@ -735,33 +735,75 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         "영수증은 다음날 등록해도 됩니다 — 실단가는 공유DB 매입가로 "
                         "반영되므로 등록 시점과 무관합니다.")
     _basis = 'dispatch' if _pb.startswith("🚚") else 'order'
-    d = st.date_input("정산 날짜 (%s 기준)" % ('발송일' if _basis == 'dispatch' else '주문일'),
-                      value=date.today())
-    ds = str(d)
+    _lbl = '발송일' if _basis == 'dispatch' else '주문일'
+    _c1, _c2 = st.columns(2)
+    _d_to = _c2.date_input("종료일 (%s 기준)" % _lbl, value=date.today(), key="ps_to")
+    _d_from = _c1.date_input("시작일 (%s 기준)" % _lbl, value=_d_to, key="ps_from")
+    if _d_from > _d_to:
+        _d_from, _d_to = _d_to, _d_from
+    _days = [str(_d_from + timedelta(days=i))
+             for i in range((_d_to - _d_from).days + 1)]
+    if len(_days) > 62:
+        st.error("기간이 너무 깁니다 — 62일 이내로 잡아 주세요.")
+        return
+    ds = str(_d_to)                    # 하루짜리 기록(저장·확정·연결)의 기준일
+    _multi = len(_days) > 1
+    if _multi:
+        st.caption(f"📅 **{_d_from} ~ {_d_to}** ({len(_days)}일) 합계입니다. "
+                   "저장·확정은 날짜별로 따로 기록됩니다.")
 
-    _is_last = is_last_day_of_month(ds)
+    # 말일 택배·포장은 그달 누적이라 기간에 말일이 들어 있을 때만 더한다.
+    _last_days = [x for x in _days if is_last_day_of_month(x)]
+    _is_last = bool(_last_days)
     if _is_last:
-        st.info(f"📦 **말일 정산** — 이 날짜 청구액에는 그달(1일~말일) **택배·포장 누적**이 포함됩니다 "
-                "(실배정 포장비 + 발송건수×택배비).")
+        st.info(f"📦 **말일 정산** — 기간에 말일({', '.join(_last_days)})이 들어 있어 "
+                "그달 **택배·포장 누적**이 포함됩니다 (실배정 포장비 + 발송건수×택배비).")
 
     per_user = {}
-    _no_dispatch = []
-    for u in _sellers():
-        items, total = compute_daily_purchase(u, ds, basis=_basis)
-        if not items:
-            # 발송 이력이 없는데 주문은 있는 계정 — 발송처리를 안 했거나 외부에서
-            # 내보낸 경우다. 조용히 빠지면 청구가 통째로 누락되므로 알려준다.
-            if _basis == 'dispatch':
-                _oi, _ot = compute_daily_purchase(u, ds, basis='order')
-                if _oi:
-                    _no_dispatch.append((u, len(_oi), _ot))
-            continue
-        snap = get_snapshot(ds, u)
-        dd = diff_against_snapshot(ds, u, basis=_basis) if snap else None
-        fees = month_fees_if_last_day(u, ds) if _is_last else None
-        per_user[u] = {'items': items, 'total': total, 'snap': snap, 'diff': dd,
-                       'matched': sum(1 for it in items if it['amount'] > 0),
-                       'fees': fees, 'charge': total + (fees['fees_total'] if fees else 0)}
+    _no_dispatch = {}
+    with st.spinner(f"{len(_days)}일 집계 중..." if _multi else "집계 중..."):
+        for u in _sellers():
+            _items, _total = [], 0
+            for _dd0 in _days:
+                _it0, _tt0 = compute_daily_purchase(u, _dd0, basis=_basis)
+                for _x in _it0:
+                    _x = dict(_x)
+                    _x['settle_date'] = _dd0
+                    _items.append(_x)
+                _total += int(_tt0 or 0)
+            if not _items:
+                # 발송 이력이 없는데 주문은 있는 계정 — 발송처리를 안 했거나 외부에서
+                # 내보낸 경우다. 조용히 빠지면 청구가 통째로 누락되므로 알려준다.
+                if _basis == 'dispatch':
+                    _on, _ot = 0, 0
+                    for _dd0 in _days:
+                        _oi, _o1 = compute_daily_purchase(u, _dd0, basis='order')
+                        _on += len(_oi)
+                        _ot += int(_o1 or 0)
+                    if _on:
+                        _no_dispatch[u] = (_on, _ot)
+                continue
+            snap = get_snapshot(ds, u) if not _multi else None
+            dd = diff_against_snapshot(ds, u, basis=_basis) if snap else None
+            # 기간이면 날짜별 저장 상태를 세어 보여준다
+            _st_cnt = {}
+            if _multi:
+                for _dd0 in _days:
+                    _s0 = get_snapshot(_dd0, u)
+                    _k0 = str((_s0 or {}).get('status') or '-')
+                    _st_cnt[_k0] = _st_cnt.get(_k0, 0) + 1
+            _fee = 0
+            for _ld in _last_days:
+                _f0 = month_fees_if_last_day(u, _ld)
+                if _f0:
+                    _fee += int(_f0.get('fees_total') or 0)
+            fees = (month_fees_if_last_day(u, _last_days[0])
+                    if (_is_last and not _multi) else None)
+            per_user[u] = {'items': _items, 'total': _total, 'snap': snap, 'diff': dd,
+                           'matched': sum(1 for it in _items if it['amount'] > 0),
+                           'fees': fees, 'fee_total': _fee, 'st_cnt': _st_cnt,
+                           'charge': _total + _fee}
+    _no_dispatch = [(u, n, t) for u, (n, t) in _no_dispatch.items()]
 
     if _no_dispatch:
         st.warning(
@@ -771,7 +813,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             + "  ·  송장 등록으로 발송처리했는지 확인하거나, 위에서 '주문일 기준'을 선택하세요.")
 
     if not per_user:
-        st.info(f"{ds} {'발송처리된 주문' if _basis == 'dispatch' else '주문'}이 없습니다.")
+        st.info(f"{_d_from} ~ {_d_to} "
+                f"{'발송처리된 주문' if _basis == 'dispatch' else '주문'}이 없습니다.")
         return
 
     # 요약 표
@@ -791,19 +834,29 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             '구매금액': fmt(v['total']),
         }
         if _is_last:
-            row['그달 택배·포장'] = fmt(v['fees']['fees_total']) if v['fees'] else '-'
+            row['그달 택배·포장'] = fmt(v.get('fee_total') or 0)
             row['청구액(구매+월비용)'] = fmt(v['charge'])
-        row['상태'] = status
-        row['변경(예상대비)'] = chg
+        if _multi:
+            _sc = v.get('st_cnt') or {}
+            row['상태'] = " · ".join(
+                f"{ {'est': '예상', 'final': '확정'}.get(k, '미저장')} {n}일"
+                for k, n in sorted(_sc.items(), key=lambda kv: -kv[1]) if n)
+            row['변경(예상대비)'] = ''
+        else:
+            row['상태'] = status
+            row['변경(예상대비)'] = chg
         rows.append(row)
     st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
     _tot = sum(v['total'] for v in per_user.values())
     _charge = sum(v['charge'] for v in per_user.values())
+    _period = f"{_d_from} ~ {_d_to}" if _multi else ds
     if _is_last:
         st.markdown(f"### 총 청구액: **{fmt(_charge)}원** "
-                    f"(구매 {fmt(_tot)} + 월 택배·포장 {fmt(_charge - _tot)})  ·  사용자 {len(per_user)}명")
+                    f"(구매 {fmt(_tot)} + 월 택배·포장 {fmt(_charge - _tot)})  ·  "
+                    f"사용자 {len(per_user)}명  ·  {_period}")
     else:
-        st.markdown(f"### 총 구매금액: **{fmt(_tot)}원**  ·  사용자 {len(per_user)}명")
+        st.markdown(f"### 총 구매금액: **{fmt(_tot)}원**  ·  사용자 {len(per_user)}명"
+                    f"  ·  {_period}")
 
     _render_costco_map(dmap, USERNAME)
     _render_period_summary(dmap)
@@ -815,19 +868,33 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     c1, c2, _ = st.columns([1.4, 1.6, 3])
     if c1.button("💾 예상 저장 (기준선)", type="primary", key="ps_save_est",
                  help="현재 구매가로 예상 청구 기준선 저장. 영수증 반영 전에 눌러 baseline 확보."):
-        for u, v in per_user.items():
-            save_estimate(ds, u, v['total'], v['items'], created_by=USERNAME)
-        st.success(f"✅ 예상 저장 완료 ({len(per_user)}명) — 영수증 반영 후 '확정'하면 변경 산출")
+        # 하루 단위 기록이라 기간이면 날짜마다 나눠 저장한다.
+        # 기간을 한 덩어리로 저장하면 나중에 하루만 다시 볼 수가 없다.
+        _cnt = 0
+        for u in per_user:
+            for _dd0 in _days:
+                _i0, _t0 = compute_daily_purchase(u, _dd0, basis=_basis)
+                if _i0:
+                    save_estimate(_dd0, u, _t0, _i0, created_by=USERNAME)
+                    _cnt += 1
+        st.success(f"✅ 예상 저장 완료 — {len(per_user)}명 · {_cnt}건(사용자×날짜). "
+                   "영수증 반영 후 '확정'하면 변경이 산출됩니다.")
         st.rerun()
     if c2.button("✅ 확정 (영수증 반영 후)", key="ps_finalize",
                  help="코스트코 영수증 업로드로 실단가가 반영된 뒤 클릭 → 예상 대비 변경 산출 + 확정."):
-        n_changed = 0
-        for u, v in per_user.items():
-            dd = diff_against_snapshot(ds, u, basis=_basis)
-            finalize(ds, u, v['total'], dd['changed'], created_by=USERNAME)
-            if dd['changed']:
-                n_changed += 1
-        st.success(f"✅ 확정 완료 — 변경 발생 사용자 {n_changed}명. 사용자 화면에 배지 표시됩니다.")
+        n_changed, _cnt = 0, 0
+        for u in per_user:
+            for _dd0 in _days:
+                _i0, _t0 = compute_daily_purchase(u, _dd0, basis=_basis)
+                if not _i0:
+                    continue
+                dd = diff_against_snapshot(_dd0, u, basis=_basis)
+                finalize(_dd0, u, _t0, dd['changed'], created_by=USERNAME)
+                _cnt += 1
+                if dd['changed']:
+                    n_changed += 1
+        st.success(f"✅ 확정 완료 — {_cnt}건(사용자×날짜) · 변경 발생 {n_changed}건. "
+                   "사용자 화면에 배지로 표시됩니다.")
         st.rerun()
 
     st.divider()
@@ -839,12 +906,14 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             badge = f"  ·  {'🔺' if _s > 0 else '🔻'}변경 {_s:+,}원"
         _head_amt = fmt(v['charge']) if _is_last else fmt(v['total'])
         with st.expander(f"🧾 {dmap.get(u, u)} — {_head_amt}원 ({len(v['items'])}건){badge}"):
-            if _is_last and v['fees']:
+            if _is_last and not _multi and v['fees']:
                 f = v['fees']
                 st.caption(f"📦 말일: 구매가 {fmt(v['total'])} + 택배 {f['ship_count']}건×{fmt(f['ship_fee'])}"
                            f"={fmt(f['ship_total'])} + 포장 실배정 {fmt(f['pkg_total'])} = 청구 {fmt(v['charge'])}")
             _df = pd.DataFrame([{
-                '수취인': it['recipient'], '상품명': it['product_name'], '수량': it['qty'],
+                **({'날짜': it.get('settle_date', '')} if _multi else {}),
+                '수취인': it['recipient'], '상품명': it['product_name'],
+                '코스트코번호': it.get('product_no', ''), '수량': it['qty'],
                 '구매단가': fmt(it['unit_price']), '구매금액': fmt(it['amount']),
             } for it in v['items']])
             st.dataframe(_df, use_container_width=True, hide_index=True)
