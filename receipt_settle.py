@@ -495,7 +495,7 @@ def allocate_dispatched_to_receipt(receipt_items, dispatch_date, users=None,
     """
     from db import get_dispatched_orders_with_details
 
-    price_by_costco, name_by_costco = {}, {}
+    price_by_costco, name_by_costco, qty_by_costco = {}, {}, {}
     for it in (receipt_items or []):
         cno = _norm(it.get('상품번호'))
         if not cno:
@@ -506,6 +506,12 @@ def allocate_dispatched_to_receipt(receipt_items, dispatch_date, users=None,
             up = 0
         if up > 0:
             price_by_costco[cno] = up
+            # 같은 상품이 영수증에 여러 줄로 찍히기도 한다 — 합산한다
+            try:
+                qty_by_costco[cno] = qty_by_costco.get(cno, 0) + max(
+                    1, int(float(it.get('수량') or 1)))
+            except (TypeError, ValueError):
+                qty_by_costco[cno] = qty_by_costco.get(cno, 0) + 1
             name_by_costco[cno] = _norm(it.get('상품명'))
 
     if users is None:
@@ -622,7 +628,8 @@ def allocate_dispatched_to_receipt(receipt_items, dispatch_date, users=None,
             matched_costco.add(costco_no)
 
     unmatched = [
-        {'상품번호': c, '상품명': name_by_costco.get(c, ''), '단가': price_by_costco[c]}
+        {'상품번호': c, '상품명': name_by_costco.get(c, ''), '단가': price_by_costco[c],
+         '영수증수량': int(qty_by_costco.get(c, 1) or 1)}
         for c in price_by_costco if c not in matched_costco
     ]
     return {'rows': rows, 'unmatched_receipt': unmatched,
@@ -669,7 +676,7 @@ def allocate_receipt_to_orders(receipt_items, date_from, date_to, users=None,
                   'date_from': 이월 시작일},
       }
     """
-    price_by_costco, name_by_costco = {}, {}
+    price_by_costco, name_by_costco, qty_by_costco = {}, {}, {}
     for it in receipt_items:
         cno = _norm(it.get('상품번호'))
         if not cno:
@@ -680,6 +687,12 @@ def allocate_receipt_to_orders(receipt_items, date_from, date_to, users=None,
             up = 0
         if up > 0:
             price_by_costco[cno] = up
+            # 같은 상품이 영수증에 여러 줄로 찍히기도 한다 — 합산한다
+            try:
+                qty_by_costco[cno] = qty_by_costco.get(cno, 0) + max(
+                    1, int(float(it.get('수량') or 1)))
+            except (TypeError, ValueError):
+                qty_by_costco[cno] = qty_by_costco.get(cno, 0) + 1
             name_by_costco[cno] = _norm(it.get('상품명'))
 
     if users is None:
@@ -828,7 +841,8 @@ def allocate_receipt_to_orders(receipt_items, date_from, date_to, users=None,
             matched_costco.add(costco_no)
 
     unmatched = [
-        {'상품번호': c, '상품명': name_by_costco.get(c, ''), '단가': price_by_costco[c]}
+        {'상품번호': c, '상품명': name_by_costco.get(c, ''), '단가': price_by_costco[c],
+         '영수증수량': int(qty_by_costco.get(c, 1) or 1)}
         for c in price_by_costco if c not in matched_costco
     ]
     return {'rows': rows, 'unmatched_receipt': unmatched,

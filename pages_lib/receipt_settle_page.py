@@ -571,25 +571,49 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 help="교환·추가 발송분을 실제로 받은 사용자를 고르세요. "
                      "받는 사람이 서로 다르면 나눠서 두 번 배정하면 됩니다.")
 
-            _um_rows = [{'배정': False, '수량(팩)': 1, '메모': '',
+            # 기본 수량은 1이 아니라 '아직 안 준 수량'이다. 1로 두면 2개 산 물건을
+            # 1개만 청구하고 나머지 차액이 조용히 사라진다.
+            _um_rows = [{'배정': False,
+                         '수량(팩)': int(u.get('남은수량') or u.get('영수증수량') or 1),
+                         '메모': '',
                          '상품번호': u['상품번호'], '상품명': u['상품명'],
+                         '영수증수량': int(u.get('영수증수량') or 1),
+                         '남은수량': int(u.get('남은수량') or u.get('영수증수량') or 1),
                          '팩단가': int(u['단가'] or 0)} for u in unmatched]
-            _um_sig = hashlib.md5(
-                "|".join(str(u['상품번호']) for u in unmatched).encode()).hexdigest()[:8]
+            # key에 남은수량을 넣는다 — 배정 뒤 남은수량이 줄었는데 표가 옛 값을
+            # 그대로 들고 있으면 남은 만큼을 다시 줄 수가 없다.
+            _um_sig = hashlib.md5("|".join(
+                f"{u['상품번호']}:{u.get('남은수량') or u.get('영수증수량') or 1}"
+                for u in unmatched).encode()).hexdigest()[:8]
             # 편집기 key에 사용자를 넣지 않는다 — 사용자를 바꿀 때마다 표가
             # 초기화되면 체크해 둔 것이 사라진다.
             _um_ed = st.data_editor(
                 pd.DataFrame(_um_rows), use_container_width=True, hide_index=True,
                 key=f"rs_memo_editor_{d_day}_{_um_sig}",
-                disabled=['상품번호', '상품명', '팩단가'],
+                disabled=['상품번호', '상품명', '팩단가', '영수증수량', '남은수량'],
                 column_config={
                     '배정': st.column_config.CheckboxColumn('배정', help='체크한 행만 배정됩니다'),
                     '수량(팩)': st.column_config.NumberColumn('수량(팩)', min_value=1, step=1),
                     '메모': st.column_config.TextColumn(
                         '메모', help='예: 8/28 김OO 교환 발송 / 파손 재발송'),
                     '팩단가': st.column_config.NumberColumn('팩단가', format='%d'),
+                    '영수증수량': st.column_config.NumberColumn(
+                        '영수증수량', format='%d', help='영수증에 찍힌 구매 팩 수'),
+                    '남은수량': st.column_config.NumberColumn(
+                        '남은수량', format='%d',
+                        help='아직 아무에게도 주지 않은 수량. 이만큼까지 배정할 수 있습니다.'),
                 })
+            st.caption("여러 사람이 나눠 가지는 물건은 **한 명씩 나눠 배정**하세요 — "
+                       "A에게 1팩을 주면 남은 수량이 줄어든 채 목록에 남고, "
+                       "그 상태에서 B에게 나머지를 주면 됩니다.")
             _um_pick = [r for r in _um_ed.to_dict('records') if r.get('배정')]
+            _over = [r for r in _um_pick
+                     if int(r.get('수량(팩)') or 1) > int(r.get('남은수량') or 1)]
+            if _over:
+                st.error("남은 수량보다 많이 배정할 수 없습니다 — " + " · ".join(
+                    f"{r.get('상품명')} {r.get('수량(팩)')}팩 요청 / 남은 {r.get('남은수량')}팩"
+                    for r in _over[:4]))
+                _um_pick = [r for r in _um_pick if r not in _over]
             if _um_pick:
                 _um_amt = sum(int(r.get('팩단가') or 0) * int(r.get('수량(팩)') or 1)
                               for r in _um_pick)
@@ -907,6 +931,21 @@ def _merge_matches(alloc, new_rows, matched_order_indices, sticky=True):
     alloc을 새로 만들어도 다시 얹는다. 사람이 판단해서 넣은 배정이
     기계 재계산으로 사라지면 안 된다.
     """
+    # 같은 사용자에게 같은 품목을 두 번 배정하면 order_no가 겹친다(MEMO-날짜-번호-사용자).
+    # 그대로 두 줄로 쌓으면 정산 저장에서 충돌하므로 수량·금액을 합쳐 한 줄로 만든다.
+    if new_rows:
+        _idx = {(r.get('username'), r.get('order_no')): r for r in alloc.get('rows', [])}
+        _fresh = []
+        for _r in new_rows:
+            _k = (_r.get('username'), _r.get('order_no'))
+            _ex = _idx.get(_k)
+            if _ex is not None:
+                _ex['qty'] = int(_ex.get('qty') or 0) + int(_r.get('qty') or 0)
+                _ex['amount'] = int(_ex.get('amount') or 0) + int(_r.get('amount') or 0)
+            else:
+                _fresh.append(_r)
+                _idx[_k] = _r
+        new_rows = _fresh
     if sticky and new_rows:
         _st = st.session_state.get('rs_sticky') or {}
         _d = str(st.session_state.get('rs_sticky_date') or '')
@@ -918,9 +957,31 @@ def _merge_matches(alloc, new_rows, matched_order_indices, sticky=True):
     idxset = set(matched_order_indices)
     alloc['unmatched_orders'] = [o for i, o in enumerate(alloc.get('unmatched_orders', []))
                                  if i not in idxset]
-    matched_costco = {str(r['costco_no']) for r in alloc['rows']}
-    alloc['unmatched_receipt'] = [u for u in alloc.get('unmatched_receipt', [])
-                                  if str(u['상품번호']) not in matched_costco]
+    # 주문에 붙은 품목은 목록에서 뺀다. 다만 '사용자에게 직접 배정(memo)'한 것은
+    # 수량이 남아 있을 수 있다 — 2개 중 1개를 A에게 줬으면 1개는 B 몫이다.
+    # 전에는 배정하는 순간 통째로 사라져 나머지를 줄 방법이 없었다.
+    _by_order, _memo_qty = set(), {}
+    for r in alloc['rows']:
+        _c = str(r.get('costco_no') or '')
+        if not _c:
+            continue
+        if str(r.get('via') or '') == 'memo':
+            _memo_qty[_c] = _memo_qty.get(_c, 0) + int(r.get('qty') or 0)
+        else:
+            _by_order.add(_c)
+    _keep = []
+    for u in alloc.get('unmatched_receipt', []):
+        _c = str(u['상품번호'])
+        if _c in _by_order:
+            continue
+        _tot = int(u.get('영수증수량') or 1)
+        _left = _tot - _memo_qty.get(_c, 0)
+        if _left <= 0:
+            continue
+        u = dict(u)
+        u['남은수량'] = _left
+        _keep.append(u)
+    alloc['unmatched_receipt'] = _keep
     alloc['user_summary'] = _summarize(alloc['rows'])
     st.session_state['rs_alloc'] = alloc
 
