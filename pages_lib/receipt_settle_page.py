@@ -178,7 +178,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     _sd = get_settle_start_date()
     _sc1, _sc2 = st.columns([2, 3])
     _new_sd = _sc1.date_input(
-        "정산 기준일 (이전 구매는 재고에서 제외)",
+        "재고 계산 시작일 (이 날짜부터 쌓인 영수증만 재고로 봅니다)",
         value=(datetime.strptime(_sd, "%Y-%m-%d").date() if _sd else date.today()),
         key="rs_start_date")
     _sc2.write(""); _sc2.write("")
@@ -190,7 +190,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         st.caption(f"📅 현재 기준일 **{_sd}** — 이전 영수증은 재고 이월에 쓰이지 않습니다 "
                    "(데이터는 보존되며 공유DB 매장 카탈로그에는 계속 반영됩니다).")
     else:
-        st.warning("⚠️ 정산 기준일이 설정되지 않아 **모든 과거 영수증**이 재고로 계산됩니다. "
+        st.warning("⚠️ 재고 계산 시작일이 없어 **모든 과거 영수증**이 재고로 계산됩니다. "
                    "업로드가 누락된 기간이 섞이면 재고가 실제와 어긋납니다.")
 
     st.caption(
@@ -716,7 +716,11 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             st.dataframe(pd.DataFrame(drows), use_container_width=True, hide_index=True)
 
     if unmatched:
-        with st.expander(f"⚠️ 주문을 못 찾은 영수증 품목 {len(unmatched)}건", expanded=False):
+        # 배정하고 rerun하면 접혀 버려 매번 다시 열어야 했다. 한 번 열면
+        # 남은 게 없어질 때까지 열어 둔다 — 여러 사용자에게 나눠 배정하는 화면이다.
+        _um_open = bool(st.session_state.get('_rs_um_open'))
+        with st.expander(f"⚠️ 주문을 못 찾은 영수증 품목 {len(unmatched)}건",
+                         expanded=_um_open):
             st.caption("해당 상품의 주문이 당일 없거나, 제품 DB에 코스트코↔네이버 번호 매핑이 없어 배치 못 함. "
                        "**이전 주문의 교환·추가 발송분이라 주문 목록에 없는 경우**는 아래에서 "
                        "사용자를 지정해 직접 배정하세요.")
@@ -823,6 +827,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         for _sfx in ('_q', '_m'):
                             st.session_state.pop(
                                 f"rs_asg_{d_day}_{_r['상품번호']}{_sfx}", None)
+                    st.session_state['_rs_um_open'] = True   # 이어서 배정하도록 열어 둔다
                     st.success(f"✅ {len(_new)}종을 {_um_bulk}에게 배정했습니다 — "
                                "정산표에 반영됐습니다. '정산 적용'을 눌러 저장하세요.")
                     st.rerun()
