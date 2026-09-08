@@ -633,8 +633,10 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         if _sv1.button("💾 매칭 저장 (전송 안 함)", key="rs_save_draft",
                        use_container_width=True):
             try:
-                _n = save_match_draft(str(d_day), rows, created_by=USERNAME)
-                st.success(f"💾 매칭 {_n}건을 저장했습니다 — 창을 닫아도 남습니다. "
+                # 변수명에 _n을 쓰면 모듈 함수 _n()이 render() 전체에서 가려진다
+                # (파이썬은 함수 안 대입만 봐도 그 이름을 지역변수로 확정한다).
+                _saved_n = save_match_draft(str(d_day), rows, created_by=USERNAME)
+                st.success(f"💾 매칭 {_saved_n}건을 저장했습니다 — 창을 닫아도 남습니다. "
                            "아직 사용자에게 청구되지 않았습니다.")
             except Exception as _e:
                 st.error(f"저장 실패: {_e}")
