@@ -183,41 +183,40 @@ def sync_from_dispatch(username, date, dry_run=False):
 
 
 def receipt_items_in_range(date_from, date_to):
-    """기간 내 영수증 품목 — [{costco_no, name, unit_price, receipt_date, qty}].
+    """기간 내 영수증 품목 — [{costco_no, name, unit_price, qty, discount, receipt_date}].
 
-    영수증은 관리자가 올리므로 전 사용자 DB의 receipt_items를 훑는다.
-    같은 상품이 여러 날 찍혔으면 가장 최근 영수증 단가를 쓴다.
+    영수증은 auth.db 공용이다. 예전엔 전 사용자 DB를 훑어서, 개인이 옛 영수증
+    페이지로 올린 것까지 섞여 들어왔다.
+    같은 상품이 여러 날 찍혔으면 가장 최근 영수증 단가를 쓰고 수량은 그날 것만 센다.
     """
-    import glob
-    import os
-    from db_core import DATA_DIR
+    from db_stats import _receipt_conn
+    conn = _receipt_conn()
+    rows = conn.execute(
+        "SELECT product_no, product_name, unit_price, qty, receipt_date, "
+        "COALESCE(discount,0) AS discount, COALESCE(list_price,0) AS list_price "
+        "FROM receipt_items WHERE receipt_date BETWEEN ? AND ? ORDER BY receipt_date",
+        (str(date_from), str(date_to))).fetchall()
+    conn.close()
     out = {}
-    for path in sorted(glob.glob(os.path.join(DATA_DIR, '*.db'))):
-        u = os.path.basename(path)[:-3]
-        if u == 'auth' or '.bak' in u or '.backup' in u:
+    for r in rows:
+        cno = str(r['product_no'] or '').strip()
+        if not cno or int(r['unit_price'] or 0) <= 0:
             continue
-        try:
-            conn = sqlite3.connect('file:%s?mode=ro' % path, uri=True)
-            conn.row_factory = sqlite3.Row
-            rows = conn.execute(
-                "SELECT product_no, product_name, unit_price, qty, receipt_date "
-                "FROM receipt_items WHERE receipt_date BETWEEN ? AND ?",
-                (str(date_from), str(date_to))).fetchall()
-            conn.close()
-        except Exception:
+        prev = out.get(cno)
+        if prev and str(prev['receipt_date']) > str(r['receipt_date']):
             continue
-        for r in rows:
-            cno = str(r['product_no'] or '').strip()
-            if not cno or int(r['unit_price'] or 0) <= 0:
-                continue
-            prev = out.get(cno)
-            if prev and str(prev['receipt_date']) >= str(r['receipt_date']):
-                continue
-            out[cno] = {'costco_no': cno,
-                        'name': str(r['product_name'] or ''),
-                        'unit_price': int(r['unit_price'] or 0),
-                        'qty': int(r['qty'] or 0),
-                        'receipt_date': str(r['receipt_date'] or '')}
+        if prev and str(prev['receipt_date']) == str(r['receipt_date']):
+            # 같은 날 같은 상품이 여러 줄이면 수량을 더한다
+            prev['qty'] += int(r['qty'] or 0)
+            prev['discount'] += int(r['discount'] or 0)
+            continue
+        out[cno] = {'costco_no': cno,
+                    'name': str(r['product_name'] or ''),
+                    'unit_price': int(r['unit_price'] or 0),
+                    'list_price': int(r['list_price'] or 0) or int(r['unit_price'] or 0),
+                    'discount': int(r['discount'] or 0),
+                    'qty': int(r['qty'] or 0),
+                    'receipt_date': str(r['receipt_date'] or '')}
     return sorted(out.values(), key=lambda x: x['name'])
 
 

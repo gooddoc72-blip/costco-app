@@ -5,7 +5,7 @@ daily_orders 집계, 영수증 raw 저장, 가격 변동 이력
 import sqlite3
 from datetime import datetime, timedelta
 
-from db_core import get_user_db
+from db_core import get_user_db, AUTH_DB
 from utils import get_week_range, get_month_range
 
 
@@ -187,28 +187,42 @@ def get_price_change_history(username, limit=50):
 
 # ── 영수증 raw 항목 ────────────────────────────────────────
 
-def _ensure_receipt_cols(conn):
-    """할인·정가 칸 보강. 없으면 할인이 저장될 데가 없어 새로고침에 사라진다."""
+def _receipt_conn():
+    """영수증은 auth.db 한 곳에 둔다 — 관리자만 등록하는 공용 사실이다."""
+    conn = sqlite3.connect(AUTH_DB, timeout=15, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    conn.execute("""CREATE TABLE IF NOT EXISTS receipt_items (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        receipt_date TEXT NOT NULL,
+        product_no   TEXT DEFAULT '',
+        product_name TEXT DEFAULT '',
+        qty          INTEGER DEFAULT 1,
+        unit_price   INTEGER DEFAULT 0,
+        discount     INTEGER DEFAULT 0,
+        list_price   INTEGER DEFAULT 0,
+        uploaded_by  TEXT DEFAULT '',
+        created_at   TEXT DEFAULT '',
+        UNIQUE(receipt_date, product_no, product_name)
+    )""")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_ri_date ON receipt_items(receipt_date)")
     for _sql in ("ALTER TABLE receipt_items ADD COLUMN discount INTEGER DEFAULT 0",
-                 "ALTER TABLE receipt_items ADD COLUMN list_price INTEGER DEFAULT 0"):
+                 "ALTER TABLE receipt_items ADD COLUMN list_price INTEGER DEFAULT 0",
+                 "ALTER TABLE receipt_items ADD COLUMN uploaded_by TEXT DEFAULT ''"):
         try:
             conn.execute(_sql)
         except Exception:
             pass
+    return conn
 
 
 def get_receipt_items_by_date(username, receipt_date):
-    """그 날짜의 영수증 품목 — 화면 표를 DB에서 되살릴 때 쓴다."""
-    conn = get_user_db(username)
-    _ensure_receipt_cols(conn)
-    try:
-        rows = conn.execute(
-            "SELECT product_no, product_name, qty, unit_price, "
-            "COALESCE(discount,0) AS discount, COALESCE(list_price,0) AS list_price, "
-            "receipt_date FROM receipt_items WHERE receipt_date=? ORDER BY id",
-            (str(receipt_date),)).fetchall()
-    except Exception:
-        rows = []
+    """그 날짜의 영수증 품목 — 화면 표를 되살릴 때 쓴다. username은 무시(공용)."""
+    conn = _receipt_conn()
+    rows = conn.execute(
+        "SELECT product_no, product_name, qty, unit_price, "
+        "COALESCE(discount,0) AS discount, COALESCE(list_price,0) AS list_price, "
+        "receipt_date FROM receipt_items WHERE receipt_date=? ORDER BY id",
+        (str(receipt_date),)).fetchall()
     conn.close()
     return [{'상품번호': str(r['product_no'] or ''), '상품명': r['product_name'] or '',
              '수량': int(r['qty'] or 1), '단가': int(r['unit_price'] or 0),
@@ -218,35 +232,22 @@ def get_receipt_items_by_date(username, receipt_date):
 
 
 def receipt_dates_with_items(limit=60):
-    """영수증이 저장된 날짜들(최신순) — 어느 날을 다시 열 수 있는지 보여준다."""
-    import glob
-    import os
-    from db_core import DATA_DIR
-    out = {}
-    for f in sorted(glob.glob(os.path.join(DATA_DIR, '*.db'))):
-        u = os.path.basename(f)[:-3]
-        if u == 'auth' or '.bak' in u or '.backup' in u:
-            continue
-        try:
-            c = sqlite3.connect('file:%s?mode=ro' % f, uri=True)
-            for d, n in c.execute("SELECT receipt_date, COUNT(*) FROM receipt_items "
-                                  "GROUP BY receipt_date"):
-                if d:
-                    out[str(d)] = out.get(str(d), 0) + int(n or 0)
-            c.close()
-        except Exception:
-            continue
-    return sorted(out.items(), reverse=True)[:int(limit)]
+    """영수증이 저장된 날짜들(최신순) — [(날짜, 품목수)]."""
+    conn = _receipt_conn()
+    rows = conn.execute(
+        "SELECT receipt_date, COUNT(*) c FROM receipt_items WHERE receipt_date<>'' "
+        "GROUP BY receipt_date ORDER BY receipt_date DESC LIMIT ?", (int(limit),)).fetchall()
+    conn.close()
+    return [(r['receipt_date'], r['c']) for r in rows]
 
 
 def save_receipt_items(username, items):
+    """영수증 품목 저장(공용). 반환: (신규, 갱신)"""
     if not items:
         return 0, 0
-    conn = get_user_db(username)
-    _ensure_receipt_cols(conn)
+    conn = _receipt_conn()
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    saved = 0
-    updated = 0
+    saved = updated = 0
     for it in items:
         rd = (it.get('receipt_date') or '').strip()
         pno = str(it.get('상품번호') or '').strip()
@@ -258,23 +259,20 @@ def save_receipt_items(username, items):
         if not name or not rd:
             continue
         existing = conn.execute(
-            "SELECT id FROM receipt_items WHERE receipt_date=? AND product_no=? AND product_name=?",
-            (rd, pno, name)
-        ).fetchone()
+            "SELECT id FROM receipt_items WHERE receipt_date=? AND product_no=? "
+            "AND product_name=?", (rd, pno, name)).fetchone()
         if existing:
             conn.execute(
                 "UPDATE receipt_items SET qty=?, unit_price=?, discount=?, "
-                "list_price=?, created_at=? WHERE id=?",
-                (qty, price, disc, listp, now, existing['id'])
-            )
+                "list_price=?, uploaded_by=?, created_at=? WHERE id=?",
+                (qty, price, disc, listp, str(username or ''), now, existing['id']))
             updated += 1
         else:
             conn.execute(
                 "INSERT INTO receipt_items (receipt_date, product_no, product_name, "
-                "qty, unit_price, discount, list_price, created_at) "
-                "VALUES (?,?,?,?,?,?,?,?)",
-                (rd, pno, name, qty, price, disc, listp, now)
-            )
+                "qty, unit_price, discount, list_price, uploaded_by, created_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?)",
+                (rd, pno, name, qty, price, disc, listp, str(username or ''), now))
             saved += 1
     conn.commit()
     conn.close()
@@ -282,7 +280,7 @@ def save_receipt_items(username, items):
 
 
 def get_recent_receipt_items(username, days=90):
-    conn = get_user_db(username)
+    conn = _receipt_conn()
     cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
     rows = conn.execute(
         "SELECT receipt_date, product_no, product_name, qty, unit_price "
@@ -303,7 +301,7 @@ def get_recent_receipt_items(username, days=90):
 
 
 def delete_receipt_items_by_date(username, receipt_date):
-    conn = get_user_db(username)
+    conn = _receipt_conn()
     cur = conn.execute("DELETE FROM receipt_items WHERE receipt_date=?", (receipt_date,))
     conn.commit()
     deleted = cur.rowcount
@@ -312,7 +310,7 @@ def delete_receipt_items_by_date(username, receipt_date):
 
 
 def get_receipt_dates(username):
-    conn = get_user_db(username)
+    conn = _receipt_conn()
     rows = conn.execute(
         "SELECT DISTINCT receipt_date, COUNT(*) as cnt FROM receipt_items "
         "GROUP BY receipt_date ORDER BY receipt_date DESC"

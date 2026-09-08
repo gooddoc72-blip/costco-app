@@ -226,39 +226,35 @@ def build_stock_pool(date_upto, exclude_dates=None):
         if pn:
             split_by[pn] = max(1, int(sp.get('split_qty') or 1))
 
-    # ① 입고 — 모든 사용자 DB의 영수증 이력 (지정일 이하, 제외일 빼고)
+    # ① 입고 — 영수증 이력(auth.db 공용). 예전엔 사용자 DB를 전부 훑어서
+    #    옛 영수증 페이지로 개인이 올린 것까지 공용 재고에 섞였다.
     pool = {}
-    for f in sorted(glob.glob(os.path.join(DATA_DIR, "*.db"))):
-        u = os.path.basename(f)[:-3]
-        if u == "auth" or ".bak" in u or ".backup" in u:
+    _start = get_settle_start_date()
+    from db_stats import _receipt_conn
+    conn = _receipt_conn()
+    if _start:
+        rows = conn.execute(
+            "SELECT product_no, product_name, unit_price, qty, receipt_date, "
+            "COALESCE(discount,0) d FROM receipt_items "
+            "WHERE receipt_date <= ? AND receipt_date >= ?",
+            (str(date_upto), _start)).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT product_no, product_name, unit_price, qty, receipt_date, "
+            "COALESCE(discount,0) d FROM receipt_items WHERE receipt_date <= ?",
+            (str(date_upto),)).fetchall()
+    conn.close()
+    for r in rows:
+        pn = _norm(r['product_no'])
+        rd = _norm(r['receipt_date'])
+        if not pn or rd in exclude:
             continue
-        try:
-            conn = sqlite3.connect(f)
-            conn.row_factory = sqlite3.Row
-            _start = get_settle_start_date()
-            if _start:
-                rows = conn.execute(
-                    "SELECT product_no, product_name, unit_price, qty, receipt_date "
-                    "FROM receipt_items WHERE receipt_date <= ? AND receipt_date >= ?",
-                    (str(date_upto), _start)).fetchall()
-            else:
-                rows = conn.execute(
-                    "SELECT product_no, product_name, unit_price, qty, receipt_date "
-                    "FROM receipt_items WHERE receipt_date <= ?", (str(date_upto),)).fetchall()
-            conn.close()
-        except Exception:
-            continue
-        for r in rows:
-            pn = _norm(r['product_no'])
-            rd = _norm(r['receipt_date'])
-            if not pn or rd in exclude:
-                continue
-            e = pool.setdefault(pn, {'units': 0, 'price': 0, 'name': '', 'date': ''})
-            e['units'] += int(r['qty'] or 0) * split_by.get(pn, 1)
-            if rd >= e['date']:          # 가장 최근 영수증 단가를 쓴다
-                e['price'] = int(r['unit_price'] or 0)
-                e['name'] = _norm(r['product_name'])
-                e['date'] = rd
+        e = pool.setdefault(pn, {'units': 0, 'price': 0, 'name': '', 'date': ''})
+        e['units'] += int(r['qty'] or 0) * split_by.get(pn, 1)
+        if rd >= e['date']:          # 가장 최근 영수증 단가를 쓴다
+            e['price'] = int(r['unit_price'] or 0)
+            e['name'] = _norm(r['product_name'])
+            e['date'] = rd
 
     # ② 출고 — 이미 정산에 배치된 수량
     try:
@@ -297,20 +293,13 @@ def unapplied_receipt_dates(date_upto=None, days=45):
         _from = _start
 
     _rc = {}
-    for f in sorted(glob.glob(os.path.join(DATA_DIR, "*.db"))):
-        u = os.path.basename(f)[:-3]
-        if u == "auth" or ".bak" in u or ".backup" in u:
-            continue
-        try:
-            conn = sqlite3.connect("file:%s?mode=ro" % f, uri=True)
-            for d, n in conn.execute(
-                    "SELECT receipt_date, COUNT(*) FROM receipt_items "
-                    "WHERE receipt_date BETWEEN ? AND ? GROUP BY receipt_date",
-                    (_from, _upto)):
-                _rc[_norm(d)] = _rc.get(_norm(d), 0) + int(n or 0)
-            conn.close()
-        except Exception:
-            continue
+    from db_stats import _receipt_conn
+    _c = _receipt_conn()
+    for d, n in _c.execute(
+            "SELECT receipt_date, COUNT(*) FROM receipt_items "
+            "WHERE receipt_date BETWEEN ? AND ? GROUP BY receipt_date", (_from, _upto)):
+        _rc[_norm(d)] = int(n or 0)
+    _c.close()
     if not _rc:
         return []
 
@@ -364,37 +353,32 @@ def get_stock_status(date_upto=None):
         if pn:
             split_by[pn] = max(1, int(sp.get('split_qty') or 1))
 
+    # 영수증은 auth.db 공용이다. 예전엔 사용자 DB를 전부 훑어서 개인이
+    # 옛 영수증 페이지로 올린 것까지 공용 재고에 섞였다.
     pool = {}
-    for f in sorted(glob.glob(os.path.join(DATA_DIR, "*.db"))):
-        u = os.path.basename(f)[:-3]
-        if u == "auth" or ".bak" in u or ".backup" in u:
+    from db_stats import _receipt_conn
+    conn = _receipt_conn()
+    if start:
+        rows = conn.execute(
+            "SELECT product_no,product_name,unit_price,qty,receipt_date FROM receipt_items "
+            "WHERE receipt_date <= ? AND receipt_date >= ?", (d, start)).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT product_no,product_name,unit_price,qty,receipt_date FROM receipt_items "
+            "WHERE receipt_date <= ?", (d,)).fetchall()
+    conn.close()
+    for r in rows:
+        pn = _norm(r['product_no'])
+        if not pn:
             continue
-        try:
-            conn = sqlite3.connect(f)
-            conn.row_factory = sqlite3.Row
-            if start:
-                rows = conn.execute(
-                    "SELECT product_no,product_name,unit_price,qty,receipt_date FROM receipt_items "
-                    "WHERE receipt_date <= ? AND receipt_date >= ?", (d, start)).fetchall()
-            else:
-                rows = conn.execute(
-                    "SELECT product_no,product_name,unit_price,qty,receipt_date FROM receipt_items "
-                    "WHERE receipt_date <= ?", (d,)).fetchall()
-            conn.close()
-        except Exception:
-            continue
-        for r in rows:
-            pn = _norm(r['product_no'])
-            if not pn:
-                continue
-            e = pool.setdefault(pn, {'costco_no': pn, 'name': '', 'price': 0,
-                                     'units_in': 0, 'units_used': 0, 'date': ''})
-            e['units_in'] += int(r['qty'] or 0) * split_by.get(pn, 1)
-            rd = _norm(r['receipt_date'])
-            if rd >= e['date']:
-                e['price'] = int(r['unit_price'] or 0)
-                e['name'] = _norm(r['product_name'])
-                e['date'] = rd
+        e = pool.setdefault(pn, {'costco_no': pn, 'name': '', 'price': 0,
+                                 'units_in': 0, 'units_used': 0, 'date': ''})
+        e['units_in'] += int(r['qty'] or 0) * split_by.get(pn, 1)
+        rd = _norm(r['receipt_date'])
+        if rd >= e['date']:
+            e['price'] = int(r['unit_price'] or 0)
+            e['name'] = _norm(r['product_name'])
+            e['date'] = rd
 
     try:
         from db_receipt_settle import _conn as _rc, _ensure as _re
