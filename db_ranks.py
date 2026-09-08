@@ -312,7 +312,7 @@ def get_rank_drops(username, lookback_days=14, limit=20):
             FROM rank_history
             WHERE tracking_id = ?
               AND checked_at >= datetime('now', ?, 'localtime')
-            ORDER BY checked_at DESC
+            ORDER BY checked_at DESC, id DESC
             LIMIT 2
         """, (t['id'], f"-{lookback_days} days")).fetchall()
         if len(rows) < 2:
@@ -391,7 +391,9 @@ def get_latest_ranks(username):
         LEFT JOIN rank_history rh ON rh.id = (
             SELECT id FROM rank_history
             WHERE tracking_id = kt.id
-            ORDER BY checked_at DESC LIMIT 1
+            -- checked_at은 분 단위라 한 회차에 들어온 행끼리 값이 같을 수 있다.
+            -- 그때는 나중에 들어온 행(id가 큰 쪽)이 최신이다.
+            ORDER BY checked_at DESC, id DESC LIMIT 1
         )
         WHERE kt.active=1
         ORDER BY kt.id
