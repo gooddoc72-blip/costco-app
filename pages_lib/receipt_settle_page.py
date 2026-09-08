@@ -739,18 +739,14 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 help="교환·추가 발송분을 실제로 받은 사용자를 고르세요. "
                      "받는 사람이 서로 다르면 나눠서 두 번 배정하면 됩니다.")
 
-            # 기본 수량은 1이 아니라 '아직 안 준 수량'이다. 1로 두면 2개 산 물건을
-            # 1개만 청구하고 나머지 차액이 조용히 사라진다.
+            # 표는 체크만 받는다. 수량을 표 안에서 고치면 편집이 되돌아가는 일이
+            # 있어(셀 수정 → rerun → 표 재생성) 수량·메모는 아래에서 따로 받는다.
             _um_rows = [{'배정': False,
-                         '수량(팩)': int(u.get('남은수량') or u.get('영수증수량') or 1),
-                         '메모': '',
                          '상품번호': u['상품번호'], '상품명': u['상품명'],
                          '영수증수량': int(u.get('영수증수량') or 1),
                          '남은수량': int(u.get('남은수량') or u.get('영수증수량') or 1),
                          '정가': _list_by.get(_n(u['상품번호']), 0),
                          '팩단가': int(u['단가'] or 0)} for u in unmatched]
-            # key에 남은수량을 넣는다 — 배정 뒤 남은수량이 줄었는데 표가 옛 값을
-            # 그대로 들고 있으면 남은 만큼을 다시 줄 수가 없다.
             _um_sig = hashlib.md5("|".join(
                 f"{u['상품번호']}:{u.get('남은수량') or u.get('영수증수량') or 1}"
                 for u in unmatched).encode()).hexdigest()[:8]
@@ -761,10 +757,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 key=f"rs_memo_editor_{d_day}_{_um_sig}",
                 disabled=['상품번호', '상품명', '팩단가', '영수증수량', '남은수량', '정가'],
                 column_config={
-                    '배정': st.column_config.CheckboxColumn('배정', help='체크한 행만 배정됩니다'),
-                    '수량(팩)': st.column_config.NumberColumn('수량(팩)', min_value=1, step=1),
-                    '메모': st.column_config.TextColumn(
-                        '메모', help='예: 8/28 김OO 교환 발송 / 파손 재발송'),
+                    '배정': st.column_config.CheckboxColumn(
+                        '배정', help='체크하면 아래에 수량·메모 입력칸이 생깁니다'),
                     '정가': st.column_config.NumberColumn(
                         '정가', format='%d', help='영수증에 찍힌 단가(할인 전)'),
                     '팩단가': st.column_config.NumberColumn(
@@ -776,25 +770,40 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         '남은수량', format='%d',
                         help='아직 아무에게도 주지 않은 수량. 이만큼까지 배정할 수 있습니다.'),
                 })
+            _checked = [_um_rows[i] for i, r in enumerate(_um_ed.to_dict('records'))
+                        if r.get('배정')]
+
+            _um_pick = []
+            if _checked:
+                st.markdown("**배정 수량 · 메모** — 남은 수량까지만 넣을 수 있습니다")
+                for _c in _checked:
+                    _left = int(_c['남은수량'])
+                    _k = f"rs_asg_{d_day}_{_c['상품번호']}"
+                    _q1, _q2, _q3 = st.columns([2.4, 1, 2.6])
+                    _q1.markdown(f"**{_c['상품명']}** &nbsp; "
+                                 f"<span style='color:#888'>{_c['상품번호']} · "
+                                 f"{fmt(_c['팩단가'])}원 · 남은 {_left}팩</span>",
+                                 unsafe_allow_html=True)
+                    _qty = _q2.number_input(
+                        "수량(팩)", min_value=1, max_value=max(1, _left), step=1,
+                        value=_left, key=f"{_k}_q", label_visibility="collapsed")
+                    _memo = _q3.text_input(
+                        "메모", key=f"{_k}_m", label_visibility="collapsed",
+                        placeholder="사유 (예: 8/28 미배송분 발송)")
+                    _um_pick.append({'상품번호': _c['상품번호'], '상품명': _c['상품명'],
+                                     '팩단가': _c['팩단가'], '수량(팩)': int(_qty),
+                                     '남은수량': _left, '메모': _memo})
+
             st.caption("여러 사람이 나눠 가지는 물건은 **한 명씩 나눠 배정**하세요 — "
-                       "A에게 1팩을 주면 남은 수량이 줄어든 채 목록에 남고, "
+                       "A에게 일부를 주면 남은 수량이 줄어든 채 목록에 남고, "
                        "그 상태에서 B에게 나머지를 주면 됩니다.")
-            _um_pick = [r for r in _um_ed.to_dict('records') if r.get('배정')]
-            _over = [r for r in _um_pick
-                     if int(r.get('수량(팩)') or 1) > int(r.get('남은수량') or 1)]
-            if _over:
-                st.error("남은 수량보다 많이 배정할 수 없습니다 — " + " · ".join(
-                    f"{r.get('상품명')} {r.get('수량(팩)')}팩 요청 / 남은 {r.get('남은수량')}팩"
-                    for r in _over[:4]))
-                _um_pick = [r for r in _um_pick if r not in _over]
             if _um_pick:
-                _um_amt = sum(int(r.get('팩단가') or 0) * int(r.get('수량(팩)') or 1)
-                              for r in _um_pick)
+                _um_amt = sum(int(r['팩단가']) * int(r['수량(팩)']) for r in _um_pick)
                 st.markdown(f"**{_um_bulk}** 에게 배정 **{len(_um_pick)}종** · "
                             f"청구금액 **{fmt(_um_amt)}원**")
                 st.caption(" · ".join(
-                    f"{r.get('상품명')} {r.get('수량(팩)')}팩"
-                    + (f" ({r.get('메모')})" if str(r.get('메모') or '').strip() else "")
+                    f"{r['상품명']} {r['수량(팩)']}/{r['남은수량']}팩"
+                    + (f" ({r['메모']})" if str(r.get('메모') or '').strip() else "")
                     for r in _um_pick))
             if st.button(f"🧑‍💼 선택한 {len(_um_pick)}종을 {_um_bulk}에게 배정",
                          key="rs_memo_apply", type="primary", disabled=not _um_pick):
@@ -808,6 +817,12 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 _new = build_memo_rows(_asg, str(d_day))
                 if _new:
                     _merge_matches(alloc, _new, [])
+                    # 배정하면 남은 수량이 줄어드는데, 수량칸에 옛 값(예: 3)이
+                    # 남아 있으면 새 최대치(1)를 넘어 위젯이 오류를 낸다. 지운다.
+                    for _r in _um_pick:
+                        for _sfx in ('_q', '_m'):
+                            st.session_state.pop(
+                                f"rs_asg_{d_day}_{_r['상품번호']}{_sfx}", None)
                     st.success(f"✅ {len(_new)}종을 {_um_bulk}에게 배정했습니다 — "
                                "정산표에 반영됐습니다. '정산 적용'을 눌러 저장하세요.")
                     st.rerun()
