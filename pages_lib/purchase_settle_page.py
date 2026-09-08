@@ -244,13 +244,15 @@ def _render_costco_map(dmap, USERNAME):
 def _render_ledger(dmap, USERNAME):
     """청구 원장 — 발송 1건 = 청구 근거 1행.
 
-    총액 한 줄만 있으면 반품 한 건을 빼낼 수도, 이미 발행한 계산서를 설명할 수도
-    없다. 건별 근거를 쌓아 계산서 발행의 바탕으로 쓴다.
+    ⚠️ 청구 금액의 정본은 **정산 원장(receipt_settle_items)** 이다. 이 패널은
+    '발송 건별로 무엇이 나갔나'를 보는 보조 장부이고, 금액은 예상가일 수 있다.
+    둘을 같은 것으로 읽어서 화면마다 금액이 다르다는 오해가 있었다.
     """
     import db_billing_ledger as bl
 
     st.divider()
     st.subheader("📒 청구 원장 — 발송건별 청구 근거")
+    st.caption("ℹ️ 이 원장은 **발송 건별 근거**를 보는 보조 장부입니다. 청구 금액의 정본은 **영수증 정산**에서 전송한 값이며, ‘사용자별 정리’와 사용자 화면은 그 값을 보여줍니다.")
     c1, c2, c3 = st.columns([1, 1, 1.4])
     _to = c2.date_input("종료일", value=date.today(), key="bl_to")
     _from = c1.date_input("시작일", value=_to - timedelta(days=6), key="bl_from")

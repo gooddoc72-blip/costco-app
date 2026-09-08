@@ -33,6 +33,13 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     with t2:
         _tab_assign(USERNAME)
     with t3:
+        # 청구 금액의 정본은 영수증 정산에서 전송한 값이다. 이 탭은 그날 주문의
+        # 구입가를 그대로 훑어 만든 별도 계산이라 값이 다를 수 있다 —
+        # 같은 것으로 읽어 화면마다 금액이 다르다는 오해가 있었다.
+        st.caption("ℹ️ 청구 금액의 **정본**은 영수증 정산에서 전송한 값입니다"
+                   "(구매내역 정산 › 사용자별 정리, 사용자의 ‘내 구매내역 정산’). "
+                   "이 탭은 주문 구입가를 훑어 만든 **보조 집계**이며 택배·포장비 "
+                   "확인용으로 쓰세요.")
         _tab_billing(USERNAME)
     with t4:
         _tab_user_fees(USERNAME)
