@@ -112,6 +112,8 @@ from db_ranks import (
     delete_trackings_bulk,
     get_rank_history,
     get_latest_ranks,
+    ingest_rank_rows,
+    find_or_create_tracking,
 )
 
 from db_shopping import (

@@ -22,7 +22,7 @@ from db import (
     get_all_products, get_shared_products, get_all_settings,
     save_profit_settlements, get_profit_settlements,
     get_recent_receipt_items, get_receipt_dates,
-    get_user_db,
+    get_user_db, ingest_rank_rows, get_latest_ranks,
 )
 from services import match_product_to_db
 from pages_lib.profit_calc.loader import build_settlement_df
@@ -303,3 +303,51 @@ def receipt_dates(user: dict = Depends(require_user)):
 def receipt_recent(days: int = 90, user: dict = Depends(require_user)):
     items = get_recent_receipt_items(user["username"], days=days)
     return {"count": len(items), "items": items}
+
+
+# ── 순위 수집 결과 수신 (외부 수집기 → 코코비즈) ─────────────
+# 네이버 쇼핑검색 API 폐지(2026-06) + 로그인 세션 차단(2026-08)으로 서버에서 직접
+# 순위를 뜨는 경로가 모두 막혔다. 측정은 실사용 IP를 쓰는 로컬 수집기(Crawler Pro)가
+# 맡고, 서버는 결과만 받아 기존 화면(캘린더·하락감지)에 그대로 태운다.
+class RankRow(BaseModel):
+    platform: str = "naver"          # 'coupang' | 'naver'
+    search_keyword: str              # 검색한 키워드
+    product_keyword: str = ""        # 추적 항목 표시명 (비우면 검색 키워드)
+    product_id: str = ""             # 쿠팡 productId / 네이버 nvMid
+    vendor_item_id: str = ""         # 쿠팡 vendorItemId (아이템위너 판정용)
+    store_name: str = ""             # 네이버 스토어 슬러그
+    rank_exposure: Optional[int] = None   # 광고 포함 '보이는 순위'
+    rank_organic: Optional[int] = None    # 광고 제외 대표 순위 (미노출이면 None)
+    rank_in_catalog: Optional[int] = None # 네이버 가격비교 판매처 목록 내 순위
+    mall_count: Optional[int] = None      # 그 카탈로그의 총 판매처 수
+    is_item_winner: Optional[str] = None  # 'O' | 'X' (쿠팡)
+    is_ad: Optional[int] = None
+    page: Optional[int] = None
+    checked_at: str = ""             # 'YYYY-MM-DD HH:MM' (비우면 서버 시각)
+
+
+class RankIngestRequest(BaseModel):
+    rows: list[RankRow]
+    source: str = "crawler_pro"
+
+
+@app.post("/api/ranks/ingest")
+def ranks_ingest(req: RankIngestRequest, user: dict = Depends(require_user)):
+    """수집기가 측정한 순위를 저장한다. 추적 항목이 없으면 자동 생성된다."""
+    if not req.rows:
+        return {"saved": 0, "created": 0, "skipped": 0}
+    if len(req.rows) > 2000:
+        raise HTTPException(status_code=413, detail="한 번에 2000건까지 보낼 수 있습니다")
+    result = ingest_rank_rows(
+        user["username"],
+        [r.model_dump() for r in req.rows],
+        source=(req.source or "crawler_pro")[:40],
+    )
+    return result
+
+
+@app.get("/api/ranks/latest")
+def ranks_latest(user: dict = Depends(require_user)):
+    """추적 중인 항목별 최신 순위 — 수집기가 '무엇을 추적 중인지' 받아갈 때도 쓴다."""
+    rows = get_latest_ranks(user["username"])
+    return {"count": len(rows), "items": rows}

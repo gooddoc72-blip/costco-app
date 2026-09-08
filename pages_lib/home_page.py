@@ -158,9 +158,14 @@ def render(USERNAME: str, IS_ADMIN: bool = False):
         _drop_html = '<div style="display:flex;flex-wrap:wrap;gap:10px;margin:6px 0 12px 0">'
         for _d in _drops:
             _diff = _d['drop']
-            _severity_bg = "#fee" if _diff <= 5 else ("#fdd" if _diff <= 15 else "#fbb")
-            _severity_border = "#e74c3c"
-            _icon = "⚠️" if _diff <= 10 else "🚨"
+            # 검색결과에서 통째로 사라진 경우(_d['disappeared'])는 '몇 계단 하락'이 아니라
+            # 노출 자체가 끊긴 상태라 낙폭 숫자 대신 '미노출'로 보여준다.
+            _gone = bool(_d.get('disappeared'))
+            _severity_bg = "#fbb" if _gone else ("#fee" if _diff <= 5 else ("#fdd" if _diff <= 15 else "#fbb"))
+            _severity_border = "#c0392b" if _gone else "#e74c3c"
+            _icon = "🚨" if (_gone or _diff > 10) else "⚠️"
+            _cur_txt = "미노출" if _gone else f'{_d["current_rank"]}위'
+            _diff_txt = "이탈" if _gone else f'↓ {_diff}'
             _drop_html += (
                 f'<div style="flex:1 1 240px;max-width:300px;padding:12px 14px;'
                 f'background:{_severity_bg};border-left:4px solid {_severity_border};'
@@ -171,9 +176,9 @@ def render(USERNAME: str, IS_ADMIN: bool = False):
                 f'title="{_d["product_keyword"]}">{_d["product_keyword"]}</div>'
                 f'<div style="display:flex;align-items:center;gap:8px;font-size:13px">'
                 f'<span style="color:#666">{_d["prev_rank"]}위</span>'
-                f'<span style="color:#e74c3c;font-weight:700;font-size:15px">→ {_d["current_rank"]}위</span>'
+                f'<span style="color:#e74c3c;font-weight:700;font-size:15px">→ {_cur_txt}</span>'
                 f'<span style="margin-left:auto;color:#e74c3c;font-weight:700;'
-                f'background:#fff;padding:2px 8px;border-radius:10px;border:1px solid #e74c3c">↓ {_diff}</span>'
+                f'background:#fff;padding:2px 8px;border-radius:10px;border:1px solid #e74c3c">{_diff_txt}</span>'
                 f'</div>'
                 f'<div style="font-size:11px;color:#999;margin-top:6px">{(_d["checked_at"] or "")[:16]}</div>'
                 f'</div>'
