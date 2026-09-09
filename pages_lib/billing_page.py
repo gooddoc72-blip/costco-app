@@ -1,15 +1,18 @@
-"""📮 포장·청구 (관리자) — 포장 단가 설정 / 주문별 포장 배정 / 일일 판매자 청구서."""
+"""📮 포장 관리 (관리자) — 포장 단가 · 주문별 배정 · 사용자 택배·포장비.
+
+청구서는 여기서 만들지 않는다. 예전에는 이 화면이 주문 구입가를 따로 훑어
+'일일 청구서'를 만들었고, 그 값이 영수증 정산의 청구액과 달라 화면마다
+금액이 다른 원인이 됐다. 이제 청구액은 정산 원장(db_settle) 하나에서만 나온다.
+"""
 from datetime import date
 
 import streamlit as st
-import pandas as pd
 
 from db import get_all_users, get_user_db, get_all_settings, set_setting
 from db_packaging import (
     KIND_LABEL, list_packaging_prices, upsert_packaging_price, delete_packaging_price,
     get_order_packaging, set_order_packaging, clear_order_packaging,
 )
-from db_receipt_settle import save_daily_billing, get_daily_billing, list_billing_dates
 from utils import fmt
 
 
@@ -25,23 +28,16 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     if not IS_ADMIN:
         st.error("관리자 전용 기능입니다.")
         return
-    st.header("📮 포장 · 청구")
-    t1, t2, t3, t4 = st.tabs(
-        ["📦 포장 단가", "📮 주문 포장 배정", "🧾 일일 청구서", "👥 사용자 택배·포장비"])
+    st.header("📮 포장 관리")
+    st.caption("포장 단가와 주문별 배정만 다룹니다. 여기서 정한 포장비·택배비는 "
+               "**그날 청구액에 자동으로 실립니다** — 청구·입금은 관리자 › 정산·청구에서 봅니다.")
+    t1, t2, t3 = st.tabs(
+        ["📦 포장 단가", "📮 주문 포장 배정", "👥 사용자 택배·포장비"])
     with t1:
         _tab_prices(USERNAME)
     with t2:
         _tab_assign(USERNAME)
     with t3:
-        # 청구 금액의 정본은 영수증 정산에서 전송한 값이다. 이 탭은 그날 주문의
-        # 구입가를 그대로 훑어 만든 별도 계산이라 값이 다를 수 있다 —
-        # 같은 것으로 읽어 화면마다 금액이 다르다는 오해가 있었다.
-        st.caption("ℹ️ 청구 금액의 **정본**은 영수증 정산에서 전송한 값입니다"
-                   "(구매내역 정산 › 사용자별 정리, 사용자의 ‘내 구매내역 정산’). "
-                   "이 탭은 주문 구입가를 훑어 만든 **보조 집계**이며 택배·포장비 "
-                   "확인용으로 쓰세요.")
-        _tab_billing(USERNAME)
-    with t4:
         _tab_user_fees(USERNAME)
 
 
@@ -184,159 +180,3 @@ def _tab_user_fees(USERNAME):
             set_setting(u, 'box_cost', int(box))
             st.success(f"✅ {dmap.get(u, u)} 저장 — 택배 {fmt(int(ship))} · 포장 {fmt(int(box))}")
             st.rerun()
-
-
-# ── 탭3: 일일 판매자 청구서 ──
-def _tab_billing(USERNAME):
-    st.subheader("🧾 일일 판매자 청구서")
-    st.caption("선택한 날짜의 각 판매자 주문 구매가(cost_price)를 합산해 청구액을 냅니다. (구매가만 — 결정하신 정책)")
-    dmap = _disp_map()
-    d = st.date_input("청구 날짜 (주문일 기준)", value=date.today(), key="bill_date")
-
-    all_rows = []
-    for u in _sellers():
-        try:
-            conn = get_user_db(u)
-            ords = conn.execute(
-                "SELECT order_no, recipient, product_name, qty, cost_price "
-                "FROM order_history WHERE order_date=?", (str(d),)).fetchall()
-            conn.close()
-        except Exception:
-            ords = []
-        for o in ords:
-            all_rows.append({'username': u, 'order_no': str(o['order_no']),
-                             'recipient': o['recipient'], 'product_name': o['product_name'],
-                             'qty': int(o['qty'] or 1), 'cost': int(o['cost_price'] or 0)})
-    # ── 청구 제외 반영 ────────────────────────────────────────
-    #   영수증과 매칭되지 않은 주문(부족분) 중 관리자가 '실제로 못 샀다'고 판정한 건은
-    #   청구에서 뺀다. 안 산 물건을 추정단가로 청구하면 과청구가 된다.
-    try:
-        from db_receipt_settle import get_excluded_orders
-        _excl = get_excluded_orders(str(d))
-    except Exception:
-        _excl = set()
-    _excl_rows = [r for r in all_rows if (r['username'], r['order_no']) in _excl]
-    if _excl_rows:
-        all_rows = [r for r in all_rows if (r['username'], r['order_no']) not in _excl]
-        st.warning(f"🚫 청구 제외 {len(_excl_rows)}건 "
-                   f"({fmt(sum(r['cost'] for r in _excl_rows))}원) — "
-                   "영수증 미매칭 중 관리자가 '미구매'로 판정한 건입니다. "
-                   "영수증 정산 › 정산 이력에서 되돌릴 수 있습니다.")
-
-    if not all_rows:
-        st.info(f"{d} 청구 대상 주문이 없습니다.")
-        return
-
-    # ── 원가 미확정(0원) 경고 ─────────────────────────────────
-    #   원가가 0이면 그 주문은 사실상 공짜로 청구된다 = 그대로 손실이다.
-    #   코스트코 단가를 못 찾은 것이므로 청구 전에 반드시 눈에 띄어야 한다.
-    _zero = [r for r in all_rows if int(r.get('cost') or 0) <= 0]
-    if _zero:
-        st.error(f"⚠️ 원가 미확정 {len(_zero)}건 — 0원으로 집계되어 **청구되지 않습니다**. "
-                 "코스트코 단가를 못 찾은 건이니 영수증 정산이나 제품DB에서 단가를 채운 뒤 "
-                 "다시 확인하세요.")
-        with st.expander(f"🔍 원가 미확정 {len(_zero)}건 보기", expanded=True):
-            st.dataframe(pd.DataFrame([
-                {'판매자': dmap.get(r['username'], r['username']), '수취인': r['recipient'],
-                 '상품명': str(r['product_name'])[:44], '수량': r['qty'],
-                 '주문번호': r['order_no']} for r in _zero
-            ]), use_container_width=True, hide_index=True)
-
-    summary = {}
-    for r in all_rows:
-        s = summary.setdefault(r['username'], {'count': 0, 'amount': 0})
-        s['count'] += 1
-        s['amount'] += r['cost']
-
-    # ── 청구 근거 분해 ────────────────────────────────────────
-    #   청구액만 보여주면 그 돈이 영수증 실단가인지 공유DB 추정치인지 알 수 없다.
-    #   코스트코 번호 커버리지가 낮은 동안에는 추정으로 청구되는 건이 섞이므로,
-    #   근거를 갈라 보여줘야 나중에 "이 금액 근거가 뭐냐"에 답할 수 있다.
-    _basis = {}
-    try:
-        from db_receipt_settle import get_user_billing_basis, list_settlement_batches
-        for _b in (list_settlement_batches(limit=30) or []):
-            if str(_b.get('receipt_dates') or '') == str(d) or str(_b.get('date_from') or '') == str(d):
-                for _u, _v in (get_user_billing_basis(_b['id']) or {}).items():
-                    _acc = _basis.setdefault(_u, {'확정': [0, 0], '추정': [0, 0], '수동': [0, 0]})
-                    for _k in ('확정', '추정', '수동'):
-                        _acc[_k][0] += _v[_k][0]
-                        _acc[_k][1] += _v[_k][1]
-    except Exception:
-        _basis = {}
-
-    st.markdown("### 판매자별 청구 요약")
-    _tbl = []
-    for u, s in sorted(summary.items(), key=lambda kv: -kv[1]['amount']):
-        _b = _basis.get(u)
-        _row = {'판매자': dmap.get(u, u), '주문수': s['count'],
-                '청구액(구매가)': fmt(s['amount'])}
-        if _basis:
-            _conf = _b['확정'][0] if _b else 0
-            _est = (_b['추정'][0] + _b['수동'][0]) if _b else 0
-            _row['영수증 확정'] = f"{_conf}건" if _b else "-"
-            _row['추정·수동'] = f"{_est}건" if _b else "-"
-            _row['근거 없음'] = f"{max(0, s['count'] - _conf - _est)}건"
-        _tbl.append(_row)
-    st.dataframe(pd.DataFrame(_tbl), use_container_width=True, hide_index=True)
-    if _basis:
-        st.caption("🧾 **영수증 확정** = 코스트코 상품번호로 영수증과 정확히 매칭된 건 · "
-                   "**추정·수동** = 상품명 유사도나 수동 지정으로 붙인 건 · "
-                   "**근거 없음** = 영수증 정산을 거치지 않아 공유DB 추정단가가 쓰인 건. "
-                   "확정 외에는 실매입가와 다를 수 있습니다.")
-    else:
-        st.caption("⚠️ 이 날짜의 영수증 정산 기록이 없어 청구액 전액이 **공유DB 추정단가** 기준입니다. "
-                   "관리자 › 영수증 정산에서 당일 영수증을 적용하면 실단가로 확정됩니다.")
-    _tot = sum(s['amount'] for s in summary.values())
-    st.markdown(f"### 총 청구액: **{fmt(_tot)}원**  ·  판매자 {len(summary)}명  ·  주문 {len(all_rows)}건")
-
-    # 저장 + 저장 상태
-    _saved = {r['username']: r for r in get_daily_billing(str(d))}
-    _sc1, _sc2 = st.columns([1.4, 3])
-    if _sc1.button("💾 이 날짜 청구서 저장", type="primary", key="bill_save"):
-        save_daily_billing(str(d), [
-            {'username': u, 'order_count': s['count'], 'amount': s['amount']}
-            for u, s in summary.items()], created_by=USERNAME)
-        st.success(f"✅ {d} 청구서 저장 완료 (판매자 {len(summary)}명)")
-        st.rerun()
-    if _saved:
-        _sc2.caption(f"💾 저장됨: {_saved[list(_saved)[0]]['created_at']} · 판매자 {len(_saved)}명")
-
-    # 판매자별 상세 + 인쇄/엑셀
-    for u, s in sorted(summary.items(), key=lambda kv: -kv[1]['amount']):
-        urows = [r for r in all_rows if r['username'] == u]
-        with st.expander(f"🧾 {dmap.get(u, u)} — 청구액 {fmt(s['amount'])}원 ({s['count']}건)", expanded=False):
-            _df = pd.DataFrame([
-                {'수취인': r['recipient'], '상품명': r['product_name'], '수량': r['qty'],
-                 '구매가': r['cost']} for r in urows
-            ])
-            st.dataframe(_df.assign(구매가=_df['구매가'].map(fmt)),
-                         use_container_width=True, hide_index=True)
-            import io
-            _buf = io.BytesIO()
-            try:
-                with pd.ExcelWriter(_buf, engine='openpyxl') as _xw:
-                    _df.to_excel(_xw, index=False, sheet_name='청구서')
-                _buf.seek(0)
-                st.download_button("📥 엑셀 다운로드", data=_buf.getvalue(),
-                                   file_name=f"청구서_{dmap.get(u, u)}_{d}.xlsx",
-                                   mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                                   key=f"bill_dl_{u}")
-            except Exception:
-                pass
-
-    # ── 저장된 청구서 조회 ──
-    st.divider()
-    st.subheader("📚 저장된 청구서 조회")
-    saved_dates = list_billing_dates(limit=60)
-    if not saved_dates:
-        st.caption("저장된 청구서가 없습니다. 위에서 '이 날짜 청구서 저장'을 눌러 보관하세요.")
-        return
-    for b in saved_dates:
-        with st.expander(f"📅 {b['bill_date']} — 총 {fmt(b['total'])}원 · 판매자 {b['sellers']}명 · 저장 {b['at']}",
-                         expanded=False):
-            det = get_daily_billing(b['bill_date'])
-            st.dataframe(pd.DataFrame([
-                {'판매자': dmap.get(x['username'], x['username']),
-                 '주문수': x['order_count'], '청구액': fmt(x['amount'])} for x in det
-            ]), use_container_width=True, hide_index=True)

@@ -995,8 +995,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 _conn_del.close()
                 # 구매 정산 내역(영수증 정산)에서도 삭제된 주문 자동 제거 → 정합성 유지
                 try:
-                    from db_receipt_settle import remove_settlement_items
-                    remove_settlement_items(USERNAME, _del_onos)
+                    import db_settle as _dsx
+                    _dsx.remove_items(USERNAME, _del_onos)
                 except Exception:
                     pass
                 # 캐시·복원플래그·선택 초기화 → 즉시 반영

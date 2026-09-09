@@ -10,7 +10,6 @@
 비용 공식은 수익계산과 동일:
   구입가 = (영수증단가 // split_qty) * 수량 * 묶음배수(pack)
 """
-import os
 import sqlite3
 from datetime import datetime, timedelta
 
@@ -216,8 +215,6 @@ def build_stock_pool(date_upto, exclude_dates=None):
     단위는 소분 단위(units)다. 소분 상품은 1팩이 split_qty개로 쪼개져 나간다.
     """
     from db import get_shared_products
-    import glob
-    from db_core import DATA_DIR
 
     exclude = {str(d) for d in (exclude_dates or [])}
     split_by = {}
@@ -258,12 +255,14 @@ def build_stock_pool(date_upto, exclude_dates=None):
 
     # ② 출고 — 이미 정산에 배치된 수량
     try:
-        from db_receipt_settle import _conn as _rs_conn, _ensure as _rs_ensure
-        c = _rs_conn(); _rs_ensure(c)
+        import db_settle as _dsx
+        c = _dsx._conn(); _dsx.ensure(c)
         _st = get_settle_start_date()
-        _q = ("SELECT costco_no, SUM(qty) FROM receipt_settle_items "
-              "WHERE order_date <= ?" + (" AND order_date >= ?" if _st else "") +
-              " GROUP BY costco_no")
+        # 입고는 소분 단위(팩×split)인데 사용을 판매수량만 빼면 단위가 안 맞는다.
+        # 묶음상품(pack>1)은 1개 팔릴 때 pack개를 먹는다 — 그만큼 재고가 부풀었다.
+        _q = ("SELECT product_no, SUM(qty * COALESCE(NULLIF(pack,0),1)) FROM settle_item "
+              "WHERE settle_date <= ?" + (" AND settle_date >= ?" if _st else "") +
+              " GROUP BY product_no")
         _args = (str(date_upto), _st) if _st else (str(date_upto),)
         for pn, used in c.execute(_q, _args):
             pn = _norm(pn)
@@ -273,18 +272,49 @@ def build_stock_pool(date_upto, exclude_dates=None):
     except Exception:
         pass
 
+    # ③ 배정 — 사용자 재고로 넘긴 수량. 이걸 안 빼면 '아직 임자 없는 물건'과
+    #    '이미 누군가의 재고가 된 물건'이 같은 숙에 섮여, 배정해도 재고가 그대로 남아
+    #    다음 날 그 재고로 또 메꿠다고 계산한다.
+    for pn, units in receipt_lot_units(date_upto, start=_start).items():
+        if pn in pool:
+            pool[pn]['units'] -= int(units or 0)
+
     return {k: v for k, v in pool.items() if v['units'] > 0}
+
+
+def receipt_lot_units(date_upto, start=''):
+    """영수증 정산에서 사용자 재고로 넘긴 수량 — {코스트코번호: units}.
+
+    배정한 순간 그 물건은 '미배정 구입잔량'이 아니라 '그 사람의 재고'다.
+    이후 그 lot이 얼마나 팔렸는지는 재고 장부가 따로 관리한다 — 여기서는
+    입고량(qty_in)을 그대로 뺀다. 잔량(qty_left)을 빼면 팔린 만큼이 다시
+    미배정 잔량으로 살아나는 놓치가 생긴다.
+    """
+    out = {}
+    try:
+        from db_inventory import _conn as _iconn, _ensure_tables as _iens
+        c = _iconn(); _iens(c)
+        q = ("SELECT product_no, SUM(qty_in) FROM inventory_lots "
+             "WHERE memo LIKE '영수증정산%' AND received_at <= ?"
+             + (" AND received_at >= ?" if start else "") + " GROUP BY product_no")
+        args = (str(date_upto), str(start)) if start else (str(date_upto),)
+        for pn, units in c.execute(q, args):
+            pn = _norm(pn)
+            if pn:
+                out[pn] = out.get(pn, 0) + int(units or 0)
+        c.close()
+    except Exception:
+        return {}
+    return out
 
 
 def unapplied_receipt_dates(date_upto=None, days=45):
     """영수증은 올렸는데 정산이 적용되지 않은 날짜들. [(날짜, 품목수), ...]
 
-    '정산 적용'을 누르지 않으면 receipt_settle_items에 아무것도 안 남고,
+    '정산 요청'을 누르지 않으면 정산 원장(settle_item)에 아무것도 안 남고,
     그날 산 것이 통째로 재고로 잡힌다. 재고가 실제보다 부풀어 보이는 원인 1위다.
     """
-    import glob
     from datetime import datetime as _dt, timedelta as _td
-    from db_core import DATA_DIR
 
     _upto = str(date_upto or _dt.now().strftime("%Y-%m-%d"))
     _from = (_dt.strptime(_upto, "%Y-%m-%d") - _td(days=int(days))).strftime("%Y-%m-%d")
@@ -307,12 +337,12 @@ def unapplied_receipt_dates(date_upto=None, days=45):
     # 다음날 출고). 그래서 ±1일 안에 적용 기록이 있으면 적용된 것으로 본다.
     _sd = set()
     try:
-        from db_receipt_settle import _conn as _rs_conn, _ensure as _rs_ensure
+        import db_settle as _dsx
         from datetime import timedelta as _td2
-        c = _rs_conn(); _rs_ensure(c)
+        c = _dsx._conn(); _dsx.ensure(c)
         for (d,) in c.execute(
-                "SELECT DISTINCT order_date FROM receipt_settle_items "
-                "WHERE order_date BETWEEN ? AND ?",
+                "SELECT DISTINCT settle_date FROM settle_item "
+                "WHERE settle_date BETWEEN ? AND ?",
                 ((_dt.strptime(_from, "%Y-%m-%d") - _td2(days=2)).strftime("%Y-%m-%d"),
                  (_dt.strptime(_upto, "%Y-%m-%d") + _td2(days=2)).strftime("%Y-%m-%d"))):
             _s = _norm(d)
@@ -337,12 +367,12 @@ def get_stock_status(date_upto=None):
     build_stock_pool은 '남은 것'만 돌려주는데, 현황 화면은 입고/사용까지
     보여야 실물과 대조할 수 있다. 같은 원천(영수증 이력·정산 기록)을 쓰되
     차감 전 값도 함께 낸다.
-    반환: [{costco_no, name, price, units_in, units_used, units_left, amount}]
+    반환: [{costco_no, name, price, units_in, units_used, units_assigned,
+              units_left, amount}]
+           units_assigned = 사용자 재고로 배정해 넘긴 수량
     """
-    import glob
     from datetime import datetime as _dt
     from db import get_shared_products
-    from db_core import DATA_DIR
 
     d = str(date_upto or _dt.now().strftime("%Y-%m-%d"))
     start = get_settle_start_date()
@@ -381,10 +411,11 @@ def get_stock_status(date_upto=None):
             e['date'] = rd
 
     try:
-        from db_receipt_settle import _conn as _rc, _ensure as _re
-        c = _rc(); _re(c)
-        q = ("SELECT costco_no, SUM(qty) FROM receipt_settle_items WHERE order_date <= ?"
-             + (" AND order_date >= ?" if start else "") + " GROUP BY costco_no")
+        import db_settle as _dsx
+        c = _dsx._conn(); _dsx.ensure(c)
+        q = ("SELECT product_no, SUM(qty * COALESCE(NULLIF(pack,0),1)) FROM settle_item "
+             "WHERE settle_date <= ?"
+             + (" AND settle_date >= ?" if start else "") + " GROUP BY product_no")
         for pn, used in c.execute(q, (d, start) if start else (d,)):
             pn = _norm(pn)
             if pn in pool:
@@ -393,11 +424,16 @@ def get_stock_status(date_upto=None):
     except Exception:
         pass
 
+    # 배정 — 사용자 재고로 넘긴 수량은 더 이상 미배정 구입잔량이 아니다.
+    # 이걸 안 빼서 '배정했는데 구입재고가 그대로'라는 질문이 계속 나왔다.
+    _lots = receipt_lot_units(d, start=start)
+
     out = []
     for e in pool.values():
-        left = e['units_in'] - e['units_used']
+        assigned = int(_lots.get(e['costco_no'], 0) or 0)
+        left = e['units_in'] - e['units_used'] - assigned
         sq = split_by.get(e['costco_no'], 1)
-        out.append({**e, 'units_left': left,
+        out.append({**e, 'units_assigned': assigned, 'units_left': left,
                     'amount': max(0, left) * (e['price'] // max(1, sq))})
     out.sort(key=lambda x: -x['amount'])
     return out
@@ -410,9 +446,8 @@ def get_settled_order_keys():
     두 번 덮어써진다. 그걸 막는 제외 목록.
     """
     try:
-        from db_receipt_settle import iter_all_settlement_item_orders
-        return {(_norm(r.get('username')), _norm(r.get('order_no')))
-                for r in (iter_all_settlement_item_orders() or [])}
+        import db_settle as _dsx
+        return _dsx.settled_order_keys()
     except Exception:
         return set()
 
@@ -1245,14 +1280,14 @@ def ai_match_receipt_orders(unmatched_receipt, unmatched_orders,
 def cleanup_orphan_settlements():
     """정산 항목 중 '해당 사용자 order_history에 더 이상 없는 주문'(삭제됨)을 제거.
     이미 생긴 orphan 일괄 정리용. Returns: {'checked': n, 'removed': n, 'batches': set}."""
-    from db_receipt_settle import iter_all_settlement_item_orders, delete_settlement_items_by_id
-    items = iter_all_settlement_item_orders()
+    import db_settle as _dsx
+    items = _dsx.all_item_orders()
     if not items:
         return {'checked': 0, 'removed': 0}
     # 사용자별 존재하는 order_no 집합
     by_user = {}
-    for it in items:
-        by_user.setdefault(_norm(it['username']), set()).add(_norm(it['order_no']))
+    for _id, _d, _u, _o in items:
+        by_user.setdefault(_norm(_u), set()).add(_norm(_o))
     existing = {}
     for uname, onos in by_user.items():
         try:
@@ -1263,15 +1298,14 @@ def cleanup_orphan_settlements():
             existing[uname] = {_norm(r[0]) for r in rows}
         except Exception:
             existing[uname] = set()
-    orphan_ids, orphan_batches = [], set()
-    for it in items:
-        uname = _norm(it['username'])
-        ono = _norm(it['order_no'])
+    orphan_ids, orphan_dates = [], set()
+    for _id, _d, _u, _o in items:
+        uname, ono = _norm(_u), _norm(_o)
         if ono and ono not in existing.get(uname, set()):
-            orphan_ids.append(int(it['id']))
-            orphan_batches.add(it['batch_id'])
-    removed = delete_settlement_items_by_id(orphan_ids, list(orphan_batches)) if orphan_ids else 0
-    return {'checked': len(items), 'removed': removed, 'batches': orphan_batches}
+            orphan_ids.append(int(_id))
+            orphan_dates.add(_d)
+    removed = _dsx.delete_items_by_id(orphan_ids) if orphan_ids else 0
+    return {'checked': len(items), 'removed': removed, 'dates': orphan_dates}
 
 
 def learn_costco_mappings(rows):
@@ -1392,61 +1426,6 @@ def learn_costco_mappings(rows):
 
     return {'filled': filled, 'by_user': by_user, 'orders': stamped,
             'pairs': sum(len(v) for v in pairs.values())}
-
-
-def price_shortages(shortages):
-    """부족분에 매길 단가를 찾는다. 반환: [{...부족분, 'unit_price','amount','via'}]
-
-    영수증에서 못 찾았으니 실단가가 없다. 아는 값 중 가장 나은 것을 쓴다.
-      ① prev_cost — 이전 정산에서 확정된 그 주문의 구입가
-      ② 제품DB·공유DB 매입가 — 같은 상품을 산 적이 있으면 그 단가
-    둘 다 없으면 0으로 둔다. 없는 값을 지어내면 과청구가 된다.
-    """
-    from services import match_product_to_db
-    out = []
-    _cache = {}
-    for x in (shortages or []):
-        u = _norm(x.get('username'))
-        qty = max(1, int(x.get('qty') or 1))
-        prev = int(x.get('prev_cost') or 0)
-        unit, amount, via = 0, 0, ''
-        if prev > 0:
-            unit, amount, via = prev, prev, 'prev'      # prev_cost는 그 주문의 총 구입가다
-        else:
-            if u not in _cache:
-                try:
-                    _cache[u] = get_all_products(u)
-                except Exception:
-                    _cache[u] = []
-            try:
-                p = match_product_to_db(u, x.get('product_name') or '',
-                                        product_no=(x.get('naver_no') or None),
-                                        _user_prods=_cache[u])
-            except Exception:
-                p = None
-            if p:
-                _sq, _pk = _split_pack(p)
-                unit = int(p.get('unit_price') or 0)
-                amount = (unit // max(1, _sq)) * qty * max(1, _pk)
-                via = 'db' if unit else ''
-        out.append({**x, 'unit_price': unit, 'amount': int(amount), 'via': via})
-    return out
-
-
-def apply_shortage_billing(shortages):
-    """청구포함으로 판정한 부족분의 구입가를 주문에 채운다.
-
-    반환: {'priced': 단가를 찾은 건, 'updated': 주문에 반영된 건,
-           'zero': 단가를 못 찾은 건, 'amount': 반영 합계}
-    """
-    rows = price_shortages(shortages)
-    _ok = [r for r in rows if int(r.get('amount') or 0) > 0]
-    _zero = [r for r in rows if int(r.get('amount') or 0) <= 0]
-    _upd = apply_receipt_settlement([
-        {'username': r['username'], 'order_no': r['order_no'],
-         'amount': int(r['amount'])} for r in _ok]) if _ok else 0
-    return {'priced': len(_ok), 'updated': _upd, 'zero': len(_zero),
-            'amount': sum(int(r['amount']) for r in _ok), 'zero_rows': _zero}
 
 
 def apply_receipt_settlement(rows):

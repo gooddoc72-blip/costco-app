@@ -51,6 +51,14 @@ pages_lib/
   tracking_page.py      # 송장번호 탭
   admin_page.py         # 관리자 탭
   guide_page.py         # 설정 가이드 탭
+  receipt_settle_page.py  # 영수증 정산 (관리자) — 매칭·정산 요청·잔량 재고 입고
+  settle_billing_page.py  # 정산·청구 (관리자) — 정산리스트·청구·입금완료·미입금자
+  my_purchase_page.py     # 내 구매내역 정산 (사용자) — 일별/월별 청구·입금 상태
+  purchase_settle_page.py # 구매가·매핑 관리 (관리자) — 청구가 아니라 매핑 도구
+  billing_page.py         # 포장 관리 (관리자) — 포장 단가·배정·사용자 택배/포장비
+db_settle.py            # 정산 원장 (청구액의 유일한 정본)
+settle_core.py          # 정산 파이프라인 (매칭 결과 → 원장 → 청구서 → 재고)
+migrate_to_settle_ledger.py  # 옛 저장소 → 새 원장 이관 (--dry-run / --verify)
 deploy/
   4_update.sh           # 수동 업데이트 스크립트
   costco-app.service    # systemd 서비스 정의
@@ -206,3 +214,71 @@ split_qty = 소분 단위 (코스트코 묶음을 N개로 나눠 판매)
 **6. GitHub Actions 장애 대응**
 - Actions 장애(`degraded_performance`) 감지 → SSH 직접 배포로 전환
 - `C:/Users/blocklabs02/.ssh/costco_key` 로컬 키 확인 완료
+
+---
+
+## 정산·청구 구조 (2026-09-09 전면 재작성)
+
+### 왜 바꿨나
+"A가 9/8에 얼마 내야 하나"에 답하는 저장소가 **넷**이었다.
+`receipt_settle_items` · `purchase_settle_snapshot` · `billing_ledger` · `daily_billing`.
+넷이 서로 다른 시점에 서로 다른 방법으로 채워져 화면마다 금액이 달랐고
+(9/7 oxo: 원장 780,720 vs 스냅샷 184,560), 한쪽을 고치면 다른 쪽이 틀어졌다.
+
+### 이제 둘뿐 (auth.db)
+| 테이블 | 뜻 |
+|--------|-----|
+| `settle_item` | 정산 품목 한 줄 = **청구 근거** 한 줄 (무엇을 얼마에 넘겼나) |
+| `settle_invoice` | 날짜×사용자 한 줄 = **청구서** (합계 + 청구·입금 상태) |
+| `settle_draft` | 매칭 초안 (저장 ≠ 정산) |
+
+`settle_invoice` 금액은 **언제나** `recompute_invoice()`가 `settle_item` 합계에서 만든다.
+사람이 손으로 고치는 금액 필드가 없어야 둘이 어긋날 수 없다.
+단, `status='paid'`인 청구서는 금액을 건드리지 않는다 — 받은 돈과 청구액이
+달라지면 무엇을 받은 것인지 설명할 수 없다.
+
+### 상태
+`draft`(정산완료·청구 전) → `billed`(청구됨) → `paid`(입금완료)
+미입금자 = `billed` 상태만. 청구하지 않은 돈을 안 냈다고 할 수는 없다.
+
+### 업무 흐름 ↔ 화면
+| 단계 | 화면 |
+|------|------|
+| ① 당일 주문 수집 → 매장 구매 | 일일 주문 수집 · 장보기 목록 |
+| ② 관리자 택배 발송 | 송장번호 (발송처리) |
+| ③ 각 사용자 송장 등록 | 송장번호 |
+| ④ 익일 영수증 등록 → 매칭 → **정산 요청** | 관리자 › 영수증 정산 |
+| ⑤ 정산리스트 | 관리자 › **정산·청구** |
+| ⑥ 사용자 일별 확인 | 내 구매내역 정산 |
+| ⑦ 청구 → 입금완료 체크 | 관리자 › **정산·청구** |
+| ⑧ 미입금자 리스트 | 관리자 › **정산·청구** |
+
+### 청구액 공식 (일별)
+```
+청구액 = 물건값(settle_item 합계) + 그날 택배비 + 그날 포장비
+그날 택배비 = 그날 발송건수 × 사용자 shipping_cost
+그날 포장비 = 배정된 주문은 order_packaging, 없으면 사용자 box_cost
+```
+월말에 몰아 붙이던 것을 **발생일**로 옮겼다. 몰아 붙이면 말일 청구서만 유독
+커지고, 달 중간에 그만둔 사용자에게는 영영 청구하지 못한다.
+
+### 정산 저장 규칙
+- `save_settlement()` → `merge_items()`: **이번 회차에 매칭된 주문만** 갱신.
+  영수증을 나눠 올리는 날, 통째로 교체하면 오전 정산분이 사라진다.
+- 같은 주문이 다시 오면 덮어쓴다 — 잘못 붙은 매칭은 다시 돌려 고친다.
+- 행을 없애려면 **정산 취소**(`delete_settlement`) — 입금완료분은 남긴다.
+- 금액 0원 행은 원장에 안 넣는다. 0원 청구는 그대로 손실이다.
+
+### 미매칭 잔량 → 사용자 재고
+구입내역 중 어느 주문에도 안 붙은 잔량은 `settle_core.leftovers()`가 뽑고,
+보유자를 **그날 장보기 목록 요청자**로 채워 준다. 관리자가 확인·체크한 것만
+`inventory_lots`로 입고된다(자동 입고 안 함 — 유령 재고가 남의 판매에서
+차감되며 교차정산 웃돈까지 발생시키는 되돌리기 어려운 사고).
+
+### 이관
+```bash
+python migrate_to_settle_ledger.py --dry-run   # 미리보기
+python migrate_to_settle_ledger.py             # 이관
+python migrate_to_settle_ledger.py --verify    # 옛 값과 대조
+```
+옛 테이블은 **지우지 않는다**. 옮긴 값이 이상하면 대조할 원본이 있어야 한다.

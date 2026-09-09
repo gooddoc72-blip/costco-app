@@ -287,8 +287,8 @@ def delete_profit(date: str, req: DeleteRequest, user: dict = Depends(require_us
     conn.commit()
     conn.close()
     try:
-        from db_receipt_settle import remove_settlement_items
-        remove_settlement_items(user["username"], onos)
+        import db_settle as _dsx
+        _dsx.remove_items(user["username"], onos)
     except Exception:
         pass
     return {"deleted": len(onos), "date": date}

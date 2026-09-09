@@ -94,6 +94,7 @@ from pages_lib import (
     product_db_page, admin_page, naver_register_page,
     guide_page, settlement_page, cafe24_page, inventory_page,
     receipt_settle_page, billing_page, purchase_settle_page, my_purchase_page,
+    settle_billing_page,
 )
 
 # 페이지 모듈에 캐시 헬퍼 주입 (페이지 모듈이 동일한 캐시 인스턴스 공유)
@@ -466,6 +467,10 @@ def run_billing():
     billing_page.render(USERNAME, IS_ADMIN, settings)
 
 
+def run_settle_billing():
+    settle_billing_page.render(USERNAME, IS_ADMIN, settings)
+
+
 def run_purchase_settle():
     purchase_settle_page.render(USERNAME, IS_ADMIN, settings)
 
@@ -507,9 +512,11 @@ if IS_ADMIN or get_setting(USERNAME, 'cafe24_menu_open') == '1':
 if IS_ADMIN:
     _pages["관리자"] = [
         st.Page(run_admin, title="관리자", icon=":material/admin_panel_settings:"),
+        # 업무 순서 그대로: ④ 영수증 매칭·정산 → ⑤⑦⑧ 청구·입금·미입금
         st.Page(run_receipt_settle, title="영수증 정산", icon=":material/receipt:"),
-        st.Page(run_purchase_settle, title="구매내역 정산", icon=":material/shopping_cart:"),
-        st.Page(run_billing, title="포장·청구", icon=":material/inventory:"),
+        st.Page(run_settle_billing, title="정산·청구", icon=":material/credit_card:"),
+        st.Page(run_purchase_settle, title="구매가·매핑", icon=":material/link:"),
+        st.Page(run_billing, title="포장 관리", icon=":material/inventory:"),
     ]
 
 # 페이지 이동 시 sid 보존 — st.navigation()이 URL 경로를 바꿔도 query param 유지

@@ -643,8 +643,9 @@ def _render_calendar(USERNAME: str, today: datetime, IS_ADMIN: bool = False):
     # 그날 내보낸 물건의 매입가 합계 = 그날 구입금액(청구 원장 기준).
     # 원장이 발송 기준이라 '언제 얼마어치를 샀는지'가 달력에 그대로 보인다.
     try:
-        from db_billing_ledger import daily_amounts as _bl_daily
-        buy_map = _bl_daily(USERNAME, _d_from, _d_to)
+        import db_settle as _dsx
+        buy_map = {i['settle_date']: int(i['total_amount'] or 0)
+                   for i in _dsx.list_invoices(_d_from, _d_to, username=USERNAME)}
     except Exception:
         buy_map = {}
 
