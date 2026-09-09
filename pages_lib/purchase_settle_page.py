@@ -263,18 +263,25 @@ def _render_split_rules(USERNAME):
 
         st.markdown("**➕ 소분 규칙 추가**")
         a1, a2, a3, a4 = st.columns([3, 1, 2.4, 1])
+        # placeholder에 예시를 그대로 적어 두었더니 입력된 것처럼 보여서
+        # '추가가 안 된다'는 오해를 낫았다. 빈 칸임을 분명히 드러낸다.
         _kw = a1.text_input("상품명 키워드", key="ps_split_kw",
-                            placeholder="커클랜드 그릭요거트 907g")
+                            placeholder="예) 커클랜드 그릭요거트 907g")
         _sq = a2.number_input("소분수", min_value=2, max_value=50, step=1, value=2,
                               key="ps_split_sq")
-        _mm = a3.text_input("메모", key="ps_split_memo", placeholder="907g 2개입을 낱개로 판매")
+        _mm = a3.text_input("메모", key="ps_split_memo",
+                            placeholder="예) 907g 2개입을 낱개로 판매")
         with a4:
             st.write("")
+            _ok = bool(str(_kw).strip())
             if st.button("추가", key="ps_split_add", use_container_width=True,
-                         disabled=not str(_kw).strip()):
+                         type="primary" if _ok else "secondary", disabled=not _ok):
                 upsert_split_rule(str(_kw).strip(), int(_sq), str(_mm or ''), USERNAME)
                 st.success(f"✅ '{str(_kw).strip()}' → 소분 {int(_sq)} 저장")
                 st.rerun()
+        if not str(_kw).strip():
+            st.caption("ℹ️ 회색 글씨는 **입력 예시**입니다 — 상품명 키워드를 직접 입력해야 "
+                       "'추가'가 활성화됩니다.")
 
 
 def _render_link_panel(per_user, dmap, ds, USERNAME):

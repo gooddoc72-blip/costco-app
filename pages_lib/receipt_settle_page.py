@@ -168,23 +168,34 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     # ── 정산 기준일 ────────────────────────────────────────────
     #   기준일 이전 구매는 재고 계산에서 제외한다. 과거에는 영수증 업로드가
     #   들쭉날쭉해 재고가 실제와 맞지 않는다. 데이터를 지우지는 않는다.
+    #   매일 쓰는 값이 아니라 한 번 정하는 값이라 화면 맨 위에서 접어 둔다 —
+    #   맨 앞에 펼쳐 두니 매번 만져야 하는 설정으로 읽혔다.
     _sd = get_settle_start_date()
-    _sc1, _sc2 = st.columns([2, 3])
-    _new_sd = _sc1.date_input(
-        "재고 계산 시작일 (이 날짜부터 쌓인 영수증만 재고로 봅니다)",
-        value=(datetime.strptime(_sd, "%Y-%m-%d").date() if _sd else date.today()),
-        key="rs_start_date")
-    _sc2.write(""); _sc2.write("")
-    if _sc2.button("기준일 저장", key="rs_save_start"):
-        set_global_setting("settle_start_date", str(_new_sd))
-        st.success(f"✅ 기준일 {_new_sd} 저장 — 이 날짜부터의 구매만 재고로 계산합니다.")
-        st.rerun()
-    if _sd:
-        st.caption(f"📅 현재 기준일 **{_sd}** — 이전 영수증은 재고 이월에 쓰이지 않습니다 "
-                   "(데이터는 보존되며 공유DB 매장 카탈로그에는 계속 반영됩니다).")
-    else:
-        st.warning("⚠️ 재고 계산 시작일이 없어 **모든 과거 영수증**이 재고로 계산됩니다. "
-                   "업로드가 누락된 기간이 섞이면 재고가 실제와 어긋납니다.")
+    with st.expander(f"⚙️ 재고 계산 시작일 — 현재 **{_sd or '미설정'}**", expanded=not _sd):
+        st.caption(
+            "이 날짜 **이전**에 산 영수증은 재고로 치지 않습니다. 옛날에는 영수증 업로드가 "
+            "들쭉날쭉해서 전부 세면 있지도 않은 재고가 잡히기 때문입니다. "
+            "한 번 정하면 계속 쓰는 값이라 평소에는 건드릴 일이 없습니다. "
+            "(영수증 데이터는 지워지지 않고, 공유DB 매장 카탈로그에는 계속 반영됩니다.)")
+        _sc1, _sc2 = st.columns([2, 3])
+        _new_sd = _sc1.date_input(
+            "재고 계산 시작일", value=(datetime.strptime(_sd, "%Y-%m-%d").date()
+                                 if _sd else date.today()),
+            key="rs_start_date")
+        _sc2.write(""); _sc2.write("")
+        if _sc2.button("기준일 저장", key="rs_save_start"):
+            set_global_setting("settle_start_date", str(_new_sd))
+            st.success(f"✅ 기준일 {_new_sd} 저장 — 이 날짜부터의 구매만 재고로 계산합니다.")
+            st.rerun()
+        # 입력칸을 고쳐 놓고 저장을 안 하면 위 칸과 '현재 기준일'이 달라 보인다.
+        # 화면이 스스로 모순돼 보이는 상태라 반드시 짚어 준다.
+        if _sd and str(_new_sd) != _sd:
+            st.warning(f"✏️ 입력한 **{_new_sd}** 는 아직 저장되지 않았습니다 — "
+                       f"실제로 적용 중인 기준일은 **{_sd}** 입니다. "
+                       "바꾸려면 '기준일 저장'을 누르세요.")
+        if not _sd:
+            st.warning("⚠️ 시작일이 없어 **모든 과거 영수증**이 재고로 계산됩니다. "
+                       "업로드가 누락된 기간이 섞이면 재고가 실제와 어긋납니다.")
 
     st.caption(
         "코스트코 영수증 PDF를 올리면 **상품번호로 각 사용자 주문에 배치**하고, "
@@ -505,6 +516,15 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     if _rdates:
         st.caption(f"🧾 영수증 인식 날짜: **{', '.join(_rdates)}** → 기본 정산일로 설정됨. "
                    "여러 날짜면 각 날짜별로 나눠 배치하세요.")
+    # 기준일보다 이른 날을 정산하면 그날 영수증이 재고에 잡히지 않는다. 조용히
+    # 무시돼 "산 물건이 어디로 갔는지 모르겠다"가 된다 — 반드시 알려 준다.
+    if _sd and str(d_day) < _sd:
+        st.error(
+            f"🚫 **정산일 {d_day} 이 재고 계산 시작일 {_sd} 보다 앞섭니다.** "
+            f"이 날 영수증으로 산 물건은 **재고에 잡히지 않아**, 주문에 안 붙고 남은 금액이 "
+            "어디에도 나타나지 않습니다.\n\n"
+            f"이 날짜를 제대로 정산하려면 위 **⚙️ 재고 계산 시작일**을 **{d_day} 이전**으로 "
+            "바꿔 저장하세요. (배치·청구 자체는 지금도 되지만 남은 재고가 유실됩니다.)")
     # 코스트코에 가는 날과 주문이 들어온 날은 어긋난다 — 마감(기본 12:00) 이후 주문은
     # 다음날 장을 보므로, 오늘 산 물건의 주문일은 어제(혹은 그 전날)다. 당일만 보면
     # 그 주문들이 통째로 미매칭이 됐다(8/19 실측: 콩담백면은 8/17 주문과 100% 일치).
@@ -980,9 +1000,6 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     # ── 3.4) 잘못 붙은 매칭 끊기 (수동 매칭 바로 위) ──
     _render_unmatch_panel(alloc, dmap, receipt_items)
 
-    # ── 3.5) 미매칭 수동/AI 매칭 ──
-    _render_match_section(alloc, dmap, settings, USERNAME, bill_date=str(d_day))
-
     # ── 4) 저장 / 정산 요청 ──
     #   둘은 다른 결정이다. 저장은 '여기까지 했다', 정산은 '이 금액으로 청구한다'.
     #   중간에 저장할 데가 없어서 창을 닫으면 배정이 통째로 날아갔다.
@@ -1031,6 +1048,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                     for _k in ('물건값', '택배비', '포장비', '청구액')})
         st.caption("청구액 = 물건값 + 그날 택배비(발송건수 × 설정) + 그날 포장비. "
                    "월말에 몰아 붙이지 않고 발생한 날에 싣습니다.")
+
+        _render_reconcile(receipt_items, alloc, sum(r['물건값'] for r in _prev), d_day)
 
         st.warning("⚠️ 정산하면 각 주문의 구입가가 영수증 실단가로 **덮어써지고** "
                    "각 사용자에게 청구금액으로 보입니다. "
@@ -1275,45 +1294,58 @@ def _render_unmatch_panel(alloc, dmap, receipt_items):
             _cnt = _unmatch_rows(alloc, _k, receipt_items)
             st.success(f"↩️ {_cnt}건을 끊었습니다 — 아래 수동 매칭에서 다시 이으세요.")
             st.rerun()
-def _render_match_section(alloc, dmap, settings, USERNAME, bill_date=None):
-    """주문 ↔ 영수증 수동 연결.
 
-    AI 자동매칭 버튼은 없앴다. 미리보기 단계의 '🤖 남은 미매칭은 AI가 바로 매칭'이
-    이미 같은 일을 하고 있어서, 같은 작업을 두 군데서 시키는 꼴이었다.
-    '주문 없이 사용자에게 직접 청구'도 없앴다 — 위 **배정할 영수증 품목** 패널이
-    같은 일(청구/재고)을 더 나은 흐름으로 한다.
-    여기 남은 것은 그 패널이 못 하는 일 하나다: **미매칭 주문**을 영수증 품목에 잇기.
+
+
+
+def _render_reconcile(receipt_items, alloc, goods_total, d_day):
+    """영수증 합계와 배치 금액을 맞춰 보여준다 — 차액이 어디로 갔는지.
+
+    "영수증 금액과 배치 금액이 안 맞는다"는 말이 계속 나왔다. 실제로는 안 맞는 게
+    정상이다 — 그날 산 것 전부가 그날 나가지는 않으니까. 문제는 **남은 돈이
+    어디로 갔는지 화면에 없었다**는 것이다. 숫자 둘만 보이면 틀린 것으로 읽힌다.
+
+      영수증 합계 = 배치(청구할 물건값) + 배정 대기(아직 안 나간 것)
     """
-    u_ords = alloc.get('unmatched_orders') or []
-    u_rcpt = alloc.get('unmatched_receipt') or []
-    if not u_ords or not u_rcpt:
+    _r_total = 0
+    for it in (receipt_items or []):
+        try:
+            _r_total += int(float(it.get('단가') or 0)) * max(1, int(it.get('수량') or 1))
+        except (TypeError, ValueError):
+            continue
+    if _r_total <= 0:
         return
-    st.divider()
-    st.subheader(f"✋ 미매칭 주문 잇기 — 주문 {len(u_ords)}건 · 영수증 {len(u_rcpt)}종")
-    st.caption("자동으로도 AI로도 못 붙은 주문을 영수증 품목에 손으로 연결합니다. "
-               "(영수증 품목을 **사용자에게 청구하거나 재고로 넘기는 일**은 위 "
-               "**배정할 영수증 품목**에서 하세요.)")
 
-    with st.expander("✋ 수동 매칭", expanded=False):
-        _ri_opts = {i: f"[{it['상품번호']}] {it['상품명']} ({fmt(it['단가'])}원)"
-                    for i, it in enumerate(u_rcpt)}
-        ri = st.selectbox("영수증 품목", options=list(_ri_opts),
-                          format_func=lambda i: _ri_opts[i], key="rs_mm_ri")
-        _oi_opts = {i: f"{dmap.get(o['username'], o['username'])} · {o['recipient']} · "
-                       f"{o['product_name'][:24]} ×{o['qty']}"
-                    for i, o in enumerate(u_ords)}
-        ois = st.multiselect("이 품목에 해당하는 주문 선택", options=list(_oi_opts),
-                             format_func=lambda i: _oi_opts[i], key="rs_mm_ois")
-        if st.button("➕ 매칭 추가", key="rs_mm_add", disabled=not ois):
-            it = u_rcpt[ri]
-            new = build_manual_rows([
-                {'order': u_ords[i], 'costco_no': it['상품번호'],
-                 'unit_price': it['단가'], 'via': 'manual'} for i in ois])
-            _merge_matches(alloc, new, list(ois))
-            st.success(f"✋ {len(new)}건 매칭 추가")
-            st.rerun()
+    _goods = int(goods_total or 0)
+    _rest = _r_total - _goods
 
+    st.markdown("##### 🧮 영수증 ↔ 배치 대조")
+    m1, m2, m3 = st.columns(3)
+    m1.metric("영수증 합계", f"{fmt(_r_total)}원", f"{len(receipt_items or [])}종")
+    m2.metric("이번 정산 물건값", f"{fmt(_goods)}원")
+    m3.metric("배정 대기", f"{fmt(_rest)}원", delta_color="off")
 
+    if _rest > 0:
+        # 왜 남았는지까지 말해 준다. '남았다'만으로는 실수인지 정상인지 알 수 없다.
+        _lefts = _sc.leftovers(receipt_items, alloc.get('rows') or [], str(d_day))
+        _undisp = len(alloc.get('unmatched_orders') or [])
+        _msg = (f"영수증 {fmt(_r_total)}원 중 **{fmt(_goods)}원**만 이번 정산에 들어갑니다. "
+                f"나머지 **{fmt(_rest)}원**은 아직 주문에 안 붙은 물건입니다 — "
+                "**금액이 틀린 게 아니라** 그날 산 것이 전부 그날 나가지 않아서입니다.")
+        if _lefts:
+            _msg += (f"\n\n남은 품목 {len(_lefts)}종은 위 **배정할 영수증 품목**에서 "
+                     "사용자에게 청구하거나 재고로 넘기세요.")
+        if _undisp:
+            _msg += (f"\n\n미매칭 주문 {_undisp}건 — 송장이 등록됐는데 영수증에서 상품을 "
+                     "못 찾은 건입니다.")
+        st.info(_msg)
+    elif _rest < 0:
+        st.warning(
+            f"⚠️ 배치 금액이 영수증보다 **{fmt(-_rest)}원 많습니다**. "
+            "이전 구입분(재고)에서 나간 주문이 섞였거나, 그날 영수증이 일부만 "
+            "업로드된 것입니다. 위 **매칭 경로**에서 '재고 이월'이 몇 건인지 확인하세요.")
+    else:
+        st.success("영수증 금액이 전부 이번 정산에 들어갑니다 — 남은 물건이 없습니다.")
 
 
 def _build_assign_rows(unmatched, receipt_items, alloc, d_day):
