@@ -658,6 +658,22 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     # 표시이름 대응표 — 아래 발송 현황부터 쓴다. (예전엔 훨씬 뒤에서 만들어
     # 'dmap referenced before assignment' 로 페이지가 죽었다.)
     dmap = _disp_map()
+    # '직접구매'로 표시된 계정은 어느 기준을 쓰든 매칭 후보에서 통째로 빠진다
+    # (billable_users). 화면에 안 보이면 "왜 이 사람만 안 붙지"를 알 길이 없어,
+    # 관리자가 그 사람 몫을 매번 손으로 배정하게 된다. 여기서 먼저 알려 준다.
+    try:
+        _sp_excl = [u['username'] for u in get_all_users()
+                    if not u.get('is_admin') and _rs.is_self_purchase(u['username'])]
+    except Exception:
+        _sp_excl = []
+    if _sp_excl:
+        st.warning(
+            "🏪 **직접구매 계정으로 표시돼 자동 매칭에서 빠지는 사용자** — "
+            + " · ".join(dmap.get(u, u) for u in _sp_excl)
+            + "\n\n이 사람들의 주문은 어느 정산 기준을 골라도 후보에 들어가지 않습니다. "
+              "구매대행 사용자인데 켜져 있다면 **관리자 › 회원 관리**에서 "
+              "'🏪 직접구매 계정' 체크를 끄세요.")
+
     # 영수증↔발송 매칭은 발송 기록이 있어야 성립한다. 없으면 매칭이 아니라
     # 관리자 수작업이 되므로, 어느 사용자가 비어 있는지 먼저 보여준다.
     try:

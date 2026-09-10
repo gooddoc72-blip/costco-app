@@ -205,6 +205,29 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     st.success("✅ 카페24 메뉴 오픈됨" if _cmo_new else "🙈 카페24 메뉴 숨김 처리됨")
                     st.rerun()
 
+                # ── 🏪 직접구매 계정 — 정산·청구 대상에서 뺀다 ──
+                #   이 값을 읽는 코드(receipt_settle.billable_users)는 있는데 켜고 끄는
+                #   화면이 없었다. 그래서 켜져 있는 줄 모르는 채로 그 사용자 주문이
+                #   영수증 매칭 후보에서 통째로 빠졌고, 관리자가 손으로 배정할 수밖에
+                #   없었다(9/1 clglobal0919: ALLO 18개가 자동으로 안 붙음).
+                _sp_cur = get_setting(u['username'], 'self_purchase') == '1'
+                _sp_new = st.checkbox(
+                    "🏪 직접구매 계정 (구매대행 아님 — 정산·청구 대상에서 제외)",
+                    value=_sp_cur, key=f"selfpur_{u['username']}",
+                    help="켜면 이 사용자의 주문은 영수증 정산의 자동 매칭 후보에서 "
+                         "빠집니다. 직접 매장에서 사는 계정에만 켜세요. "
+                         "구매대행 사용자에게 켜 두면 그 사람 주문이 영원히 매칭되지 "
+                         "않고, 산 물건이 통째로 '배정 대기' 재고로 남습니다.")
+                if _sp_new != _sp_cur:
+                    set_setting(u['username'], 'self_purchase', '1' if _sp_new else '')
+                    st.success("🏪 직접구매 계정으로 표시 — 정산 대상에서 제외됩니다"
+                               if _sp_new else
+                               "✅ 구매대행 계정으로 되돌림 — 이제 영수증 매칭 대상입니다")
+                    st.rerun()
+                if _sp_cur:
+                    st.warning("⚠️ 이 계정은 **영수증 정산 자동 매칭에서 제외**됩니다. "
+                               "구매대행 사용자라면 위 체크를 끄세요.")
+
                 # ── 📦 고정비용 (택배비·박스비) — 사용자는 수정 불가, 여기서만 설정 ──
                 st.markdown("<hr style='margin:6px 0'>", unsafe_allow_html=True)
                 st.caption("📦 고정비용 — 이 사용자의 수익계산 기본 택배비/박스비 "
