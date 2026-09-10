@@ -117,17 +117,19 @@ def _persist_receipt(username, items):
     별도 '영수증' 페이지에서만 저장하고 있었는데, 정산은 이 화면에서 하니
     실제로는 저장 없이 정산만 돌아간 셈이다.
     저장 실패가 화면 흐름을 끊지는 않는다.
-    반환: (신규, 갱신, 매입가반영)
+    저장은 **날짜 통째 교체**다 — 재업로드가 곧 그날 영수증을 다시 쓰는 일이라,
+    이번에 안 올라온 옛 품목은 지운다(save_receipt_items 주석 참고).
+    반환: (신규, 갱신, 지운 옛 행, 매입가반영)
     """
     _rows = [it for it in (items or [])
              if str(it.get('상품명', '') or '').strip()
              and str(it.get('receipt_date', '') or '').strip()]
     if not _rows:
-        return 0, 0, 0
-    _saved = _updated = _pn = 0
+        return 0, 0, 0, 0
+    _saved = _updated = _removed = _pn = 0
     _detail, _skip = [], []
     try:
-        _saved, _updated = save_receipt_items(username, _rows)
+        _saved, _updated, _removed = save_receipt_items(username, _rows)
     except Exception as _e:
         st.caption(f"⚠️ 영수증 DB 저장 실패: {_e}")
     for _it in _rows:
@@ -164,7 +166,7 @@ def _persist_receipt(username, items):
         except Exception as _e:
             _skip.append((_nm, f'저장 실패: {str(_e)[:40]}'))
     st.session_state['_rs_price_detail'] = {'rows': _detail, 'skip': _skip}
-    return _saved, _updated, _pn
+    return _saved, _updated, _removed, _pn
 
 
 def _render_price_result():
@@ -523,14 +525,25 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         if _ec1.button("💾 영수증 저장", key="rs_items_save", use_container_width=True,
                        type="primary" if _unsaved else "secondary"):
             st.session_state['rs_receipt_items'] = list(receipt_items)
-            _s2, _u2, _p2 = _persist_receipt(USERNAME, list(receipt_items))
+            _s2, _u2, _rm2, _p2 = _persist_receipt(USERNAME, list(receipt_items))
             st.session_state.pop('rs_alloc', None)
             st.session_state['_rs_unsaved'] = False
-            st.success(f"💾 영수증 {len(receipt_items)}종 저장 — 신규 {_s2} · 갱신 {_u2} · "
-                       f"가격DB 반영 {_p2}종")
+            _msg = (f"💾 영수증 {len(receipt_items)}종 저장 — 신규 {_s2} · 갱신 {_u2} · "
+                    f"가격DB 반영 {_p2}종")
+            if _rm2:
+                _msg += (f"\n\n🧹 이번에 올라오지 않은 옛 품목 **{_rm2}줄**을 지웠습니다 "
+                         "— 그 날짜는 지금 표에 보이는 것이 전부입니다.")
+            st.success(_msg)
+            if _s2 == 0 and _u2 == 0:
+                st.error("⚠️ **저장된 행이 0건입니다.** 영수증 날짜를 못 읽었을 때 이렇게 "
+                         "됩니다 — 표의 날짜를 확인하세요. 이대로 두면 판 것은 사용으로 "
+                         "잡히는데 산 것은 입고로 안 잡혀 재고가 음수가 됩니다.")
         _ec2.caption("표에서 **정가·할인·수량**을 고친 뒤 저장하세요 — 저장해야 "
                      "다음에 열 때도 남고, 재고·배치·청구에 그 값이 쓰입니다. "
-                     "저장 전에는 DB에 아무것도 들어가지 않습니다.")
+                     "저장 전에는 DB에 아무것도 들어가지 않습니다.\n\n"
+                     "**저장은 그 날짜를 통째로 교체합니다** — 잘못 읽은 값은 표에서 고쳐 "
+                     "다시 저장하면 그대로 반영됩니다. 다만 하루에 영수증이 여러 장이면 "
+                     "**한 번에 같이 올리세요** (나눠 저장하면 나중 것이 앞 것을 지웁니다).")
         _render_price_result()
         _t_qty = sum(int(x.get('수량') or 1) for x in receipt_items)
         _t_list = sum(int(x.get('정가단가') or x.get('단가') or 0) * int(x.get('수량') or 1)
@@ -1915,6 +1928,8 @@ def _render_reset_panel(dmap, USERNAME=''):
                   f"구입가 {_res['restored']}건 복원")
             if _res.get('lots'):
                 _t += f" · 재고 입고 {_res['lots']}건 취소"
+            if _res.get('deposit_returned'):
+                _t += f" · 예치금 차감 {_res['deposit_returned']}건 반환"
             if _res.get('kept_paid'):
                 _t += (" · 입금완료라 남긴 것: "
                        + ", ".join(f"{d} {dmap.get(u, u)}"

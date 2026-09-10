@@ -241,42 +241,69 @@ def receipt_dates_with_items(limit=60):
     return [(r['receipt_date'], r['c']) for r in rows]
 
 
-def save_receipt_items(username, items):
-    """영수증 품목 저장(공용). 반환: (신규, 갱신)"""
+def save_receipt_items(username, items, replace_dates=True):
+    """영수증 품목 저장(공용). 반환: (신규, 갱신, 지운 옛 행)
+
+    replace_dates=True — **그 날짜를 통째로 교체한다.**
+
+    왜: 영수증을 잘못 읽었을 때 고치는 길이 재업로드밖에 없다. 그런데 예전에는
+    있으면 UPDATE·없으면 INSERT만 해서, **이번에 안 읽힌 옛 행이 그대로 남았다.**
+    ALLO 선식크래커가 19개로 잘못 읽힌 날, 고쳐서 다시 올려도 그 줄이 이번 판독에
+    빠지면 19가 계속 재고에 남는 식이다. 상품명을 조금 다르게 읽으면 유니크 키가
+    갈라져 같은 물건이 두 줄이 되기도 했다.
+
+    이제 그 날짜 것을 지우고 이번에 올린 것으로 채운다. 재업로드 = 그날 영수증을
+    다시 쓰는 일이므로 이게 사람이 기대하는 동작이다.
+
+    ⚠️ 하루에 영수증이 여러 장이면 **한 번에 같이 올려야 한다.** 나눠서 저장하면
+    나중 것이 앞 것을 지운다. (업로더는 다중 파일을 받아 합쳐 준다.)
+    replace_dates=False로 부르면 옛 방식(누적)으로 동작한다.
+    """
     if not items:
-        return 0, 0
-    conn = _receipt_conn()
+        return 0, 0, 0
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    saved = updated = 0
+
+    # 같은 (날짜,번호,이름)이 한 배치에 두 번 오면 나중 것이 이긴다 — 옛 동작과 같다.
+    rows = {}
     for it in items:
         rd = (it.get('receipt_date') or '').strip()
-        pno = str(it.get('상품번호') or '').strip()
         name = (it.get('상품명') or '').strip()
-        qty = int(it.get('수량') or 1)
-        price = int(it.get('단가') or 0)
-        disc = int(it.get('할인') or 0)
-        listp = int(it.get('정가단가') or 0) or price
         if not name or not rd:
             continue
-        existing = conn.execute(
-            "SELECT id FROM receipt_items WHERE receipt_date=? AND product_no=? "
-            "AND product_name=?", (rd, pno, name)).fetchone()
-        if existing:
+        pno = str(it.get('상품번호') or '').strip()
+        price = int(it.get('단가') or 0)
+        rows[(rd, pno, name)] = (
+            int(it.get('수량') or 1), price, int(it.get('할인') or 0),
+            int(it.get('정가단가') or 0) or price)
+    if not rows:
+        return 0, 0, 0
+
+    dates = sorted({rd for rd, _, _ in rows})
+    conn = _receipt_conn()
+    try:
+        # 교체 전에 세어 둔다 — 지우고 나면 무엇이 새것이고 무엇이 고쳐진 것인지
+        # 구분할 수 없게 되고, 화면에는 전부 '신규'로 보인다.
+        _ph = ",".join("?" * len(dates))
+        old = {(str(r['receipt_date']), str(r['product_no'] or ''), str(r['product_name'] or ''))
+               for r in conn.execute(
+                   "SELECT receipt_date, product_no, product_name FROM receipt_items "
+                   "WHERE receipt_date IN (%s)" % _ph, dates)}
+        updated = len(old & set(rows))
+        saved = len(rows) - updated
+        removed = len(old - set(rows)) if replace_dates else 0
+
+        if replace_dates:
+            conn.execute("DELETE FROM receipt_items WHERE receipt_date IN (%s)" % _ph, dates)
+        for (rd, pno, name), (qty, price, disc, listp) in rows.items():
             conn.execute(
-                "UPDATE receipt_items SET qty=?, unit_price=?, discount=?, "
-                "list_price=?, uploaded_by=?, created_at=? WHERE id=?",
-                (qty, price, disc, listp, str(username or ''), now, existing['id']))
-            updated += 1
-        else:
-            conn.execute(
-                "INSERT INTO receipt_items (receipt_date, product_no, product_name, "
-                "qty, unit_price, discount, list_price, uploaded_by, created_at) "
-                "VALUES (?,?,?,?,?,?,?,?,?)",
+                "INSERT OR REPLACE INTO receipt_items (receipt_date, product_no, "
+                "product_name, qty, unit_price, discount, list_price, uploaded_by, "
+                "created_at) VALUES (?,?,?,?,?,?,?,?,?)",
                 (rd, pno, name, qty, price, disc, listp, str(username or ''), now))
-            saved += 1
-    conn.commit()
-    conn.close()
-    return saved, updated
+        conn.commit()
+    finally:
+        conn.close()
+    return saved, updated, removed
 
 
 def get_recent_receipt_items(username, days=90):

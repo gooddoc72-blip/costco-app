@@ -221,12 +221,13 @@ def _persist_receipt_items(username: str, items: list):
              if str(it.get('상품명', '') or '').strip()
              and str(it.get('receipt_date', '') or '').strip()]
     if not _rows:
-        return 0, 0
+        return 0, 0, 0
     try:
+        # 날짜 통째 교체 — 같은 날 다시 올리면 그날 것을 새로 쓴다.
         return save_receipt_items(username, _rows)
     except Exception as _e:
         st.caption(f"⚠️ 영수증 DB 저장 실패(화면 표시는 정상): {_e}")
-        return 0, 0
+        return 0, 0, 0
 
 
 def _render_photo_receipt(USERNAME: str, settings: dict, compact: bool = False,
