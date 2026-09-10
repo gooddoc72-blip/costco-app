@@ -18,7 +18,7 @@ from receipt_settle import (
 )
 from db import (
     get_all_users, get_all_settings,
-    get_receipt_items_by_date, receipt_dates_with_items,
+    get_receipt_items_by_date, receipt_dates_with_items, delete_receipt_items_by_date,
     set_global_setting, save_receipt_items, upsert_shared_store_price,
 )
 from utils import fmt
@@ -1488,6 +1488,7 @@ def _render_stock_status():
             st.caption("**입고** = 영수증 구매 · **주문사용** = 정산에서 주문에 붙은 양 · "
                        "**재고배정** = 사용자 재고로 넘긴 양 · **배정대기** = 남은 것. "
                        "단위는 소분 단위입니다 — 1팩을 N개로 나눠 파는 상품은 낱개 기준입니다.")
+        _render_wait_reset(_sd)
 
     with _t_user:
         try:
@@ -1533,6 +1534,90 @@ def _render_stock_status():
                            for _k in ('입고', '남음', '경과일')})
         st.caption("수량은 소분 단위입니다.")
         _render_lot_undo()
+
+
+def _render_wait_reset(_sd):
+    """배정 대기 목록을 비우는 두 가지 길.
+
+    '재고 현황을 초기화하고 싶다'는 요구가 계속 나오는데, 배정 대기는 저장된
+    표가 아니라 **영수증에서 그때그때 계산되는 값**이다. 지울 행이 없으니
+    '초기화 버튼'이 있을 자리가 아니었고, 그래서 아무 방법도 안 보였다.
+
+    실제로 줄이는 방법은 둘뿐이다:
+      ① 기준일을 옮긴다 — 그 이전 영수증을 재고 계산에서 뺀다(데이터는 남는다)
+      ② 영수증을 지운다 — 진짜 삭제. 잘못 올린 영수증일 때만.
+    """
+    _msg = st.session_state.pop('_rs_wait_msg', None)
+    if _msg:
+        (st.success if _msg.get('ok') else st.warning)(_msg.get('text', ''))
+
+    with st.expander("🧹 배정 대기 목록 비우기", expanded=False):
+        st.info(
+            "**배정 대기는 지울 수 있는 표가 아닙니다.** 영수증에서 매번 다시 계산하는 "
+            "값이라 '초기화'할 행 자체가 없습니다.\n\n"
+            "정상적으로 줄이는 방법은 **정산을 돌리는 것**입니다 — 주문에 붙거나 "
+            "사용자 재고로 배정되면 그만큼 여기서 빠집니다. "
+            "아래 둘은 그게 아니라 **과거분을 계산에서 걷어낼 때** 씁니다.")
+
+        st.markdown("##### ① 기준일 옮기기 — 권장 (데이터는 그대로)")
+        st.caption("고른 날짜 **이전**에 산 영수증은 재고 계산에서 빠집니다. "
+                   "영수증·공유DB 매장가는 그대로 남으므로 언제든 되돌릴 수 있습니다.")
+        _c1, _c2 = st.columns([2, 3])
+        _nd = _c1.date_input("이 날짜부터 재고로 계산", value=date.today(),
+                             key="rs_wait_newsd")
+        _c2.write(""); _c2.write("")
+        if _c2.button(f"📅 기준일을 {_nd} 로 변경", key="rs_wait_setsd",
+                      use_container_width=True):
+            set_global_setting("settle_start_date", str(_nd))
+            st.session_state['_rs_wait_msg'] = {
+                'ok': True,
+                'text': (f"📅 기준일을 **{_nd}** 로 바꿨습니다 — 그 이전 영수증은 "
+                         "재고에서 빠집니다. (영수증 데이터는 그대로 있습니다)")}
+            st.rerun()
+        if _sd:
+            st.caption(f"현재 기준일 **{_sd}**")
+
+        st.divider()
+        st.markdown("##### ② 영수증 삭제 — 되돌릴 수 없음")
+        st.warning(
+            "영수증을 **진짜로 지웁니다**. 잘못 올렸거나 중복 업로드한 날에만 쓰세요.\n\n"
+            "영수증은 정산의 근거이자 공유DB 매장가의 출처입니다. 지우면 그날 정산을 "
+            "다시 돌릴 수 없고, 이미 정산한 금액의 근거도 사라집니다. "
+            "**단순히 목록을 비우고 싶은 것이라면 위 ①을 쓰세요.**")
+        try:
+            _rd = receipt_dates_with_items(limit=60) or []
+        except Exception as _e:
+            st.error(f"영수증 날짜 조회 실패: {_e}")
+            return
+        if not _rd:
+            st.caption("저장된 영수증이 없습니다.")
+            return
+        _opts = [f"{_d} · {_c}종" for _d, _c in _rd]
+        _lbl2d = {f"{_d} · {_c}종": _d for _d, _c in _rd}
+        _pick = st.multiselect("지울 영수증 날짜", _opts, key="rs_wait_delrcpt")
+        if _pick:
+            st.markdown(f"삭제 대상 **{len(_pick)}일** — "
+                        + " · ".join(_lbl2d[x] for x in _pick[:8]))
+        _need = "영수증삭제"
+        _typed = st.text_input(
+            f"확인 — 아래 빈 칸에 {_need} 라고 직접 입력하세요",
+            key="rs_wait_confirm")
+        _ready = bool(_pick) and str(_typed).strip() == _need
+        if st.button(f"🗑 영수증 {len(_pick)}일치 삭제", key="rs_wait_del",
+                     disabled=not _ready):
+            _n = 0
+            for _x in _pick:
+                try:
+                    _n += delete_receipt_items_by_date('', _lbl2d[_x]) or 0
+                except Exception:
+                    continue
+            st.session_state['_rs_wait_msg'] = {
+                'ok': bool(_n),
+                'text': (f"🗑 영수증 {len(_pick)}일치 · {_n}행을 삭제했습니다."
+                         if _n else "삭제된 영수증이 없습니다.")}
+            st.rerun()
+        if not _ready:
+            st.caption(f"날짜를 고르고 **{_need}** 를 입력해야 버튼이 켜집니다.")
 
 
 def _render_lot_undo():
