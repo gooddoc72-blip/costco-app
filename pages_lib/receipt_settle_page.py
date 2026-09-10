@@ -582,8 +582,29 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         except Exception:
             _def_day = date.today()
     d_day = st.date_input("정산 날짜 (당일 주문 기준)", value=_def_day, key="rs_day")
-    if _rdates:
-        st.caption(f"🧾 영수증 인식 날짜: **{', '.join(_rdates)}** → 기본 정산일로 설정됨. "
+    # st.date_input은 key가 이미 있으면 value=를 무시한다. 그래서 새 영수증을 올려도
+    # 정산 날짜가 앞 영수증 날짜에 머무는 일이 생긴다(9/2 영수증을 올리고 정산했는데
+    # 9/1자로 저장됐다). 안내 문구는 "기본 정산일로 설정됨"이라 적혀 있어서 화면만
+    # 봐서는 알아챌 수가 없다. 어긋나면 크게 알리고 한 번에 맞춰 준다.
+    _dstr = str(d_day)
+    if _rdates and _dstr not in _rdates:
+        st.error(
+            f"🚫 **정산 날짜({_dstr})가 영수증 날짜({', '.join(_rdates)})와 다릅니다.**\n\n"
+            "이대로 정산하면 이 영수증 물건이 **엉뚱한 날짜로 청구**되고, 영수증 날짜 쪽은 "
+            "산 것만 있고 쓴 것이 없어 통째로 **배정 대기**에 남습니다. "
+            "일부러 다른 날 주문에 붙이는 것이 아니라면 아래 버튼으로 맞추세요.")
+        _fc = st.columns(min(len(_rdates), 4) + 1)
+        for _i, _rdx in enumerate(_rdates[:4]):
+            if _fc[_i].button(f"📅 {_rdx} 로 맞추기", key=f"rs_dayfix_{_rdx}",
+                              use_container_width=True):
+                try:
+                    st.session_state['rs_day'] = date.fromisoformat(_rdx)
+                except ValueError:
+                    pass
+                st.session_state.pop('rs_alloc', None)   # 날짜가 바뀌면 배치도 다시
+                st.rerun()
+    elif _rdates:
+        st.caption(f"🧾 영수증 인식 날짜: **{', '.join(_rdates)}** — 정산 날짜와 일치합니다. "
                    "여러 날짜면 각 날짜별로 나눠 배치하세요.")
     # 기준일보다 이른 날을 정산하면 그날 영수증이 재고에 잡히지 않는다. 조용히
     # 무시돼 "산 물건이 어디로 갔는지 모르겠다"가 된다 — 반드시 알려 준다.
