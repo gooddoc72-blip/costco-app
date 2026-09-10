@@ -1752,12 +1752,17 @@ def _render_reset_panel(dmap, USERNAME=''):
             "입금완료분까지 전부 삭제", value=False, key="rs_reset_paid",
             help="받은 돈의 근거까지 지웁니다. 정말 전부 다시 쌓을 때만 켜세요.")
 
+        # placeholder에 정답을 적어 두면 이미 입력된 것처럼 보여 "버튼이 안 켜진다"가 된다.
+        # 확인 칸은 사람이 직접 쳐야 의미가 있으므로 회색 예시를 두지 않는다.
         _need = "초기화"
         _typed = st.text_input(
-            f"확인 — 아래 칸에 **{_need}** 라고 입력하세요", key="rs_reset_confirm",
-            placeholder=_need)
+            f"확인 — 아래 빈 칸에 {_need} 라고 직접 입력하세요 (복사·붙여넣기도 됩니다)",
+            key="rs_reset_confirm")
+        _ready = str(_typed).strip() == _need
+        if _ready:
+            st.success(f"✅ 확인됨 — 아래 버튼이 켜졌습니다.")
         if st.button("🧨 전체 초기화 실행", key="rs_reset_go",
-                     disabled=(str(_typed).strip() != _need)):
+                     type="primary" if _ready else "secondary", disabled=not _ready):
             try:
                 _res = _ds.reset_all(include_paid=_inc_paid, restore_cost=True,
                                      drop_lots=_drop_lots)
@@ -1778,8 +1783,9 @@ def _render_reset_panel(dmap, USERNAME=''):
             st.session_state.pop('rs_alloc', None)
             st.session_state.pop('rs_sticky', None)
             st.rerun()
-        if str(_typed).strip() != _need:
-            st.caption(f"안전을 위해 **{_need}** 를 입력해야 버튼이 켜집니다.")
+        if not _ready:
+            st.caption(f"안전을 위해 **{_need}** 를 입력해야 버튼이 켜집니다. "
+                       "(칸이 비어 있으면 버튼은 회색입니다)")
 
 
 def _n(s):
