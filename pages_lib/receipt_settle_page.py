@@ -67,6 +67,46 @@ def _merge_receipt_lines(parsed):
     return out
 
 
+#: 영수증 한 줄이 이만큼을 넘으면 사람이 다시 본다. 코스트코 한 품목을
+#  이 금액어치 사는 일은 거의 없고, 있더라도 확인 한 번이 손해는 아니다.
+RECEIPT_LINE_WARN = 300_000
+#: 한 줄 수량 상한 — 같은 물건을 이보다 많이 담는 일은 드물다.
+RECEIPT_QTY_WARN = 12
+
+
+def _receipt_outliers(items):
+    """판독이 의심스러운 줄 — 저장 전에 사람이 볼 것.
+
+    AI·PDF 판독은 수량 칸을 곧잘 틀린다(상품번호 일부나 옆 칸 숫자를 수량으로
+    읽는다). 예전에는 올리는 즉시 저장돼서 그 값이 그대로 재고가 되고 공유DB
+    매장가까지 바꿨다 — 9/8 KS그릭요거트가 수량 64로 들어와 한 줄이 895,360원,
+    그날 영수증 총액의 63%를 차지했다.
+
+    금액이 큰 줄과 수량이 많은 줄만 짚는다. 규칙을 더 얹으면 멀쩡한 줄까지
+    걸려 경고가 무시된다.
+    """
+    out = []
+    for it in (items or []):
+        try:
+            qty = int(it.get('수량') or 1)
+            unit = int(float(it.get('단가') or 0))
+        except (TypeError, ValueError):
+            continue
+        amt = qty * unit
+        why = []
+        if qty >= RECEIPT_QTY_WARN:
+            why.append(f"수량 {qty}개 — 같은 물건을 이렇게 많이 담았는지 확인")
+        if amt >= RECEIPT_LINE_WARN:
+            why.append(f"한 줄 {fmt(amt)}원")
+        if why:
+            out.append({'상품번호': str(it.get('상품번호') or ''),
+                        '상품명': str(it.get('상품명') or '')[:24],
+                        '수량': qty, '단가': unit, '금액': amt,
+                        '이유': ' · '.join(why)})
+    out.sort(key=lambda r: -r['금액'])
+    return out
+
+
 def _persist_receipt(username, items):
     """영수증 품목을 DB에 남긴다 — receipt_items + 공유DB 매장 매입가.
 
@@ -277,10 +317,11 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     st.caption("· " + _l)
         merged = _merge_receipt_lines(parsed)
         st.session_state['rs_receipt_items'] = list(merged.values())
-        _sv, _up, _pn = _persist_receipt(USERNAME, list(merged.values()))
-        if _sv or _up or _pn:
-            st.caption(f"💾 영수증 DB 저장 — 신규 {_sv} · 갱신 {_up} · 공유DB 매입가 반영 {_pn}종")
-        _render_price_result()
+        # 읽은 것과 저장한 것은 다르다. 예전에는 PDF를 올리는 순간
+        # 바로 DB에 썼다 — 판독이 틀려도 사람이 보기 전에 재고와 공유DB 매장가까지
+        # 바꿔 놓았다(9/8 KS그릭요거트 수량이 64로 읽혀 895,360원이 재고로 잡혔다).
+        # 이제 표에만 채우고, 저장은 사람이 확인한 뒤에만 한다.
+        st.session_state['_rs_unsaved'] = True
         st.session_state['_rs_fkey'] = _fkey
         st.session_state['_rs_fails'] = fails
         st.session_state.pop('rs_alloc', None)   # 새 업로드 → 이전 미리보기 초기화
@@ -370,11 +411,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     (st.session_state.get('rs_receipt_items') or []) + _pparsed)
                 _merged_p = _merge_receipt_lines(_pparsed)
                 st.session_state['rs_receipt_items'] = list(_prev.values())
-                _sv, _up, _pn = _persist_receipt(USERNAME, list(_prev.values()))
-                if _sv or _up or _pn:
-                    st.caption(f"💾 영수증 DB 저장 — 신규 {_sv} · 갱신 {_up} · "
-                               f"공유DB 매입가 반영 {_pn}종")
-                _render_price_result()
+                st.session_state['_rs_unsaved'] = True   # 저장은 사람이 확인한 뒤에
                 st.session_state.pop('rs_alloc', None)
                 st.session_state.pop('rs_day', None)
                 st.success(f"📱 사진 {len(_ph)}장에서 {len(_merged_p)}품목 인식")
@@ -466,16 +503,35 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                   '정가단가': _lp or up, '할인': _dc,
                                   'receipt_date': _rd_by_cno.get(cno, '')})
     if receipt_items:
+        # 판독이 이상한 줄을 저장 전에 잡는다. 예전엔 올리는 즉시 저장돼서
+        # 수량 오독(9/8 KS그릭요거트 64개 = 895,360원)이 그대로 재고가 됐다.
+        _odd = _receipt_outliers(receipt_items)
+        if _odd:
+            st.error(
+                f"🚨 **판독이 의심스러운 줄 {len(_odd)}건** — 저장 전에 표에서 확인하세요.\n\n"
+                + "\n".join(f"- **{o['상품명']}** 수량 **{o['수량']}** · "
+                            f"{fmt(o['단가'])}원 → 합계 {fmt(o['금액'])}원 ({o['이유']})"
+                            for o in _odd[:6]))
+
         # 표에서 고친 값은 세션에만 있다 — 판독이 틀려 고쳤다면 그게 진짜 값이다.
+        _unsaved = bool(st.session_state.get('_rs_unsaved'))
+        if _unsaved:
+            st.warning("⚠️ **아직 저장되지 않았습니다.** 읽어 온 값을 표에서 확인한 뒤 "
+                       "아래 **영수증 저장**을 누르세요. 저장해야 재고·배치·청구에 쓰입니다. "
+                       "(예전에는 올리는 즉시 저장돼서 잘못 읽은 값이 그대로 들어갔습니다)")
         _ec1, _ec2 = st.columns([1, 3])
-        if _ec1.button("💾 표 내용 저장", key="rs_items_save", use_container_width=True):
+        if _ec1.button("💾 영수증 저장", key="rs_items_save", use_container_width=True,
+                       type="primary" if _unsaved else "secondary"):
             st.session_state['rs_receipt_items'] = list(receipt_items)
             _s2, _u2, _p2 = _persist_receipt(USERNAME, list(receipt_items))
             st.session_state.pop('rs_alloc', None)
+            st.session_state['_rs_unsaved'] = False
             st.success(f"💾 영수증 {len(receipt_items)}종 저장 — 신규 {_s2} · 갱신 {_u2} · "
                        f"가격DB 반영 {_p2}종")
-        _ec2.caption("표에서 **정가·할인·수량**을 고쳤다면 저장하세요 — 저장해야 "
-                     "다음에 열 때도 남고, 배치·청구에도 그 값이 쓰입니다.")
+        _ec2.caption("표에서 **정가·할인·수량**을 고친 뒤 저장하세요 — 저장해야 "
+                     "다음에 열 때도 남고, 재고·배치·청구에 그 값이 쓰입니다. "
+                     "저장 전에는 DB에 아무것도 들어가지 않습니다.")
+        _render_price_result()
         _t_qty = sum(int(x.get('수량') or 1) for x in receipt_items)
         _t_list = sum(int(x.get('정가단가') or x.get('단가') or 0) * int(x.get('수량') or 1)
                       for x in receipt_items)
