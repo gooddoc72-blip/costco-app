@@ -385,6 +385,87 @@ def delete_settlement(settle_date, username=None):
         conn.close()
 
 
+def reset_all(include_paid=False, restore_cost=True, drop_lots=False):
+    """정산을 처음부터 다시 쌓기 위해 원장을 비운다.
+
+    지우는 것:  settle_item · settle_invoice · settle_draft
+    되돌리는 것: 주문의 구입가(prev_cost) — 정산이 덮어쓴 값을 원래대로
+    남기는 것:  영수증 품목 · 공유상품 · 코스트코번호 매핑
+                — 영수증과 매핑은 정산의 '입력'이지 결과가 아니다.
+
+    입금완료된 청구서는 기본적으로 남긴다. 받은 돈의 근거를 지우면 그 입금이
+    무엇에 대한 것이었는지 설명할 수 없게 된다.
+
+    drop_lots: 영수증 정산으로 넣은 재고 입고도 같이 되돌린다(판매에 안 쓰인 것만).
+    반환: {'items','invoices','restored','lots','kept_paid'}
+    """
+    from db_core import get_user_db
+
+    conn = _conn()
+    ensure(conn)
+    res = {'items': 0, 'invoices': 0, 'restored': 0, 'lots': 0, 'kept_paid': []}
+    try:
+        paid = {(str(r['settle_date']), str(r['username'])) for r in conn.execute(
+            "SELECT settle_date, username FROM settle_invoice WHERE status='paid'")}
+        if include_paid:
+            paid = set()
+        res['kept_paid'] = sorted(paid)
+
+        rows = [dict(r) for r in conn.execute(
+            "SELECT settle_date, username, order_no, prev_cost FROM settle_item")]
+        rows = [r for r in rows
+                if (str(r['settle_date']), str(r['username'])) not in paid]
+
+        if include_paid:
+            res['items'] = conn.execute("DELETE FROM settle_item").rowcount
+            res['invoices'] = conn.execute("DELETE FROM settle_invoice").rowcount
+        else:
+            res['items'] = conn.execute(
+                "DELETE FROM settle_item WHERE (settle_date, username) NOT IN "
+                "(SELECT settle_date, username FROM settle_invoice WHERE status='paid')"
+            ).rowcount
+            res['invoices'] = conn.execute(
+                "DELETE FROM settle_invoice WHERE status<>'paid'").rowcount
+        conn.execute("DELETE FROM settle_draft")
+        conn.commit()
+    finally:
+        conn.close()
+
+    # 주문 구입가를 정산 전 값으로 — 청구만 지우고 구입가를 두면
+    # 수익계산이 계속 틀린 값을 본다.
+    if restore_cost:
+        by_user = {}
+        for r in rows:
+            if str(r['order_no'] or ''):
+                by_user.setdefault(str(r['username']), []).append(r)
+        for uname, urows in by_user.items():
+            try:
+                uc = get_user_db(uname)
+            except Exception:
+                continue
+            try:
+                for r in urows:
+                    for _t in ('order_history', 'daily_orders', 'profit_settlements'):
+                        try:
+                            uc.execute("UPDATE %s SET cost_price=? WHERE order_no=?" % _t,
+                                       (_i(r['prev_cost']), str(r['order_no'])))
+                        except sqlite3.Error:
+                            pass
+                    res['restored'] += 1
+                uc.commit()
+            finally:
+                uc.close()
+
+    if drop_lots:
+        try:
+            from db_inventory import find_receipt_lots, delete_lots
+            _ids = [int(l['id']) for l in (find_receipt_lots() or [])]
+            res['lots'] = (delete_lots(_ids) or {}).get('deleted', 0)
+        except Exception:
+            res['lots'] = 0
+    return res
+
+
 # ── 읽기 ────────────────────────────────────────────────────
 def get_items(settle_date, username=None):
     conn = _conn()

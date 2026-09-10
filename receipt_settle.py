@@ -294,8 +294,10 @@ def receipt_lot_units(date_upto, start=''):
     try:
         from db_inventory import _conn as _iconn, _ensure_tables as _iens
         c = _iconn(); _iens(c)
+        # status를 안 보면 취소한 lot까지 계속 빼서, 입고를 되돌려도 배정 대기가
+        # 안 돌아온다. ACTIVE인 것만 '누군가의 재고'로 친다.
         q = ("SELECT product_no, SUM(qty_in) FROM inventory_lots "
-             "WHERE memo LIKE '영수증정산%' AND received_at <= ?"
+             "WHERE memo LIKE '영수증정산%' AND status='ACTIVE' AND received_at <= ?"
              + (" AND received_at >= ?" if start else "") + " GROUP BY product_no")
         args = (str(date_upto), str(start)) if start else (str(date_upto),)
         for pn, units in c.execute(q, args):

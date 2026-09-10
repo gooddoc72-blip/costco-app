@@ -621,6 +621,62 @@ def get_return_due_lots(days: int = 30, owner: str = None) -> list:
     return [dict(r) for r in rows]
 
 
+def delete_lots(lot_ids: list) -> dict:
+    """입고를 취소한다 — 잘못 넣은 재고를 되돌리는 유일한 경로.
+
+    판매에 쓰인 lot은 지우지 않는다. inventory_moves가 그 lot을 가리키고 있어
+    지우면 '누구 재고에서 나갔는지'를 잃고, 교차정산 웃돈의 근거도 사라진다.
+    그런 lot은 건너뛰고 이유를 돌려준다 — 재고 관리에서 수량을 고치는 편이 맞다.
+
+    반환: {'deleted': n, 'skipped': [{'id','reason'}...]}
+    """
+    ids = [int(i) for i in (lot_ids or [])]
+    if not ids:
+        return {'deleted': 0, 'skipped': []}
+    conn = _conn()
+    _ensure_tables(conn)
+    out = {'deleted': 0, 'skipped': []}
+    try:
+        for lid in ids:
+            row = conn.execute(
+                "SELECT qty_in, qty_left FROM inventory_lots WHERE id=?", (lid,)).fetchone()
+            if row is None:
+                out['skipped'].append({'id': lid, 'reason': '없는 lot'})
+                continue
+            used = conn.execute(
+                "SELECT COUNT(*) FROM inventory_moves WHERE lot_id=?", (lid,)).fetchone()[0]
+            if used:
+                out['skipped'].append({'id': lid, 'reason': f'판매에 사용됨({used}건)'})
+                continue
+            if int(row['qty_left'] or 0) != int(row['qty_in'] or 0):
+                out['skipped'].append({'id': lid, 'reason': '일부 차감됨'})
+                continue
+            conn.execute("DELETE FROM inventory_lots WHERE id=?", (lid,))
+            out['deleted'] += 1
+        conn.commit()
+    finally:
+        conn.close()
+    return out
+
+
+def find_receipt_lots(date_from: str = '', date_to: str = '', owner: str = None) -> list:
+    """영수증 정산에서 입고한 lot 목록 — 되돌리기 화면용."""
+    conn = _conn()
+    _ensure_tables(conn)
+    sql = ("SELECT l.*, (SELECT COUNT(*) FROM inventory_moves m WHERE m.lot_id=l.id) used "
+           "FROM inventory_lots l WHERE l.memo LIKE '영수증정산%'")
+    args = []
+    if date_from:
+        sql += " AND l.received_at >= ?"; args.append(str(date_from))
+    if date_to:
+        sql += " AND l.received_at <= ?"; args.append(str(date_to))
+    if owner:
+        sql += " AND l.owner = ?"; args.append(str(owner))
+    rows = conn.execute(sql + " ORDER BY l.received_at DESC, l.id DESC", args).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
 def set_lot_status(lot_id: int, status: str) -> bool:
     conn = _conn()
     _ensure_tables(conn)

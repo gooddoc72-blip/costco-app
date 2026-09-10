@@ -1497,8 +1497,9 @@ def _render_stock_status():
             st.error(f"사용자 재고 조회 실패: {e}")
             _lots = []
         if not _lots:
-            st.info("사용자 재고가 없습니다. 위 **주문을 못 찾은 영수증 품목**에서 "
+            st.info("사용자 재고가 없습니다. 위 **배정할 영수증 품목**에서 "
                     "'재고로 입고'를 누르면 그 사용자 재고로 잡힙니다.")
+            _render_lot_undo()
             return
 
         _dm = _disp_map()
@@ -1530,7 +1531,90 @@ def _render_stock_status():
         ]), use_container_width=True, hide_index=True,
             column_config={_k: st.column_config.NumberColumn(_k, format='%d')
                            for _k in ('입고', '남음', '경과일')})
-        st.caption("수량은 소분 단위입니다. lot 단위 조회·삭제는 **재고 관리** 탭에서 합니다.")
+        st.caption("수량은 소분 단위입니다.")
+        _render_lot_undo()
+
+
+def _render_lot_undo():
+    """영수증 정산에서 넣은 재고 입고를 되돌린다.
+
+    입고는 사람이 판단해 넣는 값이라 틀릴 수 있는데, 되돌릴 방법이 화면에 없어서
+    잘못 넣으면 그대로 남았다. 지운 만큼 '배정 대기'로 돌아오므로 다시 배정하면 된다.
+
+    판매에 쓰인 lot은 지우지 않는다 — inventory_moves가 그 lot을 가리키고 있어
+    지우면 '누구 재고에서 나갔는지'와 교차정산 웃돈의 근거를 잃는다.
+    """
+    _msg = st.session_state.pop('_rs_lot_msg', None)
+    if _msg:
+        (st.success if _msg.get('ok') else st.warning)(_msg.get('text', ''))
+
+    with st.expander("↩️ 재고 입고 되돌리기 — 잘못 넣은 입고 취소", expanded=False):
+        try:
+            from db_inventory import find_receipt_lots, delete_lots
+            lots = find_receipt_lots() or []
+        except Exception as e:
+            st.error(f"입고 이력 조회 실패: {e}")
+            return
+        if not lots:
+            st.caption("영수증 정산으로 입고한 재고가 없습니다.")
+            return
+
+        _dm = _disp_map()
+        _dates = sorted({str(l['received_at']) for l in lots}, reverse=True)
+        _pick_d = st.selectbox("입고일", ["(전체)"] + _dates, key="rs_lot_date")
+        _view = [l for l in lots
+                 if _pick_d == "(전체)" or str(l['received_at']) == _pick_d]
+
+        st.caption("지운 만큼 **배정 대기**로 돌아옵니다 — 다시 배정하면 됩니다. "
+                   "이미 판매에 쓰인 입고는 지울 수 없습니다(근거가 사라지므로).")
+        _ed = st.data_editor(
+            pd.DataFrame([{
+                '취소': False,
+                '입고일': str(l['received_at']),
+                '보유자': _dm.get(str(l['owner']), str(l['owner'])),
+                '상품명': str(l['product_name'])[:30],
+                '코스트코번호': str(l['product_no']),
+                '입고': int(l['qty_in'] or 0),
+                '남음': int(l['qty_left'] or 0),
+                '판매사용': int(l.get('used') or 0),
+                '_id': int(l['id']),
+            } for l in _view]),
+            use_container_width=True, hide_index=True,
+            key=f"rs_lot_ed_{_pick_d}",
+            disabled=['입고일', '보유자', '상품명', '코스트코번호', '입고', '남음',
+                      '판매사용', '_id'],
+            column_config={
+                '취소': st.column_config.CheckboxColumn('취소', help='체크한 입고를 지웁니다'),
+                '판매사용': st.column_config.NumberColumn(
+                    '판매사용', format='%d', help='0보다 크면 지울 수 없습니다'),
+                '_id': None,
+            })
+        _picked = [r for r in _ed.to_dict('records') if r.get('취소')]
+        if not _picked:
+            st.caption("되돌릴 입고를 체크하세요.")
+            return
+
+        _blocked = [r for r in _picked if int(r.get('판매사용') or 0) > 0
+                    or int(r.get('남음') or 0) != int(r.get('입고') or 0)]
+        if _blocked:
+            st.warning(f"⚠️ {len(_blocked)}건은 이미 판매에 쓰였거나 일부 차감돼 "
+                       "건너뜁니다 — **재고 관리** 탭에서 수량을 고치세요.")
+        st.markdown(f"취소할 입고 **{len(_picked) - len(_blocked)}건** · "
+                    f"수량 {sum(int(r['입고']) for r in _picked if r not in _blocked)}소분")
+
+        if st.button(f"↩️ 선택한 {len(_picked)}건 입고 취소", key="rs_lot_del"):
+            _res = delete_lots([int(r['_id']) for r in _picked])
+            if _res['deleted']:
+                _text = (f"↩️ 입고 {_res['deleted']}건을 취소했습니다 — "
+                         "그만큼 **배정 대기**로 돌아왔습니다.")
+                if _res['skipped']:
+                    _text += f" (건너뜀 {len(_res['skipped'])}건)"
+            else:
+                _text = ("취소된 입고가 없습니다 — "
+                         + " / ".join(f"#{x['id']} {x['reason']}"
+                                      for x in _res['skipped'][:5]))
+            st.session_state['_rs_lot_msg'] = {'ok': bool(_res['deleted']), 'text': _text}
+            st.rerun()
 
 
 def _render_history(dmap, USERNAME=''):
@@ -1618,6 +1702,84 @@ def _render_history(dmap, USERNAME=''):
     _hm = st.session_state.pop('_rs_hist_msg', None)
     if _hm:
         st.info(_hm)
+
+    _render_reset_panel(dmap, USERNAME)
+
+
+def _render_reset_panel(dmap, USERNAME=''):
+    """정산을 처음부터 다시 쌓기 위한 전체 초기화.
+
+    날짜별 취소는 위에 있지만, 며칠치가 엉킨 상태에서는 하나씩 지우는 것이
+    더 위험하다(어디까지 지웠는지 모른다). 한 번에 비우고 다시 쌓는 길을 둔다.
+    되돌릴 수 없는 동작이라 이름을 직접 입력해 확인받는다.
+    """
+    _rm = st.session_state.pop('_rs_reset_msg', None)
+    if _rm:
+        (st.success if _rm.get('ok') else st.warning)(_rm.get('text', ''))
+
+    with st.expander("🧨 정산 전체 초기화 — 처음부터 다시 쌓기", expanded=False):
+        st.warning(
+            "**되돌릴 수 없습니다.** 정산 품목·청구서를 비우고 각 주문의 구입가를 "
+            "정산 전 값으로 되돌립니다.\n\n"
+            "**남는 것** — 영수증 품목 · 공유상품 · 코스트코번호 매핑 · 발송 기록. "
+            "영수증과 매핑은 정산의 *입력*이지 결과가 아니라 그대로 둡니다. "
+            "비운 뒤 같은 영수증으로 다시 정산하면 됩니다.")
+
+        try:
+            _inv = _ds.list_invoices('2000-01-01', '2099-12-31')
+        except Exception as _e:
+            st.error(f"조회 실패: {_e}")
+            return
+        _paid = [i for i in _inv if i['status'] == 'paid']
+        if not _inv:
+            st.caption("지울 정산이 없습니다.")
+        else:
+            st.markdown(
+                f"대상 — 청구서 **{len(_inv)}건** · 합계 "
+                f"**{fmt(sum(int(i['total_amount'] or 0) for i in _inv))}원** · "
+                f"날짜 {len({i['settle_date'] for i in _inv})}일")
+        if _paid:
+            st.info(f"🟢 입금완료 {len(_paid)}건은 기본적으로 **남깁니다** — "
+                    "받은 돈의 근거를 지우면 그 입금이 무엇에 대한 것이었는지 "
+                    "설명할 수 없습니다.")
+
+        _c1, _c2 = st.columns(2)
+        _drop_lots = _c1.checkbox(
+            "재고 입고도 되돌리기", value=True, key="rs_reset_lots",
+            help="영수증 정산으로 넣은 재고 입고를 함께 취소합니다. "
+                 "판매에 쓰인 입고는 건너뜁니다.")
+        _inc_paid = _c2.checkbox(
+            "입금완료분까지 전부 삭제", value=False, key="rs_reset_paid",
+            help="받은 돈의 근거까지 지웁니다. 정말 전부 다시 쌓을 때만 켜세요.")
+
+        _need = "초기화"
+        _typed = st.text_input(
+            f"확인 — 아래 칸에 **{_need}** 라고 입력하세요", key="rs_reset_confirm",
+            placeholder=_need)
+        if st.button("🧨 전체 초기화 실행", key="rs_reset_go",
+                     disabled=(str(_typed).strip() != _need)):
+            try:
+                _res = _ds.reset_all(include_paid=_inc_paid, restore_cost=True,
+                                     drop_lots=_drop_lots)
+            except Exception as _e:
+                st.session_state['_rs_reset_msg'] = {
+                    'ok': False, 'text': f"❌ 초기화 실패: {_e}"}
+                st.rerun()
+            _t = (f"🧨 초기화 완료 — 품목 {_res['items']}건 · 청구서 {_res['invoices']}건 삭제 · "
+                  f"구입가 {_res['restored']}건 복원")
+            if _res.get('lots'):
+                _t += f" · 재고 입고 {_res['lots']}건 취소"
+            if _res.get('kept_paid'):
+                _t += (" · 입금완료라 남긴 것: "
+                       + ", ".join(f"{d} {dmap.get(u, u)}"
+                                   for d, u in _res['kept_paid'][:5]))
+            _t += "\n\n같은 영수증으로 다시 정산하면 됩니다."
+            st.session_state['_rs_reset_msg'] = {'ok': True, 'text': _t}
+            st.session_state.pop('rs_alloc', None)
+            st.session_state.pop('rs_sticky', None)
+            st.rerun()
+        if str(_typed).strip() != _need:
+            st.caption(f"안전을 위해 **{_need}** 를 입력해야 버튼이 켜집니다.")
 
 
 def _n(s):
