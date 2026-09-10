@@ -323,6 +323,14 @@ def _save_dispatch_rows(username, rows, platform, container):
     from db import log_dispatch_success
     from datetime import datetime as _dt
     if not rows:
+        # 발송은 성공했는데 저장할 행이 없다 = 성공 번호와 업로드 파일의 번호가
+        # 서로 다른 모양이라는 뜻이다. 조용히 0건으로 끝나면 발송은 됐는데
+        # 정산 매칭에는 영영 안 잡힌다(쿠팡 발송이 전 사용자 0건이었던 원인).
+        container.error(
+            "⚠️ **발송은 됐는데 dispatch_log에 저장할 건이 없습니다.** "
+            "업로드 파일의 상품주문번호와 발송 성공 번호가 서로 다른 모양입니다. "
+            "이대로 두면 영수증 정산의 **출고 기준 매칭에 잡히지 않습니다** — "
+            "관리자에게 알려 주세요.")
         return 0
     today = _dt.today().strftime("%Y-%m-%d")
     saved = log_dispatch_success(username, rows, today, platform=platform)
@@ -613,18 +621,25 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                 "courierCode": _code_val,
                                 "trackingNumber": str(r['송장번호']).replace('-','').strip()}
                                for _, r in result_df.iterrows()]
+                    # 쿠팡에 보낼 때 orderId → orderId-vendorItemId 로 바꿔 놓고,
+                    # 저장할 때는 원본 df로 대조하고 있었다. 파일에 orderId만 들어온
+                    # 날은 성공 번호와 한 건도 안 맞아 dispatch_log가 통째로 비었다
+                    # (전 사용자 쿠팡 발송 기록 0건의 원인). 네이버 쪽처럼 변환된
+                    # 번호를 실은 df를 만들어 결과 표시·저장에 함께 쓴다.
+                    _cp_df = result_df.copy()
+                    _cp_df['상품주문번호'] = _cp_df['상품주문번호'].apply(_resolve_cp)
                     with st.spinner(f"쿠팡 Wing에 {len(_items)}건 발송처리 중..."):
                         _res, _err = coupang_api.dispatch_orders(cq_access, cq_secret, cq_vendor, _items)
                     _show_dispatch_result(_dc3, _res, _err, len(_items),
-                                          username=USERNAME, result_df=result_df)
+                                          username=USERNAME, result_df=_cp_df)
                     if _res and _res.get('success_order_ids'):
                         # 발송처리 성공 시 dispatch_log에 자동 저장
-                        _drows = _prepare_dispatch_rows(USERNAME, result_df, _res['success_order_ids'])
+                        _drows = _prepare_dispatch_rows(USERNAME, _cp_df, _res['success_order_ids'])
                         _save_dispatch_rows(USERNAME, _drows, 'coupang', _dc3)
                         # 발송 파일에 없는 미발송 주문 정리 (플랫폼 무관, 상품주문번호 기준)
                         #   쿠팡은 orderId만 올라온 경우 _resolve_cp가 만든 전체번호도 유지 대상.
                         _cp_keep = _uploaded_order_nos(result_df)
-                        _cp_keep |= {_resolve_cp(r['상품주문번호']) for _, r in result_df.iterrows()}
+                        _cp_keep |= {str(v) for v in _cp_df['상품주문번호']}
                         _cleanup_undispatched(USERNAME, _cp_keep, _dc3)
                         _refresh_daily_orders_session(USERNAME, _cp_keep, _dc3)
 
