@@ -1155,13 +1155,25 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                    "보여줄 뿐 정산에 반영되지 않습니다. "
                    "(택배비 = 발송건수 × 사용자 설정 · 포장비 = 배정액 또는 기본 박스비)")
 
-        _render_reconcile(receipt_items, alloc, _total, d_day)
+        _need_ck, _ck_why = _render_reconcile(receipt_items, alloc, _total, d_day)
 
         st.warning("⚠️ 정산하면 각 주문의 구입가가 영수증 실단가로 **덮어써지고** "
                    "각 사용자에게 청구금액으로 보입니다. "
                    "청구는 다음 단계입니다 — 관리자 › 정산·청구에서 누르세요.")
+
+        # 영수증 금액과 정산 금액이 어긋나면 사람이 한 번 짚고 넘어가게 한다.
+        # 잘못된 금액이 청구까지 가면 되돌리는 데 훨씬 큰 일이 된다.
+        _blocked = False
+        if _need_ck:
+            st.error("🛑 **확인이 필요합니다** — " + _ck_why)
+            _blocked = not st.checkbox(
+                "위 내용을 확인했고, 이 금액으로 정산합니다",
+                key=f"rs_reconcile_ok_{d_day}_{_total}")
+            if _blocked:
+                st.caption("체크해야 아래 **정산 요청** 버튼이 켜집니다. "
+                           "금액이 이상하면 영수증 표·매칭을 먼저 고치세요.")
         if st.button(f"✅ 정산 요청 ({len(_goods)}명 · {fmt(_total)}원)",
-                     type="primary", key="rs_apply_btn"):
+                     type="primary", key="rs_apply_btn", disabled=_blocked):
             with st.spinner("정산 중..."):
                 res = _sc.finalize(str(d_day), rows, created_by=USERNAME)
             try:
@@ -1412,6 +1424,9 @@ def _render_reconcile(receipt_items, alloc, goods_total, d_day):
     어디로 갔는지 화면에 없었다**는 것이다. 숫자 둘만 보이면 틀린 것으로 읽힌다.
 
       영수증 합계 = 배치(청구할 물건값) + 배정 대기(아직 안 나간 것)
+
+    반환: (확인이 필요한가, 사유). 숫자가 어긋나 보이면 정산 요청 전에 사람이
+    한 번 짚고 넘어가게 한다 — 잘못된 금액이 그대로 청구되면 되돌리기 어렵다.
     """
     _r_total = 0
     for it in (receipt_items or []):
@@ -1420,7 +1435,7 @@ def _render_reconcile(receipt_items, alloc, goods_total, d_day):
         except (TypeError, ValueError):
             continue
     if _r_total <= 0:
-        return
+        return False, ''
 
     _goods = int(goods_total or 0)
     _rest = _r_total - _goods
@@ -1445,13 +1460,23 @@ def _render_reconcile(receipt_items, alloc, goods_total, d_day):
             _msg += (f"\n\n미매칭 주문 {_undisp}건 — 송장이 등록됐는데 영수증에서 상품을 "
                      "못 찾은 건입니다.")
         st.info(_msg)
+        # 절반도 안 붙었으면 매칭이 덜 된 쪽을 의심해야 한다. 그대로 정산하면
+        # 나간 물건이 청구에서 빠지고, 남은 돈은 재고로 쌓이기만 한다.
+        if _goods * 2 < _r_total:
+            return True, (f"영수증 {fmt(_r_total)}원 중 **{fmt(_goods)}원**만 붙었습니다 "
+                          f"(절반 미만). 매칭이 덜 된 것은 아닌지 확인하세요.")
+        return False, ''
     elif _rest < 0:
         st.warning(
             f"⚠️ 배치 금액이 영수증보다 **{fmt(-_rest)}원 많습니다**. "
             "이전 구입분(재고)에서 나간 주문이 섞였거나, 그날 영수증이 일부만 "
             "업로드된 것입니다. 위 **매칭 경로**에서 '재고 이월'이 몇 건인지 확인하세요.")
+        return True, (f"배치 금액이 영수증보다 **{fmt(-_rest)}원 많습니다.** "
+                      "재고 이월이 섞였다면 정상이지만, 영수증이 일부만 올라온 것이라면 "
+                      "그 금액이 그대로 잘못 청구됩니다.")
     else:
         st.success("영수증 금액이 전부 이번 정산에 들어갑니다 — 남은 물건이 없습니다.")
+    return False, ''
 
 
 def _build_assign_rows(unmatched, receipt_items, alloc, d_day):
@@ -1594,6 +1619,7 @@ def _render_stock_status():
             st.caption("**입고** = 영수증 구매 · **주문사용** = 정산에서 주문에 붙은 양 · "
                        "**재고배정** = 사용자 재고로 넘긴 양 · **배정대기** = 남은 것. "
                        "단위는 소분 단위입니다 — 1팩을 N개로 나눠 파는 상품은 낱개 기준입니다.")
+            _render_wait_assign(_left)
         _render_wait_reset(_sd)
 
     with _t_user:
@@ -1642,6 +1668,91 @@ def _render_stock_status():
         _render_lot_undo()
 
 
+def _render_wait_assign(left_rows):
+    """배정 대기 잔량을 사용자 재고로 넘긴다.
+
+    여기 쌓인 것은 **지난 날짜에 사서 아직 임자가 없는 물건**이다. 예전에는
+    그 날짜의 영수증 정산 화면을 다시 열어야만 배정할 수 있었다. 며칠치가 섞여
+    쌓이면 어느 날짜로 들어가야 할지부터 헷갈려서, 결국 아무도 배정하지 않고
+    재고 목록만 계속 불어났다.
+
+    이 화면에서 바로 넘길 수 있게 한다 — 넘긴 물건은 그 사람 재고가 되고
+    배정 대기에서 빠진다. 이후 그 사람 판매에서 자동으로 차감된다.
+    """
+    if not left_rows:
+        return
+    st.divider()
+    st.markdown("##### 👤 사용자에게 배정 — 남은 물건을 그 사람 재고로")
+    st.caption("체크한 품목이 아래에서 고른 사용자의 재고가 됩니다. 넘기면 배정 대기에서 "
+               "빠지고, 그 사람이 그 상품을 팔 때 자동으로 차감됩니다. "
+               "받는 사람이 서로 다르면 나눠서 여러 번 하세요.")
+
+    _dm = _disp_map()
+    _opts = sorted(_dm.keys(), key=lambda u: _dm.get(u, u))
+    if not _opts:
+        st.caption("배정할 사용자가 없습니다.")
+        return
+    _labels = [_dm.get(u, u) for u in _opts]
+    _l2u = {_dm.get(u, u): u for u in _opts}
+    _owner = st.selectbox("배정할 사용자", _labels, key="rs_wait_owner")
+
+    _rows = [{'배정': False,
+              '코스트코번호': r['costco_no'],
+              '상품명': str(r['name'])[:34],
+              '남은수량': int(r['units_left']),
+              '배정수량': int(r['units_left']),
+              '단가': int(r['price'] or 0),
+              '묶인금액': int(r['amount'] or 0)} for r in left_rows]
+    _ed = st.data_editor(
+        pd.DataFrame(_rows), use_container_width=True, hide_index=True,
+        key="rs_wait_assign_ed",
+        disabled=['코스트코번호', '상품명', '남은수량', '단가', '묶인금액'],
+        column_config={
+            '배정': st.column_config.CheckboxColumn('배정'),
+            '배정수량': st.column_config.NumberColumn(
+                '배정수량', format='%d', min_value=0,
+                help='남은수량보다 많이 넣을 수 없습니다. 일부만 넘길 수 있습니다.'),
+            **{_k: st.column_config.NumberColumn(_k, format='%d')
+               for _k in ('남은수량', '단가', '묶인금액')},
+        })
+
+    _by_cno = {str(r['costco_no']): r for r in left_rows}
+    _picks, _over = [], []
+    for _r in _ed.to_dict('records'):
+        if not _r.get('배정'):
+            continue
+        _cno = str(_r['코스트코번호'])
+        _src = _by_cno.get(_cno) or {}
+        _q = int(_r.get('배정수량') or 0)
+        if _q <= 0:
+            continue
+        if _q > int(_src.get('units_left') or 0):
+            _over.append(f"{_r['상품명']} ({_q} > {_src.get('units_left')})")
+            continue
+        _picks.append({
+            'costco_no': _cno, 'name': _src.get('name') or _r['상품명'],
+            'unit_price': int(_src.get('price') or 0),
+            'split_qty': max(1, int(_src.get('split_qty') or 1)),
+            'units_left': _q, 'owner': _l2u.get(_owner, _owner),
+        })
+    if _over:
+        st.error("⚠️ 남은수량보다 많이 배정할 수 없습니다 — " + " · ".join(_over[:5]))
+    if _picks:
+        _amt = sum(int(p['unit_price'] / max(1, p['split_qty']) * p['units_left'])
+                   for p in _picks)
+        st.markdown(f"**{_owner}** 에게 **{len(_picks)}종 · {fmt(_amt)}원** 배정합니다.")
+    if st.button(f"📦 {_owner} 재고로 입고 ({len(_picks)}종)", type="primary",
+                 key="rs_wait_assign_go", disabled=not _picks or bool(_over)):
+        _res = _sc.receive_leftovers(str(date.today()), _picks)
+        _msg = f"📦 {_owner} 재고로 {_res['ok']}종 입고했습니다."
+        if _res.get('skipped'):
+            _msg += f" (건너뜀 {_res['skipped']}종)"
+        if _res.get('failed'):
+            _msg += " · 실패: " + ", ".join(_res['failed'][:3])
+        st.session_state['_rs_wait_msg'] = {'ok': bool(_res['ok']), 'text': _msg}
+        st.rerun()
+
+
 def _render_wait_reset(_sd):
     """배정 대기 목록을 비우는 두 가지 길.
 
@@ -1661,8 +1772,8 @@ def _render_wait_reset(_sd):
         st.info(
             "**배정 대기는 지울 수 있는 표가 아닙니다.** 영수증에서 매번 다시 계산하는 "
             "값이라 '초기화'할 행 자체가 없습니다.\n\n"
-            "정상적으로 줄이는 방법은 **정산을 돌리는 것**입니다 — 주문에 붙거나 "
-            "사용자 재고로 배정되면 그만큼 여기서 빠집니다. "
+            "정상적으로 줄이는 방법은 둘입니다 — **정산을 돌려** 주문에 붙이거나, "
+            "위 **👤 사용자에게 배정**으로 그 사람 재고로 넘기면 그만큼 여기서 빠집니다. "
             "아래 둘은 그게 아니라 **과거분을 계산에서 걷어낼 때** 씁니다.")
 
         st.markdown("##### ① 기준일 옮기기 — 권장 (데이터는 그대로)")

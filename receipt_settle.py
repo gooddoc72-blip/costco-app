@@ -436,6 +436,7 @@ def get_stock_status(date_upto=None):
         left = e['units_in'] - e['units_used'] - assigned
         sq = split_by.get(e['costco_no'], 1)
         out.append({**e, 'units_assigned': assigned, 'units_left': left,
+                    'split_qty': sq,
                     'amount': max(0, left) * (e['price'] // max(1, sq))})
     out.sort(key=lambda x: -x['amount'])
     return out
