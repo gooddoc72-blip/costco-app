@@ -51,6 +51,35 @@ def _i(v):
         return 0
 
 
+def is_billable(username):
+    """청구 대상인가 — '직접구매' 계정은 청구서를 만들지 않는다.
+
+    직접 사는 사람은 자기 돈으로 자기가 산 것이라 청구할 것이 없다. 그래도
+    품목(settle_item)은 남긴다 — 주문 구입가(수익계산)와 재고 차감의 근거이고,
+    영수증 잔량을 재고로 넘길 때도 '무엇이 나갔는지'를 여기서 읽는다.
+
+    청구서를 만들지 않아야 정산리스트·미입금자에 0원짜리가 섞이지 않는다.
+    """
+    try:
+        from db_products import get_setting
+        return str(get_setting(username, 'self_purchase') or '').strip() != '1'
+    except Exception:
+        return True
+
+
+def _drop_invoice(settle_date, username):
+    """직접구매 계정으로 바뀐 뒤 남은 청구서를 치운다(입금완료분은 남긴다)."""
+    conn = _conn()
+    ensure(conn)
+    try:
+        conn.execute(
+            "DELETE FROM settle_invoice WHERE settle_date=? AND username=? AND status<>'paid'",
+            (str(settle_date), str(username)))
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def ensure(conn=None):
     """테이블 보장. 외부 연결을 주면 그걸 쓰고 닫지 않는다."""
     _own = conn is None
@@ -239,7 +268,13 @@ def set_fees(settle_date, username, ship_fee, pack_fee):
 
     월말에 한 달치를 몰아 붙이면 그달 마지막 날 청구서만 유독 커지고, 중간에
     그만둔 사용자에게는 영영 못 받는다. 발생한 날에 그날 것만 싣는다.
+
+    '직접구매' 계정은 청구서를 만들지 않으므로 비용도 싣지 않는다 — 여기서
+    막지 않으면 INSERT가 0원 청구서를 되살린다.
     """
+    if not is_billable(username):
+        _drop_invoice(settle_date, username)
+        return 0
     conn = _conn()
     ensure(conn)
     now = _now()
@@ -263,7 +298,12 @@ def recompute_invoice(settle_date, username, created_by=''):
 
     이미 입금 완료(paid)된 청구서는 금액을 건드리지 않는다. 받은 돈과 청구액이
     달라지면 무엇을 받은 것인지 설명할 수 없게 된다.
+
+    '직접구매' 계정은 청구서를 만들지 않는다 — 품목만 남기고 0을 돌려준다.
     """
+    if not is_billable(username):
+        _drop_invoice(settle_date, username)
+        return 0
     conn = _conn()
     ensure(conn)
     try:

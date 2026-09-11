@@ -466,21 +466,28 @@ def is_self_purchase(username):
         return False
 
 
-def billable_users():
-    """구매대행 정산·청구 대상 사용자.
+def matchable_users():
+    """영수증 매칭·재고 정리 대상 — 관리자만 뺀다.
 
-    관리자와 '직접구매' 계정은 뺀다. 직접 사는 사람의 발송건을 영수증에
-    맞추려 하면 영원히 미매칭으로 남고, 어쩌다 이름이 겹쳐 붙으면
-    사지도 않은 물건이 청구된다.
+    '직접구매' 계정도 여기 들어간다. 그 사람도 코스트코에서 산 물건을 발송하고
+    남은 것은 재고로 남기 때문이다. 영수증을 올려 발송건에 붙이고 잔량을 재고로
+    넣는 일은 청구와 무관하게 필요하다 — 주문 구입가(수익계산)와 재고 차감의
+    근거가 여기서 나온다.
+
+    예전에는 매칭 대상과 청구 대상을 billable_users() 하나로 묶어 놨다. 그래서
+    직접구매로 표시된 계정은 영수증을 올려도 매칭 후보에조차 못 들어갔고,
+    그 사람이 산 물건이 통째로 '배정 대기' 재고로 남았다.
     """
-    out = []
-    for u in (get_all_users() or []):
-        if u.get('is_admin'):
-            continue
-        if is_self_purchase(u['username']):
-            continue
-        out.append(u['username'])
-    return out
+    return [u['username'] for u in (get_all_users() or []) if not u.get('is_admin')]
+
+
+def billable_users():
+    """**청구** 대상 사용자 — 관리자와 '직접구매' 계정을 뺀다.
+
+    직접 사는 사람은 자기 돈으로 자기가 산 것이라 청구할 것이 없다.
+    매칭까지 막으면 안 된다 — 그건 matchable_users()가 판단한다.
+    """
+    return [u for u in matchable_users() if not is_self_purchase(u)]
 
 
 def undispatched_orders(username, the_date):
@@ -532,7 +539,7 @@ def dispatch_coverage(the_date, users=None):
     반환: [{'username','orders','dispatched'}] — 주문이나 발송이 있는 사용자만
     """
     if users is None:
-        users = billable_users()      # 직접구매 계정은 정산 대상이 아니다
+        users = matchable_users()     # 직접구매 계정도 매칭·재고 정리 대상이다
     out = []
     for u in users:
         try:
@@ -638,7 +645,7 @@ def allocate_dispatched_to_receipt(receipt_items, dispatch_date, users=None,
             name_by_costco[cno] = _norm(it.get('상품명'))
 
     if users is None:
-        users = billable_users()      # 직접구매 계정은 정산 대상이 아니다
+        users = matchable_users()     # 직접구매 계정도 매칭·재고 정리 대상이다
     bridge = build_shopping_bridge(shopping_date or dispatch_date, users=users)
     _ritems = [{'costco': c, 'name': name_by_costco.get(c, ''), 'price': price_by_costco[c]}
                for c in price_by_costco]
@@ -869,7 +876,7 @@ def allocate_receipt_to_orders(receipt_items, date_from, date_to, users=None,
             name_by_costco[cno] = _norm(it.get('상품명'))
 
     if users is None:
-        users = billable_users()      # 직접구매 계정은 정산 대상이 아니다
+        users = matchable_users()     # 직접구매 계정도 매칭·재고 정리 대상이다
 
     # 이름 폴백용 영수증 목록
     _ritems = [{'costco': c, 'name': name_by_costco.get(c, ''), 'price': price_by_costco[c]}
@@ -1040,7 +1047,7 @@ def dispatch_consumption(dispatch_date, receipt_nos, matched_keys=None, users=No
     _nos = {str(x) for x in (receipt_nos or [])}
     _mk = set(matched_keys or ())
     if users is None:
-        users = billable_users()      # 직접구매 계정은 정산 대상이 아니다
+        users = matchable_users()     # 직접구매 계정도 매칭·재고 정리 대상이다
     used, rows = {}, []
     for uname in users:
         try:
