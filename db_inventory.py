@@ -369,6 +369,88 @@ def add_lot_units(product_no: str, product_name: str, owner: str,
     return int(lot_id or 0)
 
 
+def adjust_stock(owner: str, product_no: str, units: int, reason: str,
+                 by: str = '', product_name: str = '', unit_cost: int = 0,
+                 split_qty: int = 1) -> dict:
+    """관리자 수동 입출고 — 실물과 장부가 어긋났을 때 맞춘다.
+
+    자동 경로(영수증 배정·판매 차감)만으로는 맞출 수 없는 일이 생긴다.
+    파손·분실·반품, 매장에서 직접 더 사 온 것, 세어 보니 장부와 다른 것.
+    그때마다 DB를 손으로 고치면 왜 그렇게 됐는지 아무도 설명할 수 없다.
+
+    units > 0  입고 — 새 lot을 만든다.
+    units < 0  출고 — 오래된 입고분부터(FIFO) 뺀다. 남은 재고보다 많이 뺄 수 없다.
+
+    사유는 필수다. 나중에 "이 수량이 왜 이렇게 됐나"에 답할 근거가 이것뿐이다.
+    출고는 inventory_moves에 ADJ- 주문번호로 남긴다 — 판매 차감과 같은 표에
+    있어야 '이 lot이 어디로 갔나'가 한 줄기로 읽힌다. (order_no, lot_id)가
+    유니크라 조정마다 다른 번호를 쓴다.
+
+    반환: {'ok', 'msg', 'units', 'lots'}
+    """
+    units = int(units or 0)
+    owner = str(owner or '').strip()
+    product_no = str(product_no or '').strip()
+    note = str(reason or '').strip()
+    if not (owner and product_no):
+        return {'ok': False, 'msg': '보유자와 상품번호가 필요합니다.', 'units': 0, 'lots': 0}
+    if units == 0:
+        return {'ok': False, 'msg': '조정 수량이 0입니다.', 'units': 0, 'lots': 0}
+    if not note:
+        return {'ok': False, 'msg': '조정 사유를 입력하세요.', 'units': 0, 'lots': 0}
+
+    if units > 0:
+        lot_id = add_lot_units(
+            product_no=product_no, product_name=product_name, owner=owner,
+            pack_unit_cost=int(unit_cost or 0), qty_units=units,
+            split_qty=max(1, int(split_qty or 1)), received_at=_today(),
+            memo="관리자 수동 입고 · %s%s" % (note, (" (%s)" % by) if by else ''))
+        if not lot_id:
+            return {'ok': False, 'msg': '입고에 실패했습니다.', 'units': 0, 'lots': 0}
+        return {'ok': True, 'msg': '입고 %d개' % units, 'units': units, 'lots': 1}
+
+    need = -units
+    conn = _conn()
+    _ensure_tables(conn)
+    try:
+        lots = conn.execute(
+            """SELECT * FROM inventory_lots
+               WHERE owner=? AND product_no=? AND status='ACTIVE' AND qty_left>0
+               ORDER BY received_at ASC, id ASC""",
+            (owner, product_no)).fetchall()
+        have = sum(int(l['qty_left'] or 0) for l in lots)
+        if have < need:
+            return {'ok': False, 'units': 0, 'lots': 0,
+                    'msg': '남은 재고 %d개보다 많이 뺄 수 없습니다 (요청 %d개).' % (have, need)}
+
+        now = _now()
+        tag = 'ADJ-%s' % datetime.now().strftime('%Y%m%d%H%M%S%f')
+        taken, n_lots = 0, 0
+        for i, lot in enumerate(lots):
+            if taken >= need:
+                break
+            take = min(need - taken, int(lot['qty_left'] or 0))
+            if take <= 0:
+                continue
+            conn.execute("UPDATE inventory_lots SET qty_left=qty_left-? WHERE id=?",
+                         (take, int(lot['id'])))
+            conn.execute(
+                """INSERT INTO inventory_moves
+                   (lot_id, product_no, owner, seller, qty, unit_cost, is_cross,
+                    surcharge, order_no, dispatched_at, platform, settle_status,
+                    created_at)
+                   VALUES (?,?,?,?,?,?,0,0,?,?,'adjust','SETTLED',?)""",
+                (int(lot['id']), product_no, owner, owner, take,
+                 int(lot['unit_cost'] or 0), '%s-%d' % (tag, i), _today(), now))
+            taken += take
+            n_lots += 1
+        conn.commit()
+    finally:
+        conn.close()
+    return {'ok': True, 'msg': '출고 %d개 (lot %d개에서)' % (taken, n_lots),
+            'units': -taken, 'lots': n_lots}
+
+
 def find_lots_by_memo(memo_prefix: str, received_at: str = '') -> list:
     """memo 접두어(+입고일)로 기존 lot 조회 — 같은 영수증을 두 번 입고하는 사고 방지."""
     conn = _conn()
@@ -407,6 +489,7 @@ def get_stock_summary(owner: str = None) -> list:
     _ensure_tables(conn)
     sql = """SELECT product_no, product_name, owner,
                     SUM(qty_left) AS qty_left, SUM(qty_in) AS qty_in,
+                    MAX(unit_cost) AS unit_cost,
                     MIN(received_at) AS oldest_at,
                     CAST(julianday('now') - julianday(MIN(received_at)) AS INTEGER) AS age_days
              FROM inventory_lots

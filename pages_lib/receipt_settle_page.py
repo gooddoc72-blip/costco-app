@@ -1629,6 +1629,7 @@ def _render_stock_status():
         except Exception as e:
             st.error(f"사용자 재고 조회 실패: {e}")
             _lots = []
+        _render_manual_stock(_lots)
         if not _lots:
             st.info("사용자 재고가 없습니다. 위 **배정할 영수증 품목**에서 "
                     "'재고로 입고'를 누르면 그 사용자 재고로 잡힙니다.")
@@ -1666,6 +1667,78 @@ def _render_stock_status():
                            for _k in ('입고', '남음', '경과일')})
         st.caption("수량은 소분 단위입니다.")
         _render_lot_undo()
+
+
+def _render_manual_stock(lots):
+    """관리자 수동 입출고 — 실물과 장부가 어긋났을 때 맞춘다.
+
+    자동 경로(영수증 배정·판매 차감)만으로는 맞출 수 없는 일이 생긴다.
+    파손·분실·반품, 매장에서 직접 더 사 온 것, 세어 보니 장부와 다른 것.
+    그때마다 DB를 손으로 고치면 왜 그렇게 됐는지 아무도 설명할 수 없다.
+    사유를 필수로 받고 이력에 남긴다.
+    """
+    _msg = st.session_state.pop('_rs_adj_msg', None)
+    if _msg:
+        (st.success if _msg.get('ok') else st.error)(_msg.get('text', ''))
+
+    _dm = _disp_map()
+    _opts = sorted(_dm.keys(), key=lambda u: _dm.get(u, u))
+    if not _opts:
+        return
+    _labels = [_dm.get(u, u) for u in _opts]
+    _l2u = {_dm.get(u, u): u for u in _opts}
+
+    with st.expander("🛠 수동 입출고 (관리자)", expanded=False):
+        st.caption("실물과 장부가 다를 때만 쓰세요 — 파손·분실·반품, 매장에서 더 사 온 것, "
+                   "세어 보니 다른 것. 정상 흐름(영수증 배정·판매 차감)으로 맞출 수 있으면 "
+                   "그쪽을 쓰는 게 낫습니다. **수량은 소분 단위**입니다.")
+
+        c1, c2 = st.columns([1.5, 2.5])
+        _owner_l = c1.selectbox("보유자", _labels, key="rs_adj_owner")
+        _owner = _l2u.get(_owner_l, _owner_l)
+
+        # 그 사람이 이미 가진 상품은 골라서, 없는 상품은 번호를 직접 넣어 입고한다.
+        _mine = [r for r in (lots or []) if str(r.get('owner')) == _owner]
+        _pick_opts = ['(직접 입력 — 새 상품 입고)'] + [
+            "%s · %s (남음 %s)" % (r['product_no'], str(r['product_name'])[:22],
+                                   int(r['qty_left'] or 0)) for r in _mine]
+        _pick = c2.selectbox("상품", _pick_opts, key="rs_adj_pick")
+
+        _direct = _pick == _pick_opts[0]
+        if _direct:
+            d1, d2, d3, d4 = st.columns([1.2, 2.2, 1.2, 1])
+            _pno = d1.text_input("코스트코번호", key="rs_adj_pno")
+            _pnm = d2.text_input("상품명", key="rs_adj_pnm")
+            _cost = d3.number_input("팩단가(원)", min_value=0, step=100, key="rs_adj_cost")
+            _sq = d4.number_input("소분수", min_value=1, step=1, value=1, key="rs_adj_sq")
+        else:
+            _src = _mine[_pick_opts.index(_pick) - 1]
+            _pno = str(_src['product_no'])
+            _pnm = str(_src['product_name'] or '')
+            _cost = int(_src.get('unit_cost') or 0)
+            _sq = 1          # 기존 lot은 이미 소분 단위로 들어가 있다
+            st.caption(f"선택: **{_pnm[:40]}** · 남은 수량 **{int(_src['qty_left'] or 0)}개**")
+
+        q1, q2 = st.columns([1, 3])
+        _qty = q1.number_input("수량 (+입고 / −출고)", step=1, value=0, key="rs_adj_qty")
+        _why = q2.text_input("사유 (필수)", key="rs_adj_why",
+                             placeholder="예: 아이스박스 파손 2개 폐기 / 매장 추가구매 5개")
+
+        if _qty and _pno:
+            st.markdown(f"**{_owner_l}** · `{_pno}` 재고를 "
+                        f"**{'+' if _qty > 0 else ''}{int(_qty)}개** 조정합니다.")
+        if st.button("🛠 조정 적용", type="primary", key="rs_adj_go",
+                     disabled=not (_qty and str(_pno).strip() and str(_why).strip())):
+            from db_inventory import adjust_stock
+            _r = adjust_stock(_owner, str(_pno).strip(), int(_qty), _why,
+                              by=st.session_state.get('user', {}).get('username', ''),
+                              product_name=_pnm, unit_cost=int(_cost or 0),
+                              split_qty=int(_sq or 1))
+            st.session_state['_rs_adj_msg'] = {
+                'ok': _r['ok'],
+                'text': (f"🛠 {_owner_l} · {_pnm[:24] or _pno} — {_r['msg']}"
+                         if _r['ok'] else f"⚠️ {_r['msg']}")}
+            st.rerun()
 
 
 def _render_wait_assign(left_rows):
