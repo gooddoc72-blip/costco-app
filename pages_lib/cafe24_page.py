@@ -683,23 +683,51 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                             st.session_state['_ag_all_prev'] = False
                             st.rerun()
 
+                    # 마진·배송비 설정을 바꾸면 자동 계산가가 달라진다. 그때는 손으로
+                    # 고쳐 둔 값을 모두 버리고 새 자동가로 되돌린다 — 설정을 바꿨는데
+                    # 옛 수정값이 남아 있으면 어느 것이 반영된 값인지 알 수 없다.
+                    _px_sig = f"{_ag_margin}|{_ag_ship_in_price}|{_ag_price_mode}"
+                    if st.session_state.get('_ag_px_sig') != _px_sig:
+                        for _p in _ag_list:
+                            st.session_state.pop(f"ag_px_{_p['product_no']}", None)
+                        st.session_state['_ag_px_sig'] = _px_sig
+
+                    st.caption("네이버 판매가는 마진 설정으로 자동 계산됩니다. "
+                               "**오른쪽 칸에서 건별로 고칠 수 있습니다** — 고친 값 그대로 "
+                               "등록됩니다. (마진·배송비 설정을 바꾸면 자동가로 되돌아갑니다)")
+
                     # 현재 페이지만 체크박스를 그린다
                     for _p in _ag_show:
                         _pno = _p['product_no']; _pr = int(_p.get('price') or 0)
                         _npr = c24reg.calc_sale_price(_pr, _ag_margin, _ag_ship_in_price,
                                                      mode=_ag_price_mode)
-                        st.checkbox(
-                            f"{str(_p.get('product_name', ''))[:42]} · 카페24 {fmt(_pr)}원 → 네이버 {fmt(_npr)}원",
+                        _pxk = f"ag_px_{_pno}"
+                        st.session_state.setdefault(_pxk, int(_npr))
+                        _cc1, _cc2 = st.columns([5.5, 1.3])
+                        _cc1.checkbox(
+                            f"{str(_p.get('product_name', ''))[:42]} · 카페24 {fmt(_pr)}원 → 네이버",
                             key=f"ag_ck_{_pno}")
+                        _cc2.number_input(
+                            "네이버 판매가", min_value=0, step=10, key=_pxk,
+                            label_visibility="collapsed",
+                            help=f"자동 계산가 {fmt(_npr)}원 — 고치면 이 값으로 등록됩니다.")
 
                     # 선택분은 '전체 목록'에서 모은다 — 다른 페이지 선택이 빠지면 안 된다
-                    _ag_sel = []
+                    #   아직 안 그린 페이지는 수정값이 없으므로 자동 계산가를 쓴다.
+                    _ag_sel, _ag_edited = [], 0
                     for _p in _ag_list:
-                        if st.session_state.get(f"ag_ck_{_p['product_no']}"):
-                            _ag_sel.append(
-                                (_p, c24reg.calc_sale_price(int(_p.get('price') or 0),
-                                                           _ag_margin, _ag_ship_in_price,
-                                                           mode=_ag_price_mode)))
+                        if not st.session_state.get(f"ag_ck_{_p['product_no']}"):
+                            continue
+                        _auto = c24reg.calc_sale_price(int(_p.get('price') or 0),
+                                                       _ag_margin, _ag_ship_in_price,
+                                                       mode=_ag_price_mode)
+                        _use = int(st.session_state.get(f"ag_px_{_p['product_no']}") or _auto)
+                        if _use != int(_auto):
+                            _ag_edited += 1
+                        _ag_sel.append((_p, _use))
+                    if _ag_edited:
+                        st.info(f"✏️ 판매가를 손으로 고친 상품 **{_ag_edited}개**가 선택에 "
+                                "들어 있습니다 — 고친 값으로 등록됩니다.")
                     if _npages > 1:
                         st.caption(f"페이지 {int(_pg)}/{_npages} 표시 중 · "
                                    f"전체 선택 {len(_ag_sel)}개")
@@ -751,8 +779,12 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                       'as_tel': _ag_tas}
                         for _i, (_p, _npr) in enumerate(_ag_sel):
                             _agprog.progress((_i + 1) / len(_ag_sel))
+                            # 화면에서 고친 판매가를 그대로 실어 보낸다 — 안 넘기면
+                            # register_one이 마진으로 다시 계산해 화면과 달라진다.
                             _res = c24reg.register_one(
-                                _ag_creds, _ag_save, _p, _ag_margin, _ag_target, _ag_opts,
+                                _ag_creds, _ag_save,
+                                {**_p, 'sale_price_override': int(_npr or 0)},
+                                _ag_margin, _ag_target, _ag_opts,
                                 have_code=_ag_have_code, have_name=_ag_have_name,
                                 shared=_ag_shared, target_user=_ag_tuser)
                             _icon = {'ok': '✅', 'skip': '⏭'}.get(_res['status'], '❌')

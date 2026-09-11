@@ -339,6 +339,16 @@ def register_one(creds, save_tokens, product, margin, target, opts,
     _ship_in_price = _dv['ship_cost'] if _dv['fee_type'] == 'FREE' else 0
     sale = calc_sale_price(product.get('price'), margin, _ship_in_price,
                            mode=opts.get('price_mode', 'calc'))
+    # 화면에서 건별로 고친 판매가가 있으면 그 값이 이긴다. 계산식이 아니라 사람이
+    # 정한 값이므로 마진·모드와 무관하게 그대로 쓴다. 예전에는 화면이 고친 값을
+    # 보여 주고도 여기서 다시 계산해, 등록되는 가격이 화면과 달랐다.
+    # 네이버는 판매가 10원 단위를 강제하므로 올림해서 손해가 안 나게 맞춘다.
+    try:
+        _ov = int(float(product.get('sale_price_override') or 0))
+    except (TypeError, ValueError):
+        _ov = 0
+    if _ov > 0:
+        sale = ((_ov + 9) // 10) * 10
 
     def _r(status, detail, reason='', **kw):
         _out = {'status': status, 'name': _name, 'code': '', 'code_src': '',
