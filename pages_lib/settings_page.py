@@ -372,7 +372,7 @@ def _render_settings_content(USERNAME: str, _gs, IS_ADMIN: bool = False):
     c1, c2, c3 = st.columns(3)
     # 택배비·박스비는 관리자가 사용자별로 정한다 (관리자 페이지 > 사용자 목록).
     #   단가 협상 결과라 사용자가 임의로 바꾸면 정산·수익이 실제와 어긋난다.
-    new_ship = c1.number_input("택배비 (원)", value=int(_gs('shipping_cost') or 1800), step=100,
+    new_ship = c1.number_input("택배비 (원)", value=int(_gs('shipping_cost') or 2000), step=100,
                                disabled=not IS_ADMIN,
                                help=None if IS_ADMIN else "관리자가 설정합니다. 변경이 필요하면 관리자에게 문의하세요.")
     new_box = c2.number_input("박스비 (원)", value=int(_gs('box_cost') or 300), step=50,

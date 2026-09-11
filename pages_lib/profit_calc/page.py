@@ -107,7 +107,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             f'style="font-size:13px;color:#0f3460;text-decoration:none">'
             f'🆕 React 베타 버전 새 창으로 열기 — 같은 데이터·새 화면 (비교용)</a>',
             unsafe_allow_html=True)
-    _ship_default = int(_gs('shipping_cost') or 1800)
+    _ship_default = int(_gs('shipping_cost') or 2000)
     _box_default  = int(_gs('box_cost') or 300)
     if _ship_default > 100000: _ship_default = 1800
     if _box_default  > 10000:  _box_default  = 300

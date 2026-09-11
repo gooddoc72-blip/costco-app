@@ -855,7 +855,7 @@ def init_user_db(username):
         matched INTEGER DEFAULT 0, created_at TEXT NOT NULL
     )""")
     default_settings = [
-        ('shipping_cost', '1800'), ('box_cost', '300'), ('excel_password', ''),
+        ('shipping_cost', '2000'), ('box_cost', '300'), ('excel_password', ''),
         ('api_client_id', ''), ('api_client_secret', ''),
         ('kakao_api_key', ''), ('kakao_access_token', ''), ('kakao_refresh_token', ''),
         ('cj_api_id', ''), ('cj_api_pw', ''), ('cj_account_no', ''),

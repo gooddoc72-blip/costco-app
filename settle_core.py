@@ -43,13 +43,14 @@ def daily_fees(username, settle_date):
     월말에 한 달치를 몰아 붙이던 것을 발생일로 옮겼다. 몰아 붙이면 말일
     청구서만 유독 커지고, 달 중간에 그만둔 사용자에게는 영영 청구하지 못한다.
 
-    택배비 = 그날 발송건수 × 그 사용자 택배비 설정
+    택배비 = 건별로 지정된 금액이 있으면 그 값, 없으면 사용자 택배비 설정
+             (부피가 크면 택배 요금이 다르다 — 단일 단가로는 맞출 수 없다)
     포장비 = 그날 발송한 주문에 실제 배정된 포장비 합
              (배정이 없으면 발송건수 × 기본 박스비 — 포장은 어차피 나간다)
     """
     from db import get_all_settings
     from db_dispatch_log import get_dispatched_orders_with_details
-    from db_packaging import get_packaging_cost_map
+    from db_packaging import get_packaging_cost_map, get_ship_cost_map
 
     try:
         rows = get_dispatched_orders_with_details(username, str(settle_date)) or []
@@ -59,21 +60,28 @@ def daily_fees(username, settle_date):
     ship_count = len(onos)
 
     s = get_all_settings(username) or {}
-    ship_unit = _i(s.get('shipping_cost')) or 1800
+    ship_unit = _i(s.get('shipping_cost')) or 2000
     box_unit = _i(s.get('box_cost')) or 300
 
-    pkg = {}
+    pkg, shp = {}, {}
     if onos:
         try:
             pkg = get_packaging_cost_map(username, onos) or {}
         except Exception:
             pkg = {}
+        try:
+            shp = get_ship_cost_map(username, onos) or {}
+        except Exception:
+            shp = {}
     # 배정이 있는 주문은 배정액, 없는 주문은 기본 박스비. 배정 화면을 안 쓰는
     # 사용자에게 포장비가 0으로 잡히면 그만큼이 그대로 손실로 남는다.
     pack_fee = sum(_i(pkg.get(o)) or box_unit for o in onos)
+    # 건별 택배비가 지정된 주문은 그 값으로. 부피 큰 건이 섞인 날은 단가 × 건수로
+    # 계산하면 실제 낸 택배비와 어긋난다.
+    ship_fee = sum(_i(shp.get(o)) or ship_unit for o in onos)
 
     return {'ship_count': ship_count, 'ship_unit': ship_unit,
-            'ship_fee': ship_count * ship_unit, 'pack_fee': pack_fee,
+            'ship_fee': ship_fee, 'ship_custom': len(shp), 'pack_fee': pack_fee,
             'order_nos': onos}
 
 

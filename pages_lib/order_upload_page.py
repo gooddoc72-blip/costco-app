@@ -469,7 +469,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
 
             # ── 3. 매입가 계산만 수행 (수익계산 저장은 사용자가 명시적으로) ──
             if fetched_df is not None and not fetched_df.empty:
-                _s_cost = int(_gs('shipping_cost') or 1800)
+                _s_cost = int(_gs('shipping_cost') or 2000)
                 _b_cost = int(_gs('box_cost') or 300)
                 try:
                     from services import process_and_save_orders
@@ -564,7 +564,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
 
                 # 통합 진입점으로 매입가 계산만 수행 (daily_orders는 사용자 저장 시점에)
                 from services import process_and_save_orders
-                _s_cost = int(_gs('shipping_cost') or 1800)
+                _s_cost = int(_gs('shipping_cost') or 2000)
                 _b_cost = int(_gs('box_cost') or 300)
                 _cq_result = process_and_save_orders(
                     USERNAME, cq_df,
@@ -696,7 +696,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                             _cf_df[_c] = pd.to_numeric(_cf_df[_c], errors='coerce').fillna(0).astype(int)
                     _cf_df = _cf_df.sort_values('상품명').reset_index(drop=True)
                     from services import process_and_save_orders
-                    _s_cost = int(_gs('shipping_cost') or 1800)
+                    _s_cost = int(_gs('shipping_cost') or 2000)
                     _b_cost = int(_gs('box_cost') or 300)
                     _cf_result = process_and_save_orders(
                         USERNAME, _cf_df, datetime.today().strftime("%Y-%m-%d"),
@@ -767,7 +767,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
 
                 # 매칭 + 매입가 계산만 (daily_orders는 사용자가 명시적으로 💾 저장 버튼 눌러야 반영)
                 from services import process_and_save_orders
-                _s_cost = int(_gs('shipping_cost') or 1800)
+                _s_cost = int(_gs('shipping_cost') or 2000)
                 _b_cost = int(_gs('box_cost') or 300)
                 _xl_result = process_and_save_orders(
                     USERNAME, df,
@@ -891,7 +891,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             _clear_clicked = st.button("🗑 지우기", key="cancel_orders_btn", use_container_width=True)
 
         if _save_clicked:
-            _s_cost = int(_gs('shipping_cost') or 1800)
+            _s_cost = int(_gs('shipping_cost') or 2000)
             _b_cost = int(_gs('box_cost') or 300)
             # 수집한 미발송 주문 '전체'를 선택한 날짜에 저장 (결제일과 무관 — 오늘 발송 대상 기준).
             # save_daily_orders도 '결제일 무시하고 받은 날짜에 일괄 저장' 설계라 일관됨.
@@ -1671,7 +1671,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         if _ship_b3.button("💾 장보기 저장", key="save_shopping_local",
                             use_container_width=True,
                             help="이 날짜의 장보기 목록을 daily_orders에 저장 (수익계산 페이지에서 불러옴)"):
-            _s_cost = int(_gs('shipping_cost') or 1800)
+            _s_cost = int(_gs('shipping_cost') or 2000)
             _b_cost = int(_gs('box_cost') or 300)
             try:
                 from services import process_and_save_orders

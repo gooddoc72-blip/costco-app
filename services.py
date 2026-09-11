@@ -1348,10 +1348,10 @@ def apply_receipt_to_unmatched_daily_orders(username, unmatched_receipt_items, o
     try:
         s_row = conn.execute("SELECT value FROM settings WHERE key='shipping_cost'").fetchone()
         b_row = conn.execute("SELECT value FROM settings WHERE key='box_cost'").fetchone()
-        shipping_cost = int(s_row[0]) if s_row and s_row[0] else 1800
+        shipping_cost = int(s_row[0]) if s_row and s_row[0] else 2000
         box_cost      = int(b_row[0]) if b_row and b_row[0] else 300
     except Exception:
-        shipping_cost, box_cost = 1800, 300
+        shipping_cost, box_cost = 2000, 300
 
     results = []
     used_order_ids = set()

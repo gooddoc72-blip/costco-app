@@ -55,7 +55,126 @@ def _ensure(conn):
         )
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_op_user ON order_packaging(username)")
+    # 주문별 택배비 — 부피에 따라 금액이 달라서 사용자 단일 단가로는 맞출 수 없다.
+    #   비워 두면(0) 사용자 기본 단가를 쓴다. 나중에 붙인 칸이라 따로 추가한다.
+    try:
+        _cols = {r[1] for r in conn.execute("PRAGMA table_info(order_packaging)")}
+        if 'ship_cost' not in _cols:
+            conn.execute("ALTER TABLE order_packaging ADD COLUMN ship_cost INTEGER DEFAULT 0")
+    except sqlite3.Error:
+        pass
+    # 포장부자재비 — 관리자가 월별로 직접 적어 넣는 금액.
+    #   박스·아이스팩 단가로 자동 계산하던 것과 다르다. 실제로 쓰는 부자재는
+    #   주문마다 다르고 한 번에 사 두었다 나눠 쓰는 것이라, 건별로 배정하는 것보다
+    #   "이번 달 이 사람 몫은 얼마"를 사람이 정하는 편이 현실에 맞는다.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS packaging_fee (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            username   TEXT NOT NULL,
+            ym         TEXT NOT NULL,          -- YYYY-MM
+            amount     INTEGER DEFAULT 0,
+            memo       TEXT DEFAULT '',
+            updated_by TEXT DEFAULT '',
+            updated_at TEXT DEFAULT '',
+            UNIQUE(username, ym)
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_pfee_ym ON packaging_fee(ym)")
     conn.commit()
+
+
+# ── 주문별 택배비 (부피에 따라 건별로 다르다) ──
+def get_ship_cost_map(username, order_nos):
+    """{order_no: 택배비} — 건별로 지정된 것만. 없는 주문은 키가 없다(기본 단가를 쓴다)."""
+    onos = [str(o) for o in (order_nos or []) if str(o or '').strip()]
+    if not onos:
+        return {}
+    conn = _conn()
+    _ensure(conn)
+    try:
+        out = {}
+        CHUNK = 900                       # SQLite 변수 한도
+        for i in range(0, len(onos), CHUNK):
+            part = onos[i:i + CHUNK]
+            ph = ",".join("?" * len(part))
+            for r in conn.execute(
+                    "SELECT order_no, COALESCE(ship_cost,0) c FROM order_packaging "
+                    "WHERE username=? AND order_no IN (%s)" % ph, [str(username)] + part):
+                if int(r['c'] or 0) > 0:
+                    out[str(r['order_no'])] = int(r['c'])
+        return out
+    finally:
+        conn.close()
+
+
+def set_order_ship_cost(username, order_no, ship_cost, updated_by=''):
+    """그 주문의 택배비를 지정한다. 0이면 지정을 지우고 기본 단가로 돌아간다.
+
+    order_packaging 행이 없으면 만든다 — 포장 배정을 안 한 주문에도 택배비만
+    따로 적을 수 있어야 한다(부피 큰 건은 포장 배정과 무관하게 요금이 다르다).
+    """
+    from datetime import datetime as _dt
+    try:
+        cost = int(float(ship_cost or 0))
+    except (TypeError, ValueError):
+        cost = 0
+    conn = _conn()
+    _ensure(conn)
+    try:
+        now = _dt.now().strftime("%Y-%m-%d %H:%M:%S")
+        cur = conn.execute(
+            "UPDATE order_packaging SET ship_cost=?, updated_by=?, updated_at=? "
+            "WHERE username=? AND order_no=?",
+            (max(0, cost), str(updated_by or ''), now, str(username), str(order_no)))
+        if cur.rowcount == 0:
+            conn.execute(
+                "INSERT INTO order_packaging (username, order_no, ship_cost, "
+                "updated_by, updated_at) VALUES (?,?,?,?,?)",
+                (str(username), str(order_no), max(0, cost), str(updated_by or ''), now))
+        conn.commit()
+        return max(0, cost)
+    finally:
+        conn.close()
+
+
+# ── 포장부자재비 (월별 · 관리자 수동 입력) ──
+def get_packaging_fees(ym):
+    """{username: {'amount', 'memo', 'updated_by', 'updated_at'}} — 그달 입력값."""
+    conn = _conn()
+    _ensure(conn)
+    try:
+        return {str(r['username']): dict(r) for r in conn.execute(
+            "SELECT * FROM packaging_fee WHERE ym=?", (str(ym)[:7],))}
+    finally:
+        conn.close()
+
+
+def set_packaging_fee(username, ym, amount, memo='', updated_by=''):
+    """그달 그 사람 포장부자재비를 적어 넣는다. 0이면 지운다(빈 줄을 남기지 않는다)."""
+    from datetime import datetime as _dt
+    try:
+        amt = int(float(amount or 0))
+    except (TypeError, ValueError):
+        amt = 0
+    conn = _conn()
+    _ensure(conn)
+    try:
+        if amt <= 0 and not str(memo or '').strip():
+            conn.execute("DELETE FROM packaging_fee WHERE username=? AND ym=?",
+                         (str(username), str(ym)[:7]))
+        else:
+            conn.execute(
+                """INSERT INTO packaging_fee (username, ym, amount, memo, updated_by, updated_at)
+                   VALUES (?,?,?,?,?,?)
+                   ON CONFLICT(username, ym) DO UPDATE SET
+                     amount=excluded.amount, memo=excluded.memo,
+                     updated_by=excluded.updated_by, updated_at=excluded.updated_at""",
+                (str(username), str(ym)[:7], amt, str(memo or ''), str(updated_by or ''),
+                 _dt.now().strftime("%Y-%m-%d %H:%M:%S")))
+        conn.commit()
+        return amt
+    finally:
+        conn.close()
 
 
 # ── 포장 항목 단가 카탈로그 ──

@@ -389,7 +389,7 @@ with st.sidebar:
         st.rerun()
 
     # 사이드바 하단 — 설정 미리보기
-    ship = settings.get('shipping_cost') or 1800
+    ship = settings.get('shipping_cost') or 2000
     box = settings.get('box_cost') or 300
     st.markdown(
         f'<div class="sidebar-cost-info">택배비: {fmt(int(ship))}원 | 박스비: {fmt(int(box))}원</div>',

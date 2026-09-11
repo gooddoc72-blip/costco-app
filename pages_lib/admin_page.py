@@ -230,7 +230,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 st.caption("📦 고정비용 — 이 사용자의 수익계산 기본 택배비/박스비 "
                            "(사용자 설정 화면에서는 읽기 전용)")
                 try:
-                    _ship_cur = int(get_setting(u['username'], 'shipping_cost') or 1800)
+                    _ship_cur = int(get_setting(u['username'], 'shipping_cost') or 2000)
                 except (TypeError, ValueError):
                     _ship_cur = 1800
                 try:

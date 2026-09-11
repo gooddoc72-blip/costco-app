@@ -117,7 +117,7 @@ def save_daily_orders(username, orders, settings):
     """
     import pandas as _pd
     today = datetime.now().strftime("%Y-%m-%d")
-    shipping_cost = int(settings.get("shipping_cost") or 1800)
+    shipping_cost = int(settings.get("shipping_cost") or 2000)
     box_cost = int(settings.get("box_cost") or 300)
 
     if not orders:

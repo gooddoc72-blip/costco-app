@@ -144,10 +144,10 @@ def recalc_daily_orders_for_products(username, product_nos):
     try:
         s_row = conn.execute("SELECT value FROM settings WHERE key='shipping_cost'").fetchone()
         b_row = conn.execute("SELECT value FROM settings WHERE key='box_cost'").fetchone()
-        shipping_cost = int(s_row[0]) if s_row and s_row[0] else 1800
+        shipping_cost = int(s_row[0]) if s_row and s_row[0] else 2000
         box_cost = int(b_row[0]) if b_row and b_row[0] else 300
     except Exception:
-        shipping_cost, box_cost = 1800, 300
+        shipping_cost, box_cost = 2000, 300
 
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     _factor = _ship_settle_factor(conn)  # 실정산배송비 비율

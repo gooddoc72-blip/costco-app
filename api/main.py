@@ -135,7 +135,7 @@ def _settings_defaults(username):
     """행별 기본 택배비/박스비 — page.py와 동일 폴백(1800/300, 이상치 방어)."""
     s = get_all_settings(username)
     try:
-        ship = int(s.get('shipping_cost') or 1800)
+        ship = int(s.get('shipping_cost') or 2000)
     except (TypeError, ValueError):
         ship = 1800
     try:
