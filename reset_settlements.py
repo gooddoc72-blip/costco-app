@@ -31,6 +31,7 @@ for _i, _a in enumerate(sys.argv):
         USER = sys.argv[_i + 1]
 
 import db_settle as ds
+import db_deposit as dep
 from db_core import get_user_db
 
 conn = ds._conn()
@@ -54,6 +55,13 @@ n_inv = conn.execute(
     "SELECT COUNT(*) FROM settle_invoice WHERE %s" % _w, _args).fetchone()[0]
 n_draft = conn.execute("SELECT COUNT(*) FROM settle_draft").fetchone()[0]
 
+# 지워질 청구서 중 예치금으로 결제된 건 — 청구서만 없애면 사용자 잔액에서는
+# 돈이 빠진 채로 무엇 때문에 빠졌는지 가리킬 곳이 사라진다.
+_gone_w = _w + ("" if INCLUDE_PAID else " AND status<>'paid'")
+gone = [(str(r['settle_date']), str(r['username'])) for r in conn.execute(
+    "SELECT settle_date, username FROM settle_invoice WHERE %s" % _gone_w, _args)]
+dep_back = [(d, u) for (d, u) in gone if dep.deducted(d, u)]
+
 print("삭제 대상 · %s%s" % ("적용" if APPLY else "미리보기",
                           (" · 계정 %s" % USER) if USER else ""))
 print("  settle_item      %d행 (구입가 복원 대상)" % len(items))
@@ -62,6 +70,8 @@ print("  settle_draft     %d행" % n_draft)
 if paid_keys:
     print("  입금완료 %d건 — %s" % (
         len(paid_keys), "함께 지웁니다(--include-paid)" if INCLUDE_PAID else "남깁니다"))
+if dep_back:
+    print("  예치금 차감 %d건 — 사용자 잔액으로 되돌립니다" % len(dep_back))
 
 if not APPLY:
     conn.close()
@@ -107,5 +117,12 @@ if not USER:
     conn.execute("DELETE FROM settle_draft")
 conn.commit()
 conn.close()
+
+# ③ 없어진 청구서에 딸려 있던 예치금 차감을 되돌린다
+for _d, _u in dep_back:
+    dep.undo_deduct(_d, _u, by='reset', memo="%s 정산 초기화로 차감 취소" % _d)
+
 print("\n완료 — 구입가 %d건 복원 · 정산 원장 삭제" % restored)
+if dep_back:
+    print("예치금 차감 %d건을 되돌렸습니다 — 해당 사용자 잔액이 그만큼 늘었습니다." % len(dep_back))
 print("영수증 품목·공유상품·코스트코번호 매핑·재고는 그대로 남아 있습니다.")

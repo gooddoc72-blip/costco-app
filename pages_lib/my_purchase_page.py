@@ -13,6 +13,7 @@ import streamlit as st
 import pandas as pd
 
 import db_settle as _ds
+import db_deposit as _dep
 from utils import fmt
 
 _STATUS = {
@@ -43,6 +44,10 @@ def _day_view(USERNAME):
         return
 
     _icon, _txt = _STATUS.get(inv['status'], ("⚪", inv['status']))
+    # 예치금에서 빠진 날은 '입금완료'라고만 하면 사용자가 자기가 입금한 줄 안다.
+    _dedrow = _dep.deducted(ds, USERNAME)
+    if _dedrow and inv['status'] == 'paid':
+        _icon, _txt = "💳", "예치금에서 차감됨"
     c1, c2 = st.columns([1.3, 3])
     c1.metric("청구액", f"{fmt(int(inv['total_amount'] or 0))}원")
     c2.markdown(f"### {_icon} {_txt}")
@@ -50,8 +55,11 @@ def _day_view(USERNAME):
     if inv['billed_at']:
         _sub += f" · 청구 {str(inv['billed_at'])[:16]}"
     if inv['paid_at']:
-        _sub += f" · 입금 {str(inv['paid_at'])[:16]} ({fmt(int(inv['paid_amount'] or 0))}원)"
+        _sub += (f" · {'차감' if _dedrow else '입금'} {str(inv['paid_at'])[:16]} "
+                 f"({fmt(int(inv['paid_amount'] or 0))}원)")
     c2.caption(_sub)
+    if _dedrow:
+        c2.caption(f"💳 예치금 잔액 **{fmt(_dep.balance(USERNAME))}원**")
 
     _ship, _pack = int(inv['ship_fee'] or 0), int(inv['pack_fee'] or 0)
     st.caption(
@@ -174,6 +182,10 @@ def _month_view(USERNAME):
     m3.metric("청구 합계", f"{fmt(_total)}원", f"{len(invs)}일")
     m4.metric("미입금", f"{fmt(_unpaid)}원", f"입금 {fmt(_paid)}원")
 
+    # 예치금에서 빠진 날 — '입금완료'라고만 두면 자기가 입금한 것으로 읽힌다
+    _depdates = {str(r['settle_date']) for r in _dep.ledger(USERNAME, _mf, _mt)
+                 if r['kind'] == 'spend'}
+
     # 청구서가 있는 날 + 발송만 있는 날을 합쳐 날짜순으로 보여 준다
     _by_date = {str(i['settle_date']): i for i in invs}
     _rows = []
@@ -182,8 +194,9 @@ def _month_view(USERNAME):
         if i:
             _rows.append({
                 '날짜': _d,
-                '상태': _STATUS.get(i['status'], ("", i['status']))[0] + " "
-                        + _ds.STATUS_LABEL.get(i['status'], i['status']),
+                '상태': ('💳 예치금 차감' if _d in _depdates and i['status'] == 'paid'
+                         else _STATUS.get(i['status'], ("", i['status']))[0] + " "
+                              + _ds.STATUS_LABEL.get(i['status'], i['status'])),
                 '발송': int(_dcnt.get(_d) or 0),
                 '품목': int(i['item_count'] or 0),
                 '물건값': int(i['goods_amount'] or 0),
@@ -233,10 +246,65 @@ def _month_view(USERNAME):
             st.caption(f"엑셀 생성 실패: {_e}")
 
 
+def _deposit_view(USERNAME):
+    """💳 예치금 — 미리 맡긴 돈과 그날 구매분이 어떻게 빠졌는지.
+
+    잔액만 보여 주면 "왜 이 금액이지"에 답할 수 없다. 예치와 차감을 한 표에
+    시간순으로 놓아, 사용자가 스스로 통장과 맞춰 볼 수 있게 한다.
+    """
+    s = _dep.summary(USERNAME)
+    _bal = int(s['balance'])
+
+    m1, m2, m3 = st.columns(3)
+    m1.metric("예치금 잔액", f"{fmt(_bal)}원")
+    m2.metric("누적 예치", f"{fmt(int(s['charged']))}원",
+              f"최근 {s['last_charge'] or '-'}")
+    m3.metric("누적 차감", f"{fmt(int(s['spent']))}원")
+
+    if _bal < 0:
+        st.error(f"🔴 예치금이 **{fmt(-_bal)}원 부족**합니다. 그만큼 추가로 "
+                 "입금해 주세요. 잔액이 마이너스인 동안은 구매대행이 밀릴 수 있습니다.")
+    elif s['charged'] and _bal == 0:
+        st.warning("🟡 예치금을 모두 사용했습니다. 다음 구매분을 위해 미리 입금해 주세요.")
+    elif _bal > 0:
+        st.success(f"🟢 예치금 **{fmt(_bal)}원** — 이 금액 안에서 그날 구매분이 "
+                   "자동으로 차감됩니다. 별도 입금은 필요 없습니다.")
+
+    st.divider()
+    st.markdown("#### 예치·차감 내역")
+    rows = _dep.ledger(username=USERNAME, limit=300)
+    if not rows:
+        st.info("예치금 내역이 없습니다. 관리자가 입금을 확인하면 여기 뜹니다. "
+                "예치금을 쓰지 않는 동안은 일별 청구액을 그때그때 입금하시면 됩니다.")
+        return
+
+    st.dataframe(pd.DataFrame([{
+        '날짜': r['tx_date'],
+        '구분': _dep.KIND_LABEL.get(r['kind'], r['kind']),
+        '금액': int(r['amount'] or 0),
+        '구매일': r['settle_date'] or '',
+        '메모': r['memo'] or '',
+    } for r in rows]), use_container_width=True, hide_index=True,
+        column_config={'금액': st.column_config.NumberColumn('금액', format='%d')})
+    st.caption(f"{len(rows)}건 · 잔액은 이 표의 합계입니다 — "
+               "'차감 취소됨'은 바로 아래 '차감 되돌림'과 짝을 이뤄 서로 상쇄됩니다. "
+               "금액이 이상하면 관리자에게 문의하세요.")
+
+
 def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     st.header("🧾 내 구매내역 정산")
     st.caption("코스트코 구매대행 **청구액**입니다. 관리자가 익일 영수증을 반영해 정산하면 "
                "실단가로 뜨고, 청구·입금 상태가 함께 표시됩니다.")
+
+    _bal = _dep.balance(USERNAME)
+    _has_dep = bool(_dep.ledger(username=USERNAME, limit=1))
+    if _has_dep:
+        if _bal < 0:
+            st.error(f"🔴 예치금 **{fmt(-_bal)}원 부족** — 추가 입금이 필요합니다. "
+                     "(💳 예치금 탭에서 내역 확인)")
+        else:
+            st.info(f"💳 예치금 잔액 **{fmt(_bal)}원** — 그날 구매금액이 여기서 "
+                    "차감됩니다.")
 
     _unpaid = [i for i in _ds.list_invoices('2000-01-01', str(date.today()),
                                             username=USERNAME, status='billed')]
@@ -247,8 +315,10 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                 for i in _unpaid[:6])
                    + (" …" if len(_unpaid) > 6 else ""))
 
-    _t_day, _t_month = st.tabs(["일별", "월별"])
+    _t_day, _t_month, _t_dep = st.tabs(["일별", "월별", "💳 예치금"])
     with _t_day:
         _day_view(USERNAME)
     with _t_month:
         _month_view(USERNAME)
+    with _t_dep:
+        _deposit_view(USERNAME)
