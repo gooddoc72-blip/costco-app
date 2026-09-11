@@ -99,10 +99,7 @@ def _tab_day(USERNAME, dmap):
         '상태': _ST_ICON.get(i['status'], i['status']),
         '판매자': dmap.get(i['username'], i['username']),
         '품목': int(i['item_count'] or 0),
-        '물건값': int(i['goods_amount'] or 0),
-        '택배비': int(i['ship_fee'] or 0),
-        '포장비': int(i['pack_fee'] or 0),
-        '청구액': int(i['total_amount'] or 0),
+        '청구액(물건값)': int(i['total_amount'] or 0),
         '결제': '💳 예치금' if i['username'] in _ded else (
             '🏦 계좌입금' if i['status'] == 'paid' else ''),
         '입금액': int(i['paid_amount'] or 0),
@@ -111,8 +108,8 @@ def _tab_day(USERNAME, dmap):
         '입금일시': str(i['paid_at'] or '')[:16],
     } for i in invs]), use_container_width=True, hide_index=True,
         column_config={k: st.column_config.NumberColumn(k, format='%d')
-                       for k in ('물건값', '택배비', '포장비', '청구액', '입금액',
-                                 '예치금잔액')})
+                       for k in ('청구액(물건값)', '입금액', '예치금잔액')})
+    st.caption("청구액은 **물건값만**입니다 — 택배비·포장비는 별도로 청구합니다.")
 
     _render_items_detail(ds, invs, dmap)
 
@@ -270,10 +267,9 @@ def _render_items_detail(ds, invs, dmap):
                            f"**{ds}** 를 열어 다시 매칭하세요.")
                 st.rerun()
 
-        st.caption(f"물건값 {fmt(sum(int(i['amount'] or 0) for i in items))}원 "
-                   f"+ 택배비 {fmt(int(_inv.get('ship_fee') or 0))}원 "
-                   f"+ 포장비 {fmt(int(_inv.get('pack_fee') or 0))}원 "
-                   f"= 청구액 {fmt(int(_inv.get('total_amount') or 0))}원")
+        st.caption(f"물건값 합계 {fmt(sum(int(i['amount'] or 0) for i in items))}원 "
+                   f"= 청구액 {fmt(int(_inv.get('total_amount') or 0))}원 "
+                   "— 택배비·포장비는 별도 청구합니다.")
 
 
 # ── 💳 예치금 차감 (일별) ─────────────────────────────────────
@@ -554,17 +550,15 @@ def _tab_month(dmap):
         return
     rows = [{
         '판매자': dmap.get(u, u),
-        '물건값': e['goods'], '택배·포장': e['fees'], '청구액': e['total'],
+        '청구액(물건값)': e['total'],
         '입금완료': e['paid'], '미입금': e['unpaid'], '정산일수': e['days'],
     } for u, e in sorted(summ.items(), key=lambda kv: -kv[1]['total'])]
     rows.append({'판매자': '— 합계 —',
-                 '물건값': sum(r['물건값'] for r in rows),
-                 '택배·포장': sum(r['택배·포장'] for r in rows),
-                 '청구액': sum(r['청구액'] for r in rows),
+                 '청구액(물건값)': sum(r['청구액(물건값)'] for r in rows),
                  '입금완료': sum(r['입금완료'] for r in rows),
                  '미입금': sum(r['미입금'] for r in rows),
                  '정산일수': ''})
     st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True,
                  column_config={k: st.column_config.NumberColumn(k, format='%d')
-                                for k in ('물건값', '택배·포장', '청구액',
-                                          '입금완료', '미입금')})
+                                for k in ('청구액(물건값)', '입금완료', '미입금')})
+    st.caption("택배비·포장비는 이 청구에 포함되지 않습니다 — 별도로 청구합니다.")

@@ -1133,7 +1133,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             st.caption("📌 저장만 하고 정산하지 않은 날 — "
                        + " · ".join(f"**{_d}** {_c}건" for _d, _c in _dd[:6]))
 
-        # ── 정산 미리보기 — 물건값 + 그날 택배·포장비 ──
+        # ── 정산 미리보기 — 청구액은 물건값만. 택배·포장비는 별도 청구한다. ──
         _goods = {u: v['amount'] for u, v in (summary or {}).items()}
         _fees = _sc.fees_for_users(sorted(_goods), str(d_day))
         _prev = []
@@ -1141,21 +1141,21 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             _f = _fees.get(_u) or {}
             _prev.append({
                 '판매자': dmap.get(_u, _u),
-                '물건값': int(_goods[_u]),
-                '택배비': int(_f.get('ship_fee') or 0),
-                '포장비': int(_f.get('pack_fee') or 0),
-                '청구액': int(_goods[_u]) + int(_f.get('ship_fee') or 0)
-                          + int(_f.get('pack_fee') or 0),
+                '청구액(물건값)': int(_goods[_u]),
                 '발송': int(_f.get('ship_count') or 0),
+                '참고·택배비': int(_f.get('ship_fee') or 0),
+                '참고·포장비': int(_f.get('pack_fee') or 0),
             })
-        _total = sum(r['청구액'] for r in _prev)
+        _total = sum(r['청구액(물건값)'] for r in _prev)
         st.dataframe(pd.DataFrame(_prev), use_container_width=True, hide_index=True,
                      column_config={_k: st.column_config.NumberColumn(_k, format='%d')
-                                    for _k in ('물건값', '택배비', '포장비', '청구액')})
-        st.caption("청구액 = 물건값 + 그날 택배비(발송건수 × 설정) + 그날 포장비. "
-                   "월말에 몰아 붙이지 않고 발생한 날에 싣습니다.")
+                                    for _k in ('청구액(물건값)', '참고·택배비', '참고·포장비')})
+        st.caption("**청구액 = 물건값만입니다.** 택배비·포장비는 청구서에 싣지 않고 "
+                   "별도로 청구합니다 — 오른쪽 두 칸은 그날 발생한 금액을 참고로 "
+                   "보여줄 뿐 정산에 반영되지 않습니다. "
+                   "(택배비 = 발송건수 × 사용자 설정 · 포장비 = 배정액 또는 기본 박스비)")
 
-        _render_reconcile(receipt_items, alloc, sum(r['물건값'] for r in _prev), d_day)
+        _render_reconcile(receipt_items, alloc, _total, d_day)
 
         st.warning("⚠️ 정산하면 각 주문의 구입가가 영수증 실단가로 **덮어써지고** "
                    "각 사용자에게 청구금액으로 보입니다. "
@@ -1849,12 +1849,11 @@ def _render_history(dmap, USERNAME=''):
                 '상태': _ds.STATUS_LABEL.get(i['status'], i['status']),
                 '사용자': dmap.get(i['username'], i['username']),
                 '품목수': int(i['item_count'] or 0),
-                '물건값': int(i['goods_amount'] or 0),
-                '택배·포장': int(i['ship_fee'] or 0) + int(i['pack_fee'] or 0),
-                '청구액': int(i['total_amount'] or 0),
+                '청구액(물건값)': int(i['total_amount'] or 0),
             } for i in invs]), use_container_width=True, hide_index=True,
                 column_config={_k: st.column_config.NumberColumn(_k, format='%d')
-                               for _k in ('물건값', '택배·포장', '청구액')})
+                               for _k in ('청구액(물건값)',)})
+            st.caption("청구액은 **물건값만**입니다 — 택배비·포장비는 별도로 청구합니다.")
 
             # 근거 분해 — 이 돈이 영수증 실단가인지 재고 단가인지 수동인지
             _items = _ds.get_items(_d)

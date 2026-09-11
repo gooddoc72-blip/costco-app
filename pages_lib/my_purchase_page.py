@@ -61,12 +61,9 @@ def _day_view(USERNAME):
     if _dedrow:
         c2.caption(f"💳 예치금 잔액 **{fmt(_dep.balance(USERNAME))}원**")
 
-    _ship, _pack = int(inv['ship_fee'] or 0), int(inv['pack_fee'] or 0)
-    st.caption(
-        f"물건값 {fmt(int(inv['goods_amount'] or 0))}원"
-        + (f" + 택배비 {fmt(_ship)}원" if _ship else "")
-        + (f" + 포장비 {fmt(_pack)}원" if _pack else "")
-        + f" = **청구액 {fmt(int(inv['total_amount'] or 0))}원**")
+    st.caption(f"물건값 {fmt(int(inv['goods_amount'] or 0))}원 "
+               f"= **청구액 {fmt(int(inv['total_amount'] or 0))}원** "
+               "— 택배비·포장비는 별도로 청구됩니다.")
 
     if not items:
         st.caption("품목 내역이 없습니다 (비용만 청구된 날).")
@@ -170,17 +167,16 @@ def _month_view(USERNAME):
         return
 
     _goods = sum(int(i['goods_amount'] or 0) for i in invs)
-    _fees = sum(int(i['ship_fee'] or 0) + int(i['pack_fee'] or 0) for i in invs)
     _total = sum(int(i['total_amount'] or 0) for i in invs)
     _paid = sum(int(i['paid_amount'] or 0) for i in invs if i['status'] == 'paid')
     _unpaid = sum(int(i['total_amount'] or 0) for i in invs if i['status'] == 'billed')
 
     _dtot = sum(int(v or 0) for v in _dcnt.values())
-    m1, m2, m3, m4 = st.columns(4)
+    m1, m2, m3 = st.columns(3)
     m1.metric("그달 물건값", f"{fmt(_goods)}원", f"발송 {_dtot}건")
-    m2.metric("택배·포장", f"{fmt(_fees)}원")
-    m3.metric("청구 합계", f"{fmt(_total)}원", f"{len(invs)}일")
-    m4.metric("미입금", f"{fmt(_unpaid)}원", f"입금 {fmt(_paid)}원")
+    m2.metric("청구 합계", f"{fmt(_total)}원", f"{len(invs)}일")
+    m3.metric("미입금", f"{fmt(_unpaid)}원", f"입금 {fmt(_paid)}원")
+    st.caption("택배비·포장비는 이 청구에 포함되지 않습니다 — 별도로 청구됩니다.")
 
     # 예치금에서 빠진 날 — '입금완료'라고만 두면 자기가 입금한 것으로 읽힌다
     _depdates = {str(r['settle_date']) for r in _dep.ledger(USERNAME, _mf, _mt)
@@ -199,20 +195,16 @@ def _month_view(USERNAME):
                               + _ds.STATUS_LABEL.get(i['status'], i['status'])),
                 '발송': int(_dcnt.get(_d) or 0),
                 '품목': int(i['item_count'] or 0),
-                '물건값': int(i['goods_amount'] or 0),
-                '택배·포장': int(i['ship_fee'] or 0) + int(i['pack_fee'] or 0),
-                '청구액': int(i['total_amount'] or 0),
+                '청구액(물건값)': int(i['total_amount'] or 0),
                 '입금액': int(i['paid_amount'] or 0),
             })
         else:
             _rows.append({'날짜': _d, '상태': '⏳ 정산 전',
                           '발송': int(_dcnt.get(_d) or 0), '품목': 0,
-                          '물건값': 0, '택배·포장': 0,
-                          '청구액': 0, '입금액': 0})
+                          '청구액(물건값)': 0, '입금액': 0})
     st.dataframe(pd.DataFrame(_rows), use_container_width=True, hide_index=True,
         column_config={k: st.column_config.NumberColumn(k, format='%d')
-                       for k in ('발송', '품목', '물건값', '택배·포장',
-                                 '청구액', '입금액')})
+                       for k in ('발송', '품목', '청구액(물건값)', '입금액')})
     _pend = [r for r in _rows if r['상태'] == '⏳ 정산 전']
     if _pend:
         st.caption("⏳ **정산 전** — 발송은 등록됐지만 관리자가 아직 그날 영수증으로 "

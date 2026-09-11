@@ -116,9 +116,15 @@ def to_ledger_rows(alloc_rows, settle_date, receipt_date=''):
 
 
 # ── ④ 정산 확정 ──────────────────────────────────────────────
-def finalize(settle_date, alloc_rows, created_by='', with_fees=True,
+def finalize(settle_date, alloc_rows, created_by='', with_fees=False,
              apply_cost=True, learn=True):
     """정산 요청 — 원장에 쓰고 청구서를 만든다. 이 함수가 유일한 확정 경로다.
+
+    with_fees=False가 기본 — **청구액은 물건값만이다.**
+    택배비·포장비는 별도로 청구한다. 물건값과 한 청구서에 섞으면 사용자가
+    "이 금액이 왜 이런가"를 물건 내역만으로 확인할 수 없고, 단가를 고쳐 다시
+    정산할 때마다 비용까지 함께 흔들린다.
+    (켜면 그날 택배·포장비를 청구서에 싣는 종전 동작.)
 
     반환: {'saved': n, 'dropped': [...], 'totals': {user: 청구액},
            'learned': {...}, 'fees': {user: {...}}}
