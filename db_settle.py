@@ -390,20 +390,26 @@ def reset_all(include_paid=False, restore_cost=True, drop_lots=False):
 
     지우는 것:  settle_item · settle_invoice · settle_draft
     되돌리는 것: 주문의 구입가(prev_cost) — 정산이 덮어쓴 값을 원래대로
+                 예치금 차감 — 지워지는 청구서에 딸린 차감분을 사용자에게 돌려준다
     남기는 것:  영수증 품목 · 공유상품 · 코스트코번호 매핑
                 — 영수증과 매핑은 정산의 '입력'이지 결과가 아니다.
 
     입금완료된 청구서는 기본적으로 남긴다. 받은 돈의 근거를 지우면 그 입금이
     무엇에 대한 것이었는지 설명할 수 없게 된다.
 
+    예치금 차감건은 status='paid'라 기본 경로에서는 지워지지 않는다. include_paid로
+    지울 때는 차감도 함께 되돌린다 — 청구서만 없애면 사용자 잔액에서는 돈이 빠진
+    채로 무엇 때문에 빠졌는지 가리킬 곳이 사라진다.
+
     drop_lots: 영수증 정산으로 넣은 재고 입고도 같이 되돌린다(판매에 안 쓰인 것만).
-    반환: {'items','invoices','restored','lots','kept_paid'}
+    반환: {'items','invoices','restored','lots','kept_paid','deposit_returned'}
     """
     from db_core import get_user_db
 
     conn = _conn()
     ensure(conn)
-    res = {'items': 0, 'invoices': 0, 'restored': 0, 'lots': 0, 'kept_paid': []}
+    res = {'items': 0, 'invoices': 0, 'restored': 0, 'lots': 0, 'kept_paid': [],
+           'deposit_returned': 0}
     try:
         paid = {(str(r['settle_date']), str(r['username'])) for r in conn.execute(
             "SELECT settle_date, username FROM settle_invoice WHERE status='paid'")}
@@ -415,6 +421,11 @@ def reset_all(include_paid=False, restore_cost=True, drop_lots=False):
             "SELECT settle_date, username, order_no, prev_cost FROM settle_item")]
         rows = [r for r in rows
                 if (str(r['settle_date']), str(r['username'])) not in paid]
+
+        # 지워질 청구서 — 예치금 차감을 되돌릴 대상을 지우기 전에 잡아 둔다
+        gone = [(str(r['settle_date']), str(r['username'])) for r in conn.execute(
+            "SELECT settle_date, username FROM settle_invoice"
+            + ("" if include_paid else " WHERE status<>'paid'"))]
 
         if include_paid:
             res['items'] = conn.execute("DELETE FROM settle_item").rowcount
@@ -430,6 +441,13 @@ def reset_all(include_paid=False, restore_cost=True, drop_lots=False):
         conn.commit()
     finally:
         conn.close()
+
+    # 없어진 청구서에 딸려 있던 예치금 차감을 사용자에게 돌려준다
+    import db_deposit as _dep
+    for _d, _u in gone:
+        if _dep.deducted(_d, _u):
+            _dep.undo_deduct(_d, _u, by='reset', memo="%s 정산 초기화로 차감 취소" % _d)
+            res['deposit_returned'] += 1
 
     # 주문 구입가를 정산 전 값으로 — 청구만 지우고 구입가를 두면
     # 수익계산이 계속 틀린 값을 본다.
@@ -672,30 +690,82 @@ def all_item_orders():
         conn.close()
 
 
-def delete_items_by_id(item_ids):
-    """id 목록으로 품목을 지우고 영향받은 날짜×사용자 청구서를 다시 계산한다."""
+def delete_items_by_id(item_ids, restore_cost=True):
+    """오매칭 품목을 지운다 — 지운 주문은 다시 매칭 대상이 된다.
+
+    같은 주문을 두 번 청구하지 않으려고 settled_order_keys()가 settle_item을
+    읽어 '이미 정산된 주문'을 매칭에서 빼는데, 그 판단 근거가 바로 이 표다.
+    그래서 행을 지우면 그 주문은 **영수증 정산에서 자동으로 다시 후보가 된다.**
+    별도 표시를 남길 필요가 없다.
+
+    restore_cost: 정산이 주문에 덮어쓴 구입가를 정산 전 값(prev_cost)으로 되돌린다.
+      안 되돌리면 청구는 사라졌는데 수익계산은 계속 그 단가를 본다.
+
+    품목이 다 빠지고 비용도 없으면 빈 청구서를 남기지 않는다 — 0원 청구서는
+    화면에서 "뭔가 있는 것"처럼 보이지만 청구할 것이 없다.
+    반환: 지운 행 수
+    """
     ids = [int(i) for i in (item_ids or [])]
     if not ids:
         return 0
     conn = _conn()
     ensure(conn)
     try:
-        pairs, removed = set(), 0
+        pairs, gone, removed = set(), [], 0
         CHUNK = 900
         for i in range(0, len(ids), CHUNK):
             part = ids[i:i + CHUNK]
             ph = ",".join("?" * len(part))
             for r in conn.execute(
-                    "SELECT DISTINCT settle_date, username FROM settle_item "
+                    "SELECT settle_date, username, order_no, prev_cost FROM settle_item "
                     "WHERE id IN (%s)" % ph, part):
                 pairs.add((str(r['settle_date']), str(r['username'])))
+                if str(r['order_no'] or ''):
+                    gone.append((str(r['username']), str(r['order_no']), _i(r['prev_cost'])))
             removed += conn.execute(
                 "DELETE FROM settle_item WHERE id IN (%s)" % ph, part).rowcount
         conn.commit()
     finally:
         conn.close()
+
+    if restore_cost and gone:
+        from db_core import get_user_db
+        by_user = {}
+        for uname, ono, prev in gone:
+            by_user.setdefault(uname, []).append((ono, prev))
+        for uname, rows in by_user.items():
+            try:
+                uc = get_user_db(uname)
+            except Exception:
+                continue
+            try:
+                for ono, prev in rows:
+                    for _t in ('order_history', 'daily_orders', 'profit_settlements'):
+                        try:
+                            uc.execute("UPDATE %s SET cost_price=? WHERE order_no=?" % _t,
+                                       (prev, ono))
+                        except sqlite3.Error:
+                            pass
+                uc.commit()
+            finally:
+                uc.close()
+
     for d, u in pairs:
         recompute_invoice(d, u)
+        # 남은 품목도 비용도 없으면 청구서를 치운다
+        conn = _conn()
+        try:
+            r = conn.execute(
+                "SELECT item_count, ship_fee, pack_fee, status FROM settle_invoice "
+                "WHERE settle_date=? AND username=?", (d, u)).fetchone()
+            if (r is not None and str(r['status']) != 'paid'
+                    and _i(r['item_count']) == 0
+                    and _i(r['ship_fee']) == 0 and _i(r['pack_fee']) == 0):
+                conn.execute("DELETE FROM settle_invoice WHERE settle_date=? AND username=?",
+                             (d, u))
+                conn.commit()
+        finally:
+            conn.close()
     return removed
 
 
