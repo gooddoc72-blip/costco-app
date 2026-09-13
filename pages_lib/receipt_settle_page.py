@@ -2082,12 +2082,18 @@ def _render_unmatch_panel(alloc, dmap, receipt_items):
     _risky = {'ai', 'name', 'shopping-name', 'stock'}
     _n_risky = sum(1 for r in _rows if str(r.get('via') or '') in _risky)
     with st.expander(f"✏️ 매칭 수정 — 잘못 붙은 건 끊기 "
-                     f"({len(_rows)}건 중 확인 권장 {_n_risky}건)", expanded=False):
+                     f"(배치 {len(_rows)}건 · 추측으로 붙은 것 {_n_risky}건)",
+                     expanded=False):
         st.caption("AI·상품명 유사도로 붙인 것은 틀릴 수 있습니다. 끊으면 그 주문은 "
                    "미매칭으로 돌아가고, 아래 **수동 매칭**에서 다시 이을 수 있습니다. "
                    "틀린 채로 전송하면 그 단가로 청구되고 매핑까지 굳어집니다.")
-        _only = st.checkbox("추측으로 붙은 것만 보기 (AI·이름·재고)", value=bool(_n_risky),
-                            key="rs_um_only")
+        # 기본은 **전부 보기**다. 추측으로 붙은 것만 보여 주면, 번호로 붙었지만
+        # 수량·금액이 틀린 건(영수증 1개짜리에 주문 7개가 붙는 식)이 기본 화면에서
+        # 통째로 가려진다. 정작 고쳐야 할 건이 안 보이면 이 화면은 쓸모가 없다.
+        _only = st.checkbox("추측으로 붙은 것만 보기 (AI·이름·재고)", value=False,
+                            key="rs_um_only",
+                            help=f"끄면 배치된 {len(_rows)}건 전부를 봅니다. "
+                                 "번호로 붙은 건도 수량·금액이 틀릴 수 있습니다.")
         _view = [r for r in _rows if (not _only or str(r.get('via') or '') in _risky)]
         if not _view:
             st.caption("해당하는 행이 없습니다.")
