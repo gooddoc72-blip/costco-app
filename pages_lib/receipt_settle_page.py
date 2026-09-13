@@ -1261,14 +1261,52 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                    "각 사용자에게 청구금액으로 보입니다. "
                    "청구는 다음 단계입니다 — 관리자 › 정산·청구에서 누르세요.")
 
+        # ── 나간 물건은 반드시 청구돼야 한다 ──────────────────────
+        #   발송(dispatch_log)됐는데 매칭이 안 된 주문은 미매칭으로 남고, 그대로
+        #   정산하면 그 물건은 **공짜로 나간다**. 지금까지는 영수증 합계가 있을
+        #   때만 안내가 떴고(영수증 없는 날은 경고조차 없었다) 막지도 않았다.
+        #   물건이 나갔다는 증거(송장)가 있는 이상, 사람이 처리하거나 빠진다는
+        #   사실을 명시적으로 확인하기 전에는 정산이 넘어가면 안 된다.
+        _unbilled = list(alloc.get('unmatched_orders') or [])
+        _unbilled_ok = True
+        if _unbilled:
+            _by_u = {}
+            for _o in _unbilled:
+                _by_u.setdefault(str(_o.get('username') or ''), []).append(_o)
+            st.error(
+                f"🛑 **발송됐는데 청구되지 않는 주문이 {len(_unbilled)}건** 있습니다 — "
+                + " · ".join(f"{dmap.get(_u, _u)} {len(_v)}건"
+                             for _u, _v in sorted(_by_u.items(),
+                                                  key=lambda kv: -len(kv[1])))
+                + ".\n\n이대로 정산하면 그 물건은 **청구에서 빠집니다**(공짜로 나갑니다). "
+                  "위에서 처리하세요 — 영수증에 있으면 **수동 매칭**, 남의 재고나 "
+                  "관리자 재고에서 나갔으면 **✍️ 금액 직접 지정**(그 재고의 구입가로), "
+                  "코스트코가 직접 보냈으면 **🛒 온라인몰 직배송 지정**.")
+            with st.expander(f"📋 청구 안 되는 발송건 {len(_unbilled)}건 보기",
+                             expanded=True):
+                st.dataframe(pd.DataFrame([{
+                    '사용자': dmap.get(str(_o.get('username') or ''),
+                                    str(_o.get('username') or '')),
+                    '주문번호': str(_o.get('order_no') or ''),
+                    '수취인': str(_o.get('recipient') or ''),
+                    '상품명': str(_o.get('product_name') or '')[:40],
+                    '수량': int(_o.get('qty') or 1),
+                } for _o in _unbilled]), use_container_width=True, hide_index=True)
+            _unbilled_ok = st.checkbox(
+                f"이 {len(_unbilled)}건은 청구하지 않아도 됩니다 — 확인했습니다",
+                key=f"rs_unbilled_ok_{d_day}_{len(_unbilled)}",
+                help="취소된 주문이거나 이미 다른 날 청구된 건이라면 체크하고 넘어가세요. "
+                     "그 외에는 위에서 처리한 뒤 정산하세요.")
+
         # 영수증 금액과 정산 금액이 어긋나면 사람이 한 번 짚고 넘어가게 한다.
         # 잘못된 금액이 청구까지 가면 되돌리는 데 훨씬 큰 일이 된다.
-        _blocked = False
+        _blocked = not _unbilled_ok
         if _need_ck:
             st.error("🛑 **확인이 필요합니다** — " + _ck_why)
-            _blocked = not st.checkbox(
+            # 앞의 '청구 안 되는 발송건' 확인을 덮어쓰면 안 된다 — 둘 다 통과해야 한다
+            _blocked = (not st.checkbox(
                 "위 내용을 확인했고, 이 금액으로 정산합니다",
-                key=f"rs_reconcile_ok_{d_day}_{_total}")
+                key=f"rs_reconcile_ok_{d_day}_{_total}")) or _blocked
             if _blocked:
                 st.caption("체크해야 아래 **정산 요청** 버튼이 켜집니다. "
                            "금액이 이상하면 영수증 표·매칭을 먼저 고치세요.")
