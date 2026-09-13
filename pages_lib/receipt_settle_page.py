@@ -1257,9 +1257,10 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     # ── 3.35) 코스트코 온라인몰 직배송 지정 ──
     #   매장 영수증에 없는 건은 언제나 여기(미매칭 주문)에 남는다. 그중
     #   온라인몰로 산 건을 골라 표시해야 청구에 실린다.
+    # 🛒 온라인몰 직배송 — **미발송 주문**에서 고른다. 코스트코가 직접 보낸 건이라
+    #   발송 기록에 없다(발송건에 온라인몰 건은 있을 수 없다).
+    _render_online_pick_panel(alloc, dmap, d_day, USERNAME)
     # 그날 이미 지정해 둔 온라인몰 건 확인·취소
-    #   (영수증에 없는 발송건 처리는 '정산 요청' 바로 위에서 한다 — 거기서
-    #    막히므로 목록과 처리 수단이 같은 자리에 있어야 한다)
     _render_online_panel(alloc, dmap, d_day, USERNAME)
 
     # ── 3.4) 잘못 붙은 매칭 끊기 (수동 매칭 바로 위) ──
@@ -1731,6 +1732,143 @@ def _render_online_panel(alloc, dmap, d_day, USERNAME=''):
 
 
 
+def _render_online_pick_panel(alloc, dmap, d_day, USERNAME):
+    """🛒 코스트코 온라인몰 직배송 지정 — **미발송 주문**에서 고른다.
+
+    왜 발송건이 아니라 미발송 주문인가:
+      온라인몰 건은 코스트코가 고객에게 직접 보낸다. 관리자가 보내지 않으므로
+      택배사 발송 파일에 없고, 발송 기록에도 잡히지 않는다. 즉 **발송건 중에
+      온라인몰 건은 있을 수 없다.** 그날 주문에는 있는데 발송되지 않은 채로
+      남아 있는 것이 온라인몰 건이다.
+
+      전에는 '영수증에 없는 발송건'에서 온라인몰을 고르게 했는데, 그건 매장에서
+      산 물건을 온라인몰로 잘못 분류하기 딱 좋은 구조였다(단가가 온라인가로
+      바뀌고 택배비까지 빠진다).
+
+    지정하면 물건값이 청구되고, 택배비·포장비는 붙지 않는다.
+    """
+    _users = sorted({str(c.get('username') or '') for c in (_rs.dispatch_coverage(str(d_day)) or [])
+                     if c.get('orders')}) if True else []
+    _cand = []
+    for _u in _users:
+        try:
+            for _o in (_rs.undispatched_orders(_u, str(d_day)) or []):
+                _o = dict(_o)
+                _o['username'] = _u
+                _cand.append(_o)
+        except Exception:
+            continue
+    try:
+        _marked = _op.get_by_date(str(d_day)) or []
+    except Exception:
+        _marked = []
+    _done = {(str(m.get('username') or ''), str(m.get('order_no') or '')) for m in _marked}
+    _cand = [c for c in _cand
+             if (str(c.get('username') or ''), str(c.get('order_no') or '')) not in _done]
+    if not _cand:
+        return
+
+    with st.expander(f"🛒 코스트코 온라인몰 직배송 지정 — 미발송 주문 {len(_cand)}건에서 고르기",
+                     expanded=False):
+        st.caption(
+            "코스트코 온라인몰에서 주문해 **코스트코가 고객에게 직접 보낸 건**을 "
+            "여기서 고릅니다. 관리자가 보내지 않으므로 발송 기록에 없고, 그날 주문에 "
+            "미발송으로 남아 있습니다. 지정하면 **물건값이 청구되고 택배비·포장비는 "
+            "붙지 않습니다.**")
+        _q = st.text_input("🔎 상품명·수취인·주문번호 검색", key=f"rs_onl_q_{d_day}",
+                           placeholder="예: 그릭요거트 / 김혜영 / 2026090133")
+        _qs = str(_q or '').strip().lower()
+        _view = [c for c in _cand if not _qs or any(
+            _qs in str(c.get(_k) or '').lower()
+            for _k in ('product_name', 'recipient', 'order_no'))]
+        if not _view:
+            st.caption("검색 결과가 없습니다.")
+            return
+
+        # 온라인가 기본값 — 매장가를 쓰면 안 된다(온라인가가 7~17% 비싸다).
+        try:
+            _sug = {str(c.get('order_no') or ''): c
+                    for c in (suggest_online_candidates(_view) or [])}
+        except Exception:
+            _sug = {}
+        _rows = [{
+            '지정': False,
+            '판매자': dmap.get(str(c.get('username') or ''), str(c.get('username') or '')),
+            '주문번호': str(c.get('order_no') or ''),
+            '수취인': str(c.get('recipient') or ''),
+            '상품명': str(c.get('product_name') or '')[:38],
+            '수량': int(c.get('qty') or 1),
+            '단가(온라인)': int((_sug.get(str(c.get('order_no') or '')) or {})
+                            .get('online_price') or 0),
+            '참고·매장가': int((_sug.get(str(c.get('order_no') or '')) or {})
+                           .get('store_price') or 0),
+            '메모': '',
+        } for c in _view]
+        _ed = st.data_editor(
+            pd.DataFrame(_rows), use_container_width=True, hide_index=True,
+            key=f"rs_onl_pick_{d_day}",
+            disabled=['판매자', '주문번호', '수취인', '상품명', '참고·매장가'],
+            column_config={
+                '지정': st.column_config.CheckboxColumn(
+                    '지정', help='코스트코 온라인몰에서 사서 코스트코가 직접 보낸 건'),
+                '수량': st.column_config.NumberColumn('수량', format='%d',
+                                                    min_value=1, step=1),
+                '단가(온라인)': st.column_config.NumberColumn(
+                    '단가(온라인)', format='%d', min_value=0, step=10,
+                    help='코스트코 온라인몰 결제 단가. 공유DB 온라인가를 채워 뒀습니다 — '
+                         '할인·쿠폰이 붙었다면 실제 결제액으로 고치세요.'),
+                '참고·매장가': st.column_config.NumberColumn(
+                    '참고·매장가', format='%d',
+                    help='매장 가격입니다. 온라인몰은 보통 이보다 비쌉니다 — 참고용.'),
+                '메모': st.column_config.TextColumn('메모'),
+            })
+
+        _recs = _ed.to_dict('records')
+        _picks, _zero = [], 0
+        for _i, _r in enumerate(_recs):
+            if not _r.get('지정'):
+                continue
+            _up = int(_r.get('단가(온라인)') or 0)
+            if _up <= 0:
+                _zero += 1
+                continue
+            _c = _view[_i]
+            _picks.append({
+                'username': str(_c.get('username') or ''),
+                'order_no': str(_c.get('order_no') or ''),
+                'settle_date': str(d_day),
+                'costco_no': str(_c.get('costco_no') or ''),
+                'naver_no': str(_c.get('product_no') or ''),
+                'product_name': str(_c.get('product_name') or ''),
+                'recipient': str(_c.get('recipient') or ''),
+                'qty': max(1, int(_r.get('수량') or 1)),
+                'unit_price': _up, 'prev_cost': 0,
+                'memo': str(_r.get('메모') or '').strip(),
+            })
+        if _zero:
+            st.warning(f"⚠️ 지정했지만 **단가가 0원인 {_zero}건**은 제외됩니다 — "
+                       "0원으로 청구하면 그만큼 그대로 손실입니다.")
+        if _picks:
+            st.markdown(f"**{len(_picks)}건 · 청구액 "
+                        f"{fmt(sum(p['unit_price'] * p['qty'] for p in _picks))}원** — "
+                        "택배비·포장비는 붙지 않습니다.")
+        if st.button(f"🛒 {len(_picks)}건을 온라인몰 직배송으로 **청구 추가**",
+                     key=f"rs_onl_pick_apply_{d_day}", type="primary",
+                     disabled=not _picks, use_container_width=True):
+            try:
+                _saved = _op.mark(_picks, created_by=USERNAME)
+            except Exception as _e:
+                st.error(f"저장 실패: {_e}")
+                _saved = 0
+            if _saved:
+                # 미발송 주문이라 unmatched_orders에 없다 → 인덱스 제거는 없다
+                _merge_matches(alloc, build_online_rows(_picks, str(d_day)), [])
+                st.session_state['_rs_onl_open'] = True
+                st.success(f"✅ {_saved}건을 온라인몰 직배송으로 지정했습니다 — "
+                           "물건값이 청구되고 택배비·포장비는 빠집니다.")
+                st.rerun()
+
+
 def _render_unmatched_panel(alloc, dmap, d_day, USERNAME, receipt_items):
     """📋 영수증에 없는 발송건 — 한 곳에서 분류하고 처리한다.
 
@@ -1743,11 +1881,14 @@ def _render_unmatched_panel(alloc, dmap, d_day, USERNAME, receipt_items):
       영수증에 없다는 사실만으로는 그게 무엇인지 알 수 없다. 그러니 먼저 '매칭 안 됨'
       으로 묶어 두고, 관리자가 건별로 무엇이었는지 고르게 한다.
 
-    처리 셋:
-      🛒 온라인몰 — 코스트코가 고객에게 직접 보낸 건. 택배비에서 빠진다.
+    처리 둘:
       📦 재고 출고 — 전에 사 둔 재고에서 나간 건. **누구 재고인지 고른다.**
                     남의 재고면 보유자 웃돈이 붙는다(재고 장부와 같은 규칙).
-      ✍️ 금액 지정 — 내품수량이 달라 금액만 안 맞는 건 등.
+      ✍️ 금액 지정 — 내품수량이 달라 금액만 안 맞는 건, 누락분 재발송 등.
+
+    온라인몰은 여기 없다. 코스트코가 직접 보낸 건이라 관리자는 발송하지 않고,
+    따라서 발송건에 온라인몰 건은 있을 수 없다 — 그건 미발송 주문에서 고른다
+    (_render_online_pick_panel).
     """
     _un = list(alloc.get('unmatched_orders') or [])
     if not _un:
@@ -1807,13 +1948,7 @@ def _render_unmatched_panel(alloc, dmap, d_day, USERNAME, receipt_items):
                     _price_by[_c] = int(float(_it.get('단가') or 0))
                 except (TypeError, ValueError):
                     pass
-        try:
-            _onl_cands = {str(c.get('order_no') or ''): c
-                          for c in (suggest_online_candidates(_un) or [])}
-        except Exception:
-            _onl_cands = {}
-
-        _NONE, _ONL, _STK, _AMT = '— 미처리 —', '🛒 온라인몰', '📦 재고 출고', '✍️ 금액 지정'
+        _NONE, _STK, _AMT = '— 미처리 —', '📦 재고 출고', '✍️ 금액 지정'
         _rows, _pn_of = [], []
         for _o in _un:
             _cno = _find_stock_pn(_o)
@@ -1843,15 +1978,15 @@ def _render_unmatched_panel(alloc, dmap, d_day, USERNAME, receipt_items):
                       '참고·영수증가'],
             column_config={
                 '처리': st.column_config.SelectboxColumn(
-                    '처리', options=[_NONE, _ONL, _STK, _AMT], required=True,
-                    help='이 발송건이 무엇이었는지 고르세요'),
+                    '처리', options=[_NONE, _STK, _AMT], required=True,
+                    help='이 발송건이 무엇이었는지 고르세요 — 코스트코가 직접 보낸 '
+                         '온라인몰 건은 발송 기록에 없으므로 여기 나오지 않습니다'),
                 '수량': st.column_config.NumberColumn('수량', format='%d',
                                                     min_value=1, step=1),
                 '금액': st.column_config.NumberColumn(
                     '금액', format='%d', min_value=0, step=100,
-                    help='0으로 두면 자동으로 채웁니다 — 온라인몰은 공유DB 온라인가, '
-                         '재고 출고는 그 재고의 구입가(남의 재고면 웃돈 포함). '
-                         '금액 지정은 직접 적어야 합니다.'),
+                    help='0으로 두면 재고 출고는 그 재고의 구입가(남의 재고면 웃돈 '
+                         '포함)로 자동으로 채웁니다. 금액 지정은 직접 적어야 합니다.'),
                 '재고 보유자': st.column_config.SelectboxColumn(
                     '재고 보유자', options=_own_opts,
                     help='📦 재고 출고일 때만 씁니다. 남의 재고를 빌려 보냈으면 '
@@ -1862,7 +1997,6 @@ def _render_unmatched_panel(alloc, dmap, d_day, USERNAME, receipt_items):
             })
 
         _recs = _ed.to_dict('records')
-        _onl_picks, _onl_idx = [], []
         _rows_new, _row_idx, _zero = [], [], 0
         for _i, _r in enumerate(_recs):
             _how = str(_r.get('처리') or _NONE)
@@ -1875,24 +2009,6 @@ def _render_unmatched_panel(alloc, dmap, d_day, USERNAME, receipt_items):
             _amt = int(_r.get('금액') or 0)
             _memo = str(_r.get('메모') or '').strip()
             _me = str(_o.get('username') or '')
-
-            if _how == _ONL:
-                _c = _onl_cands.get(str(_o.get('order_no') or '')) or {}
-                _up = _amt or int(_c.get('online_price') or 0)
-                if _up <= 0:
-                    _zero += 1
-                    continue
-                _onl_idx.append(_i)
-                _onl_picks.append({
-                    'username': _me, 'order_no': str(_o.get('order_no') or ''),
-                    'settle_date': str(d_day),
-                    'costco_no': str(_o.get('costco_no') or ''),
-                    'naver_no': str(_o.get('naver_no') or ''),
-                    'product_name': str(_o.get('product_name') or ''),
-                    'recipient': str(_o.get('recipient') or ''),
-                    'qty': _qty, 'unit_price': _up,
-                    'prev_cost': int(_o.get('prev_cost') or 0), 'memo': _memo})
-                continue
 
             if _how == _STK:
                 _own = _own_l2u.get(str(_r.get('재고 보유자') or ''), '')
@@ -1935,25 +2051,14 @@ def _render_unmatched_panel(alloc, dmap, d_day, USERNAME, receipt_items):
             st.warning(f"⚠️ 금액이 0원인 {_zero}건은 제외됩니다 — 0원으로 청구하면 "
                        "그만큼 그대로 손실입니다. **금액 칸을 직접 채우세요** "
                        "(재고 현황이 '없음'이면 자동 계산할 값이 없습니다).")
-        _tot_n = len(_onl_picks) + len(_rows_new)
+        _tot_n = len(_rows_new)
         if _tot_n:
-            _sum = (sum(p['unit_price'] * p['qty'] for p in _onl_picks)
-                    + sum(r['amount'] for r in _rows_new))
-            st.markdown(f"**{_tot_n}건 · 청구액 {fmt(_sum)}원**"
-                        + (f"  ·  온라인몰 {len(_onl_picks)}건은 택배비에서 빠집니다"
-                           if _onl_picks else ""))
+            st.markdown(f"**{_tot_n}건 · 청구액 "
+                        f"{fmt(sum(r['amount'] for r in _rows_new))}원**")
         if st.button(f"✅ {_tot_n}건 처리해서 청구에 넣기",
                      key=f"rs_um2_apply_{d_day}", type="primary",
                      disabled=not _tot_n, use_container_width=True):
             _done = 0
-            if _onl_picks:
-                try:
-                    if _op.mark(_onl_picks, created_by=USERNAME):
-                        _merge_matches(alloc, build_online_rows(_onl_picks, str(d_day)),
-                                       _onl_idx)
-                        _done += len(_onl_picks)
-                except Exception as _e:
-                    st.error(f"온라인몰 지정 저장 실패: {_e}")
             if _rows_new:
                 _merge_matches(alloc, _rows_new, _row_idx)
                 _done += len(_rows_new)
