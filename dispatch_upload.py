@@ -176,12 +176,16 @@ def classify_rows(records, colmap, owner_index):
                 break
         if not ono and _ocols:
             ono = _norm_no(rec.get(_ocols[0]))
+        _dm = _DATE_RE.search(str(_g('dispatched_at') or ''))
         item = {
             'order_no': ono,
             'recipient': str(_g('recipient') or '').strip(),
             'product_name': str(_g('product_name') or '').strip(),
             'tracking_no': _norm_no(_g('tracking_no')),
             'courier': str(_g('courier') or '').strip(),
+            # 집화일자 — 택배사가 물건을 받아 간 날. 발송일의 진짜 근거다.
+            'dispatched_at': ('%s-%02d-%02d' % (_dm.group(1), int(_dm.group(2)),
+                                                int(_dm.group(3))) if _dm else ''),
             '_row': i + 1,
         }
         try:
@@ -223,7 +227,45 @@ def existing_dispatch(username, order_nos):
     return out
 
 
-def save_dispatch(by_user, dispatched_at, platform='upload', skip_existing=True):
+def _move_wrong_date(username, rows, target_date):
+    """같은 주문이 **다른 날짜**에 같은 송장으로 기록돼 있으면 그 행을 지운다.
+
+    앱은 일괄발송 버튼을 누른 시각을 발송일로 쓴다. 자정을 넘겨 처리하면 다음
+    날로 기록된다(실측: 9/11 발송 8건이 9/12 00:20에 처리돼 9/12로 저장됐다).
+    택배사 파일의 집화일자가 진짜 발송일이므로 그 날짜로 옮긴다. 새로 만들기만
+    하면 같은 택배가 두 날에 잡혀 택배비가 두 번 청구된다.
+
+    송장번호가 같을 때만 옮긴다 — 송장이 다르면 재발송이라 둘 다 남아야 한다.
+    반환: 옮긴(지운) 행 수
+    """
+    _t = [(str(r.get('order_no') or '').strip(), str(r.get('tracking_no') or '').strip())
+          for r in (rows or [])]
+    _t = [(o, t) for o, t in _t if o and t]
+    if not _t:
+        return 0
+    from db import get_user_db
+    try:
+        conn = get_user_db(username)
+    except Exception:
+        return 0
+    moved = 0
+    try:
+        for _o, _tn in _t:
+            cur = conn.execute(
+                "DELETE FROM dispatch_log WHERE order_no=? AND dispatched_at<>? "
+                "  AND REPLACE(COALESCE(tracking_no,''),'-','')=REPLACE(?,'-','')",
+                (_o, str(target_date), _tn))
+            moved += cur.rowcount
+        conn.commit()
+    except Exception:
+        moved = 0
+    finally:
+        conn.close()
+    return moved
+
+
+def save_dispatch(by_user, dispatched_at, platform='upload', skip_existing=True,
+                  use_row_date=False, move_wrong_date=False):
     """분류 결과를 dispatch_log에 기록. 반환: {username: 저장건수}, 건너뛴 수.
 
     건너뛰기는 **같은 날짜**에 이미 있는 주문만 뺀다. 다른 날짜에 기록이 있다고
@@ -233,23 +275,32 @@ def save_dispatch(by_user, dispatched_at, platform='upload', skip_existing=True)
     되고, 다른 날짜 건은 행이 하나 더 생긴다(재발송이면 그게 맞다).
     """
     from db import log_dispatch_success
-    saved, skipped = {}, 0
+    saved, skipped, moved = {}, 0, 0
     for uname, rows in (by_user or {}).items():
-        _rows = rows
-        if skip_existing:
-            _ex = existing_dispatch(uname, [r['order_no'] for r in rows])
-            _same = {o for o, d in _ex.items() if str(d) == str(dispatched_at)}
-            _rows = [r for r in rows if r['order_no'] not in _same]
-            skipped += len(rows) - len(_rows)
-        if not _rows:
-            continue
-        try:
-            n = log_dispatch_success(uname, _rows, str(dispatched_at), platform=platform)
-        except Exception:
-            n = 0
-        if n:
-            saved[uname] = n
-    return saved, skipped
+        # 행마다 집화일자가 다를 수 있다(여러 날이 한 파일에 섞인 경우).
+        groups = {}
+        for r in rows:
+            _d = (str(r.get('dispatched_at') or '').strip()
+                  if use_row_date else '') or str(dispatched_at)
+            groups.setdefault(_d, []).append(r)
+        for _d, _grp in groups.items():
+            _rows = _grp
+            if move_wrong_date:
+                moved += _move_wrong_date(uname, _grp, _d)
+            if skip_existing:
+                _ex = existing_dispatch(uname, [r['order_no'] for r in _grp])
+                _same = {o for o, dd in _ex.items() if str(dd) == str(_d)}
+                _rows = [r for r in _grp if r['order_no'] not in _same]
+                skipped += len(_grp) - len(_rows)
+            if not _rows:
+                continue
+            try:
+                n = log_dispatch_success(uname, _rows, str(_d), platform=platform)
+            except Exception:
+                n = 0
+            if n:
+                saved[uname] = saved.get(uname, 0) + n
+    return saved, skipped, moved
 
 
 # ── 화면 (Streamlit) ───────────────────────
@@ -459,29 +510,41 @@ def render_panel(dmap, USERNAME):
                     '상품명': u['product_name'][:34], '사유': u.get('_why', '')}
                     for u in _unknown[:200]]), use_container_width=True, hide_index=True)
 
+        # 집화일자 = 택배사가 물건을 받아 간 날. 발송일의 진짜 근거다.
+        #   앱의 일괄발송은 '버튼 누른 시각'을 쓰므로 자정을 넘기면 다음 날로
+        #   기록된다(실측: 9/11 발송 8건이 9/12 00:20 처리 → 9/12로 저장).
+        _c1, _c2 = st.columns(2)
+        _use_row = _c1.checkbox("파일의 집화일자를 발송일로 쓰기", value=bool(_dates),
+                                key="du_rowdate", disabled=not _dates,
+                                help="행마다 파일에 적힌 집화일자로 저장합니다. "
+                                     "여러 날짜가 섞인 파일도 날짜별로 나뉘어 들어갑니다. "
+                                     "끄면 아래에서 고른 날짜 하나로 전부 저장합니다.")
+        _fix = _c2.checkbox("다른 날짜로 잘못 기록된 건 옮기기", value=bool(_dates),
+                            key="du_fixdate",
+                            help="같은 주문이 **같은 송장번호**로 다른 날짜에 기록돼 "
+                                 "있으면 그 기록을 지우고 이 날짜로 옮깁니다. "
+                                 "송장이 다르면 재발송이라 그대로 둡니다. "
+                                 "끄면 그 날짜에도 남아 한 택배가 두 날에 잡힙니다.")
         _skip = st.checkbox("같은 날짜에 이미 있는 주문은 건너뛰기", value=True,
                             key="du_skip",
-                            help="이 날짜에 이미 기록된 주문만 뺍니다. 다른 날짜에 "
-                                 "기록이 있어도 이 날짜로 저장됩니다(재발송이면 그게 "
-                                 "맞습니다). 끄면 같은 날짜 기록까지 이 파일 값으로 "
-                                 "덮어씁니다.")
+                            help="그 날짜에 이미 기록된 주문만 뺍니다.")
         _will = _new_total if _skip else _tot
-        st.caption(f"저장 버튼을 누르면 **{_will}건**이 기록됩니다"
-                   + (f" (건너뛰기 켜짐 — 이미 기록된 {_tot - _new_total}건 제외)"
-                      if _skip and _tot != _will else "")
-                   + (f" (건너뛰기 꺼짐 — 이미 기록된 건도 {_dd}로 넣습니다. 같은 "
-                       f"날짜면 덮어쓰고, 다른 날짜면 한 건 더 쌓입니다)"
-                      if not _skip and _tot != _new_total else ""))
+        st.caption(f"저장 버튼을 누르면 최대 **{_will}건**이 기록됩니다"
+                   + ("  ·  날짜는 **파일의 집화일자**를 씁니다"
+                      if (_use_row and _dates) else
+                      f"  ·  날짜는 **{_dd}** 하나로 저장합니다"))
         if st.button(f"💾 {_will}건 발송 기록 저장", key="du_save", type="primary",
                      disabled=not _by_user or _will <= 0):
-            _saved, _skipped = save_dispatch(_by_user, str(_dd),
-                                                skip_existing=bool(_skip))
+            _saved, _skipped, _moved = save_dispatch(
+                _by_user, str(_dd), skip_existing=bool(_skip),
+                use_row_date=bool(_use_row and _dates),
+                move_wrong_date=bool(_fix))
             _n = sum(_saved.values())
             st.session_state['_du_msg'] = (
                 (f"✅ 발송 기록 {_n}건 저장 — "
                  + " · ".join(f"{dmap.get(u, u)} {c}건" for u, c in _saved.items()))
                 if _n else
-                "ℹ️ 새로 저장된 건이 없습니다 — 파일의 주문이 모두 이미 기록돼 "
-                "있습니다. 날짜를 바꾸려면 '건너뛰기'를 끄고 저장하세요."
-            ) + (f"  ·  ⏭ 이미 있어 건너뜀 {_skipped}건" if _skipped else "")
+                "ℹ️ 새로 저장된 건이 없습니다 — 파일의 주문이 그 날짜에 모두 이미 "
+                "기록돼 있습니다."
+            ) + (f"  ·  🔁 다른 날짜에서 옮긴 건 {_moved}건" if _moved else "")               + (f"  ·  ⏭ 이미 있어 건너뜀 {_skipped}건" if _skipped else "")
             st.rerun()
