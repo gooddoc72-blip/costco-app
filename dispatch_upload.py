@@ -224,14 +224,22 @@ def existing_dispatch(username, order_nos):
 
 
 def save_dispatch(by_user, dispatched_at, platform='upload', skip_existing=True):
-    """분류 결과를 dispatch_log에 기록. 반환: {username: 저장건수}, 건너뛴 수."""
+    """분류 결과를 dispatch_log에 기록. 반환: {username: 저장건수}, 건너뛴 수.
+
+    건너뛰기는 **같은 날짜**에 이미 있는 주문만 뺀다. 다른 날짜에 기록이 있다고
+    빼면 안 된다 — 파일이 "이 날짜에 이 건이 나갔다"고 말하는데 저장을 막는
+    셈이고, 실제로 그것 때문에 9/1 파일 9건 중 1건만 저장된 일이 있었다.
+    dispatch_log는 UNIQUE(order_no, dispatched_at)이라 같은 날짜 중복만 막으면
+    되고, 다른 날짜 건은 행이 하나 더 생긴다(재발송이면 그게 맞다).
+    """
     from db import log_dispatch_success
     saved, skipped = {}, 0
     for uname, rows in (by_user or {}).items():
         _rows = rows
         if skip_existing:
             _ex = existing_dispatch(uname, [r['order_no'] for r in rows])
-            _rows = [r for r in rows if r['order_no'] not in _ex]
+            _same = {o for o, d in _ex.items() if str(d) == str(dispatched_at)}
+            _rows = [r for r in rows if r['order_no'] not in _same]
             skipped += len(rows) - len(_rows)
         if not _rows:
             continue
@@ -421,7 +429,8 @@ def render_panel(dmap, USERNAME):
                 for _o, _d in _ex.items():
                     if str(_d) != str(_dd):
                         _other_dates[str(_d)] = _other_dates.get(str(_d), 0) + 1
-                _new = len(_rows) - len(_ex)
+                # 건너뛰기는 같은 날짜만 뺀다 → 다른 날짜 건은 저장 대상이다
+                _new = len(_rows) - _same
                 _new_total += _new
                 _sum.append({'사용자': dmap.get(_u, _u), '건수': len(_rows),
                              '이 날짜에 이미 있음': _same,
@@ -450,12 +459,12 @@ def render_panel(dmap, USERNAME):
                     '상품명': u['product_name'][:34], '사유': u.get('_why', '')}
                     for u in _unknown[:200]]), use_container_width=True, hide_index=True)
 
-        _skip = st.checkbox("이미 발송 기록이 있는 주문은 건너뛰기", value=True,
+        _skip = st.checkbox("같은 날짜에 이미 있는 주문은 건너뛰기", value=True,
                             key="du_skip",
-                            help="주문번호만 보고 판단합니다(날짜 무관). 끄면 같은 "
-                                 "날짜 기록은 덮어쓰고, 다른 날짜 기록은 그대로 둔 채 "
-                                 "이 날짜로 한 건 더 쌓입니다 — 재발송건을 넣을 때 "
-                                 "끄세요.")
+                            help="이 날짜에 이미 기록된 주문만 뺍니다. 다른 날짜에 "
+                                 "기록이 있어도 이 날짜로 저장됩니다(재발송이면 그게 "
+                                 "맞습니다). 끄면 같은 날짜 기록까지 이 파일 값으로 "
+                                 "덮어씁니다.")
         _will = _new_total if _skip else _tot
         st.caption(f"저장 버튼을 누르면 **{_will}건**이 기록됩니다"
                    + (f" (건너뛰기 켜짐 — 이미 기록된 {_tot - _new_total}건 제외)"
