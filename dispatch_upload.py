@@ -16,6 +16,7 @@ UNIQUE(order_no, dispatched_at)라 같은 파일을 두 번 올려도 중복되�
 """
 import glob
 import os
+import re
 import sqlite3
 
 from db_core import DATA_DIR
@@ -27,9 +28,17 @@ COLUMN_HINTS = {
     'recipient':   ('수취인명', '수취인', '받는분', '수령인', 'recipient'),
     'product_name': ('상품명', '제품명', 'product', 'item'),
     'qty':         ('수량', 'qty', 'quantity'),
-    'courier':     ('택배사', '배송사', 'courier'),
-    'dispatched_at': ('발송일', '출고일', '발송처리일', '배송일'),
+    # '배송사'를 후보에서 뺐다 — CJ 파일의 '배송사업담당'(담당 조직)에 부분일치해
+    # 택배사 칸에 사람 조직명이 들어갔다. 택배사 열이 없는 파일이 대부분이고,
+    # 틀린 값이 들어가느니 비는 편이 낫다.
+    'courier':     ('택배사', 'courier', '배송사명'),
+    # 택배사 파일은 '접수일자'(집화일)를 쓴다. 이 열을 못 읽으면 발송일이 오늘로
+    # 잡혀 그날 택배비가 통째로 어긋난다.
+    'dispatched_at': ('발송일', '출고일', '발송처리일', '접수일자', '집화일자', '배송일'),
 }
+
+#: 날짜로 읽을 값의 형태 — '2026-09-01', '2026/09/01', '2026-09-01 14:00:29'
+_DATE_RE = re.compile(r'(20\d{2})[-/.](\d{1,2})[-/.](\d{1,2})')
 
 
 def _norm_no(v):
@@ -85,14 +94,33 @@ def guess_columns(headers):
     _low = {h: str(h).strip().lower().replace(' ', '') for h in _h}
     out = {}
     for key, hints in COLUMN_HINTS.items():
-        for hint in hints:
-            _hi = hint.lower().replace(' ', '')
-            # 완전일치 우선, 없으면 부분일치
-            hit = next((h for h in _h if _low[h] == _hi), None) \
-                or next((h for h in _h if _hi in _low[h]), None)
-            if hit:
-                out[key] = hit
-                break
+        _hs = [hint.lower().replace(' ', '') for hint in hints]
+        # 모든 후보의 **완전일치**를 먼저 본다. 후보별로 완전→부분을 돌리면
+        # 앞 후보의 부분일치가 뒤 후보의 완전일치를 이겨 엉뚱한 열이 잡힌다.
+        hit = next((h for _hi in _hs for h in _h if _low[h] == _hi), None) \
+            or next((h for _hi in _hs for h in _h if _hi in _low[h]), None)
+        if hit:
+            out[key] = hit
+    return out
+
+
+def file_dates(records, headers):
+    """파일에서 읽은 발송일 → {'YYYY-MM-DD': 행수}. 못 읽으면 빈 dict.
+
+    발송일을 사람이 매번 고르게 두면 기본값(오늘)으로 저장하는 사고가 난다.
+    파일이 이미 날짜를 들고 있으므로 그걸 기본값으로 올린다.
+    """
+    _g = guess_columns(headers)
+    col = _g.get('dispatched_at')
+    if not col:
+        return {}
+    out = {}
+    for r in (records or []):
+        m = _DATE_RE.search(str(r.get(col) or ''))
+        if not m:
+            continue
+        d = '%s-%02d-%02d' % (m.group(1), int(m.group(2)), int(m.group(3)))
+        out[d] = out.get(d, 0) + 1
     return out
 
 
@@ -320,32 +348,60 @@ def render_panel(dmap, USERNAME):
             st.warning("⚠️ 이 파일의 어느 열도 우리 주문번호와 맞지 않습니다 — "
                        "**상품주문번호**가 들어 있는 열인지, 그리고 그 주문들이 "
                        "일일 주문 수집으로 들어와 있는지 확인하세요.")
-        st.markdown("**열 매핑** — 자동으로 찾은 값이 맞는지 확인하세요")
-        _m1, _m2, _m3 = st.columns(3)
+        # 열 매핑은 접어 둔다 — 주문번호 열은 값으로 찾으므로 사람이 확인할 일이
+        # 거의 없다. 매번 6개 드롭다운을 보여 주면 진짜 확인할 것(날짜·건수)이 묻힌다.
         _opts = ['(없음)'] + [str(c) for c in _cols]
+        _need_fix = not _guess.get('order_no')
+        with st.expander("⚙️ 열 매핑 — 자동 인식 결과 (고칠 일이 있을 때만 여세요)",
+                         expanded=_need_fix):
+            _m1, _m2, _m3 = st.columns(3)
 
-        def _pick(col, label, key, need=False):
-            _d = _guess.get(key)
-            _i = _opts.index(str(_d)) if _d and str(_d) in _opts else 0
-            _v = col.selectbox(label + (" *" if need else ""), _opts, index=_i,
-                               key=f"du_col_{key}")
-            return None if _v == '(없음)' else _v
+            def _pick(col, label, key, need=False):
+                _d = _guess.get(key)
+                _i = _opts.index(str(_d)) if _d and str(_d) in _opts else 0
+                _v = col.selectbox(label + (" *" if need else ""), _opts, index=_i,
+                                   key=f"du_col_{key}")
+                return None if _v == '(없음)' else _v
 
-        _cm = {
-            'order_no':     _pick(_m1, "주문번호", 'order_no', need=True),
-            'tracking_no':  _pick(_m2, "송장번호", 'tracking_no'),
-            'recipient':    _pick(_m3, "수취인", 'recipient'),
-            'product_name': _pick(_m1, "상품명", 'product_name'),
-            'qty':          _pick(_m2, "수량", 'qty'),
-            'courier':      _pick(_m3, "택배사", 'courier'),
-            'order_no_alt': _alt,          # 스토어가 섞였을 때 함께 볼 열
-        }
+            _cm = {
+                'order_no':     _pick(_m1, "주문번호", 'order_no', need=True),
+                'tracking_no':  _pick(_m2, "송장번호", 'tracking_no'),
+                'recipient':    _pick(_m3, "수취인", 'recipient'),
+                'product_name': _pick(_m1, "상품명", 'product_name'),
+                'qty':          _pick(_m2, "수량", 'qty'),
+                'courier':      _pick(_m3, "택배사", 'courier'),
+                'order_no_alt': _alt,      # 스토어가 섞였을 때 함께 볼 열
+            }
         if not _cm.get('order_no'):
-            st.error("⚠️ **주문번호** 열을 지정해야 분류할 수 있습니다.")
+            st.error("⚠️ **주문번호** 열을 지정해야 분류할 수 있습니다. "
+                     "위 **⚙️ 열 매핑**을 열어 지정하세요.")
             return
+        st.caption("🔗 인식된 열 — "
+                   + " · ".join(f"{_k}={_cm.get(_v) or '없음'}" for _k, _v in
+                                (('주문번호', 'order_no'), ('송장', 'tracking_no'),
+                                 ('수취인', 'recipient'), ('택배사', 'courier'))))
 
-        _dd = st.date_input("발송일 (청구 귀속일)", value=date.today(), key="du_date",
-                            help="이 날짜로 발송 기록이 남고, 그날 청구에 잡힙니다.")
+        # 발송일은 파일에서 읽는다. 기본값을 오늘로 두면 9/1 파일을 올리고도
+        # 오늘 발송으로 저장돼 그날 택배비가 통째로 어긋난다(실제로 그럴 뻔했다).
+        _dates = file_dates(_recs0, _cols)
+        if _dates:
+            _top = max(_dates.items(), key=lambda kv: kv[1])[0]
+            _dv = _top
+            if len(_dates) == 1:
+                st.success(f"📅 파일에서 발송일 **{_top}** 을 읽었습니다 "
+                           f"({_dates[_top]}건).")
+            else:
+                st.warning(
+                    "📅 파일에 날짜가 여러 개입니다 — "
+                    + " · ".join(f"{_k} {_v}건" for _k, _v in sorted(_dates.items()))
+                    + ". 아래 날짜 하나로 **전부** 저장되므로, 날짜별로 나눠 올리는 "
+                      "편이 정확합니다.")
+        else:
+            _dv = date.today()
+            st.caption("📅 파일에서 발송일 열을 찾지 못했습니다 — 아래에서 직접 고르세요.")
+        _dd = st.date_input("발송일 (청구 귀속일)", value=_dv, key="du_date",
+                            help="이 날짜로 발송 기록이 남고, 그날 청구에 잡힙니다. "
+                                 "파일에 날짜가 있으면 그 값이 기본으로 들어옵니다.")
 
         _idx, _dup = _idx0, _dup0
         if _dup:
