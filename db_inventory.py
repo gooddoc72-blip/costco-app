@@ -88,6 +88,11 @@ def _ensure_tables(conn):
         memo TEXT DEFAULT '',
         created_at TEXT NOT NULL
     )""")
+    # 정가(할인 전 영수증 단가) — 나중에 붙인 컬럼이라 ALTER로 채운다
+    try:
+        conn.execute("ALTER TABLE inventory_lots ADD COLUMN list_price INTEGER DEFAULT 0")
+    except Exception:
+        pass
     conn.execute("CREATE INDEX IF NOT EXISTS idx_lot_pno ON inventory_lots(product_no, status)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_lot_owner ON inventory_lots(owner)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_lot_recv ON inventory_lots(received_at)")
@@ -319,7 +324,7 @@ def receive_deal_lots(deal_id: int, received_at: str = '', memo: str = '') -> in
 
 def add_lot(product_no: str, product_name: str, owner: str, unit_cost: int,
             qty_packs: int, split_qty: int = 1, received_at: str = '',
-            deal_id: int = 0, memo: str = '') -> int:
+            deal_id: int = 0, memo: str = '', list_price: int = 0) -> int:
     """추천건 없이 재고를 직접 넣는 경로(관리자 수동 입고)."""
     sq = max(1, int(split_qty or 1))
     units = int(qty_packs or 0) * sq
@@ -329,11 +334,12 @@ def add_lot(product_no: str, product_name: str, owner: str, unit_cost: int,
     _ensure_tables(conn)
     cur = conn.execute("""INSERT INTO inventory_lots
         (deal_id, product_no, product_name, owner, unit_cost, split_qty,
-         qty_in, qty_left, received_at, status, memo, created_at)
-        VALUES (?,?,?,?,?,?,?,?,?, 'ACTIVE', ?, ?)""",
+         qty_in, qty_left, received_at, status, memo, created_at, list_price)
+        VALUES (?,?,?,?,?,?,?,?,?, 'ACTIVE', ?, ?, ?)""",
         (int(deal_id or 0), str(product_no or ''), str(product_name or ''), str(owner),
          int(unit_cost or 0) // sq, sq, units, units,
-         received_at or _today(), str(memo or ''), _now()))
+         received_at or _today(), str(memo or ''), _now(),
+         int(list_price or 0) // sq))
     lot_id = cur.lastrowid
     conn.commit()
     conn.close()
@@ -342,7 +348,8 @@ def add_lot(product_no: str, product_name: str, owner: str, unit_cost: int,
 
 def add_lot_units(product_no: str, product_name: str, owner: str,
                   pack_unit_cost: int, qty_units: int, split_qty: int = 1,
-                  received_at: str = '', memo: str = '') -> int:
+                  received_at: str = '', memo: str = '',
+                  pack_list_price: int = 0) -> int:
     """소분 단위 수량으로 직접 입고 (영수증 정산의 '남은 재고'용).
 
     add_lot은 팩 수를 받아 units = 팩수 x split_qty로 환산하는데, 영수증에서
@@ -358,11 +365,12 @@ def add_lot_units(product_no: str, product_name: str, owner: str,
     _ensure_tables(conn)
     cur = conn.execute("""INSERT INTO inventory_lots
         (deal_id, product_no, product_name, owner, unit_cost, split_qty,
-         qty_in, qty_left, received_at, status, memo, created_at)
-        VALUES (?,?,?,?,?,?,?,?,?, 'ACTIVE', ?, ?)""",
+         qty_in, qty_left, received_at, status, memo, created_at, list_price)
+        VALUES (?,?,?,?,?,?,?,?,?, 'ACTIVE', ?, ?, ?)""",
         (0, str(product_no or ''), str(product_name or ''), str(owner),
          int(pack_unit_cost or 0) // sq, sq, units, units,
-         received_at or _today(), str(memo or ''), _now()))
+         received_at or _today(), str(memo or ''), _now(),
+         int(pack_list_price or 0) // sq))
     lot_id = cur.lastrowid
     conn.commit()
     conn.close()
@@ -490,6 +498,7 @@ def get_stock_summary(owner: str = None) -> list:
     sql = """SELECT product_no, product_name, owner,
                     SUM(qty_left) AS qty_left, SUM(qty_in) AS qty_in,
                     MAX(unit_cost) AS unit_cost,
+                    MAX(COALESCE(list_price, 0)) AS list_price,
                     MIN(received_at) AS oldest_at,
                     CAST(julianday('now') - julianday(MIN(received_at)) AS INTEGER) AS age_days
              FROM inventory_lots

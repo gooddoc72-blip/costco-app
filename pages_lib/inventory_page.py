@@ -461,12 +461,22 @@ def _admin_stock():
         st.info("재고가 없습니다.")
     else:
         import pandas as pd
+        _nm3 = _name_map()
         df = pd.DataFrame([{
-            "상품번호": r['product_no'], "상품명": r['product_name'], "보유자": r['owner'],
+            "상품번호": r['product_no'], "상품명": r['product_name'],
+            "보유자": _nm3.get(r['owner'], r['owner']),
             "잔여(개)": r['qty_left'], "입고(개)": r['qty_in'],
+            "정가": int(r.get('list_price') or 0),
+            "구입가": int(r.get('unit_cost') or 0),
+            "할인": max(0, int(r.get('list_price') or 0) - int(r.get('unit_cost') or 0)),
+            "재고금액": int(r.get('unit_cost') or 0) * int(r['qty_left'] or 0),
             "최초입고": r['oldest_at'], "경과": _age_badge(r['age_days']),
         } for r in rows])
-        st.dataframe(df, use_container_width=True, hide_index=True)
+        st.dataframe(df, use_container_width=True, hide_index=True,
+                     column_config={_k: st.column_config.NumberColumn(_k, format='%d')
+                                    for _k in ("정가", "구입가", "할인", "재고금액")})
+        st.caption("정가는 할인 전 영수증 단가, 구입가는 실제 지불 단가입니다 "
+                   "(판매 1개 기준). 이 기능 이전 입고분은 정가가 0입니다.")
 
     st.divider()
     with st.expander("➕ 재고 직접 입고 (추천건 없이)"):
@@ -474,19 +484,22 @@ def _admin_stock():
             c1, c2 = st.columns([2, 1])
             name = c1.text_input("상품명")
             pno = c2.text_input("코스트코 상품번호")
-            c3, c4, c5, c6 = st.columns(4)
+            c3, c4, c5, c6, c7 = st.columns(5)
             users = [u['username'] for u in get_all_users() if u.get('status', 'active') == 'active']
             owner = c3.selectbox("보유자", users) if users else c3.text_input("보유자")
             cost = c4.number_input("구입가(1팩)", min_value=0, step=100)
-            packs = c5.number_input("수량(팩)", min_value=1, step=1, value=1)
-            sq = c6.number_input("소분수", min_value=1, step=1, value=1)
+            lprice = c5.number_input("정가(1팩)", min_value=0, step=100,
+                                     help="할인 전 금액. 0이면 구입가와 같게 봅니다.")
+            packs = c6.number_input("수량(팩)", min_value=1, step=1, value=1)
+            sq = c7.number_input("소분수", min_value=1, step=1, value=1)
             rdate = st.date_input("입고일", value=datetime.now())
             if st.form_submit_button("입고", type="primary"):
                 if not (name.strip() and pno.strip() and owner):
                     st.error("상품명·상품번호·보유자를 채우세요.")
                 else:
                     add_lot(pno.strip(), name.strip(), owner, int(cost), int(packs),
-                            split_qty=int(sq), received_at=rdate.strftime("%Y-%m-%d"))
+                            split_qty=int(sq), received_at=rdate.strftime("%Y-%m-%d"),
+                            list_price=int(lprice or cost))
                     st.success("입고 완료")
                     st.rerun()
 
@@ -633,12 +646,22 @@ def _user_stock(USERNAME, sur):
         st.info("보유 재고가 없습니다. 대량구매 공지에서 요청해 보세요.")
     else:
         import pandas as pd
+        # 얼마짜리를 얼마에 샀는지 — 할인을 얼마나 받았는지 남겨야 나중에
+        # 타인에게 넘길 값을 정하거나 수익을 따질 때 근거가 된다.
         st.dataframe(pd.DataFrame([{
             "상품번호": r['product_no'], "상품명": r['product_name'],
             "잔여(개)": r['qty_left'], "입고(개)": r['qty_in'],
+            "정가": int(r.get('list_price') or 0),
+            "구입가": int(r.get('unit_cost') or 0),
+            "할인": max(0, int(r.get('list_price') or 0) - int(r.get('unit_cost') or 0)),
+            "재고금액": int(r.get('unit_cost') or 0) * int(r['qty_left'] or 0),
             "최초입고": r['oldest_at'], "경과": _age_badge(r['age_days']),
-        } for r in rows]), use_container_width=True, hide_index=True)
-        st.caption("수량은 판매 1개 기준입니다. 소분 상품이면 1팩이 여러 개로 잡힙니다.")
+        } for r in rows]), use_container_width=True, hide_index=True,
+            column_config={_k: st.column_config.NumberColumn(_k, format='%d')
+                           for _k in ("정가", "구입가", "할인", "재고금액")})
+        st.caption("수량·금액은 **판매 1개 기준**입니다(소분 상품이면 1팩이 여러 개). "
+                   "정가는 할인 전 영수증 단가, 구입가는 실제 지불한 단가입니다. "
+                   "이 기능 이전에 입고된 재고는 정가가 0으로 보입니다.")
 
     st.divider()
     _return_due(USERNAME)

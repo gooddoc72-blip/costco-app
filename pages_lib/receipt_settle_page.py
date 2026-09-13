@@ -1189,6 +1189,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 _picks = [{'costco_no': str(r.get('상품번호') or ''),
                            'name': str(r.get('상품명') or ''),
                            'unit_price': int(r.get('팩단가') or 0),
+                           # 할인 전 정가 — 재고에 함께 남겨 할인액을 볼 수 있게
+                           'list_price': int(r.get('정가') or 0),
                            'split_qty': _split.get(str(r.get('상품번호') or ''), 1),
                            # 재고원장은 소분 단위다 — 팩 수 × split
                            'units_left': int(r.get('수량(팩)') or 1)

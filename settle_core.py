@@ -285,7 +285,9 @@ def receive_leftovers(settle_date, picks):
                 pack_unit_cost=_i(p.get('unit_price')), qty_units=units,
                 split_qty=max(1, _i(p.get('split_qty')) or 1),
                 received_at=str(settle_date),
-                memo=_memo_tag(settle_date) + " · 미배정 잔량")
+                memo=_memo_tag(settle_date) + " · 미배정 잔량",
+                # 정가(할인 전) — 얼마짜리를 얼마에 샀는지 재고에도 남긴다
+                pack_list_price=_i(p.get('list_price')))
             if lid:
                 res['ok'] += 1
             else:
