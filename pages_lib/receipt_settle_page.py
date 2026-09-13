@@ -1001,8 +1001,13 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             _k = str(r.get('via') or '')
             _via_cnt[_k] = _via_cnt.get(_k, 0) + 1
         if _via_cnt:
+            # 건수만으로는 '재고에서 얼마가 나갔나'를 알 수 없다. 금액을 같이 적는다.
+            _via_amt = {}
+            for r in rows:
+                _k2 = str(r.get('via') or '')
+                _via_amt[_k2] = _via_amt.get(_k2, 0) + int(r.get('amount') or 0)
             st.caption("매칭 경로 — " + " · ".join(
-                f"{_via_lbl.get(k, k or '기타')} {v}건"
+                f"{_via_lbl.get(k, k or '기타')} {v}건 ({fmt(_via_amt.get(k, 0))}원)"
                 for k, v in sorted(_via_cnt.items(), key=lambda kv: -kv[1])))
         _cy = alloc.get('carry') or {}
         if _cy.get('scanned'):
@@ -1969,20 +1974,35 @@ def _render_reconcile(receipt_items, alloc, goods_total, d_day):
     if _r_total <= 0:
         return False, ''
 
-    _onl_amt = sum(int(r.get('amount') or 0) for r in (alloc.get('rows') or [])
-                   if str(r.get('via') or '') == 'online')
-    _goods = int(goods_total or 0) - _onl_amt
+    # **그날 영수증으로 산 물건이 아닌 것은 대조에서 뺀다.**
+    #   온라인몰 = 코스트코가 직접 보낸 건, 재고 출고 = 전에 사 둔 물건.
+    #   둘 다 양변에 들어갈 자리가 없다. 안 빼면 배치 금액만 커져
+    #   "영수증보다 많다"는 확인 요구가 뜨는데, 그건 틀린 게 아니라
+    #   재고에서 나갔다는 뜻이다 — 확인을 받을 게 아니라 그렇게 표시해야 한다.
+    _off = {}
+    for r in (alloc.get('rows') or []):
+        _v = str(r.get('via') or '')
+        if _v in ('online', 'stock'):
+            _off[_v] = _off.get(_v, 0) + int(r.get('amount') or 0)
+    _onl_amt = _off.get('online', 0)
+    _stk_amt = _off.get('stock', 0)
+    _goods = int(goods_total or 0) - _onl_amt - _stk_amt
     _rest = _r_total - _goods
 
     st.markdown("##### 🧮 영수증 ↔ 배치 대조")
     m1, m2, m3 = st.columns(3)
     m1.metric("영수증 합계", f"{fmt(_r_total)}원", f"{len(receipt_items or [])}종")
-    m2.metric("이번 정산 물건값", f"{fmt(_goods)}원")
+    m2.metric("그날 영수증분 청구", f"{fmt(_goods)}원")
     m3.metric("배정 대기", f"{fmt(_rest)}원", delta_color="off")
-    if _onl_amt:
-        st.caption(f"🛒 위 숫자에는 **코스트코 온라인몰 직배송 {fmt(_onl_amt)}원**이 "
-                   "빠져 있습니다 — 매장 영수증으로 산 물건이 아니라 대조 대상이 "
-                   f"아닙니다. 실제 청구액은 {fmt(int(goods_total or 0))}원입니다.")
+    if _onl_amt or _stk_amt:
+        _parts = []
+        if _stk_amt:
+            _parts.append(f"📦 **재고 출고 {fmt(_stk_amt)}원**")
+        if _onl_amt:
+            _parts.append(f"🛒 **온라인몰 직배송 {fmt(_onl_amt)}원**")
+        st.caption(" · ".join(_parts) + "은 위 대조에서 빠져 있습니다 — "
+                   "그날 영수증으로 산 물건이 아니라 대조 대상이 아닙니다. "
+                   f"**실제 청구액은 {fmt(int(goods_total or 0))}원**입니다.")
 
     if _rest > 0:
         # 왜 남았는지까지 말해 준다. '남았다'만으로는 실수인지 정상인지 알 수 없다.
@@ -2005,12 +2025,14 @@ def _render_reconcile(receipt_items, alloc, goods_total, d_day):
                           f"(절반 미만). 매칭이 덜 된 것은 아닌지 확인하세요.")
         return False, ''
     elif _rest < 0:
+        # 재고·온라인몰은 위에서 이미 뺐다. 그래도 넘친다면 그날 영수증이 일부만
+        # 올라왔거나 금액을 잘못 지정한 것이므로 그때만 확인을 받는다.
         st.warning(
-            f"⚠️ 배치 금액이 영수증보다 **{fmt(-_rest)}원 많습니다**. "
-            "이전 구입분(재고)에서 나간 주문이 섞였거나, 그날 영수증이 일부만 "
-            "업로드된 것입니다. 위 **매칭 경로**에서 '재고 이월'이 몇 건인지 확인하세요.")
-        return True, (f"배치 금액이 영수증보다 **{fmt(-_rest)}원 많습니다.** "
-                      "재고 이월이 섞였다면 정상이지만, 영수증이 일부만 올라온 것이라면 "
+            f"⚠️ 영수증분 청구가 영수증 합계보다 **{fmt(-_rest)}원 많습니다**. "
+            "재고 출고·온라인몰은 이미 뺀 금액이라, 그날 영수증이 일부만 올라왔거나 "
+            "금액을 잘못 지정한 것입니다.")
+        return True, (f"영수증분 청구가 영수증 합계보다 **{fmt(-_rest)}원 많습니다.** "
+                      "재고·온라인몰은 이미 제외했으므로, 영수증이 일부만 올라온 것이라면 "
                       "그 금액이 그대로 잘못 청구됩니다.")
     else:
         st.success("영수증 금액이 전부 이번 정산에 들어갑니다 — 남은 물건이 없습니다.")
