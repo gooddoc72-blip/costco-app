@@ -1422,6 +1422,22 @@ def _unmatch_rows(alloc, keys, receipt_items):
         _st[_d] = [r for r in _st[_d] if (r.get('username'), r.get('order_no')) not in keys]
         st.session_state['rs_sticky'] = _st
 
+    # 온라인몰로 지정한 건은 원장(db_online_purchase)에도 적혀 있다. 거기서 지우지
+    # 않으면 미리보기를 다시 누를 때 _online_restored가 그대로 되살려 놓는다 —
+    # 끊었는데 되살아나니 잘못 지정한 건을 고칠 방법이 없었다.
+    # 원장에서 빠지면 택배비 제외도 함께 풀린다(매장 발송이었으므로 그게 맞다).
+    _onl_by_u = {}
+    for r in _drop:
+        if str(r.get('via') or '') != 'online':
+            continue
+        _onl_by_u.setdefault(str(r.get('username') or ''), []).append(
+            str(r.get('order_no') or ''))
+    for _u, _onos in _onl_by_u.items():
+        try:
+            _op.unmark(_u, _onos)
+        except Exception:
+            pass
+
     # 주문 되돌리기 — 관리자 메모 배정(memo)은 원래 주문이 없으므로 뺀다
     _have = {(o.get('username'), o.get('order_no'))
              for o in alloc.get('unmatched_orders', [])}
@@ -1776,7 +1792,8 @@ def _render_unmatch_panel(alloc, dmap, receipt_items):
     _via_lbl = {'number': '상품번호', 'name': '상품명 유사도', 'stock': '재고 이월',
                 'carry': '미정산 이월', 'shopping': '장보기 목록',
                 'shopping-name': '장보기 이름', 'manual': '수동', 'ai': 'AI',
-                'order': '주문 코스트코번호', 'memo': '직접 배정'}
+                'order': '주문 코스트코번호', 'memo': '직접 배정',
+                'online': '온라인몰 직배송'}
     # 기계가 추측한 것부터 보여준다 — 사람이 고른 건 확인할 이유가 적다
     _risky = {'ai', 'name', 'shopping-name', 'stock'}
     _n_risky = sum(1 for r in _rows if str(r.get('via') or '') in _risky)
@@ -1799,11 +1816,12 @@ def _render_unmatch_panel(alloc, dmap, receipt_items):
                  '실단가': int(r.get('unit_price') or 0),
                  '청구액': int(r.get('amount') or 0),
                  '근거': _via_lbl.get(str(r.get('via') or ''), r.get('via') or ''),
-                 '_u': r.get('username'), '_o': r.get('order_no')} for r in _view]
+                 '_u': r.get('username'), '_o': r.get('order_no'),
+                 '_via': str(r.get('via') or '')} for r in _view]
         _sig = hashlib.md5(
             "|".join(f"{t['_u']}:{t['_o']}" for t in _tbl).encode()).hexdigest()[:8]
         _ed = st.data_editor(
-            pd.DataFrame(_tbl).drop(columns=['_u', '_o']),
+            pd.DataFrame(_tbl).drop(columns=['_u', '_o', '_via']),
             use_container_width=True, hide_index=True, key=f"rs_um_ed_{_sig}",
             disabled=['사용자', '상품명', '수량', '코스트코번호', '실단가', '청구액', '근거'],
             column_config={
@@ -1815,11 +1833,17 @@ def _render_unmatch_panel(alloc, dmap, receipt_items):
         if _picked:
             st.caption("끊을 행 — " + " · ".join(
                 f"{t['사용자']} {t['상품명'][:16]} {fmt(t['청구액'])}원" for t in _picked[:6]))
+        _n_onl = sum(1 for t in _picked if str(t.get('_via') or '') == 'online')
+        if _n_onl:
+            st.caption(f"🛒 그중 **온라인몰 직배송 {_n_onl}건**은 원장에서도 지워집니다 "
+                       "— 택배비 제외도 함께 풀립니다(매장 발송이었다는 뜻이므로 "
+                       "그게 맞습니다).")
         if st.button(f"↩️ 선택한 {len(_picked)}건 매칭 끊기", key="rs_um_apply",
                      disabled=not _picked):
             _k = {(t['_u'], t['_o']) for t in _picked}
             _cnt = _unmatch_rows(alloc, _k, receipt_items)
-            st.success(f"↩️ {_cnt}건을 끊었습니다 — 아래 수동 매칭에서 다시 이으세요.")
+            st.success(f"↩️ {_cnt}건을 끊었습니다 — 위 지정 화면이나 아래 수동 "
+                       "매칭에서 다시 이으세요.")
             st.rerun()
 
 
