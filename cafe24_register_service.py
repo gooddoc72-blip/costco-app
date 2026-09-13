@@ -330,8 +330,22 @@ def register_one(creds, save_tokens, product, margin, target, opts,
         if _q.get('blocked'):
             return {'status': 'fail', 'name': _name, 'code': '', 'code_src': '',
                     'category': '', 'tags': 0, 'price': 0,
-                    'detail': '등록 한도 초과 (%d/%d) — 관리자에게 한도 상향을 요청하세요.'
+                    'detail': '카페24 등록 한도 초과 (%d/%d) — 관리자에게 한도 상향을 요청하세요.'
                               % (_q.get('used', 0), _q.get('limit', 0)),
+                    'reason': 'QUOTA'}
+        # 네이버 등록 한도(누적) — 카페24 카탈로그 한도와 별개다.
+        #   카페24 한도는 '이 카탈로그를 얼마나 썼나', 이건 '그 사용자 스토어에
+        #   우리 프로그램으로 몇 개를 올렸나'. 둘 중 하나라도 소진되면 막는다.
+        try:
+            from db_naver_reg import naver_reg_quota
+            _nq = naver_reg_quota(_tu)
+        except Exception:
+            _nq = {'blocked': False}
+        if _nq.get('blocked'):
+            return {'status': 'fail', 'name': _name, 'code': '', 'code_src': '',
+                    'category': '', 'tags': 0, 'price': 0,
+                    'detail': '네이버 등록 한도 초과 (%d/%d) — 관리자에게 한도 상향을 요청하세요.'
+                              % (_nq.get('used', 0), _nq.get('limit', 0)),
                     'reason': 'QUOTA'}
     # 유료배송이면 배송비를 구매자가 내므로 판매가에 녹이지 않는다
     _dv = naver_api.merge_delivery(opts.get('delivery'))
@@ -466,6 +480,8 @@ def register_one(creds, save_tokens, product, margin, target, opts,
         top_img=opts.get('top_img', ''), bottom_img=opts.get('bottom_img', ''))
 
     _res, _e2 = naver_api.register_product(tid, tsecret, {
+        # 등록 집계용 — 토큰 주인(_tu) 몫으로 세되 누가 대행했는지 남긴다
+        "reg_source": "cafe24", "reg_actor": str(opts.get('actor') or ''),
         "name": _final_name, "sale_price": sale,
         "image_url": _cdn, "category_id": _cid,
         "detail_html": _detail_html,

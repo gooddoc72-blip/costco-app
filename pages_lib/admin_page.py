@@ -193,6 +193,35 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                    if _lim_new else "✅ 한도 해제(무제한)")
                         st.rerun()
 
+                # ── 🛍 네이버 등록 한도(누적) — 사용자 토큰으로 올라간 총량 ──
+                #   카페24 한도와 별개다. 카페24 한도는 '관리자 카탈로그 사용량',
+                #   이건 '그 사용자 스토어에 이 프로그램으로 올린 상품 수'(수동·무인·
+                #   대행 전 경로 합산). 열어준 기능과 무관하게 누구에게나 적용된다.
+                from db_naver_reg import naver_reg_quota
+                _nq = naver_reg_quota(u['username'])
+                _nc1, _nc2 = st.columns([1, 2])
+                _nlim_new = _nc1.number_input(
+                    "네이버 등록 한도 (누적, 0=무제한)", min_value=0, max_value=1000000,
+                    step=50, value=int(_nq['limit'] or 0),
+                    key=f"nvlim_{u['username']}",
+                    help="이 사용자의 네이버 커머스 API 토큰으로 등록할 수 있는 누적 "
+                         "상품 수. 수동등록·무인자동·카페24 대행을 모두 합산합니다. "
+                         "0이면 제한 없음.")
+                with _nc2:
+                    st.write("")
+                    if _nq['limit']:
+                        st.caption(f"현재 **{_nq['used']} / {_nq['limit']}**개 등록 "
+                                   f"(남은 {_nq['remaining']}개)"
+                                   + ("  ·  🚫 한도 소진" if _nq['blocked'] else ""))
+                    else:
+                        st.caption(f"현재 누적 등록 **{_nq['used']}개** · 한도 없음")
+                if int(_nlim_new) != int(_nq['limit'] or 0):
+                    from db_naver_reg import set_naver_reg_limit
+                    set_naver_reg_limit(u['username'], int(_nlim_new))
+                    st.success(f"✅ 네이버 등록 한도 {int(_nlim_new)}개로 저장"
+                               if _nlim_new else "✅ 네이버 등록 한도 해제(무제한)")
+                    st.rerun()
+
                 # ── 🛒 카페24 전용 메뉴(대행등록·코스트코 매칭·동기화) 오픈/숨김 ──
                 _cmo_cur = get_setting(u['username'], 'cafe24_menu_open') == '1'
                 _cmo_new = st.checkbox(
@@ -250,6 +279,83 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     st.success(f"✅ {u['username']}: 택배비 {int(_ship_new):,}원 / "
                                f"박스비 {int(_box_new):,}원 저장")
                     st.rerun()
+
+    # ── 🛍 네이버 등록 집계 (사용자별) ────────────────────────────
+    #   '누가 자기 토큰으로 몇 개 올렸나'를 한 화면에서 본다. 기록 지점은
+    #   naver_api.register_product 한 곳이므로 수동·무인·대행이 모두 잡힌다.
+    st.divider()
+    st.subheader("🛍 네이버 등록 집계 (사용자별)")
+    from db_naver_reg import (naver_reg_summary, list_naver_registrations,
+                              backfill_all, SOURCE_LABELS)
+
+    _nv_c1, _nv_c2, _nv_c3 = st.columns([1, 1, 1.4])
+    _nv_from = _nv_c1.date_input("기간 시작", value=None, key="nvlog_from")
+    _nv_to = _nv_c2.date_input("기간 끝", value=None, key="nvlog_to")
+    with _nv_c3:
+        st.write("")
+        # 이 기능 이전 등록분은 로그에 없어 한도가 0에서 시작한다. products에
+        # 남은 원상품번호로 과거분을 한 번 채워 실사용량에 맞춘다.
+        if st.button("📥 과거 등록분 소급 집계", key="nvlog_backfill",
+                     help="사용자 상품DB의 네이버 원상품번호를 근거로, 이 기능 이전에 "
+                          "등록된 건을 '과거분(소급)'으로 채웁니다. 여러 번 눌러도 "
+                          "중복되지 않습니다."):
+            _bf = backfill_all()
+            if _bf:
+                st.success("✅ 소급 완료 — " + ", ".join(
+                    f"{_k} {_v}건" for _k, _v in _bf.items()))
+            else:
+                st.info("소급할 과거 등록분이 없습니다 (이미 반영됨).")
+
+    _nv_df = str(_nv_from) if _nv_from else ''
+    _nv_dt = str(_nv_to) if _nv_to else ''
+    _nv_rows = naver_reg_summary(_nv_df, _nv_dt)
+    if not _nv_rows:
+        st.info("아직 기록된 네이버 등록이 없습니다. "
+                "(이 기능 이전 등록분은 위 '과거 등록분 소급 집계'로 채울 수 있습니다)")
+    else:
+        _nv_tbl = []
+        for _r in _nv_rows:
+            _bs = _r['by_source']
+            _nv_tbl.append({
+                "사용자": _r['username'] + (f" ({_r['display_name']})"
+                                          if _r['display_name'] else ''),
+                "누적": _r['total'],
+                "기간내": _r['period'] if (_nv_df or _nv_dt) else _r['total'],
+                "수동": _bs.get('manual', 0),
+                "무인": _bs.get('auto', 0),
+                "카페24대행": _bs.get('cafe24', 0),
+                "과거분": _bs.get('backfill', 0),
+                "한도": _r['limit'] or '무제한',
+                "남음": ('—' if _r['remaining'] is None
+                        else ('🚫 소진' if _r['blocked'] else _r['remaining'])),
+                "최근등록": _r['last_at'],
+            })
+        st.dataframe(pd.DataFrame(_nv_tbl), use_container_width=True, hide_index=True)
+        st.caption(f"총 {sum(r['total'] for r in _nv_rows):,}건 · "
+                   f"사용자 {len(_nv_rows)}명  ·  집계 주체는 **토큰 소유자**입니다 "
+                   "(관리자가 대행등록해도 그 사용자 몫으로 셉니다).")
+
+        with st.expander("📋 최근 등록 로그 (건별)", expanded=False):
+            _lg_users = [''] + [r['username'] for r in _nv_rows]
+            _lg_c1, _lg_c2 = st.columns([1, 1])
+            _lg_u = _lg_c1.selectbox("사용자", _lg_users, key="nvlog_user",
+                                     format_func=lambda v: v or "전체")
+            _lg_s = _lg_c2.selectbox(
+                "경로", ['', 'manual', 'auto', 'cafe24', 'backfill'], key="nvlog_src",
+                format_func=lambda v: SOURCE_LABELS.get(v, v) if v else "전체")
+            _lg = list_naver_registrations(_lg_u, source=_lg_s, limit=500)
+            if not _lg:
+                st.caption("해당 조건의 로그가 없습니다.")
+            else:
+                st.dataframe(pd.DataFrame([{
+                    "일시": _x['created_at'], "사용자": _x['username'],
+                    "상품명": _x['product_name'], "원상품번호": _x['origin_no'],
+                    "판매가": _x['sale_price'],
+                    "경로": SOURCE_LABELS.get(_x['source'], _x['source'] or '기타'),
+                    "대행자": _x['actor'] or '—',
+                    "토큰": _x['client_tag'] or '—',
+                } for _x in _lg]), use_container_width=True, hide_index=True)
+                st.caption(f"최근 {len(_lg)}건 (최대 500건)")
 
     st.divider()
     st.subheader("➕ 사용자 직접 추가")

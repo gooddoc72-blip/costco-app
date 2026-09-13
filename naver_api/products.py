@@ -464,6 +464,28 @@ def _clean_product_attributes(attrs):
     return out[:50]
 
 
+# ── 사용자별 등록 기록·한도 훅 ─────────────────────────────────────
+#   naver_api는 DB를 모르는 얇은 래퍼다. 그래서 지연 import + 전면 guard로
+#   db_naver_reg가 없거나 깨져도 등록 자체는 절대 막지 않는다(기록만 빠진다).
+#   한도 초과만은 의도적으로 등록을 막는다 — 그게 한도의 존재 이유다.
+
+def _reg_log_hook(client_id, pno, product_info):
+    try:
+        import db_naver_reg
+        db_naver_reg.log_by_client_id(client_id, pno, product_info)
+    except Exception:
+        pass
+
+
+def _reg_limit_gate(client_id):
+    """한도 초과 시 사유 문자열, 통과면 None."""
+    try:
+        import db_naver_reg
+        return db_naver_reg.block_reason_by_client_id(client_id)
+    except Exception:
+        return None
+
+
 def register_product(client_id, client_secret, product_info):
     """
     네이버 스마트스토어 상품 등록.
@@ -471,9 +493,15 @@ def register_product(client_id, client_secret, product_info):
       name, sale_price, image_url(네이버CDN), category_id
     선택 키:
       stock(default 100), shipping_fee(default 0), detail_content,
-      after_service_tel, origin_code('03'=국내, '04'=해외)
+      after_service_tel, origin_code('03'=국내, '04'=해외),
+      reg_source('manual'|'auto'|'cafe24') / reg_actor — 등록 집계용 경로 표시.
+        payload에는 안 들어가고 db_naver_reg 기록에만 쓰인다. 안 넘기면 manual.
     반환: ({"origin_product_no": str}, error_msg)
     """
+    _blocked = _reg_limit_gate(client_id)
+    if _blocked:
+        return None, _blocked
+
     token, err = get_token(client_id, client_secret)
     if not token:
         return None, err
@@ -637,6 +665,8 @@ def register_product(client_id, client_secret, product_info):
         if resp.status_code in (200, 201):
             data = resp.json()
             pno = str(data.get("originProductNo") or data.get("productNo") or "")
+            if pno:
+                _reg_log_hook(client_id, pno, product_info)
             return {"origin_product_no": pno}, None
         return None, f"상품 등록 실패({resp.status_code}): {_format_naver_err(resp)}"
 

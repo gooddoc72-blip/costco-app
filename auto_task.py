@@ -1622,6 +1622,7 @@ def run_cafe24_register_task(username="admin", limit=None, target=None,
         'gen_tags':   get_global_setting('cafe24_register_gen_tags', '1') == '1',
         'opt_name':   get_global_setting('cafe24_register_opt_name', '1') == '1',
         'ai_key': _ai, 'gemini_key': _gai, 'ad_creds': _ad_creds,
+        'actor': username,   # 대행 집계용(등록 몫은 대상 사용자)
     }
     # 공통 상단/하단 고정 이미지 폴백 — 대상 사용자에게 없으면 실행 계정(관리자) 것
     _admin_ts = get_user_settings(username) or {}

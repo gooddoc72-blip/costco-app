@@ -40,6 +40,9 @@ auto_task.py            # 자동화 태스크 (cron)
 cafe24_api.py           # 카페24 Admin API 클라이언트
 cafe24_register_service.py  # 카페24→네이버 대행등록 1건 로직 (UI·크론 공용)
 db_cafe24_queue.py      # 카페24 대행등록 배치 대기열 (auth.db)
+db_naver_reg.py         # 네이버 등록 사용자별 기록·한도 (auth.db/naver_register_log)
+                        #   기록 지점은 naver_api.register_product 한 곳 — 토큰으로
+                        #   주인을 되짚어 수동·무인·대행 전 경로를 자동 집계
 pages_lib/
   profit_calc_page.py   # 수익계산 탭
   order_upload_page.py  # 주문 업로드 탭

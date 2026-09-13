@@ -774,6 +774,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                             'gen_tags': True, 'opt_name': True,
                             'ai_key': _ag_ai, 'gemini_key': _ag_gai,
                             'ad_creds': _ad_creds,
+                            'actor': USERNAME,   # 대행 집계용(등록 몫은 대상 사용자)
                         }
                         _ag_target = {'api_id': _ag_tid, 'api_secret': _ag_tsecret,
                                       'as_tel': _ag_tas}

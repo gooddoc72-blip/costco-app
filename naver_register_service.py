@@ -344,7 +344,8 @@ def register_one(username, api_id, api_secret, product, cat_id, opts=None):
     """크롤링 상품 1건을 네이버에 등록.
     대표+추가이미지 CDN 업로드 → 상세HTML → register_product.
     성공 시 등록완료 표시(upsert_user_private) + shared_products.naver_category_id 갱신.
-    opts: sale_price(필수), as_tel, stock.
+    opts: sale_price(필수), as_tel, stock,
+          source('auto'면 무인 경로로 집계 — 기본 manual), actor(대행자).
     반환: (origin_product_no, err)."""
     opts = opts or {}
     name = (product.get("costco_name") or "").strip()
@@ -532,6 +533,10 @@ def register_one(username, api_id, api_secret, product, cat_id, opts=None):
             pass
 
     res, e2 = naver_api.register_product(api_id, api_secret, {
+        # 등록 집계용 경로 표시 — auto_task는 source='auto'를 넘긴다.
+        # 없으면 화면에서 누른 수동등록(db_naver_reg.DEFAULT_SOURCE).
+        "reg_source":        str(opts.get("source") or "manual"),
+        "reg_actor":         str(opts.get("actor") or username),
         "name":              name,
         "sale_price":        sale,
         "image_url":         rep_cdn,
@@ -578,7 +583,7 @@ def register_one(username, api_id, api_secret, product, cat_id, opts=None):
 def auto_register(username, api_id, api_secret, *, margin=10, max_count=20,
                   open_creds=None, ai_key="", cat_map=None, as_tel="", stock=100,
                   gen_tags=True, optimize_name=True, ai_desc=True, with_spec=True,
-                  exclude_rules=None, log=None):
+                  exclude_rules=None, log=None, source="auto"):
     """미등록 코스트코 상품을 자동 등록.
     - merged에서 naver_product_no 빈 상품만 대상.
     - 제외 규칙(키워드·카테고리·원가·카톤)에 걸린 건은 비용 없이 스킵.
@@ -624,6 +629,23 @@ def auto_register(username, api_id, api_secret, *, margin=10, max_count=20,
             _rd.append(f"카톤 x{exclude_rules['carton_min']}+"
                        + (f" & 원가 {_ccm:,}원+" if _ccm else " (원가무관)"))
         log("제외 규칙 적용: " + " · ".join(_rd))
+
+    # 네이버 등록 한도(관리자 설정) 잔량 — 0이면 아예 돌지 않는다.
+    try:
+        from db_naver_reg import naver_reg_quota
+        _quota = naver_reg_quota(username)
+    except Exception:
+        _quota = {'blocked': False, 'remaining': None}
+    if _quota.get('blocked'):
+        log("⛔ 네이버 등록 한도 소진 (%s/%s) — 자동 등록 중단"
+            % (_quota.get('used', 0), _quota.get('limit', 0)))
+        return {"ok": 0, "fail": 0, "skipped_no_category": 0, "skipped_no_price": 0,
+                "skipped_no_image": 0, "skipped_soldout": 0, "skipped_excluded": 0,
+                "processed": 0, "results": [], "quota_blocked": True}
+    if _quota.get('remaining') is not None and _quota['remaining'] < max_count:
+        log("ℹ️ 네이버 등록 한도 잔량 %d건 — 회당 상한을 %d → %d로 줄임"
+            % (_quota['remaining'], max_count, _quota['remaining']))
+        max_count = _quota['remaining']
 
     out = {
         "ok": 0, "fail": 0,
@@ -697,7 +719,8 @@ def auto_register(username, api_id, api_secret, *, margin=10, max_count=20,
                   "ai_key": ai_key if (gen_tags or optimize_name or ai_desc) else "",
                   "cat_full": cat_full or "",
                   "gen_tags": gen_tags, "optimize_name": optimize_name,
-                  "ai_desc": ai_desc, "with_spec": with_spec})
+                  "ai_desc": ai_desc, "with_spec": with_spec,
+                  "source": source, "actor": username})
         if err or not origin_no:
             out["fail"] += 1
             out["results"].append({"상품명": name, "결과": "fail", "내용": str(err)[:80]})

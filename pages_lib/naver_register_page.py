@@ -248,6 +248,21 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     _nr_unreg = [p for p in _nr_all if not p.get("naver_product_no")]
     _nr_reg   = [p for p in _nr_all if p.get("naver_product_no")]
 
+    # ── 네이버 등록 한도(관리자 설정) — 막히기 전에 미리 보여준다 ──
+    #   한도에 걸리면 등록 버튼이 '한도 초과'로만 실패해 이유를 알 수 없다.
+    try:
+        from db_naver_reg import naver_reg_quota as _nv_quota
+        _nvq = _nv_quota(USERNAME)
+    except Exception:
+        _nvq = {'limit': 0}
+    if _nvq.get('limit'):
+        if _nvq.get('blocked'):
+            st.error(f"🚫 네이버 등록 한도 소진 — 누적 {_nvq['used']}/{_nvq['limit']}개. "
+                     "관리자에게 한도 상향을 요청하세요. (등록 버튼이 실패합니다)")
+        else:
+            st.caption(f"🛍 네이버 등록 한도: **{_nvq['used']} / {_nvq['limit']}**개 사용 "
+                       f"(남은 {_nvq['remaining']}개)")
+
     # ── 통계 ────────────────────────────────────────────────────────
     _CART_MAX = 30
     _st1, _st2, _st3, _st4 = st.columns(4)
