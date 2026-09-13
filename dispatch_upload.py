@@ -235,6 +235,9 @@ def render_panel(dmap, USERNAME):
     """
 
     with st.expander("🚚 발송 파일 업로드 — 주문번호로 사용자 분류", expanded=False):
+        _msg = st.session_state.pop('_du_msg', None)
+        if _msg:
+            st.success(_msg)
         st.caption(
             "전체 발송내역 파일(엑셀·CSV)을 올리면 **주문번호**로 각 사용자에게 나눠 "
             "발송 기록에 넣습니다. 이후 영수증 정산이 그 발송건에 매입가를 채웁니다. "
@@ -352,14 +355,33 @@ def render_panel(dmap, USERNAME):
 
         _tot = sum(len(v) for v in _by_user.values())
         st.markdown(f"### 분류 결과 — {_tot}건 매칭 · {len(_unknown)}건 미분류")
+        _new_total, _other_dates = 0, {}
         if _by_user:
             _sum = []
             for _u, _rows in sorted(_by_user.items(), key=lambda kv: -len(kv[1])):
                 _ex = existing_dispatch(_u, [r['order_no'] for r in _rows])
+                _same = sum(1 for _d in _ex.values() if str(_d) == str(_dd))
+                _diff = len(_ex) - _same
+                for _o, _d in _ex.items():
+                    if str(_d) != str(_dd):
+                        _other_dates[str(_d)] = _other_dates.get(str(_d), 0) + 1
+                _new = len(_rows) - len(_ex)
+                _new_total += _new
                 _sum.append({'사용자': dmap.get(_u, _u), '건수': len(_rows),
-                             '이미 발송기록 있음': len(_ex),
-                             '새로 저장될 건': len(_rows) - len(_ex)})
+                             '이 날짜에 이미 있음': _same,
+                             '다른 날짜에 기록됨': _diff,
+                             '새로 저장될 건': _new})
             st.dataframe(pd.DataFrame(_sum), use_container_width=True, hide_index=True)
+        # 다른 날짜에 이미 있는 건은 건너뛰기를 켜 두면 조용히 빠진다. 왜 0건
+        # 저장됐는지 화면이 답해야 한다.
+        if _other_dates:
+            st.warning(
+                "⚠️ 파일의 주문 중 **다른 날짜로 이미 기록된 건**이 있습니다 — "
+                + " · ".join(f"{_k} {_v}건" for _k, _v in sorted(_other_dates.items()))
+                + ". 아래 **건너뛰기를 켜 두면 이 건들은 저장되지 않습니다**"
+                  "(현재 기록된 날짜가 유지됩니다). 이 파일의 날짜가 맞다면 건너뛰기를 **끄고** "
+                  "저장하세요 — 발송일이 이 날짜로 덮어써집니다. "
+                  "⚠️ 이미 청구·입금된 날짜의 발송건수가 바뀌므로 청구서와 어긋날 수 있습니다.")
         if _unknown:
             with st.expander(f"❓ 미분류 {len(_unknown)}건 — 어느 사용자 것인지 못 찾음",
                              expanded=False):
@@ -373,13 +395,22 @@ def render_panel(dmap, USERNAME):
         _skip = st.checkbox("이미 발송 기록이 있는 주문은 건너뛰기", value=True,
                             key="du_skip",
                             help="끄면 같은 주문의 발송일을 이 날짜로 덮어씁니다.")
-        if st.button(f"💾 {_tot}건 발송 기록 저장", key="du_save", type="primary",
-                     disabled=not _by_user):
+        _will = _new_total if _skip else _tot
+        st.caption(f"저장 버튼을 누르면 **{_will}건**이 기록됩니다"
+                   + (f" (건너뛰기 켜짐 — 이미 기록된 {_tot - _new_total}건 제외)"
+                      if _skip and _tot != _will else "")
+                   + (f" (건너뛰기 꺼짐 — 이미 기록된 건의 발송일을 {_dd}로 덮어씀)"
+                      if not _skip and _tot != _new_total else ""))
+        if st.button(f"💾 {_will}건 발송 기록 저장", key="du_save", type="primary",
+                     disabled=not _by_user or _will <= 0):
             _saved, _skipped = save_dispatch(_by_user, str(_dd),
                                                 skip_existing=bool(_skip))
             _n = sum(_saved.values())
             st.session_state['_du_msg'] = (
-                f"✅ 발송 기록 {_n}건 저장 — "
-                + " · ".join(f"{dmap.get(u, u)} {c}건" for u, c in _saved.items())
-                + (f"  ·  ⏭ 이미 있어 건너뜀 {_skipped}건" if _skipped else ""))
+                (f"✅ 발송 기록 {_n}건 저장 — "
+                 + " · ".join(f"{dmap.get(u, u)} {c}건" for u, c in _saved.items()))
+                if _n else
+                "ℹ️ 새로 저장된 건이 없습니다 — 파일의 주문이 모두 이미 기록돼 "
+                "있습니다. 날짜를 바꾸려면 '건너뛰기'를 끄고 저장하세요."
+            ) + (f"  ·  ⏭ 이미 있어 건너뜀 {_skipped}건" if _skipped else "")
             st.rerun()
