@@ -565,20 +565,25 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                        f"총수량은 영수증의 '총 판매 상품 수'와 같아야 합니다.")
     if not receipt_items:
         st.info("정산하려면 표에 **코스트코 상품번호 + 실단가(>0)** 가 있는 항목이 최소 1개 필요합니다.")
-        # 매장에 가지 않은 날이 있다. 그날 나간 물건이 전부 코스트코 온라인몰
-        # 직배송이면 영수증이 아예 없는데, 여기서 막으면 그 건들은 어디서도
-        # 청구할 수 없다. 기본은 막되(영수증을 안 올린 실수가 훨씬 흔하다),
+        # 매장에 가지 않은 날이 있다. 그날 나간 물건은 과거에 사 둔 재고이거나
+        # 코스트코 온라인몰 직배송인데, 여기서 막으면 그 건들은 어디서도 청구할
+        # 수 없다. 기본은 막되(영수증을 안 올린 실수가 훨씬 흔하다),
         # 사람이 '그런 날이다'라고 밝히면 열어 준다.
         if not st.checkbox(
-                "🛒 영수증 없이 진행 — 그날 **코스트코 온라인몰 직배송만** 있었습니다",
+                "🧾 영수증 없이 진행 — 매장에 안 간 날입니다 "
+                "(**재고 출고** · **온라인몰 직배송**)",
                 key="rs_no_receipt",
-                help="매장에 가지 않아 영수증이 없는 날입니다. 아래 배치 화면에서 "
-                     "온라인몰 직배송 건만 지정해 정산합니다. 영수증을 올리는 것을 "
-                     "잊은 것이라면 체크하지 마세요."):
+                help="매장에 가지 않아 영수증이 없는 날입니다. 그날 발송건은 "
+                     "과거 구매분(재고)에서 이름으로 찾아 자동 차감되고, 코스트코 "
+                     "온라인몰 직배송 건은 아래에서 지정합니다. "
+                     "영수증 올리는 것을 잊은 것이라면 체크하지 마세요 — "
+                     "그날 산 물건이 재고로 안 잡힙니다."):
             _render_stock_status()
             _render_history(_disp_map(), USERNAME)
             return
-        st.caption("🛒 영수증 없이 진행합니다 — **온라인몰 직배송 지정**만 쓸 수 있습니다.")
+        st.caption("🧾 영수증 없이 진행합니다 — 발송건은 **과거 구매분(재고)에서 자동 "
+                   "차감**되고, 온라인몰 직배송 건은 아래 **🛒 코스트코 온라인몰 직배송 "
+                   "지정**에서 고릅니다.")
     else:
         st.caption(f"✅ 정산 대상 품목 {len(receipt_items)}종")
 
@@ -850,6 +855,13 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     alloc['_stock_carry'] = _nc
             except Exception as _e:
                 st.caption(f"⚠️ 재고 이월 계산 실패: {_e}")
+        # 일일주문 기준 경로는 allocate 안에서 이월이 끝나므로 위 카운터가 안 잡힌다.
+        # 영수증 없는 날엔 이 안내가 유일한 확인 수단이라 여기서 한 번 더 센다.
+        if not alloc.get('_stock_carry'):
+            _sc_n = sum(1 for r in (alloc.get('rows') or [])
+                        if str(r.get('via') or '') == 'stock')
+            if _sc_n:
+                alloc['_stock_carry'] = _sc_n
         st.session_state['rs_alloc'] = alloc
 
     st.session_state['rs_sticky_date'] = str(d_day)
