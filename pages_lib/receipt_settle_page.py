@@ -198,6 +198,14 @@ def _render_price_result():
                        "가격이 저장됩니다.")
 
 
+_VIA_LABEL = {
+    'number': '상품번호', 'name': '상품명 유사도', 'stock': '재고 이월',
+    'carry': '미정산 이월', 'shopping': '장보기 목록', 'shopping-name': '장보기 이름',
+    'manual': '수동', 'ai': 'AI', 'order': '주문 코스트코번호',
+    'memo': '직접 배정', 'online': '온라인몰 직배송', '': '기타',
+}
+
+
 def _disp_map():
     return {u['username']: (u.get('display_name') or u['username']) for u in get_all_users()}
 
@@ -239,6 +247,117 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         if not _sd:
             st.warning("⚠️ 시작일이 없어 **모든 과거 영수증**이 재고로 계산됩니다. "
                        "업로드가 누락된 기간이 섞이면 재고가 실제와 어긋납니다.")
+    # ── 1) 정산일 · 그날 발송건 ───────────────────────────────────
+    #   순서가 중요하다. 청구 기준은 '그날 실제 나간 물건'이다. 발송건을 먼저
+    #   확정하고(누락분은 파일로 채우고) 그 다음에 영수증을 올려 맞춘다.
+    #   전에는 영수증부터 올리게 되어 있어, 발송건이 비어 있는 줄도 모르고
+    #   매칭을 돌리다 그 사용자 청구가 통째로 0원이 되는 일이 있었다.
+    st.divider()
+    st.subheader("📅 1. 정산일 · 그날 발송건")
+    d_day = st.date_input("정산 날짜 (발송일 기준)", value=date.today(), key="rs_day",
+                          help="이 날짜에 실제로 나간 발송건을 영수증과 맞춥니다.")
+    dmap = _disp_map()
+
+    # 기준일보다 이른 날을 정산하면 그날 영수증이 재고에 잡히지 않는다. 조용히
+    # 무시돼 "산 물건이 어디로 갔는지 모르겠다"가 된다 — 반드시 알려 준다.
+    if _sd and str(d_day) < _sd:
+        st.error(
+            f"🚫 **정산일 {d_day} 이 재고 계산 시작일 {_sd} 보다 앞섭니다.** "
+            f"이 날 영수증으로 산 물건은 **재고에 잡히지 않아**, 주문에 안 붙고 남은 금액이 "
+            "어디에도 나타나지 않습니다.\n\n"
+            f"이 날짜를 제대로 정산하려면 위 **⚙️ 재고 계산 시작일**을 **{d_day} 이전**으로 "
+            "바꿔 저장하세요. (배치·청구 자체는 지금도 되지만 남은 재고가 유실됩니다.)")
+
+    # 영수증↔발송 매칭은 발송 기록이 있어야 성립한다. 없으면 매칭이 아니라
+    # 관리자 수작업이 되므로, 어느 사용자가 비어 있는지 먼저 보여준다.
+    try:
+        _cov = _rs.dispatch_coverage(str(d_day))
+    except Exception:
+        _cov = []
+    if _cov:
+        _none = [c for c in _cov if c['orders'] and not c['dispatched']]
+        _c_tot_o = sum(c['orders'] for c in _cov)
+        _c_tot_d = sum(c['dispatched'] for c in _cov)
+        st.markdown(f"**🚚 {d_day} 발송 기록** — 주문 {_c_tot_o}건 중 "
+                    f"발송 **{_c_tot_d}건**")
+        st.dataframe(pd.DataFrame([{
+            '사용자': dmap.get(c['username'], c['username']),
+            '주문': c['orders'], '발송': c['dispatched'],
+            '미발송': max(0, c['orders'] - c['dispatched']),
+            '상태': '✅' if c['dispatched'] else ('⚠️ 발송 기록 없음' if c['orders'] else '-'),
+        } for c in _cov]), use_container_width=True, hide_index=True)
+        # 주문은 있는데 송장등록이 안 된 건 — **보여주기만** 한다.
+        # 송장등록은 사용자가 자기 스토어에서 하는 일이라 관리자가 대신 누르면
+        # 실제 상태와 어긋난다. 관리자에게 필요한 건 '누가 아직 안 했나'다.
+        _pend = [c for c in _cov if c['orders'] > c['dispatched']]
+        if _pend:
+            _pend_n = sum(c['orders'] - c['dispatched'] for c in _pend)
+            with st.expander(f"📮 송장등록 안 된 주문 {_pend_n}건 — 어느 건인지 보기",
+                             expanded=False):
+                st.caption("송장등록은 **각 사용자가 자기 스토어에서** 하는 일입니다. "
+                           "여기서는 아직 안 된 주문이 무엇인지 확인해 해당 사용자에게 "
+                           "알려주세요. 등록이 끝나면 자동으로 발송으로 잡혀 "
+                           "영수증과 매칭됩니다.")
+                _plabels = [f"{dmap.get(c['username'], c['username'])} "
+                            f"— 미등록 {c['orders'] - c['dispatched']}건" for c in _pend]
+                _pk = st.selectbox("사용자", _plabels, key=f"rs_md_u_{d_day}")
+                _pu = _pend[_plabels.index(_pk)]['username']
+                try:
+                    _ulist = _rs.undispatched_orders(_pu, str(d_day))
+                except Exception as _e:
+                    _ulist = []
+                    st.error(f"목록 조회 실패: {_e}")
+                if not _ulist:
+                    st.caption("미등록 주문이 없습니다.")
+                else:
+                    st.dataframe(pd.DataFrame([{
+                        '주문번호': o['order_no'], '수취인': o['recipient'],
+                        '상품명': o['product_name'][:44], '수량': o['qty'],
+                        '코스트코번호': o['costco_no'] or '',
+                    } for o in _ulist]), use_container_width=True, hide_index=True)
+                    st.caption(f"{dmap.get(_pu, _pu)} · {len(_ulist)}건 미등록")
+                    try:
+                        _csv = pd.DataFrame(_ulist).to_csv(index=False).encode('utf-8-sig')
+                        st.download_button("📥 미등록 목록 CSV", data=_csv,
+                                           file_name=f"미등록_{_pu}_{d_day}.csv",
+                                           mime="text/csv", key=f"rs_md_dl_{d_day}_{_pu}")
+                    except Exception:
+                        pass
+
+        if _none:
+            # 사용자들은 대개 오후 6~7시에 송장을 등록한다. 그 전에 정산을 돌리면
+            # 발송이 비어 매칭이 안 되는데, 이건 고장이 아니라 아직 이른 것이다.
+            from datetime import datetime as _dtn
+            _now = _dtn.now()
+            _early = (str(d_day) == _now.strftime('%Y-%m-%d') and _now.hour < 19)
+            st.warning(
+                "⚠️ **발송 기록이 없어 영수증과 매칭할 수 없는 사용자** — "
+                + " · ".join(f"{dmap.get(c['username'], c['username'])} "
+                             f"(주문 {c['orders']}건)" for c in _none[:8])
+                + ("  ·  🕕 사용자들은 보통 **오후 6~7시**에 송장을 등록합니다. "
+                   "지금은 그 전이라 비어 있는 것이 정상입니다 — "
+                   "등록이 끝난 뒤 다시 미리보기를 누르세요."
+                   if _early else
+                   "  ·  바로 아래 **🚚 2. 누락된 발송건 올리기**에 택배사 파일을 올리거나 "
+                   "각 사용자가 송장 등록으로 발송처리하면 매칭 대상이 됩니다. "
+                   "그 전에는 아래에서 손으로 배정할 수밖에 없습니다."))
+
+    st.markdown("##### 🚚 2. 누락된 발송건 올리기")
+    st.caption("위 표에 **발송 기록 없음**이 있으면 택배사 발송 파일을 올려 채우세요. "
+               "주문번호로 사용자에게 자동 분류됩니다.")
+
+    # ── 1-a) 🚚 발송 파일 업로드 — 주문번호로 사용자 분류 ──
+    #   영수증과 발송건을 함께 올려야 각 사용자의 주문건이 정리된다.
+    #   구매내역 정산은 그 결과를 확인·검수만 한다.
+    try:
+        import dispatch_upload as _du
+        _du.render_panel(_disp_map(), USERNAME)
+    except Exception as _e:
+        st.caption(f"⚠️ 발송 파일 업로드 화면을 열지 못했습니다: {_e}")
+
+    st.divider()
+    st.subheader("🧾 3. 영수증 업로드")
+
 
     st.caption(
         "코스트코 영수증 PDF를 올리면 **상품번호로 각 사용자 주문에 배치**하고, "
@@ -330,14 +449,6 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         st.session_state.pop('rs_alloc', None)   # 새 업로드 → 이전 미리보기 초기화
         st.session_state.pop('rs_day', None)     # 새 영수증 → 정산일을 새 영수증 날짜로 재설정
 
-    # ── 1-a) 🚚 발송 파일 업로드 — 주문번호로 사용자 분류 ──
-    #   영수증과 발송건을 함께 올려야 각 사용자의 주문건이 정리된다.
-    #   구매내역 정산은 그 결과를 확인·검수만 한다.
-    try:
-        import dispatch_upload as _du
-        _du.render_panel(_disp_map(), USERNAME)
-    except Exception as _e:
-        st.caption(f"⚠️ 발송 파일 업로드 화면을 열지 못했습니다: {_e}")
 
     # ── 1-b) 📱 영수증 사진 (휴대폰 촬영) — PDF가 없을 때 ──
     #   코스트코에서 장 본 직후 종이 영수증을 찍어 바로 정산할 수 있게 한다.
@@ -587,19 +698,13 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     else:
         st.caption(f"✅ 정산 대상 품목 {len(receipt_items)}종")
 
-    # ── 2) 당일 배치 ── (당일 주문건만 매칭 — 매일 그날 주문에 대해 정산)
+    # ── 4) 영수증 ↔ 발송건 매칭 ──
     st.divider()
-    st.subheader("📅 당일 주문 배치")
+    st.subheader("🔎 4. 정산 매칭")
+
     # 영수증에서 인식된 날짜를 기본 정산일로 (영수증일자 ↔ 주문일자 매칭)
     _rdates = sorted({(it.get('receipt_date') or '')[:10]
                       for it in receipt_items if (it.get('receipt_date') or '')})
-    _def_day = date.today()
-    if _rdates:
-        try:
-            _def_day = date.fromisoformat(_rdates[-1])
-        except Exception:
-            _def_day = date.today()
-    d_day = st.date_input("정산 날짜 (당일 주문 기준)", value=_def_day, key="rs_day")
     # st.date_input은 key가 이미 있으면 value=를 무시한다. 그래서 새 영수증을 올려도
     # 정산 날짜가 앞 영수증 날짜에 머무는 일이 생긴다(9/2 영수증을 올리고 정산했는데
     # 9/1자로 저장됐다). 안내 문구는 "기본 정산일로 설정됨"이라 적혀 있어서 화면만
@@ -624,15 +729,6 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     elif _rdates:
         st.caption(f"🧾 영수증 인식 날짜: **{', '.join(_rdates)}** — 정산 날짜와 일치합니다. "
                    "여러 날짜면 각 날짜별로 나눠 배치하세요.")
-    # 기준일보다 이른 날을 정산하면 그날 영수증이 재고에 잡히지 않는다. 조용히
-    # 무시돼 "산 물건이 어디로 갔는지 모르겠다"가 된다 — 반드시 알려 준다.
-    if _sd and str(d_day) < _sd:
-        st.error(
-            f"🚫 **정산일 {d_day} 이 재고 계산 시작일 {_sd} 보다 앞섭니다.** "
-            f"이 날 영수증으로 산 물건은 **재고에 잡히지 않아**, 주문에 안 붙고 남은 금액이 "
-            "어디에도 나타나지 않습니다.\n\n"
-            f"이 날짜를 제대로 정산하려면 위 **⚙️ 재고 계산 시작일**을 **{d_day} 이전**으로 "
-            "바꿔 저장하세요. (배치·청구 자체는 지금도 되지만 남은 재고가 유실됩니다.)")
     # 코스트코에 가는 날과 주문이 들어온 날은 어긋난다 — 마감(기본 12:00) 이후 주문은
     # 다음날 장을 보므로, 오늘 산 물건의 주문일은 어제(혹은 그 전날)다. 당일만 보면
     # 그 주문들이 통째로 미매칭이 됐다(8/19 실측: 콩담백면은 8/17 주문과 100% 일치).
@@ -671,7 +767,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                    "**🚚 발송건 기준**으로 바꾸세요.")
     elif _by_dispatch and not _disp_n:
         st.warning("⚠️ 이 날 **발송 기록이 없습니다** — 맞출 대상이 없습니다. "
-                   "아래 **🚚 발송 파일 업로드**로 그날 발송건을 먼저 넣으세요.")
+                   "위 **🚚 2. 누락된 발송건 올리기**로 그날 발송건을 먼저 넣으세요.")
 
     if _by_dispatch:
         st.caption(f"**{d_day}** 에 일괄발송(출고)한 주문을, 같은 날 **장보기 목록**을 브리지로 "
@@ -715,79 +811,6 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
               "구매대행 사용자인데 잘못 켜져 있다면 **관리자 › 회원 관리**에서 "
               "'🏪 직접구매 계정' 체크를 끄세요.")
 
-    # 영수증↔발송 매칭은 발송 기록이 있어야 성립한다. 없으면 매칭이 아니라
-    # 관리자 수작업이 되므로, 어느 사용자가 비어 있는지 먼저 보여준다.
-    try:
-        _cov = _rs.dispatch_coverage(str(d_day))
-    except Exception:
-        _cov = []
-    if _cov:
-        _none = [c for c in _cov if c['orders'] and not c['dispatched']]
-        _c_tot_o = sum(c['orders'] for c in _cov)
-        _c_tot_d = sum(c['dispatched'] for c in _cov)
-        st.markdown(f"**🚚 {d_day} 발송 기록** — 주문 {_c_tot_o}건 중 "
-                    f"발송 **{_c_tot_d}건**")
-        st.dataframe(pd.DataFrame([{
-            '사용자': dmap.get(c['username'], c['username']),
-            '주문': c['orders'], '발송': c['dispatched'],
-            '미발송': max(0, c['orders'] - c['dispatched']),
-            '상태': '✅' if c['dispatched'] else ('⚠️ 발송 기록 없음' if c['orders'] else '-'),
-        } for c in _cov]), use_container_width=True, hide_index=True)
-        # 주문은 있는데 송장등록이 안 된 건 — **보여주기만** 한다.
-        # 송장등록은 사용자가 자기 스토어에서 하는 일이라 관리자가 대신 누르면
-        # 실제 상태와 어긋난다. 관리자에게 필요한 건 '누가 아직 안 했나'다.
-        _pend = [c for c in _cov if c['orders'] > c['dispatched']]
-        if _pend:
-            _pend_n = sum(c['orders'] - c['dispatched'] for c in _pend)
-            with st.expander(f"📮 송장등록 안 된 주문 {_pend_n}건 — 어느 건인지 보기",
-                             expanded=False):
-                st.caption("송장등록은 **각 사용자가 자기 스토어에서** 하는 일입니다. "
-                           "여기서는 아직 안 된 주문이 무엇인지 확인해 해당 사용자에게 "
-                           "알려주세요. 등록이 끝나면 자동으로 발송으로 잡혀 "
-                           "영수증과 매칭됩니다.")
-                _plabels = [f"{dmap.get(c['username'], c['username'])} "
-                            f"— 미등록 {c['orders'] - c['dispatched']}건" for c in _pend]
-                _pk = st.selectbox("사용자", _plabels, key=f"rs_md_u_{d_day}")
-                _pu = _pend[_plabels.index(_pk)]['username']
-                try:
-                    _ulist = _rs.undispatched_orders(_pu, str(d_day))
-                except Exception as _e:
-                    _ulist = []
-                    st.error(f"목록 조회 실패: {_e}")
-                if not _ulist:
-                    st.caption("미등록 주문이 없습니다.")
-                else:
-                    st.dataframe(pd.DataFrame([{
-                        '주문번호': o['order_no'], '수취인': o['recipient'],
-                        '상품명': o['product_name'][:44], '수량': o['qty'],
-                        '코스트코번호': o['costco_no'] or '',
-                    } for o in _ulist]), use_container_width=True, hide_index=True)
-                    st.caption(f"{dmap.get(_pu, _pu)} · {len(_ulist)}건 미등록")
-                    try:
-                        _csv = pd.DataFrame(_ulist).to_csv(index=False).encode('utf-8-sig')
-                        st.download_button("📥 미등록 목록 CSV", data=_csv,
-                                           file_name=f"미등록_{_pu}_{d_day}.csv",
-                                           mime="text/csv", key=f"rs_md_dl_{d_day}_{_pu}")
-                    except Exception:
-                        pass
-
-        if _none:
-            # 사용자들은 대개 오후 6~7시에 송장을 등록한다. 그 전에 정산을 돌리면
-            # 발송이 비어 매칭이 안 되는데, 이건 고장이 아니라 아직 이른 것이다.
-            from datetime import datetime as _dtn
-            _now = _dtn.now()
-            _early = (str(d_day) == _now.strftime('%Y-%m-%d') and _now.hour < 19)
-            st.warning(
-                "⚠️ **발송 기록이 없어 영수증과 매칭할 수 없는 사용자** — "
-                + " · ".join(f"{dmap.get(c['username'], c['username'])} "
-                             f"(주문 {c['orders']}건)" for c in _none[:8])
-                + ("  ·  🕕 사용자들은 보통 **오후 6~7시**에 송장을 등록합니다. "
-                   "지금은 그 전이라 비어 있는 것이 정상입니다 — "
-                   "등록이 끝난 뒤 다시 미리보기를 누르세요."
-                   if _early else
-                   "  ·  위 **🚚 발송 파일 업로드**에 송장 파일을 올리거나 "
-                   "각 사용자가 송장 등록으로 발송처리하면 매칭 대상이 됩니다. "
-                   "그 전에는 아래에서 손으로 배정할 수밖에 없습니다."))
 
     _auto_ai = st.checkbox(
         "🤖 남은 미매칭은 AI가 바로 매칭", value=True, key="rs_auto_ai",
@@ -965,10 +988,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             st.caption("**할인액**은 쿠폰(CPN)으로 덜 낸 금액입니다 — 구매금액에는 이미 "
                        "빠져 있습니다. 사용자에게 청구 근거를 설명할 때 쓰세요.")
         # 매칭 경로 내역 — 어떤 근거로 붙었는지 보여야 오매칭을 잡을 수 있다
-        _via_lbl = {'number': '상품번호', 'name': '상품명 유사도', 'stock': '재고 이월',
-                    'carry': '미정산 이월(번호 일치)', 'shopping': '장보기 목록',
-                    'shopping-name': '장보기 이름', 'manual': '수동', 'ai': 'AI',
-                    'memo': '관리자 메모 배정(주문 없음)'}
+        _via_lbl = _VIA_LABEL
         _via_cnt = {}
         for r in rows:
             _k = str(r.get('via') or '')
@@ -1229,31 +1249,53 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             if str(_r3.get('via') or '') == 'online':
                 _u3 = str(_r3.get('username') or '')
                 _onl_by_u[_u3] = _onl_by_u.get(_u3, 0) + int(_r3.get('amount') or 0)
+        # 택배비·포장비는 여기 싣지 않는다 — 별도 청구라 이 화면에서 보면
+        # 청구액에 포함된 것으로 읽힌다.
         _prev = []
         for _u in sorted(_goods, key=lambda k: -_goods[k]):
             _f = _fees.get(_u) or {}
             _prev.append({
                 '판매자': dmap.get(_u, _u),
+                '발송건수': int(_f.get('ship_count') or 0),
                 '청구액(물건값)': int(_goods[_u]),
                 '그중 온라인몰': int(_onl_by_u.get(_u, 0)),
-                '발송': int(_f.get('ship_count') or 0),
-                '참고·택배비': int(_f.get('ship_fee') or 0),
-                '참고·포장비': int(_f.get('pack_fee') or 0),
+                '_u': _u,
             })
         _total = sum(r['청구액(물건값)'] for r in _prev)
-        st.dataframe(pd.DataFrame(_prev), use_container_width=True, hide_index=True,
+        st.dataframe(pd.DataFrame(_prev).drop(columns=['_u']),
+                     use_container_width=True, hide_index=True,
                      column_config={_k: st.column_config.NumberColumn(_k, format='%d')
-                                    for _k in ('청구액(물건값)', '그중 온라인몰',
-                                               '참고·택배비', '참고·포장비')})
-        st.caption("**청구액 = 물건값만입니다.** 택배비·포장비는 청구서에 싣지 않고 "
-                   "별도로 청구합니다 — 오른쪽 두 칸은 그날 발생한 금액을 참고로 "
-                   "보여줄 뿐 정산에 반영되지 않습니다. "
-                   "(택배비 = 발송건수 × 사용자 설정 · 포장비 = 배정액 또는 기본 박스비)")
-        _onl_skip = sum(len((_fees.get(_u) or {}).get('online_skipped') or [])
-                        for _u in _goods)
-        if _onl_skip:
-            st.caption(f"🛒 **발송** 칸에서 코스트코 온라인몰 직배송 **{_onl_skip}건**을 "
-                       "뺐습니다 — 코스트코가 보낸 건이라 택배비·포장비가 들지 않습니다.")
+                                    for _k in ('발송건수', '청구액(물건값)',
+                                               '그중 온라인몰')})
+        st.caption("**청구액 = 물건값만입니다.** 택배비·포장비는 별도로 청구하므로 "
+                   "여기 넣지 않습니다.")
+
+        # 사용자별 발송 리스트 — '이 금액이 어느 발송건에서 나왔나'에 답한다.
+        # 숫자만 보이면 맞는지 확인할 방법이 없어 매번 DB를 뒤져야 했다.
+        if _prev:
+            _plbl = [f"{r['판매자']} — 발송 {r['발송건수']}건 · "
+                     f"{fmt(r['청구액(물건값)'])}원" for r in _prev]
+            with st.expander("📦 사용자별 발송 리스트 — 이 금액이 어느 건에서 나왔나",
+                             expanded=False):
+                _pick = st.selectbox("사용자", _plbl, key=f"rs_prev_u_{d_day}")
+                _pu = _prev[_plbl.index(_pick)]['_u']
+                _mine = [r for r in rows if str(r.get('username') or '') == _pu]
+                if not _mine:
+                    st.caption("이 사용자의 배치 건이 없습니다.")
+                else:
+                    st.dataframe(pd.DataFrame([{
+                        '주문번호': str(r.get('order_no') or ''),
+                        '상품명': str(r.get('product_name') or '')[:40],
+                        '수량': int(r.get('qty') or 1),
+                        '청구액': int(r.get('amount') or 0),
+                        '근거': _VIA_LABEL.get(str(r.get('via') or ''),
+                                             r.get('via') or ''),
+                        '메모': str(r.get('memo') or ''),
+                    } for r in _mine]), use_container_width=True, hide_index=True,
+                        column_config={_k: st.column_config.NumberColumn(_k, format='%d')
+                                       for _k in ('수량', '청구액')})
+                    st.caption(f"{dmap.get(_pu, _pu)} · {len(_mine)}건 · "
+                               f"합계 {fmt(sum(int(r.get('amount') or 0) for r in _mine))}원")
 
         _need_ck, _ck_why = _render_reconcile(receipt_items, alloc, _total, d_day)
 
@@ -1827,11 +1869,7 @@ def _render_unmatch_panel(alloc, dmap, receipt_items):
     _rows = alloc.get('rows') or []
     if not _rows:
         return
-    _via_lbl = {'number': '상품번호', 'name': '상품명 유사도', 'stock': '재고 이월',
-                'carry': '미정산 이월', 'shopping': '장보기 목록',
-                'shopping-name': '장보기 이름', 'manual': '수동', 'ai': 'AI',
-                'order': '주문 코스트코번호', 'memo': '직접 배정',
-                'online': '온라인몰 직배송'}
+    _via_lbl = _VIA_LABEL
     # 기계가 추측한 것부터 보여준다 — 사람이 고른 건 확인할 이유가 적다
     _risky = {'ai', 'name', 'shopping-name', 'stock'}
     _n_risky = sum(1 for r in _rows if str(r.get('via') or '') in _risky)
