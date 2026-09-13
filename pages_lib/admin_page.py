@@ -222,6 +222,33 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                if _nlim_new else "✅ 네이버 등록 한도 해제(무제한)")
                     st.rerun()
 
+                # ── 🤖 AI 월 한도 — 관리자 공용키를 쓰는 만큼 돈이 나간다 ──
+                #   영수증 판독 한 장이 Sonnet vision 호출이라, 한 사용자가 대량으로
+                #   돌리면 청구서는 관리자에게만 온다. 월 단위로 상한을 건다.
+                from db_ai_usage import ai_quota as _ai_quota, set_limit as _ai_setlim
+                _aq = _ai_quota(u['username'])
+                _ac1, _ac2 = st.columns([1, 2])
+                _alim_new = _ac1.number_input(
+                    "AI 월 한도 (원, 0=무제한)", min_value=0, max_value=10_000_000,
+                    step=1000, value=int(_aq['limit'] or 0),
+                    key=f"ailim_{u['username']}",
+                    help="이 사용자가 관리자 AI 키로 쓸 수 있는 월 실비 상한(원). "
+                         "Claude·Gemini 합산이며 매달 1일 자동으로 새로 시작합니다. "
+                         "넘으면 AI 기능만 막히고 나머지 기능은 그대로 씁니다.")
+                with _ac2:
+                    st.write("")
+                    if _aq['limit']:
+                        st.caption(f"이번 달 **{_aq['used']:,} / {_aq['limit']:,}**원 사용 "
+                                   f"(남은 {_aq['remaining']:,}원)"
+                                   + ("  ·  🚫 한도 소진" if _aq['blocked'] else ""))
+                    else:
+                        st.caption(f"이번 달 AI 실비 **{_aq['used']:,}원** · 한도 없음")
+                if int(_alim_new) != int(_aq['limit'] or 0):
+                    _ai_setlim(u['username'], int(_alim_new))
+                    st.success(f"✅ AI 월 한도 {int(_alim_new):,}원으로 저장"
+                               if _alim_new else "✅ AI 월 한도 해제(무제한)")
+                    st.rerun()
+
                 # ── 🛒 카페24 전용 메뉴(대행등록·코스트코 매칭·동기화) 오픈/숨김 ──
                 _cmo_cur = get_setting(u['username'], 'cafe24_menu_open') == '1'
                 _cmo_new = st.checkbox(
@@ -288,6 +315,16 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     st.subheader("🛍 네이버 등록 집계 (사용자별)")
     from pages_lib import _naver_reg_panel
     _naver_reg_panel.render(key_prefix="nvlog")
+
+    # ── 🤖 AI 사용량·비용 (사용자별) ──────────────────────────────
+    #   AI 키는 관리자 전역키 하나를 전 사용자가 공유한다(get_ai_keys가 전역키
+    #   우선). 즉 모든 호출이 관리자에게 과금된다 — 누가 얼마를 쓰는지 본다.
+    st.divider()
+    st.subheader("🤖 AI 사용량·비용 (사용자별)")
+    st.caption("관리자 공용 AI 키로 나간 Claude·Gemini 호출의 실비입니다. "
+               "월 한도는 위 사용자 목록에서 사용자별로 겁니다.")
+    from pages_lib import _ai_usage_panel
+    _ai_usage_panel.render(key_prefix="aiu")
 
     st.divider()
     st.subheader("➕ 사용자 직접 추가")

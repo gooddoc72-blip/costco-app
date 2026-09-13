@@ -41,6 +41,10 @@ cafe24_api.py           # 카페24 Admin API 클라이언트
 cafe24_register_service.py  # 카페24→네이버 대행등록 1건 로직 (UI·크론 공용)
 db_cafe24_queue.py      # 카페24 대행등록 배치 대기열 (auth.db)
 db_naver_reg.py         # 네이버 등록 사용자별 기록·한도 (auth.db/naver_register_log)
+db_ai_usage.py          # AI 사용량 원장·실비 청구·월 한도 (auth.db/ai_usage_log)
+                        #   AI 키는 관리자 전역키를 전 사용자가 공유(get_ai_keys)한다.
+                        #   기록 지점은 ai_service의 claude_complete/claude_vision/
+                        #   _gemini_post 3곳. 귀속은 ai_service.set_current_user()
                         #   기록 지점은 naver_api.register_product 한 곳 — 토큰으로
                         #   주인을 되짚어 수동·무인·대행 전 경로를 자동 집계
 pages_lib/

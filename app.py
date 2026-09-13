@@ -335,6 +335,15 @@ if _sync_sid and not st.session_state.get('_cookie_synced'):
 
 settings = get_all_settings(USERNAME)
 
+# AI 사용량 귀속 — AI 키는 관리자 전역키 하나를 전 사용자가 공유하므로 키로는
+# 누가 썼는지 알 수 없다. 여기서 한 번 세팅하면 이 세션에서 나가는 모든 Claude·
+# Gemini 호출이 이 사용자 몫으로 기록된다(Streamlit은 세션별 스레드 → 안 섞인다).
+try:
+    import ai_service as _ai_svc
+    _ai_svc.set_current_user(USERNAME)
+except Exception:
+    pass
+
 # 카페24 인증 콜백 결과 알림 (OAuth 리다이렉트 처리 후)
 _cf_msg = st.session_state.pop('_cafe24_auth_msg', None)
 if _cf_msg:

@@ -13,13 +13,77 @@ DEFAULT_MODEL = "claude-haiku-4-5-20251001"   # 저비용 — 브리핑 1회 ≈
 VISION_MODEL = "claude-sonnet-5"               # 사진 판독(가격표 등)은 정확도 우선
 
 
+# ── 사용량 귀속·기록·한도 ──────────────────────────────────────────
+#   AI 키는 전 사용자 공용(관리자 전역키)이라 키로는 누가 썼는지 알 수 없다.
+#   그래서 '지금 누구를 위해 도는 중인지'를 여기 들고 있는다.
+#     · 앱: app.py가 로그인 직후 1회 세팅 (Streamlit은 세션별 스레드 → 서로 안 섞인다)
+#     · 크론: auto_task가 태스크마다 대상 사용자로 세팅
+#   세팅되지 않은 경로는 ''로 남아 '(미귀속)'으로 집계된다 — 막지는 않는다.
+import threading as _threading
+
+_CUR = _threading.local()
+
+
+def set_current_user(username):
+    """이후 이 스레드에서 나가는 AI 호출을 이 사용자 몫으로 기록한다."""
+    _CUR.username = str(username or '')
+
+
+def current_user():
+    return getattr(_CUR, 'username', '') or ''
+
+
+def _usage_gate():
+    """월 한도 초과면 사유 문자열, 통과면 None. db 모듈이 없으면 통과."""
+    try:
+        import db_ai_usage
+        return db_ai_usage.block_reason(current_user())
+    except Exception:
+        return None
+
+
+def _track(provider, model, feature, *, in_tokens=0, out_tokens=0,
+           cache_read=0, cache_write=0):
+    """사용량 1건 기록. 기록 실패가 기능을 막아서는 안 되므로 전면 guard."""
+    try:
+        import db_ai_usage
+        db_ai_usage.log_usage(current_user(), provider, model, feature=feature,
+                              in_tokens=in_tokens, out_tokens=out_tokens,
+                              cache_read=cache_read, cache_write=cache_write)
+    except Exception:
+        pass
+
+
+def _track_claude(model, feature, body_json):
+    """Claude 응답 JSON의 usage를 그대로 기록 — 추정이 아니라 실제 과금 토큰."""
+    _u = (body_json or {}).get("usage") or {}
+    _track('claude', model, feature,
+           in_tokens=_u.get("input_tokens") or 0,
+           out_tokens=_u.get("output_tokens") or 0,
+           cache_read=_u.get("cache_read_input_tokens") or 0,
+           cache_write=_u.get("cache_creation_input_tokens") or 0)
+
+
+def _track_gemini(model, feature, body_json):
+    """Gemini usageMetadata. 사고 토큰(thoughtsTokenCount)도 출력으로 과금된다."""
+    _u = (body_json or {}).get("usageMetadata") or {}
+    _track('gemini', model, feature,
+           in_tokens=_u.get("promptTokenCount") or 0,
+           out_tokens=(int(_u.get("candidatesTokenCount") or 0)
+                       + int(_u.get("thoughtsTokenCount") or 0)))
+
+
 def claude_complete(api_key: str, system: str, user_msg: str,
                     max_tokens: int = 1200, model: str = DEFAULT_MODEL,
-                    thinking: dict = None):
+                    thinking: dict = None, feature: str = ''):
     """Claude 메시지 1회 호출. 반환: (text, error).
-    thinking: {"type":"disabled"} 등 전달 시 요청에 포함 (단순작업은 사고 끄면 잘림 방지)."""
+    thinking: {"type":"disabled"} 등 전달 시 요청에 포함 (단순작업은 사고 끄면 잘림 방지).
+    feature: 사용량 집계용 용도 표시('category'·'name'·'desc'·'brief' 등)."""
     if not api_key:
         return None, "Anthropic API 키 미설정 (설정 탭 > 🤖 AI 설정)"
+    _blocked = _usage_gate()
+    if _blocked:
+        return None, _blocked
     try:
         _body = {
             "model": model,
@@ -45,7 +109,9 @@ def claude_complete(api_key: str, system: str, user_msg: str,
             except Exception:
                 _e = r.text[:200]
             return None, f"[{r.status_code}] {_e}"
-        _blocks = r.json().get("content") or []
+        _body_json = r.json()
+        _track_claude(model, feature, _body_json)
+        _blocks = _body_json.get("content") or []
         _text = "".join(b.get("text", "") for b in _blocks if b.get("type") == "text")
         return (_text.strip() or None), (None if _text.strip() else "빈 응답")
     except Exception as e:
@@ -68,7 +134,7 @@ GEMINI_FALLBACK_MODELS = ("gemini-flash-latest", "gemini-3.7-flash", "gemini-2.5
 GEMINI_VISION_MODEL = "gemini-pro-latest"
 
 
-def _gemini_post(api_key, model, body, timeout=60):
+def _gemini_post(api_key, model, body, timeout=60, feature=''):
     """Gemini 호출 1회 + 자가복구 재시도. 반환: (text, error).
 
     두 가지 함정을 여기서 흡수한다.
@@ -78,6 +144,9 @@ def _gemini_post(api_key, model, body, timeout=60):
         (실측: 3.6은 400, 3.7·flash-latest는 200).
         → thinkingConfig를 빼고 1회 재시도.
     """
+    _blocked = _usage_gate()
+    if _blocked:
+        return None, _blocked
     import copy as _copy
     tried, last_err, _bumped = [], None, False
     queue = [model] + [m for m in GEMINI_FALLBACK_MODELS if m != model]
@@ -103,6 +172,7 @@ def _gemini_post(api_key, model, body, timeout=60):
                 break
             if r.status_code == 200:
                 data = r.json()
+                _track_gemini(_m, feature, data)
                 cands = data.get("candidates") or []
                 if not cands:
                     return None, "빈 응답(후보 없음 — 안전차단/키 확인)"
@@ -127,7 +197,9 @@ def _gemini_post(api_key, model, body, timeout=60):
                                  "content-type": "application/json"},
                         json=_b, timeout=timeout)
                     if r.status_code == 200:
-                        cands = r.json().get("candidates") or []
+                        _retry_json = r.json()
+                        _track_gemini(_m, feature, _retry_json)   # 재시도분도 과금된다
+                        cands = _retry_json.get("candidates") or []
                         parts = ((cands[0].get("content") or {}).get("parts") or []) if cands else []
                         text = "".join(p.get("text", "") for p in parts)
                 if text.strip():
@@ -151,7 +223,8 @@ def _gemini_post(api_key, model, body, timeout=60):
 
 
 def gemini_complete(api_key: str, system: str, user_msg: str,
-                    max_tokens: int = 1200, model: str = GEMINI_MODEL):
+                    max_tokens: int = 1200, model: str = GEMINI_MODEL,
+                    feature: str = ''):
     """Gemini 메시지 1회 호출. 반환: (text, error).
     ⚠️ 2.5+ flash는 기본 thinking이 출력토큰을 소진해 빈 응답이 나므로 thinkingBudget=0로 끈다."""
     if not api_key:
@@ -163,14 +236,14 @@ def gemini_complete(api_key: str, system: str, user_msg: str,
             "generationConfig": {"maxOutputTokens": max_tokens, "temperature": 0,
                                  "thinkingConfig": {"thinkingBudget": 0}},
         }
-        return _gemini_post(api_key, model, body, timeout=60)
+        return _gemini_post(api_key, model, body, timeout=60, feature=feature)
     except Exception as e:
         return None, str(e)
 
 
 def ai_complete(system: str, user_msg: str, *, gemini_key: str = '',
                 anthropic_key: str = '', max_tokens: int = 1200,
-                claude_model: str = None):
+                claude_model: str = None, feature: str = ''):
     """가용 키로 자동 선택 — Gemini 우선(있으면), 실패 시 Claude 폴백.
     claude_model: Claude 폴백 시 쓸 모델 (기본 DEFAULT_MODEL=haiku).
                   상품명 작문처럼 품질이 중요하면 VISION_MODEL을 넘긴다.
@@ -179,10 +252,12 @@ def ai_complete(system: str, user_msg: str, *, gemini_key: str = '',
 
     def _claude():
         return claude_complete(anthropic_key, system, user_msg, max_tokens=max_tokens,
-                               model=_cm, thinking={"type": "disabled"})
+                               model=_cm, thinking={"type": "disabled"},
+                               feature=feature)
 
     if gemini_key:
-        txt, err = gemini_complete(gemini_key, system, user_msg, max_tokens=max_tokens)
+        txt, err = gemini_complete(gemini_key, system, user_msg, max_tokens=max_tokens,
+                                   feature=feature)
         if txt:
             return txt, '', 'gemini'
         if anthropic_key:
@@ -337,13 +412,17 @@ def _shrink_for_ai(image_bytes, media_type, max_edge=1092):
 
 
 def claude_vision(api_key, image_bytes, media_type, system, user_text,
-                  max_tokens=600, model=None, max_edge=1092):
+                  max_tokens=600, model=None, max_edge=1092, feature=''):
     """이미지 1장 + 텍스트 → Claude 멀티모달 응답. 반환: (text, error).
 
     max_edge: 판독 전 긴 변 상한(px). 식품라벨 등 깨알글씨는 크게(1568) 넘겨준다.
+    feature: 사용량 집계용 용도 표시('receipt'·'photo'·'label'·'pricetag' 등).
     """
     if not api_key:
         return None, "Anthropic API 키 미설정"
+    _blocked = _usage_gate()
+    if _blocked:
+        return None, _blocked
     try:
         image_bytes, media_type = _shrink_for_ai(image_bytes, media_type, max_edge)
         _b64 = base64.standard_b64encode(image_bytes).decode("ascii")
@@ -365,7 +444,9 @@ def claude_vision(api_key, image_bytes, media_type, system, user_text,
             except Exception:
                 _e = r.text[:200]
             return None, f"[{r.status_code}] {_e}"
-        _blocks = r.json().get("content") or []
+        _body_json = r.json()
+        _track_claude(model or VISION_MODEL, feature, _body_json)
+        _blocks = _body_json.get("content") or []
         _text = "".join(b.get("text", "") for b in _blocks if b.get("type") == "text")
         return (_text.strip() or None), (None if _text.strip() else "빈 응답")
     except Exception as e:
@@ -373,7 +454,8 @@ def claude_vision(api_key, image_bytes, media_type, system, user_text,
 
 
 def gemini_vision(api_key, image_bytes, media_type, system, user_text,
-                  max_tokens=600, model=GEMINI_MODEL, max_edge=1092, thinking=False):
+                  max_tokens=600, model=GEMINI_MODEL, max_edge=1092, thinking=False,
+                  feature=''):
     """이미지 1장 + 텍스트 → Gemini 멀티모달 응답. 반환: (text, error).
 
     claude_vision과 동일한 시그니처 — ai_vision에서 서로 바꿔 끼울 수 있게 맞췄다.
@@ -396,32 +478,37 @@ def gemini_vision(api_key, image_bytes, media_type, system, user_text,
         # pro(영수증 판독)는 thinking이 부호·검산 정확도를 올리므로 켜둔다.
         if not thinking:
             body["generationConfig"]["thinkingConfig"] = {"thinkingBudget": 0}
-        return _gemini_post(api_key, model, body, timeout=180 if thinking else 90)
+        return _gemini_post(api_key, model, body, timeout=180 if thinking else 90,
+                           feature=feature)
     except Exception as e:
         return None, str(e)
 
 
 def ai_vision(system, user_text, image_bytes, media_type, *,
-              gemini_key='', anthropic_key='', max_tokens=600, max_edge=1092):
+              gemini_key='', anthropic_key='', max_tokens=600, max_edge=1092,
+              feature=''):
     """사진 판독 — Gemini 우선(있으면), 실패 시 Claude 폴백. 반환: (text, error, provider).
 
     ai_complete(텍스트)의 이미지 버전. 판독 비용은 Gemini가 약 1/5.
     """
     if gemini_key:
         _t, _e = gemini_vision(gemini_key, image_bytes, media_type, system, user_text,
-                               max_tokens=max_tokens, max_edge=max_edge)
+                               max_tokens=max_tokens, max_edge=max_edge,
+                               feature=feature)
         if _t:
             return _t, '', 'gemini'
         if anthropic_key:
             _t2, _e2 = claude_vision(anthropic_key, image_bytes, media_type, system,
-                                     user_text, max_tokens=max_tokens, max_edge=max_edge)
+                                     user_text, max_tokens=max_tokens, max_edge=max_edge,
+                                     feature=feature)
             if _t2:
                 return _t2, '', 'claude'
             return None, f"Gemini 실패({_e}) · Claude 실패({_e2})", ''
         return None, _e or "빈 응답", 'gemini'
     if anthropic_key:
         _t2, _e2 = claude_vision(anthropic_key, image_bytes, media_type, system,
-                                 user_text, max_tokens=max_tokens, max_edge=max_edge)
+                                 user_text, max_tokens=max_tokens, max_edge=max_edge,
+                                 feature=feature)
         return (_t2, '', 'claude') if _t2 else (None, _e2 or "빈 응답", 'claude')
     return None, "AI 키 없음 (설정 탭 > 🤖 AI 설정에서 Gemini 또는 Claude 키 등록)", ''
 
@@ -519,6 +606,7 @@ def generate_product_description(api_key, image_bytes, media_type, name="", cate
     _u = (f"상품명: {name or '(미상)'}\n카테고리: {category or '(미상)'}\n"
           "이 상품 사진을 보고 상세페이지에 넣을 상세설명을 작성해줘. 문장마다 줄바꿈해서.")
     _txt, _err, _prov = ai_vision(_DESC_SYSTEM, _u, image_bytes, media_type,
+                                  feature='desc',
                                   gemini_key=gemini_key, anthropic_key=api_key,
                                   max_tokens=500)
     if _txt:
@@ -612,7 +700,8 @@ def analyze_product_photo(api_key, image_bytes, media_type, *, gemini_key=''):
     """
     _txt, _err, _prov = ai_vision(_PHOTO_SYSTEM, "이 상품 사진을 분석해 등록용 JSON을 출력해줘.",
                                   image_bytes, media_type,
-                                  gemini_key=gemini_key, anthropic_key=api_key)
+                                  gemini_key=gemini_key, anthropic_key=api_key,
+                                  feature='photo')
     if _err or not _txt:
         return None, _err or "빈 응답"
     _d = _extract_json(_txt)
@@ -676,7 +765,7 @@ def analyze_food_label(api_key, image_bytes, media_type, *, gemini_key=''):
                                   "이 식품 표시사항 사진을 분석해 JSON으로 출력해줘.",
                                   image_bytes, media_type,
                                   gemini_key=gemini_key, anthropic_key=api_key,
-                                  max_tokens=700, max_edge=1568)
+                                  max_tokens=700, max_edge=1568, feature='label')
     if _err or not _txt:
         return None, _err or "빈 응답"
     _d = _extract_json(_txt)
@@ -739,7 +828,8 @@ def analyze_price_tag(api_key, image_bytes, media_type, *, gemini_key=''):
             _t, _e = gemini_vision(gemini_key, image_bytes, media_type,
                                    _PRICETAG_SYSTEM, _PRICETAG_USER,
                                    model=_gm, thinking=_think,
-                                   max_tokens=800 if _think else 600)
+                                   max_tokens=800 if _think else 600,
+                                   feature='pricetag')
             if not _t:
                 _g_err = _g_err or f"{_gm}: {_e}"
                 continue
@@ -758,7 +848,7 @@ def analyze_price_tag(api_key, image_bytes, media_type, *, gemini_key=''):
             return None, _g_err or "판독 실패"
 
     _txt, _err = claude_vision(api_key, image_bytes, media_type,
-                               _PRICETAG_SYSTEM, _PRICETAG_USER)
+                               _PRICETAG_SYSTEM, _PRICETAG_USER, feature='pricetag')
     if _err or not _txt:
         # Claude 실패 시 Gemini 결과라도 있으면 그걸 반환 (완전 실패보다 낫다)
         if _out:
@@ -1180,7 +1270,7 @@ def _parse_receipt_whole(api_key, image_bytes, media_type, max_tokens=4000, *, g
         for _gm, _think in ((GEMINI_VISION_MODEL, True), (GEMINI_MODEL, False)):
             _gt, _e = gemini_vision(gemini_key, image_bytes, media_type, _RECEIPT_SYSTEM,
                                     _RECEIPT_USER, max_tokens=max_tokens, max_edge=1568,
-                                    model=_gm, thinking=_think)
+                                    model=_gm, thinking=_think, feature='receipt')
             if not _gt:
                 _g_err = _g_err or f"{_gm}: {_e}"
                 continue
@@ -1202,7 +1292,8 @@ def _parse_receipt_whole(api_key, image_bytes, media_type, max_tokens=4000, *, g
         return None, "AI 키 없음 (설정 탭 > 🤖 AI 설정에서 Gemini 또는 Claude 키 등록)"
 
     _txt, _err = claude_vision(api_key, image_bytes, media_type, _RECEIPT_SYSTEM,
-                               _RECEIPT_USER, max_tokens=max_tokens, max_edge=1568)
+                               _RECEIPT_USER, max_tokens=max_tokens, max_edge=1568,
+                               feature='receipt')
     _c_data = _parse_receipt_json(_txt) if _txt else None
     if _c_data is None:
         if _g_data is not None:   # Claude 실패 → 검증 못 넘긴 Gemini 결과라도 돌려준다
@@ -1230,13 +1321,14 @@ def _read_one_tile(api_key, gemini_key, b, mt, max_tokens):
     if gemini_key:
         _t, _e = gemini_vision(gemini_key, b, mt, _RECEIPT_SYSTEM, _TILE_USER,
                                max_tokens=max_tokens, max_edge=1568,
-                               model=GEMINI_VISION_MODEL, thinking=True)
+                               model=GEMINI_VISION_MODEL, thinking=True,
+                               feature='receipt')
         _d = _parse_receipt_json(_t) if _t else None
         if _d:
             return _d
     if api_key:
         _t, _e = claude_vision(api_key, b, mt, _RECEIPT_SYSTEM, _TILE_USER,
-                               max_tokens=max_tokens, max_edge=1568)
+                               max_tokens=max_tokens, max_edge=1568, feature='receipt')
         return _parse_receipt_json(_t) if _t else None
     return None
 
@@ -1325,6 +1417,7 @@ def suggest_category_terms(product_name, api_key=None, *, gemini_key=None):
     if not (api_key or _gk):
         return [], "AI 키 없음"
     _txt, _err, _ = ai_complete(_CAT_TERM_SYSTEM, f"상품명: {product_name}",
+                                feature='category',
                                 gemini_key=_gk, anthropic_key=api_key, max_tokens=60)
     if _err or not _txt:
         return [], _err or "응답 없음"
@@ -1346,7 +1439,7 @@ def suggest_naver_category(api_key, product_name, candidate_paths, *, gemini_key
         return _majority, None
     _msg = (f"상품명: {product_name}\n\n후보 카테고리 경로:\n"
             + "\n".join(f"- {p}" for p in _uniq))
-    _txt, _err, _ = ai_complete(_CAT_SYSTEM, _msg, gemini_key=_gk,
+    _txt, _err, _ = ai_complete(_CAT_SYSTEM, _msg, gemini_key=_gk, feature='category',
                                 anthropic_key=api_key, max_tokens=120)
     if _err or not _txt:
         return _majority, None
@@ -1380,6 +1473,7 @@ def optimize_product_name(api_key, costco_name, category=""):
             "위 상품의 네이버 검색 최적화 상품명을 한 줄로 출력해줘.")
     # 상품명은 품질 중요 → Sonnet, 단 사고(thinking) 끔(잘림/비용 방지)
     _txt, _err = claude_complete(api_key, _NAME_SYSTEM, _msg, max_tokens=200,
+                                 feature='name',
                                  model=VISION_MODEL, thinking={"type": "disabled"})
     if _err or not _txt:
         return _orig, _err
@@ -1414,7 +1508,8 @@ def generate_description_from_costco(api_key, name, costco_text, category=""):
             f"원본 설명(정리 안 됨): {_txt_in or '(없음)'}\n\n"
             "위를 바탕으로 상세페이지용 상세설명을 문장마다 줄바꿈해서 새로 작성해줘.")
     _t, _e = claude_complete(api_key, _DESC_TEXT_SYSTEM, _msg, max_tokens=700,
-                             model=VISION_MODEL, thinking={"type": "disabled"})
+                             model=VISION_MODEL, thinking={"type": "disabled"},
+                             feature='desc')
     if _t:
         return _desc_to_lines(_t), None
     return None, _e

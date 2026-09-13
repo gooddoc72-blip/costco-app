@@ -98,7 +98,13 @@ def _tab_fee_billing(USERNAME):
                 _unit = int(_f.get('ship_unit') or 0) or _unit
                 _onl_tot += len(_f.get('online_skipped') or [])
             _pf = _saved.get(u) or {}
-            if not _cnt and not int(_pf.get('amount') or 0):
+            # AI 실비 — 관리자 공용 키로 그 사용자가 쓴 만큼(Claude+Gemini 합산)
+            try:
+                from db_ai_usage import month_cost as _ai_month_cost
+                _ai = _ai_month_cost(u, _ym)
+            except Exception:
+                _ai = 0
+            if not _cnt and not int(_pf.get('amount') or 0) and not _ai:
                 continue          # 그달 아무 일도 없던 사용자는 줄을 만들지 않는다
             _rows.append({
                 '판매자': dmap.get(u, u),
@@ -106,7 +112,8 @@ def _tab_fee_billing(USERNAME):
                 '택배단가': _unit,
                 '택배비': _ship,
                 '포장부자재비': int(_pf.get('amount') or 0),
-                '합계': _ship + int(_pf.get('amount') or 0),
+                'AI비': int(_ai),
+                '합계': _ship + int(_pf.get('amount') or 0) + int(_ai),
                 '메모': str(_pf.get('memo') or ''),
                 '_u': u,
             })
@@ -119,13 +126,17 @@ def _tab_fee_billing(USERNAME):
     _ed = st.data_editor(
         pd.DataFrame(_rows), use_container_width=True, hide_index=True,
         key=f"fb_ed_{_ym}",
-        disabled=['판매자', '발송건수', '택배단가', '택배비', '합계', '_u'],
+        disabled=['판매자', '발송건수', '택배단가', '택배비', 'AI비', '합계', '_u'],
         column_config={
             '포장부자재비': st.column_config.NumberColumn(
                 '포장부자재비', format='%d', min_value=0, step=1000,
                 help='관리자가 직접 적습니다. 저장해야 반영됩니다.'),
             '메모': st.column_config.TextColumn('메모', help='청구 근거 메모 (선택)'),
             '_u': None,
+            'AI비': st.column_config.NumberColumn(
+                'AI비', format='%d',
+                help='관리자 AI 키로 그 사용자가 쓴 Claude·Gemini 실비. '
+                     '관리자 탭 > 🤖 AI 사용량에서 단가·환율을 맞춥니다.'),
             **{_k: st.column_config.NumberColumn(_k, format='%d')
                for _k in ('발송건수', '택배단가', '택배비', '합계')},
         })
@@ -133,9 +144,10 @@ def _tab_fee_billing(USERNAME):
     _recs = _ed.to_dict('records')
     _t_ship = sum(int(r['택배비'] or 0) for r in _recs)
     _t_pack = sum(int(r['포장부자재비'] or 0) for r in _recs)
+    _t_ai = sum(int(r.get('AI비') or 0) for r in _recs)
     st.markdown(f"**{_ym} 합계** — 택배비 **{fmt(_t_ship)}원** + 부자재비 "
-                f"**{fmt(_t_pack)}원** = **{fmt(_t_ship + _t_pack)}원** "
-                f"({len(_recs)}명)")
+                f"**{fmt(_t_pack)}원** + AI비 **{fmt(_t_ai)}원** "
+                f"= **{fmt(_t_ship + _t_pack + _t_ai)}원** ({len(_recs)}명)")
     st.caption("합계 칸은 저장 후 다시 계산됩니다 — 부자재비를 고치면 저장을 누르세요.")
     if _onl_tot:
         st.caption(f"🛒 **발송건수에서 코스트코 온라인몰 직배송 {_onl_tot}건을 뺐습니다** — "

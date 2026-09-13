@@ -1670,6 +1670,13 @@ def run_cafe24_register_task(username="admin", limit=None, target=None,
             continue
         target = {'api_id': _tid, 'api_secret': _tsecret,
                   'as_tel': _ts.get('naver_as_tel') or '1588-1234'}
+        # 이 구간의 AI 비용(카테고리 판단·상품명·사진분석)은 대상 사용자 상품에
+        # 쓰는 돈이다. 실행 계정(관리자)이 아니라 그 사용자 몫으로 기록한다.
+        try:
+            import ai_service as _ai_svc2
+            _ai_svc2.set_current_user(_tuser)
+        except Exception:
+            pass
         # 고정 이미지는 대상 사용자 스토어의 브랜딩이므로 그쪽 설정이 우선.
         opts['top_img'] = (str(_ts.get('naver_detail_top_img') or '').strip()
                            or str(_admin_ts.get('naver_detail_top_img') or '').strip())
@@ -1985,6 +1992,12 @@ if __name__ == "__main__":
     args = parser.parse_args()
     # 이 실행의 모든 로그를 해당 사용자 전용 로그에도 기록 (타 사용자 로그 노출 방지)
     set_log_user(args.user)
+    # AI 사용량도 같은 기준으로 귀속한다 — 공용 키라 세팅하지 않으면 '(미귀속)'이 된다.
+    try:
+        import ai_service as _ai_svc
+        _ai_svc.set_current_user(args.user)
+    except Exception:
+        pass
 
     if args.task == "shopping":
         run_shopping_task(args.user)
