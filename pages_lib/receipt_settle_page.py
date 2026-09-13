@@ -1898,11 +1898,6 @@ def _render_unmatched_panel(alloc, dmap, d_day, USERNAME, receipt_items):
                      expanded=True):
         st.caption("발송은 됐는데 그날 영수증에서 상품을 못 찾은 건입니다. "
                    "**그대로 두면 청구에서 빠집니다.** 건별로 처리를 고르세요.")
-        if not _owners:
-            st.info("ℹ️ 재고 원장이 비어 있어 **재고 보유자·구입가를 자동으로 채울 수 "
-                    "없습니다.** 📦 재고 출고로 처리하려면 **금액 칸에 직접 적으세요** "
-                    "— 원장에 없어도 그 금액으로 청구됩니다.")
-
         # 재고 현황 — 상품별로 누가 몇 개 갖고 있나.
         try:
             import db_inventory as _inv
@@ -1941,6 +1936,10 @@ def _render_unmatched_panel(alloc, dmap, d_day, USERNAME, receipt_items):
             return _b['_pn'] if _b else _c3
 
         _owners = sorted({o for v in _stock.values() for o in v})
+        if not _owners:
+            st.info("ℹ️ 재고 원장이 비어 있어 **재고 보유자·구입가를 자동으로 채울 수 "
+                    "없습니다.** 📦 재고 출고로 처리하려면 **금액 칸에 직접 적으세요** "
+                    "— 원장에 없어도 그 금액으로 청구됩니다.")
         _OWN_AUTO = '(자동: 재고 많은 사람)'
         _own_opts = [_OWN_AUTO] + [dmap.get(o, o) for o in _owners]
         _own_l2u = {dmap.get(o, o): o for o in _owners}
