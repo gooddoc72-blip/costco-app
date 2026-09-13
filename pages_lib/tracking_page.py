@@ -332,9 +332,16 @@ def _save_dispatch_rows(username, rows, platform, container):
             "이대로 두면 영수증 정산의 **출고 기준 매칭에 잡히지 않습니다** — "
             "관리자에게 알려 주세요.")
         return 0
-    today = _dt.today().strftime("%Y-%m-%d")
+    # 발송일은 '버튼 누른 날'이 아니라 영업일 기준이다. 자정을 넘겨 처리해도
+    # 그날 발송으로 잡아야 택배비 청구가 하루씩 어긋나지 않는다.
+    from db import business_dispatch_date as _bdd
+    today = _bdd()
+    _real = _dt.now().strftime("%Y-%m-%d")
     saved = log_dispatch_success(username, rows, today, platform=platform)
-    container.caption(f"💾 dispatch_log: {saved}건 저장됨 ({today}) — 정산 매칭에 사용")
+    container.caption(
+        f"💾 dispatch_log: {saved}건 저장됨 ({today}) — 정산 매칭에 사용"
+        + (f"  ·  ⏰ 지금은 {_real} 새벽이라 **전날({today})** 발송으로 기록했습니다"
+           if today != _real else ""))
     return saved
 
 
@@ -700,7 +707,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             _mi1.info(f"송장번호 입력된 주문 **{len(_filled)}건** — 저장하면 정산 매칭에 활용됩니다.")
             _mi2.write(""); _mi2.write("")
             if _mi2.button("💾 발송 완료 저장", type="primary", use_container_width=True, key="manual_disp_save"):
-                _today = datetime.today().strftime("%Y-%m-%d")
+                from db import business_dispatch_date as _bdd2
+                _today = _bdd2()      # 새벽 처리는 전날 발송으로
                 _save_rows = []
                 for _, _r in _filled.iterrows():
                     _pno = str(_r.get('상품주문번호', '')).strip()

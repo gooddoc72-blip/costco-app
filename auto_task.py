@@ -811,9 +811,10 @@ def run_shipping_task(username="admin"):
             _row["courier"] = courier_display
             _rows.append(_row)
         if _rows:
-            _n = log_dispatch_success(username, _rows,
-                                      now.strftime("%Y-%m-%d"), platform="naver")
-            log(f"📝 발송이력 저장 {_n}건 (재고 차감 포함)")
+            from db import business_dispatch_date as _bdd
+            _dday = _bdd(now)         # 새벽에 돌면 전날 발송으로 잡는다
+            _n = log_dispatch_success(username, _rows, _dday, platform="naver")
+            log(f"📝 발송이력 저장 {_n}건 · 발송일 {_dday} (재고 차감 포함)")
     except Exception as _de:
         log(f"⚠️  발송이력/재고 차감 실패: {_de}")
 

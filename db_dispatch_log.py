@@ -5,7 +5,7 @@
 
 재고 차감도 여기에 걸려 있다 — 발송 = 실제 판매 확정 시점.
 """
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from db_core import get_user_db
 
@@ -123,6 +123,26 @@ def _ensure_table(conn):
         conn.execute("ALTER TABLE dispatch_log ADD COLUMN customer_shipping_fee INTEGER DEFAULT 0")
     except Exception:
         pass
+
+
+#: 이 시각 이전에 처리하면 '전날 발송'으로 본다.
+#   발송 작업은 밤에 몰린다(실측 배치: 19:27 / 21:33 / 22:04 / 23:11 / 00:20).
+#   자정을 넘겨 버튼을 누르면 다음 날로 기록돼 그날 택배비가 통째로 빠지고
+#   다음 날이 부풀었다 — 9/11 발송 8건이 9/12 00:20에 처리돼 9/12로 갔다.
+DISPATCH_CUTOFF_HOUR = 4
+
+
+def business_dispatch_date(now=None, cutoff_hour: int = None) -> str:
+    """발송일로 쓸 날짜 — 새벽에 처리하면 전날로 본다.
+
+    택배는 이미 전날 집화됐거나 그날 아침에 나간다. 조작 시각이 자정을 몇 분
+    넘겼다는 이유로 날짜가 바뀌면 택배비 청구가 하루씩 어긋난다.
+    """
+    _n = now or datetime.now()
+    _cut = DISPATCH_CUTOFF_HOUR if cutoff_hour is None else int(cutoff_hour)
+    if _n.hour < _cut:
+        _n = _n - timedelta(days=1)
+    return _n.strftime("%Y-%m-%d")
 
 
 def log_dispatch_success(username: str, orders: list, dispatched_at: str,
