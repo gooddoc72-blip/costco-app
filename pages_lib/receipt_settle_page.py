@@ -1257,10 +1257,9 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     # ── 3.35) 코스트코 온라인몰 직배송 지정 ──
     #   매장 영수증에 없는 건은 언제나 여기(미매칭 주문)에 남는다. 그중
     #   온라인몰로 산 건을 골라 표시해야 청구에 실린다.
-    #   영수증에 없는 발송건은 한 곳에서 분류한다. 전에는 온라인몰 후보와
-    #   금액지정 후보가 같은 건을 각각 띄워, 매장 건이 온라인몰로 잘못 들어갔다.
-    _render_unmatched_panel(alloc, dmap, d_day, USERNAME, receipt_items)
-    # 그날 이미 지정해 둔 온라인몰 건 확인·취소 (후보 고르기는 위 패널이 한다)
+    # 그날 이미 지정해 둔 온라인몰 건 확인·취소
+    #   (영수증에 없는 발송건 처리는 '정산 요청' 바로 위에서 한다 — 거기서
+    #    막히므로 목록과 처리 수단이 같은 자리에 있어야 한다)
     _render_online_panel(alloc, dmap, d_day, USERNAME)
 
     # ── 3.4) 잘못 붙은 매칭 끊기 (수동 매칭 바로 위) ──
@@ -1423,16 +1422,9 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                   "위에서 처리하세요 — 영수증에 있으면 **수동 매칭**, 남의 재고나 "
                   "관리자 재고에서 나갔으면 **✍️ 금액 직접 지정**(그 재고의 구입가로), "
                   "코스트코가 직접 보냈으면 **🛒 온라인몰 직배송 지정**.")
-            with st.expander(f"📋 청구 안 되는 발송건 {len(_unbilled)}건 보기",
-                             expanded=True):
-                st.dataframe(pd.DataFrame([{
-                    '사용자': dmap.get(str(_o.get('username') or ''),
-                                    str(_o.get('username') or '')),
-                    '주문번호': str(_o.get('order_no') or ''),
-                    '수취인': str(_o.get('recipient') or ''),
-                    '상품명': str(_o.get('product_name') or '')[:40],
-                    '수량': int(_o.get('qty') or 1),
-                } for _o in _unbilled]), use_container_width=True, hide_index=True)
+            # 목록만 보여 주고 처리는 다른 데서 하라고 하면, 올려갔다 내려왔다
+            # 하게 된다. 막히는 자리에 처리 수단을 같이 둔다.
+            _render_unmatched_panel(alloc, dmap, d_day, USERNAME, receipt_items)
             _unbilled_ok = st.checkbox(
                 f"이 {len(_unbilled)}건은 청구하지 않아도 됩니다 — 확인했습니다",
                 key=f"rs_unbilled_ok_{d_day}_{len(_unbilled)}",
