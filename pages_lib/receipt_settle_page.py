@@ -982,7 +982,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         st.info(f"📦 남은 {alloc['_stock_carry']}건은 **과거 구매분(재고)**에서 메꿨습니다 — "
                 "오늘 영수증에 없는 상품이라 그때 산 단가로 청구됩니다.")
     if alloc and alloc.get('_auto_ai_err'):
-        st.warning(f"⚠️ AI 자동매칭 실패: {alloc['_auto_ai_err']} — 아래 수동 매칭을 쓰세요.")
+        st.warning(f"⚠️ AI 자동매칭 실패: {alloc['_auto_ai_err']} — "
+                   "아래 **📋 영수증에 없는 발송건**에서 손으로 처리하세요.")
     if not alloc:
         _render_stock_status()
         _render_history(_disp_map(), USERNAME)
@@ -1263,7 +1264,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     # 그날 이미 지정해 둔 온라인몰 건 확인·취소
     _render_online_panel(alloc, dmap, d_day, USERNAME)
 
-    # ── 3.4) 잘못 붙은 매칭 끊기 (수동 매칭 바로 위) ──
+    # ── 3.4) 잘못 붙은 매칭 끊기 ── (끊은 건은 위 📋 패널에서 다시 청구)
     _render_unmatch_panel(alloc, dmap, receipt_items)
 
     # ── 4) 저장 / 정산 요청 ──
@@ -1420,7 +1421,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                              for _u, _v in sorted(_by_u.items(),
                                                   key=lambda kv: -len(kv[1])))
                 + ".\n\n이대로 정산하면 그 물건은 **청구에서 빠집니다**(공짜로 나갑니다). "
-                  "위에서 처리하세요 — 영수증에 있으면 **수동 매칭**, 남의 재고나 "
+                  "바로 아래에서 처리하세요 — 남의 재고나 "
                   "관리자 재고에서 나갔으면 **✍️ 금액 직접 지정**(그 재고의 구입가로), "
                   "코스트코가 직접 보냈으면 **🛒 온라인몰 직배송 지정**.")
             # 목록만 보여 주고 처리는 다른 데서 하라고 하면, 올려갔다 내려왔다
@@ -2085,7 +2086,8 @@ def _render_unmatch_panel(alloc, dmap, receipt_items):
                      f"(배치 {len(_rows)}건 · 추측으로 붙은 것 {_n_risky}건)",
                      expanded=False):
         st.caption("AI·상품명 유사도로 붙인 것은 틀릴 수 있습니다. 끊으면 그 주문은 "
-                   "미매칭으로 돌아가고, 아래 **수동 매칭**에서 다시 이을 수 있습니다. "
+                   "미매칭으로 돌아가고, 아래 **📋 영수증에 없는 발송건**에서 재고 출고나 "
+                   "금액 지정으로 다시 청구에 넣을 수 있습니다. "
                    "틀린 채로 전송하면 그 단가로 청구되고 매핑까지 굳어집니다.")
         # 기본은 **전부 보기**다. 추측으로 붙은 것만 보여 주면, 번호로 붙었지만
         # 수량·금액이 틀린 건(영수증 1개짜리에 주문 7개가 붙는 식)이 기본 화면에서
@@ -2132,8 +2134,9 @@ def _render_unmatch_panel(alloc, dmap, receipt_items):
                      disabled=not _picked):
             _k = {(t['_u'], t['_o']) for t in _picked}
             _cnt = _unmatch_rows(alloc, _k, receipt_items)
-            st.success(f"↩️ {_cnt}건을 끊었습니다 — 위 지정 화면이나 아래 수동 "
-                       "매칭에서 다시 이으세요.")
+            st.success(f"↩️ {_cnt}건을 끊었습니다 — 아래 **📋 영수증에 없는 발송건**에서 "
+                       "재고 출고·금액 지정으로 청구에 넣으세요. 그대로 두면 "
+                       "청구에서 빠집니다.")
             st.rerun()
 
 
