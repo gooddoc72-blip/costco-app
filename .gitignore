@@ -38,4 +38,8 @@ Desktop.ini
 # 로컬판 빌드 산출물(대용량)
 local_build/_build/
 .costcobiz_license.json
+# 루트의 임시 스크립트(_patch_cart.py, _sp.py 등) 제외
 _*.py
+# 단, pages_lib의 '_' 접두사 파일은 화면 공유조각이라 배포에 반드시 들어가야 한다.
+#   (이 예외가 없으면 새 조각이 커밋에서 조용히 빠져 서버가 ImportError로 죽는다)
+!pages_lib/_*.py
