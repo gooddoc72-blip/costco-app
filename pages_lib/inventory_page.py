@@ -617,6 +617,15 @@ def _user_requests(USERNAME):
 
 
 # ── 사용자: 내 재고 ───────────────────────────────────────
+def _name_map():
+    """username → 표시 이름. 재고가 오간 상대를 아이디로만 보여주면 알아볼 수 없다."""
+    try:
+        return {u['username']: (u.get('display_name') or u['username'])
+                for u in get_all_users()}
+    except Exception:
+        return {}
+
+
 def _user_stock(USERNAME, sur):
     st.subheader("📦 내 재고")
     rows = get_stock_summary(owner=USERNAME)
@@ -646,12 +655,19 @@ def _user_stock(USERNAME, sur):
         _pending = sum(int(m['unit_cost']) * int(m['qty']) + int(m['surcharge'])
                        for m in mv if m['settle_status'] == 'PENDING')
         st.metric("정산 대기 금액", f"{fmt(_pending)}원")
+        _nm = _name_map()
         st.dataframe(pd.DataFrame([{
-            "발송일": m['dispatched_at'], "판매자": m['seller'],
+            "발송일": m['dispatched_at'],
+            "가져간 판매자": _nm.get(m['seller'], m['seller']),
             "상품번호": m['product_no'], "수량": m['qty'],
-            "정산액": fmt(int(m['unit_cost']) * int(m['qty']) + int(m['surcharge'])) + "원",
+            "구입가(개당)": int(m['unit_cost']), "웃돈": int(m['surcharge']),
+            "정산액": int(m['unit_cost']) * int(m['qty']) + int(m['surcharge']),
+            "주문번호": m['order_no'],
             "상태": "✅ 정산완료" if m['settle_status'] == 'SETTLED' else "⏳ 대기",
-        } for m in mv]), use_container_width=True, hide_index=True)
+        } for m in mv]), use_container_width=True, hide_index=True,
+            column_config={_k: st.column_config.NumberColumn(_k, format='%d')
+                           for _k in ("구입가(개당)", "웃돈", "정산액")})
+        st.caption("**가져간 판매자**가 내 재고를 쓴 사람입니다. 정산액 = 구입가×수량 + 웃돈.")
 
     st.divider()
     st.subheader("🛒 내가 타인 재고로 판매한 건")
@@ -661,8 +677,13 @@ def _user_stock(USERNAME, sur):
         st.caption("해당 내역이 없습니다.")
     else:
         import pandas as pd
+        _nm2 = _name_map()
         st.dataframe(pd.DataFrame([{
-            "발송일": m['dispatched_at'], "재고 보유자": m['owner'],
+            "발송일": m['dispatched_at'],
+            "재고 보유자": _nm2.get(m['owner'], m['owner']),
             "상품번호": m['product_no'], "수량": m['qty'],
-            "추가 부담": fmt(int(m['surcharge'])) + "원", "주문번호": m['order_no'],
-        } for m in ms]), use_container_width=True, hide_index=True)
+            "구입가(개당)": int(m['unit_cost']), "추가 부담": int(m['surcharge']),
+            "주문번호": m['order_no'],
+        } for m in ms]), use_container_width=True, hide_index=True,
+            column_config={_k: st.column_config.NumberColumn(_k, format='%d')
+                           for _k in ("구입가(개당)", "추가 부담")})

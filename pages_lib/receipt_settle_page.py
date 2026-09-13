@@ -1295,7 +1295,10 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 if not _mine:
                     st.caption("이 사용자의 배치 건이 없습니다.")
                 else:
-                    st.dataframe(pd.DataFrame([{
+                    # 금액을 여기서 고칠 수 있어야 한다. 남의 재고로 나간 건은
+                    # 웃돈이 자동으로 얹히는데 실제로 합의한 값이 다를 수 있고,
+                    # 내품수량이 다른 건도 여기서 바로 잡는 편이 빠르다.
+                    _mrows = [{
                         '주문번호': str(r.get('order_no') or ''),
                         '상품명': str(r.get('product_name') or '')[:40],
                         '수량': int(r.get('qty') or 1),
@@ -1303,11 +1306,54 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         '근거': _VIA_LABEL.get(str(r.get('via') or ''),
                                              r.get('via') or ''),
                         '메모': str(r.get('memo') or ''),
-                    } for r in _mine]), use_container_width=True, hide_index=True,
-                        column_config={_k: st.column_config.NumberColumn(_k, format='%d')
-                                       for _k in ('수량', '청구액')})
+                    } for r in _mine]
+                    _med = st.data_editor(
+                        pd.DataFrame(_mrows), use_container_width=True,
+                        hide_index=True, key=f"rs_prev_ed_{d_day}_{_pu}",
+                        disabled=['주문번호', '상품명', '근거'],
+                        column_config={
+                            '수량': st.column_config.NumberColumn(
+                                '수량', format='%d', min_value=1, step=1),
+                            '청구액': st.column_config.NumberColumn(
+                                '청구액', format='%d', min_value=0, step=100,
+                                help='이 주문에 청구할 금액입니다(단가 아님). '
+                                     '고치면 아래 버튼으로 반영하세요.'),
+                            '메모': st.column_config.TextColumn(
+                                '메모', help='왜 이 금액인지 남기세요'),
+                        })
+                    _mnew = _med.to_dict('records')
+                    _chg = [(i, _r) for i, _r in enumerate(_mnew)
+                            if int(_r.get('청구액') or 0) != _mrows[i]['청구액']
+                            or int(_r.get('수량') or 1) != _mrows[i]['수량']
+                            or str(_r.get('메모') or '') != _mrows[i]['메모']]
                     st.caption(f"{dmap.get(_pu, _pu)} · {len(_mine)}건 · "
-                               f"합계 {fmt(sum(int(r.get('amount') or 0) for r in _mine))}원")
+                               f"합계 {fmt(sum(int(_r.get('청구액') or 0) for _r in _mnew))}원"
+                               + (f"  ·  ✏️ 고친 행 {len(_chg)}건" if _chg else ""))
+                    if st.button(f"💾 {len(_chg)}건 금액 수정 반영",
+                                 key=f"rs_prev_save_{d_day}_{_pu}",
+                                 disabled=not _chg):
+                        _byo = {str(r.get('order_no') or ''): r for r in _mine}
+                        for _i4, _r4 in _chg:
+                            _tgt = _byo.get(str(_r4.get('주문번호') or ''))
+                            if _tgt is None:
+                                continue
+                            _tgt['qty'] = max(1, int(_r4.get('수량') or 1))
+                            _tgt['amount'] = int(_r4.get('청구액') or 0)
+                            _tgt['unit_price'] = _tgt['amount']
+                            _tgt['memo'] = str(_r4.get('메모') or '')
+                        # 손으로 고친 값은 미리보기를 다시 눌러도 살아남아야 한다
+                        _stk = st.session_state.get('rs_sticky') or {}
+                        _dk2 = str(d_day)
+                        _keys2 = {(r.get('username'), r.get('order_no')) for r in _mine}
+                        _stk[_dk2] = [r for r in (_stk.get(_dk2) or [])
+                                      if (r.get('username'), r.get('order_no')) not in _keys2]
+                        _stk[_dk2] += [dict(r) for r in _mine]
+                        st.session_state['rs_sticky'] = _stk
+                        alloc['user_summary'] = _summarize(alloc['rows'])
+                        st.session_state['rs_alloc'] = alloc
+                        st.success(f"✅ {len(_chg)}건 반영했습니다 — "
+                                   "'정산 요청'을 눌러 저장하세요.")
+                        st.rerun()
 
         _need_ck, _ck_why = _render_reconcile(receipt_items, alloc, _total, d_day)
 
