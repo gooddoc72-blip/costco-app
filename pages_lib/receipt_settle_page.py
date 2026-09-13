@@ -292,6 +292,45 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             '미발송': max(0, c['orders'] - c['dispatched']),
             '상태': '✅' if c['dispatched'] else ('⚠️ 발송 기록 없음' if c['orders'] else '-'),
         } for c in _cov]), use_container_width=True, hide_index=True)
+        # 발송된 건을 바로 볼 수 있어야 한다. 표의 '발송 N건'만으로는 무엇이
+        # 나갔는지 알 수 없어, 확인하려면 매번 DB를 뒤져야 했다.
+        _has = [c for c in _cov if c['dispatched']]
+        if _has:
+            with st.expander(f"🚚 발송된 건 보기 — {_c_tot_d}건", expanded=False):
+                _dlbl = [f"{dmap.get(c['username'], c['username'])} "
+                         f"— 발송 {c['dispatched']}건" for c in _has]
+                _dk3 = st.selectbox("사용자", _dlbl, key=f"rs_dsp_u_{d_day}")
+                _du3 = _has[_dlbl.index(_dk3)]['username']
+                try:
+                    from db import get_dispatched_orders_with_details as _gdo
+                    _dl = _gdo(_du3, str(d_day)) or []
+                except Exception as _e:
+                    _dl = []
+                    st.error(f"발송 내역 조회 실패: {_e}")
+                if not _dl:
+                    st.caption("이 날짜의 발송 기록이 없습니다.")
+                else:
+                    st.dataframe(pd.DataFrame([{
+                        '주문번호': str(x.get('order_no') or ''),
+                        '수취인': str(x.get('recipient') or ''),
+                        '상품명': str(x.get('product_name') or '')[:40],
+                        '수량': int(x.get('qty') or 1),
+                        '송장번호': str(x.get('tracking_no') or ''),
+                        '택배사': str(x.get('courier') or ''),
+                        '경로': ('업로드' if str(x.get('platform') or '') == 'upload'
+                               else str(x.get('platform') or '')),
+                    } for x in _dl]), use_container_width=True, hide_index=True)
+                    st.caption(f"{dmap.get(_du3, _du3)} · {len(_dl)}건 "
+                               "· 경로 '업로드'는 발송 파일로 넣은 건입니다.")
+                    try:
+                        _csv2 = pd.DataFrame(_dl).to_csv(index=False).encode('utf-8-sig')
+                        st.download_button("📥 발송 목록 CSV", data=_csv2,
+                                           file_name=f"발송_{_du3}_{d_day}.csv",
+                                           mime="text/csv",
+                                           key=f"rs_dsp_dl_{d_day}_{_du3}")
+                    except Exception:
+                        pass
+
         # 주문은 있는데 송장등록이 안 된 건 — **보여주기만** 한다.
         # 송장등록은 사용자가 자기 스토어에서 하는 일이라 관리자가 대신 누르면
         # 실제 상태와 어긋난다. 관리자에게 필요한 건 '누가 아직 안 했나'다.
