@@ -751,6 +751,10 @@ def allocate_dispatched_to_receipt(receipt_items, dispatch_date, users=None,
                     'naver_no': onv, 'product_name': nm, 'qty': qty,
                     'prev_cost': int(o.get('cost_price') or 0),
                     'split_qty': _sq,
+                    # 코스트코번호 — 영수증에서 못 찾았을 뿐 주문은 번호를 안다.
+                    # 화면이 이 번호로 재고 보유자·단가를 찾는다.
+                    'costco_no': (_norm((prod or {}).get('product_no'))
+                                  or _norm(o.get('costco_no'))),
                 })
                 continue
 
@@ -994,6 +998,10 @@ def allocate_receipt_to_orders(receipt_items, date_from, date_to, users=None,
                     'naver_no': onv, 'product_name': nm, 'qty': int(o['qty'] or 1),
                     'prev_cost': int(o['cost_price'] or 0),
                     'split_qty': int((prod or {}).get('split_qty', 1) or 1),
+                    # 화면이 재고 보유자·단가를 찾을 수 있게 번호를 실어 보낸다
+                    'costco_no': (_norm((prod or {}).get('product_no'))
+                                  or _norm(o.get('costco_no') if hasattr(o, 'get')
+                                           else '')),
                 })
                 continue
             if _from_stock is not None:

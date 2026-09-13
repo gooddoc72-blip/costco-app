@@ -1688,6 +1688,28 @@ def _render_unmatched_panel(alloc, dmap, d_day, USERNAME, receipt_items):
             _stock.setdefault(_pn, {})[str(_sr.get('owner') or '')] = {
                 'qty': int(_sr.get('qty_left') or 0),
                 'cost': int(_sr.get('unit_cost') or 0)}
+        _stock_names = [{'_pn': _pn, 'name': (_sr.get('product_name') or '')}
+                        for _sr in _stock_rows
+                        for _pn in [_n(_sr.get('product_no'))] if _pn]
+        _seen_pn = set()
+        _stock_cands = []
+        for _c2 in _stock_names:
+            if _c2['_pn'] not in _seen_pn:
+                _seen_pn.add(_c2['_pn'])
+                _stock_cands.append(_c2)
+
+        def _find_stock_pn(order):
+            """이 주문이 쓸 재고의 상품번호. 번호가 없으면 상품명으로 찾는다."""
+            _c3 = _n(order.get('costco_no'))
+            if _c3 and _c3 in _stock:
+                return _c3
+            try:
+                _b, _ = _rs.best_name_match(
+                    str(order.get('product_name') or ''), _stock_cands)
+            except Exception:
+                _b = None
+            return _b['_pn'] if _b else _c3
+
         _owners = sorted({o for v in _stock.values() for o in v})
         _OWN_AUTO = '(자동: 재고 많은 사람)'
         _own_opts = [_OWN_AUTO] + [dmap.get(o, o) for o in _owners]
@@ -1708,9 +1730,10 @@ def _render_unmatched_panel(alloc, dmap, d_day, USERNAME, receipt_items):
             _onl_cands = {}
 
         _NONE, _ONL, _STK, _AMT = '— 미처리 —', '🛒 온라인몰', '📦 재고 출고', '✍️ 금액 지정'
-        _rows = []
+        _rows, _pn_of = [], []
         for _o in _un:
-            _cno = _n(_o.get('costco_no'))
+            _cno = _find_stock_pn(_o)
+            _pn_of.append(_cno)
             _have = _stock.get(_cno) or {}
             _rows.append({
                 '처리': _NONE,
@@ -1726,7 +1749,7 @@ def _render_unmatched_panel(alloc, dmap, d_day, USERNAME, receipt_items):
                     f"{dmap.get(_ow, _ow)} {_v['qty']}"
                     for _ow, _v in sorted(_have.items(), key=lambda kv: -kv[1]['qty']))
                     or '없음'),
-                '참고·영수증가': _price_by.get(_cno, 0),
+                '참고·영수증가': _price_by.get(_n(_o.get('costco_no')), 0),
                 '메모': '',
             })
         _ed = st.data_editor(
@@ -1764,7 +1787,7 @@ def _render_unmatched_panel(alloc, dmap, d_day, USERNAME, receipt_items):
             _o = dict(_un[_i])
             _qty = max(1, int(_r.get('수량') or 1))
             _o['qty'] = _qty
-            _cno = _n(_o.get('costco_no'))
+            _cno = _pn_of[_i] if _i < len(_pn_of) else _n(_o.get('costco_no'))
             _amt = int(_r.get('금액') or 0)
             _memo = str(_r.get('메모') or '').strip()
             _me = str(_o.get('username') or '')
@@ -1826,7 +1849,8 @@ def _render_unmatched_panel(alloc, dmap, d_day, USERNAME, receipt_items):
 
         if _zero:
             st.warning(f"⚠️ 금액이 0원인 {_zero}건은 제외됩니다 — 0원으로 청구하면 "
-                       "그만큼 그대로 손실입니다. 금액을 채우세요.")
+                       "그만큼 그대로 손실입니다. **금액 칸을 직접 채우세요** "
+                       "(재고 현황이 '없음'이면 자동 계산할 값이 없습니다).")
         _tot_n = len(_onl_picks) + len(_rows_new)
         if _tot_n:
             _sum = (sum(p['unit_price'] * p['qty'] for p in _onl_picks)
