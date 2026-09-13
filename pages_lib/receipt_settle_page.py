@@ -1163,6 +1163,10 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     #   온라인몰로 산 건을 골라 표시해야 청구에 실린다.
     _render_online_panel(alloc, dmap, d_day, USERNAME)
 
+    # ── 3.37) 금액 직접 지정 — 내품수량이 달라 금액이 안 맞는 건 ──
+    #   온라인몰이 아니면서 영수증 단가로도 안 맞는 건이 갈 곳이 없었다.
+    _render_amount_panel(alloc, dmap, d_day, receipt_items)
+
     # ── 3.4) 잘못 붙은 매칭 끊기 (수동 매칭 바로 위) ──
     _render_unmatch_panel(alloc, dmap, receipt_items)
 
@@ -1526,6 +1530,15 @@ def _render_online_panel(alloc, dmap, d_day, USERNAME=''):
             st.error(f"후보 조회 실패: {_e}")
             return
 
+        # 이 목록은 '온라인몰 건'이 아니라 '아직 안 붙은 주문 전부'다. 매장에서 산
+        # 건도 여기 뜨므로, 체크하면 매입 경로가 온라인으로 잘못 기록되고 택배비도
+        # 빠진다. 무엇을 체크해야 하는지 화면이 먼저 말해야 한다.
+        st.warning(
+            "⚠️ 아래는 **아직 안 붙은 주문 전부**입니다 — 온라인몰 건만 모아 둔 것이 "
+            "아닙니다. **코스트코 온라인몰에서 주문해 코스트코가 고객에게 직접 보낸 "
+            "건만** 체크하세요. 매장에서 산 건을 여기에 체크하면 매입 경로가 잘못 "
+            "기록되고 택배비·포장비도 빠집니다 — 내품수량이 달라 금액만 안 맞는 "
+            "건이라면 아래 **✍️ 금액 직접 지정**을 쓰세요.")
         _no_price = sum(1 for c in _cands if not int(c.get('online_price') or 0))
         if _no_price:
             st.info(f"ℹ️ {_no_price}건은 공유DB에 **온라인가가 없어 단가가 0**입니다 — "
@@ -1613,6 +1626,118 @@ def _render_online_panel(alloc, dmap, d_day, USERNAME=''):
                     "반영됐고 택배비·포장비에서는 빠집니다. "
                     "'정산 요청'을 눌러 저장하세요.")
                 st.rerun()
+
+
+def _render_amount_panel(alloc, dmap, d_day, receipt_items):
+    """✍️ 미매칭 주문 금액 직접 지정 — 관리자가 청구액을 손으로 정한다.
+
+    왜 필요한가:
+      영수증에 그 물건이 있는데도 금액이 안 맞는 경우가 있다. **코스트코 구매
+      내품수량과 판매 내품수량이 다를 때**가 대표적이다(8개들이를 사서 4개씩
+      나눠 팔면 영수증 단가를 그대로 쓸 수 없다). 이런 건은 온라인몰도 아니고
+      재고 이월도 아니라서 지금까지 갈 곳이 없었다 — 미매칭으로 남아 청구에서
+      통째로 빠지거나, 온라인몰 지정 화면에서 엉뚱하게 처리될 위험이 있었다.
+
+    온라인몰 지정과 나란히 두되 성격이 다르다:
+      온라인몰 = 매입 경로가 다른 건(택배비도 빠진다)
+      여기     = 매장에서 산 건인데 금액만 사람이 정하는 것(택배비는 그대로)
+    """
+    _un = list(alloc.get('unmatched_orders') or [])
+    if not _un:
+        return
+    _open = bool(st.session_state.pop('_rs_amt_open', False))
+    with st.expander(f"✍️ 금액 직접 지정 — 미매칭 주문 {len(_un)}건", expanded=_open):
+        st.caption(
+            "영수증에 있는데 **내품수량이 달라** 금액이 안 맞는 건을 여기서 처리합니다"
+            "(8개들이를 사서 4개씩 나눠 판 경우 등). 청구할 금액을 직접 적으세요. "
+            "매장에서 산 건이므로 **택배비·포장비는 그대로 붙습니다** — 코스트코가 "
+            "직접 보낸 건이면 위 **온라인몰 직배송 지정**을 쓰세요.")
+        # 참고용 매장가 — 영수증에 같은 상품이 있으면 그 단가를 보여 준다.
+        _price_by = {}
+        for _it in (receipt_items or []):
+            _c = _n(_it.get('상품번호'))
+            if _c:
+                try:
+                    _price_by[_c] = int(float(_it.get('단가') or 0))
+                except (TypeError, ValueError):
+                    pass
+        _rows = [{
+            '지정': False,
+            '판매자': dmap.get(str(o.get('username') or ''), str(o.get('username') or '')),
+            '주문번호': str(o.get('order_no') or ''),
+            '수취인': str(o.get('recipient') or ''),
+            '상품명': str(o.get('product_name') or '')[:40],
+            '수량': int(o.get('qty') or 1),
+            '청구금액': 0,
+            '참고·영수증단가': _price_by.get(_n(o.get('costco_no')), 0),
+            '메모': '',
+        } for o in _un]
+        _ed = st.data_editor(
+            pd.DataFrame(_rows), use_container_width=True, hide_index=True,
+            key=f"rs_amt_ed_{d_day}",
+            disabled=['판매자', '주문번호', '수취인', '상품명', '참고·영수증단가'],
+            column_config={
+                '지정': st.column_config.CheckboxColumn(
+                    '지정', help='금액을 직접 정해 청구할 건'),
+                '수량': st.column_config.NumberColumn('수량', format='%d',
+                                                    min_value=1, step=1),
+                '청구금액': st.column_config.NumberColumn(
+                    '청구금액', format='%d', min_value=0, step=100,
+                    help='이 주문 전체에 청구할 금액입니다(단가 아님). '
+                         '수량으로 다시 곱하지 않습니다. 0이면 제외됩니다.'),
+                '참고·영수증단가': st.column_config.NumberColumn(
+                    '참고·영수증단가', format='%d',
+                    help='영수증에 같은 상품번호가 있으면 그 단가입니다. 참고용.'),
+                '메모': st.column_config.TextColumn(
+                    '메모', help='왜 이 금액인지 남기세요 (예: 8개입 중 4개 판매)'),
+            })
+
+        _recs = _ed.to_dict('records')
+        _picks, _idxs, _zero = [], [], 0
+        for _i, _r in enumerate(_recs):
+            if not _r.get('지정'):
+                continue
+            _amt = int(_r.get('청구금액') or 0)
+            if _amt <= 0:
+                _zero += 1
+                continue
+            _o = dict(_un[_i])
+            _o['qty'] = max(1, int(_r.get('수량') or 1))
+            _idxs.append(_i)
+            _picks.append((_o, _amt, str(_r.get('메모') or '').strip()))
+        if _zero:
+            st.warning(f"⚠️ 지정했지만 **금액이 0원인 {_zero}건**은 제외됩니다 — "
+                       "0원으로 청구하면 그만큼 그대로 손실입니다.")
+        if _picks:
+            st.markdown(f"**{len(_picks)}건 · 청구액 "
+                        f"{fmt(sum(a for _, a, _m in _picks))}원**")
+        if st.button(f"✍️ {len(_picks)}건을 지정 금액으로 **청구 추가**",
+                     key=f"rs_amt_apply_{d_day}", type="primary",
+                     disabled=not _picks, use_container_width=True):
+            _new = []
+            for _o, _amt, _memo in _picks:
+                _new.append({
+                    'username': _o.get('username', ''),
+                    'order_no': _o.get('order_no', ''),
+                    'order_date': _o.get('order_date', '') or str(d_day),
+                    'costco_no': str(_o.get('costco_no') or ''),
+                    'naver_no': _o.get('naver_no', ''),
+                    'product_name': _o.get('product_name', ''),
+                    'qty': int(_o.get('qty') or 1),
+                    # 단가가 아니라 '이 주문에 청구할 총액'을 받는다. 내품수량이
+                    # 다른 게 이 화면의 존재 이유라, 단가×수량으로 되돌리면
+                    # 사람이 정한 금액이 다시 어긋난다.
+                    'unit_price': _amt,
+                    'amount': _amt,
+                    'prev_cost': int(_o.get('prev_cost') or 0),
+                    'via': 'manual', 'split_qty': 1, 'pack': 1,
+                    'memo': _memo,
+                })
+            _merge_matches(alloc, _new, _idxs)
+            st.session_state['_rs_amt_open'] = True
+            st.success(f"✅ {len(_new)}건을 지정 금액으로 청구에 넣었습니다 — "
+                       "'정산 요청'을 눌러 저장하세요.")
+            st.rerun()
 
 
 def _render_unmatch_panel(alloc, dmap, receipt_items):
