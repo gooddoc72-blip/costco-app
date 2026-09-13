@@ -548,17 +548,41 @@ def _tab_month(dmap):
     if not summ:
         st.info(f"{_ym} 정산 내역이 없습니다.")
         return
+    # 택배 발송건수 — 물건값 청구와 함께 '그달 몇 건 나갔나'를 같이 본다.
+    #   택배비 청구(포장 관리 탭)와 **같은 기준**이어야 한다. dispatch_log를 그냥
+    #   세면 한 주문의 여러 품목이 각각 잡혀 건수가 부풀고, 코스트코 온라인몰
+    #   직배송(관리자가 보내지 않은 건)까지 섞인다. daily_fees가 주문번호 기준으로
+    #   중복을 없애고 온라인몰 건을 빼 주므로 그것을 그대로 쓴다.
+    import calendar as _cal
+    _last = _cal.monthrange(int(_ym[:4]), int(_ym[5:7]))[1]
+    _ship = {u: 0 for u in summ}
+    try:
+        import settle_core as _sc
+        with st.spinner(f"{_ym} 발송건수를 세는 중..."):
+            for _d in range(1, _last + 1):
+                _dt = '%s-%02d' % (_ym, _d)
+                for _u, _f in (_sc.fees_for_users(list(summ), _dt) or {}).items():
+                    _ship[_u] = _ship.get(_u, 0) + int(_f.get('ship_count') or 0)
+    except Exception as _e:
+        st.caption(f"⚠️ 발송건수 집계 실패: {_e}")
+
     rows = [{
         '판매자': dmap.get(u, u),
         '청구액(물건값)': e['total'],
-        '입금완료': e['paid'], '미입금': e['unpaid'], '정산일수': e['days'],
+        '입금완료': e['paid'], '미입금': e['unpaid'],
+        '택배 발송건': _ship.get(u, 0), '정산일수': e['days'],
     } for u, e in sorted(summ.items(), key=lambda kv: -kv[1]['total'])]
     rows.append({'판매자': '— 합계 —',
                  '청구액(물건값)': sum(r['청구액(물건값)'] for r in rows),
                  '입금완료': sum(r['입금완료'] for r in rows),
                  '미입금': sum(r['미입금'] for r in rows),
+                 '택배 발송건': sum(r['택배 발송건'] for r in rows),
                  '정산일수': ''})
     st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True,
                  column_config={k: st.column_config.NumberColumn(k, format='%d')
-                                for k in ('청구액(물건값)', '입금완료', '미입금')})
-    st.caption("택배비·포장비는 이 청구에 포함되지 않습니다 — 별도로 청구합니다.")
+                                for k in ('청구액(물건값)', '입금완료', '미입금',
+                                          '택배 발송건')})
+    st.caption("택배비·포장비는 이 청구에 포함되지 않습니다 — 별도로 청구합니다. "
+               "**택배 발송건**은 그달 실제 발송한 주문 수(주문번호 기준)이며, "
+               "코스트코 온라인몰 직배송은 빠집니다 — 포장 관리 › 택배·부자재비 "
+               "청구의 발송건수와 같은 기준입니다.")
