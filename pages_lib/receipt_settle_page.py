@@ -254,6 +254,12 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     #   매칭을 돌리다 그 사용자 청구가 통째로 0원이 되는 일이 있었다.
     st.divider()
     st.subheader("📅 1. 정산일 · 그날 발송건")
+    _pend_day = st.session_state.pop('_rs_day_pending', None)
+    if _pend_day:
+        try:
+            st.session_state['rs_day'] = date.fromisoformat(str(_pend_day))
+        except ValueError:
+            pass
     d_day = st.date_input("정산 날짜 (발송일 기준)", value=date.today(), key="rs_day",
                           help="이 날짜에 실제로 나간 발송건을 영수증과 맞춥니다.")
     dmap = _disp_map()
@@ -447,7 +453,9 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         st.session_state['_rs_fkey'] = _fkey
         st.session_state['_rs_fails'] = fails
         st.session_state.pop('rs_alloc', None)   # 새 업로드 → 이전 미리보기 초기화
-        st.session_state.pop('rs_day', None)     # 새 영수증 → 정산일을 새 영수증 날짜로 재설정
+        # 정산일은 화면 맨 위에서 사람이 고른다 — 여기서 지우면 위젯 생성 뒤
+        # 수정이라 StreamlitAPIException이 난다. 날짜가 어긋나면 아래 '정산 매칭'
+        # 단계에서 경고와 '그 날짜로 맞추기' 버튼이 뜬다.
 
 
     # ── 1-b) 📱 영수증 사진 (휴대폰 촬영) — PDF가 없을 때 ──
@@ -527,7 +535,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 st.session_state['rs_receipt_items'] = list(_prev.values())
                 st.session_state['_rs_unsaved'] = True   # 저장은 사람이 확인한 뒤에
                 st.session_state.pop('rs_alloc', None)
-                st.session_state.pop('rs_day', None)
+                # (rs_day는 위젯 생성 뒤라 건드리지 않는다 — 위 주석 참고)
                 st.success(f"📱 사진 {len(_ph)}장에서 {len(_merged_p)}품목 인식")
             st.session_state['_rs_pkey'] = _pkey
             st.session_state['_rs_fails'] = (st.session_state.get('_rs_fails') or []) + _pfails
@@ -720,10 +728,9 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         for _i, _rdx in enumerate(_rdates[:4]):
             if _fc[_i].button(f"📅 {_rdx} 로 맞추기", key=f"rs_dayfix_{_rdx}",
                               use_container_width=True):
-                try:
-                    st.session_state['rs_day'] = date.fromisoformat(_rdx)
-                except ValueError:
-                    pass
+                # 위젯이 이미 만들어진 뒤라 rs_day를 직접 못 바꾼다 → 예약해 두고
+                # 다음 실행의 위젯 생성 직전에 반영한다.
+                st.session_state['_rs_day_pending'] = str(_rdx)
                 st.session_state.pop('rs_alloc', None)   # 날짜가 바뀌면 배치도 다시
                 st.rerun()
     elif _rdates:
