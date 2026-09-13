@@ -9,12 +9,13 @@ import pandas as pd
 from services import parse_costco_receipt_pdf, render_pdf_to_images
 import receipt_settle as _rs
 import db_settle as _ds
+import db_online_purchase as _op
 import settle_core as _sc
 from receipt_settle import (
     allocate_receipt_to_orders, cleanup_orphan_settlements,
     build_manual_rows, build_memo_rows, ai_match_receipt_orders, _summarize,
     build_stock_pool, get_settle_start_date, get_stock_status,
-    allocate_dispatched_to_receipt,
+    allocate_dispatched_to_receipt, build_online_rows, suggest_online_candidates,
 )
 from db import (
     get_all_users, get_all_settings,
@@ -564,10 +565,22 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                        f"총수량은 영수증의 '총 판매 상품 수'와 같아야 합니다.")
     if not receipt_items:
         st.info("정산하려면 표에 **코스트코 상품번호 + 실단가(>0)** 가 있는 항목이 최소 1개 필요합니다.")
-        _render_stock_status()
-        _render_history(_disp_map(), USERNAME)
-        return
-    st.caption(f"✅ 정산 대상 품목 {len(receipt_items)}종")
+        # 매장에 가지 않은 날이 있다. 그날 나간 물건이 전부 코스트코 온라인몰
+        # 직배송이면 영수증이 아예 없는데, 여기서 막으면 그 건들은 어디서도
+        # 청구할 수 없다. 기본은 막되(영수증을 안 올린 실수가 훨씬 흔하다),
+        # 사람이 '그런 날이다'라고 밝히면 열어 준다.
+        if not st.checkbox(
+                "🛒 영수증 없이 진행 — 그날 **코스트코 온라인몰 직배송만** 있었습니다",
+                key="rs_no_receipt",
+                help="매장에 가지 않아 영수증이 없는 날입니다. 아래 배치 화면에서 "
+                     "온라인몰 직배송 건만 지정해 정산합니다. 영수증을 올리는 것을 "
+                     "잊은 것이라면 체크하지 마세요."):
+            _render_stock_status()
+            _render_history(_disp_map(), USERNAME)
+            return
+        st.caption("🛒 영수증 없이 진행합니다 — **온라인몰 직배송 지정**만 쓸 수 있습니다.")
+    else:
+        st.caption(f"✅ 정산 대상 품목 {len(receipt_items)}종")
 
     # ── 2) 당일 배치 ── (당일 주문건만 매칭 — 매일 그날 주문에 대해 정산)
     st.divider()
@@ -759,6 +772,14 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             #   실측(8/15~19): 미매칭 159건 → 100건으로 59건 감소.
             _pool = build_stock_pool(str(d_to), exclude_dates=[str(d_day)])
             _settled = _ds.settled_order_keys(exclude_date=str(d_day))
+            # 이미 '온라인몰 직배송'으로 표시한 주문은 매장 영수증 매칭에서 뺀다.
+            # 안 빼면 이름이 비슷한 영수증 품목에 붙어 **매장가**로 청구되는데,
+            # 온라인가가 7~17% 비싸므로 그 차액이 그대로 손실이 된다.
+            # (아직 표시하지 않은 건은 미매칭 주문으로 남아야 아래 화면에서 고를 수 있다.)
+            try:
+                _settled = _settled | (_op.keys_all() or set())
+            except Exception:
+                pass
             if _by_dispatch:
                 # 재고 이월은 마지막 수단이다. 먼저 물어 가면 오늘 영수증에
                 # 있는 물건까지 과거 재고로 처리돼 그때 단가로 청구된다.
@@ -790,6 +811,20 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             if _re:
                 _merge_matches(alloc, _re, [], sticky=False)
                 alloc['_restored'] = len(_re)
+        # 그날 표시해 둔 온라인몰 직배송 건을 되살린다. 위에서 매칭 대상에서
+        # 뺐으므로 여기서 다시 넣지 않으면 청구에서 통째로 빠진다.
+        try:
+            _onl_db = _op.get_by_date(str(d_day)) or []
+        except Exception:
+            _onl_db = []
+        if _onl_db:
+            _have2 = {(r.get('username'), r.get('order_no')) for r in alloc['rows']}
+            _onl_rows = _rs.build_online_rows(
+                [o for o in _onl_db
+                 if (o.get('username'), o.get('order_no')) not in _have2], str(d_day))
+            if _onl_rows:
+                _merge_matches(alloc, _onl_rows, [], sticky=False)
+                alloc['_online_restored'] = len(_onl_rows)
         if _auto_ai and alloc.get('unmatched_orders') and alloc.get('unmatched_receipt'):
             _ak2 = _resolve_ai_key('anthropic_api_key', settings)
             _gk2 = _resolve_ai_key('gemini_api_key', settings)
@@ -835,6 +870,10 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     if alloc and alloc.get('_auto_ai'):
         st.success(f"🤖 규칙으로 못 붙은 {alloc['_auto_ai']}건을 AI가 이었습니다 — "
                    "정산을 확정하면 이 연결이 저장돼 다음부터는 번호로 바로 붙습니다.")
+    if alloc and alloc.get('_online_restored'):
+        st.info(f"🛒 전에 지정해 둔 **코스트코 온라인몰 직배송 {alloc['_online_restored']}건**을 "
+                "그대로 얹었습니다 — 매장 영수증 매칭에서는 빠지고, 택배비·포장비도 "
+                "붙지 않습니다.")
     if alloc and alloc.get('_stock_carry'):
         st.info(f"📦 남은 {alloc['_stock_carry']}건은 **과거 구매분(재고)**에서 메꿨습니다 — "
                 "오늘 영수증에 없는 상품이라 그때 산 단가로 청구됩니다.")
@@ -854,10 +893,14 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
 
     st.divider()
     if not rows:
-        st.warning(
-            "이 기간에 영수증 상품번호와 일치하는 주문이 없습니다. "
-            "기간을 넓히거나, 제품 DB에 코스트코 상품번호↔네이버 번호 매핑이 있는지 확인하세요."
-        )
+        if not receipt_items:
+            st.info("영수증 없이 진행 중입니다 — 아래 **🛒 코스트코 온라인몰 직배송 지정**에서 "
+                    "그날 온라인으로 산 건을 골라 청구하세요.")
+        else:
+            st.warning(
+                "이 기간에 영수증 상품번호와 일치하는 주문이 없습니다. "
+                "기간을 넓히거나, 제품 DB에 코스트코 상품번호↔네이버 번호 매핑이 있는지 확인하세요."
+            )
     else:
         # ── 3) 사용자별 정산표 ──
         st.subheader("💰 사용자별 정산표")
@@ -1103,6 +1146,11 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 }
                 st.rerun()
 
+    # ── 3.35) 코스트코 온라인몰 직배송 지정 ──
+    #   매장 영수증에 없는 건은 언제나 여기(미매칭 주문)에 남는다. 그중
+    #   온라인몰로 산 건을 골라 표시해야 청구에 실린다.
+    _render_online_panel(alloc, dmap, d_day, USERNAME)
+
     # ── 3.4) 잘못 붙은 매칭 끊기 (수동 매칭 바로 위) ──
     _render_unmatch_panel(alloc, dmap, receipt_items)
 
@@ -1136,12 +1184,19 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         # ── 정산 미리보기 — 청구액은 물건값만. 택배·포장비는 별도 청구한다. ──
         _goods = {u: v['amount'] for u, v in (summary or {}).items()}
         _fees = _sc.fees_for_users(sorted(_goods), str(d_day))
+        # 사용자별 온라인몰 금액 — '이 청구액에 온라인몰이 얼마나 섞였나'에 답한다
+        _onl_by_u = {}
+        for _r3 in rows:
+            if str(_r3.get('via') or '') == 'online':
+                _u3 = str(_r3.get('username') or '')
+                _onl_by_u[_u3] = _onl_by_u.get(_u3, 0) + int(_r3.get('amount') or 0)
         _prev = []
         for _u in sorted(_goods, key=lambda k: -_goods[k]):
             _f = _fees.get(_u) or {}
             _prev.append({
                 '판매자': dmap.get(_u, _u),
                 '청구액(물건값)': int(_goods[_u]),
+                '그중 온라인몰': int(_onl_by_u.get(_u, 0)),
                 '발송': int(_f.get('ship_count') or 0),
                 '참고·택배비': int(_f.get('ship_fee') or 0),
                 '참고·포장비': int(_f.get('pack_fee') or 0),
@@ -1149,11 +1204,17 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         _total = sum(r['청구액(물건값)'] for r in _prev)
         st.dataframe(pd.DataFrame(_prev), use_container_width=True, hide_index=True,
                      column_config={_k: st.column_config.NumberColumn(_k, format='%d')
-                                    for _k in ('청구액(물건값)', '참고·택배비', '참고·포장비')})
+                                    for _k in ('청구액(물건값)', '그중 온라인몰',
+                                               '참고·택배비', '참고·포장비')})
         st.caption("**청구액 = 물건값만입니다.** 택배비·포장비는 청구서에 싣지 않고 "
                    "별도로 청구합니다 — 오른쪽 두 칸은 그날 발생한 금액을 참고로 "
                    "보여줄 뿐 정산에 반영되지 않습니다. "
                    "(택배비 = 발송건수 × 사용자 설정 · 포장비 = 배정액 또는 기본 박스비)")
+        _onl_skip = sum(len((_fees.get(_u) or {}).get('online_skipped') or [])
+                        for _u in _goods)
+        if _onl_skip:
+            st.caption(f"🛒 **발송** 칸에서 코스트코 온라인몰 직배송 **{_onl_skip}건**을 "
+                       "뺐습니다 — 코스트코가 보낸 건이라 택배비·포장비가 들지 않습니다.")
 
         _need_ck, _ck_why = _render_reconcile(receipt_items, alloc, _total, d_day)
 
@@ -1273,6 +1334,10 @@ def _merge_matches(alloc, new_rows, matched_order_indices, sticky=True):
         _c = str(r.get('costco_no') or '')
         if not _c:
             continue
+        # 온라인몰 직배송분은 이 영수증을 먹지 않았다 — 같은 상품을 매장에서도 산
+        # 날에 이 줄을 세면 매장 영수증 품목이 통째로 목록에서 사라진다.
+        if str(r.get('via') or '') == 'online':
+            continue
         if str(r.get('via') or '') == 'memo':
             _memo_qty[_c] = _memo_qty.get(_c, 0) + int(r.get('qty') or 0)
         else:
@@ -1354,6 +1419,190 @@ def _unmatch_rows(alloc, keys, receipt_items):
     return len(_drop)
 
 
+def _render_online_panel(alloc, dmap, d_day, USERNAME=''):
+    """🛒 코스트코 온라인몰 직배송 지정 — 미매칭 주문에서 골라 청구에 싣는다.
+
+    이 화면이 없으면 온라인몰 건은 **조용히 사라진다.** 매장 영수증에 없으니
+    단가를 못 찾고, 0원인 행은 정산 저장에서 버려지기 때문이다(to_ledger_rows).
+    동시에 사용자가 코스트코 송장을 등록해 발송건으로는 잡히므로 택배비만 붙는다.
+    여기서 표시해 두면 물건값이 청구되고 택배비는 빠진다.
+
+    단가 기본값은 공유DB의 **온라인가**다. 매장가를 쓰면 안 된다 —
+    온라인몰가가 7~17% 비싸서(건당 1,000~4,500원) 그 차액이 손실로 남는다.
+    """
+    _un = list(alloc.get('unmatched_orders') or [])
+    try:
+        _marked = _op.get_by_date(str(d_day)) or []
+    except Exception:
+        _marked = []
+    if not _un and not _marked:
+        return
+
+    _open = bool(st.session_state.get('_rs_onl_open'))
+    _title = f"🛒 코스트코 온라인몰 직배송 지정 — 미매칭 주문 {len(_un)}건"
+    if _marked:
+        _title += f" · 지정됨 {len(_marked)}건"
+    with st.expander(_title, expanded=_open):
+        st.caption(
+            "코스트코 **온라인몰에서 주문해 코스트코가 고객에게 직접 보낸 건**을 "
+            "여기서 지정하세요. 매장 영수증에 없는 건이라 그냥 두면 "
+            "**물건값이 청구되지 않고**, 사용자가 코스트코 송장을 등록했다면 "
+            "**택배비만 잘못 붙습니다.** 지정하면 물건값이 청구되고 택배비는 빠집니다.")
+
+        # ── 이미 지정된 건 ──
+        if _marked:
+            st.markdown("##### ✅ 이 날짜에 지정된 온라인몰 건")
+            _mrows = [{
+                '판매자': dmap.get(str(m.get('username') or ''), str(m.get('username') or '')),
+                '주문번호': str(m.get('order_no') or ''),
+                '수취인': str(m.get('recipient') or ''),
+                '상품명': str(m.get('product_name') or '')[:40],
+                '수량': int(m.get('qty') or 1),
+                '단가': int(m.get('unit_price') or 0),
+                '청구액': int(m.get('amount') or 0),
+                '메모': str(m.get('memo') or ''),
+                '_u': str(m.get('username') or ''),
+            } for m in _marked]
+            st.dataframe(
+                pd.DataFrame([{k: v for k, v in r.items() if k != '_u'} for r in _mrows]),
+                use_container_width=True, hide_index=True,
+                column_config={_k: st.column_config.NumberColumn(_k, format='%d')
+                               for _k in ('수량', '단가', '청구액')})
+            st.caption(f"합계 **{fmt(sum(r['청구액'] for r in _mrows))}원** · "
+                       f"{len(_mrows)}건 — 이 건들은 택배비·포장비에서 제외됩니다.")
+            _cc1, _cc2 = st.columns([2, 1.2])
+            _cancel = _cc1.multiselect(
+                "지정 취소할 주문 (매장 구매였다면)",
+                [r['주문번호'] for r in _mrows], key=f"rs_onl_cancel_{d_day}",
+                help="취소하면 그 주문은 다시 매장 영수증 매칭 대상이 되고 "
+                     "택배비도 다시 붙습니다.")
+            if _cc2.button("↩️ 지정 취소", key=f"rs_onl_cancel_btn_{d_day}",
+                           disabled=not _cancel, use_container_width=True):
+                _by_ono = {r['주문번호']: r['_u'] for r in _mrows}
+                _cnt = 0
+                for _o in _cancel:
+                    try:
+                        _cnt += _op.unmark(_by_ono.get(_o, ''), [_o])
+                    except Exception as _e:
+                        st.error(f"{_o} 취소 실패: {_e}")
+                # 배치에서도 빼야 정산표가 맞는다
+                _unmatch_keys = {(_by_ono.get(_o, ''), _o) for _o in _cancel}
+                alloc['rows'] = [r for r in alloc.get('rows', [])
+                                 if (r.get('username'), r.get('order_no')) not in _unmatch_keys]
+                _st = st.session_state.get('rs_sticky') or {}
+                _dk = str(d_day)
+                if _st.get(_dk):
+                    _st[_dk] = [r for r in _st[_dk]
+                                if (r.get('username'), r.get('order_no')) not in _unmatch_keys]
+                    st.session_state['rs_sticky'] = _st
+                alloc['user_summary'] = _summarize(alloc['rows'])
+                st.session_state['rs_alloc'] = alloc
+                st.session_state['_rs_onl_open'] = True
+                st.success(f"↩️ {_cnt}건 지정을 취소했습니다 — "
+                           "**미리보기를 다시 눌러** 매장 영수증 매칭을 새로 하세요.")
+                st.rerun()
+            st.divider()
+
+        # ── 미매칭 주문에서 고르기 ──
+        if not _un:
+            st.caption("미매칭 주문이 없습니다 — 고를 대상이 없습니다.")
+            return
+
+        try:
+            _cands = suggest_online_candidates(_un)
+        except Exception as _e:
+            st.error(f"후보 조회 실패: {_e}")
+            return
+
+        _no_price = sum(1 for c in _cands if not int(c.get('online_price') or 0))
+        if _no_price:
+            st.info(f"ℹ️ {_no_price}건은 공유DB에 **온라인가가 없어 단가가 0**입니다 — "
+                    "코스트코 온라인몰에서 실제 결제한 금액을 직접 적으세요. "
+                    "0원인 채로는 청구되지 않습니다.")
+
+        _erows = [{
+            '지정': False,
+            '판매자': dmap.get(str(c.get('username') or ''), str(c.get('username') or '')),
+            '주문번호': str(c.get('order_no') or ''),
+            '수취인': str(c.get('recipient') or ''),
+            '상품명': str(c.get('product_name') or '')[:40],
+            '수량': int(c.get('qty') or 1),
+            '단가(온라인)': int(c.get('online_price') or 0),
+            '참고·매장가': int(c.get('store_price') or 0),
+            '메모': '',
+        } for c in _cands]
+
+        _ed = st.data_editor(
+            pd.DataFrame(_erows), use_container_width=True, hide_index=True,
+            key=f"rs_onl_ed_{d_day}",
+            disabled=['판매자', '주문번호', '수취인', '상품명', '참고·매장가'],
+            column_config={
+                '지정': st.column_config.CheckboxColumn(
+                    '지정', help='코스트코 온라인몰에서 사서 코스트코가 직접 보낸 건'),
+                '수량': st.column_config.NumberColumn('수량', format='%d', min_value=1, step=1),
+                '단가(온라인)': st.column_config.NumberColumn(
+                    '단가(온라인)', format='%d', min_value=0, step=10,
+                    help='코스트코 온라인몰 결제 단가. 공유DB의 온라인가를 채워 뒀습니다 — '
+                         '할인·쿠폰이 붙었다면 실제 결제한 금액으로 고치세요.'),
+                '참고·매장가': st.column_config.NumberColumn(
+                    '참고·매장가', format='%d',
+                    help='매장 가격입니다. 온라인몰은 보통 이보다 비쌉니다 — 참고용일 뿐 '
+                         '이 금액으로 청구하면 차액만큼 손해입니다.'),
+                '메모': st.column_config.TextColumn('메모', help='사유 (선택)'),
+            })
+
+        _recs = _ed.to_dict('records')
+        _picks, _idxs, _zero = [], [], 0
+        for _i2, _r in enumerate(_recs):
+            if not _r.get('지정'):
+                continue
+            _up = int(_r.get('단가(온라인)') or 0)
+            if _up <= 0:
+                _zero += 1
+                continue
+            _c = _cands[_i2]
+            _idxs.append(_i2)
+            _picks.append({
+                'username': str(_c.get('username') or ''),
+                'order_no': str(_c.get('order_no') or ''),
+                'settle_date': str(d_day),
+                'costco_no': str(_c.get('costco_no') or ''),
+                'naver_no': str(_c.get('naver_no') or ''),
+                'product_name': str(_c.get('product_name') or ''),
+                'recipient': str(_c.get('recipient') or ''),
+                'qty': max(1, int(_r.get('수량') or 1)),
+                'unit_price': _up,
+                'prev_cost': int(_c.get('prev_cost') or 0),
+                'memo': str(_r.get('메모') or '').strip(),
+            })
+
+        if _zero:
+            st.warning(f"⚠️ 지정했지만 **단가가 0원인 {_zero}건**은 제외됩니다 — "
+                       "0원으로 청구하면 그만큼이 그대로 손실입니다. 단가를 채우세요.")
+        if _picks:
+            _amt = sum(p['unit_price'] * p['qty'] for p in _picks)
+            st.markdown(f"**{len(_picks)}건 · 청구액 {fmt(_amt)}원** — "
+                        "이 건들은 택배비·포장비에서 제외됩니다.")
+
+        if st.button(f"🛒 {len(_picks)}건을 온라인몰 직배송으로 **청구 추가**",
+                     key=f"rs_onl_apply_{d_day}", type="primary",
+                     disabled=not _picks, use_container_width=True):
+            try:
+                _saved = _op.mark(_picks, created_by=USERNAME)
+            except Exception as _e:
+                st.error(f"저장 실패: {_e}")
+                _saved = 0
+            if _saved:
+                _new = build_online_rows(_picks, str(d_day))
+                _merge_matches(alloc, _new, _idxs)
+                st.session_state['_rs_onl_open'] = True
+                st.success(
+                    f"✅ {_saved}건을 온라인몰 직배송으로 지정했습니다 — 정산표에 "
+                    "반영됐고 택배비·포장비에서는 빠집니다. "
+                    "'정산 요청'을 눌러 저장하세요.")
+                st.rerun()
+
+
 def _render_unmatch_panel(alloc, dmap, receipt_items):
     """잘못 붙은 매칭을 골라 끊는다.
 
@@ -1425,6 +1674,10 @@ def _render_reconcile(receipt_items, alloc, goods_total, d_day):
 
       영수증 합계 = 배치(청구할 물건값) + 배정 대기(아직 안 나간 것)
 
+    **온라인몰 직배송분은 이 대조에서 뺀다.** 매장 영수증으로 산 물건이 아니라
+    양변에 들어갈 자리가 없다. 섞어 두면 배치 금액만 커져 "영수증보다 많다"는
+    경고가 뜨고, 정상인 정산이 매번 확인 체크에 걸린다.
+
     반환: (확인이 필요한가, 사유). 숫자가 어긋나 보이면 정산 요청 전에 사람이
     한 번 짚고 넘어가게 한다 — 잘못된 금액이 그대로 청구되면 되돌리기 어렵다.
     """
@@ -1437,7 +1690,9 @@ def _render_reconcile(receipt_items, alloc, goods_total, d_day):
     if _r_total <= 0:
         return False, ''
 
-    _goods = int(goods_total or 0)
+    _onl_amt = sum(int(r.get('amount') or 0) for r in (alloc.get('rows') or [])
+                   if str(r.get('via') or '') == 'online')
+    _goods = int(goods_total or 0) - _onl_amt
     _rest = _r_total - _goods
 
     st.markdown("##### 🧮 영수증 ↔ 배치 대조")
@@ -1445,6 +1700,10 @@ def _render_reconcile(receipt_items, alloc, goods_total, d_day):
     m1.metric("영수증 합계", f"{fmt(_r_total)}원", f"{len(receipt_items or [])}종")
     m2.metric("이번 정산 물건값", f"{fmt(_goods)}원")
     m3.metric("배정 대기", f"{fmt(_rest)}원", delta_color="off")
+    if _onl_amt:
+        st.caption(f"🛒 위 숫자에는 **코스트코 온라인몰 직배송 {fmt(_onl_amt)}원**이 "
+                   "빠져 있습니다 — 매장 영수증으로 산 물건이 아니라 대조 대상이 "
+                   f"아닙니다. 실제 청구액은 {fmt(int(goods_total or 0))}원입니다.")
 
     if _rest > 0:
         # 왜 남았는지까지 말해 준다. '남았다'만으로는 실수인지 정상인지 알 수 없다.

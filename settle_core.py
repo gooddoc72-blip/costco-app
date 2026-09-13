@@ -26,6 +26,7 @@ _VIA_TO_SOURCE = {
     'manual': 'manual',
     'memo': 'direct',        # 주문 없이 관리자가 직접 배정한 교환·추가 발송분
     'direct': 'direct',
+    'online': 'online',      # 코스트코 온라인몰에서 사서 코스트코가 직접 보낸 건
 }
 
 
@@ -47,6 +48,12 @@ def daily_fees(username, settle_date):
              (부피가 크면 택배 요금이 다르다 — 단일 단가로는 맞출 수 없다)
     포장비 = 그날 발송한 주문에 실제 배정된 포장비 합
              (배정이 없으면 발송건수 × 기본 박스비 — 포장은 어차피 나간다)
+
+    **코스트코 온라인몰 직배송 건은 뺀다.** 그 건은 코스트코가 고객에게 바로
+    보내므로 관리자가 포장도 발송도 하지 않았다. 그런데 사용자가 코스트코 송장을
+    자기 스토어에 등록하면 dispatch_log가 생겨 여기 발송건으로 잡히고, 내지도 않은
+    택배비·포장비가 청구된다. 온라인몰 원장(db_online_purchase)에 표시된 주문은
+    발송건수에서 제외해야 실제 지출과 청구가 맞는다.
     """
     from db import get_all_settings
     from db_dispatch_log import get_dispatched_orders_with_details
@@ -57,6 +64,16 @@ def daily_fees(username, settle_date):
     except Exception:
         rows = []
     onos = sorted({str(r.get('order_no') or '') for r in rows if r.get('order_no')})
+    # 온라인몰 직배송 건 제외 — 관리자가 부담하지 않은 비용이다
+    online_nos = set()
+    try:
+        import db_online_purchase as _op
+        online_nos = _op.order_nos(username) or set()
+    except Exception:
+        online_nos = set()
+    online_skipped = sorted(o for o in onos if o in online_nos)
+    if online_skipped:
+        onos = [o for o in onos if o not in online_nos]
     ship_count = len(onos)
 
     s = get_all_settings(username) or {}
@@ -82,7 +99,9 @@ def daily_fees(username, settle_date):
 
     return {'ship_count': ship_count, 'ship_unit': ship_unit,
             'ship_fee': ship_fee, 'ship_custom': len(shp), 'pack_fee': pack_fee,
-            'order_nos': onos}
+            'order_nos': onos,
+            # 왜 발송건수가 dispatch_log보다 적은지 화면에서 답할 수 있어야 한다
+            'online_skipped': online_skipped}
 
 
 def fees_for_users(usernames, settle_date):

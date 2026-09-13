@@ -87,6 +87,7 @@ def _tab_fee_billing(USERNAME):
 
     with st.spinner(f"{_ym} 발송 기록을 모으는 중..."):
         _rows = []
+        _onl_tot = 0
         for u in _sellers():
             _cnt = _ship = 0
             _unit = 0
@@ -95,6 +96,7 @@ def _tab_fee_billing(USERNAME):
                 _cnt += int(_f.get('ship_count') or 0)
                 _ship += int(_f.get('ship_fee') or 0)
                 _unit = int(_f.get('ship_unit') or 0) or _unit
+                _onl_tot += len(_f.get('online_skipped') or [])
             _pf = _saved.get(u) or {}
             if not _cnt and not int(_pf.get('amount') or 0):
                 continue          # 그달 아무 일도 없던 사용자는 줄을 만들지 않는다
@@ -135,6 +137,10 @@ def _tab_fee_billing(USERNAME):
                 f"**{fmt(_t_pack)}원** = **{fmt(_t_ship + _t_pack)}원** "
                 f"({len(_recs)}명)")
     st.caption("합계 칸은 저장 후 다시 계산됩니다 — 부자재비를 고치면 저장을 누르세요.")
+    if _onl_tot:
+        st.caption(f"🛒 **발송건수에서 코스트코 온라인몰 직배송 {_onl_tot}건을 뺐습니다** — "
+                   "코스트코가 고객에게 직접 보낸 건이라 택배비·포장비가 들지 않습니다. "
+                   "(영수증 정산 화면에서 지정한 건)")
 
     b1, b2 = st.columns([1, 3])
     if b1.button("💾 부자재비 저장", type="primary", key=f"fb_save_{_ym}"):
@@ -219,6 +225,20 @@ def _tab_ship_per_order(USERNAME, dmap, ym, last_day, users):
             st.error(f"발송 내역 조회 실패: {_e}")
             return
         _onos = sorted({str(r.get('order_no') or '') for r in _rows0 if r.get('order_no')})
+        # 코스트코 온라인몰 직배송 건은 관리자가 보낸 것이 아니다 — 여기 두면
+        # 합계가 실제 청구액(daily_fees)과 어긋나고, 안 낸 택배비를 손으로 적게 된다.
+        _onl_n = 0
+        try:
+            import db_online_purchase as _op
+            _onl = _op.order_nos(_u) or set()
+            _before = len(_onos)
+            _onos = [o for o in _onos if o not in _onl]
+            _onl_n = _before - len(_onos)
+        except Exception:
+            pass
+        if _onl_n:
+            st.caption(f"🛒 코스트코 온라인몰 직배송 **{_onl_n}건**은 뺐습니다 — "
+                       "코스트코가 보낸 건이라 택배비가 들지 않습니다.")
         _cur = get_ship_cost_map(_u, _onos) or {}
         _by_ono = {}
         for r in _rows0:

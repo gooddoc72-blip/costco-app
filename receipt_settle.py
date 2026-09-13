@@ -1043,10 +1043,21 @@ def dispatch_consumption(dispatch_date, receipt_nos, matched_keys=None, users=No
     주문 단위로 세므로 매칭된 건과 겹쳐 두 번 빠지지 않는다(matched_keys로 제외).
     코스트코번호는 주문 행에 굳혀 둔 daily_orders.costco_no를 쓴다 — 번호를
     모르는 주문은 어느 품목을 먹었는지 알 수 없으므로 세지 않는다.
+
+    **코스트코 온라인몰 직배송 건은 세지 않는다.** 그 물건은 창고에 들어온 적이
+    없다(코스트코가 고객에게 바로 보냈다). 그런데 같은 상품을 그날 매장에서도
+    샀다면 코스트코번호가 겹쳐, 온라인으로 나간 건이 매장 재고를 먹은 것으로
+    잡힌다. 그러면 실제로 남아 있는 재고가 장부에서 사라지고, 그만큼을 다음 날
+    또 사게 된다.
     """
     from db import get_dispatched_orders_with_details
     _nos = {str(x) for x in (receipt_nos or [])}
     _mk = set(matched_keys or ())
+    try:
+        import db_online_purchase as _op
+        _online = _op.keys_all() or set()
+    except Exception:
+        _online = set()
     if users is None:
         users = matchable_users()     # 직접구매 계정도 매칭·재고 정리 대상이다
     used, rows = {}, []
@@ -1070,6 +1081,8 @@ def dispatch_consumption(dispatch_date, receipt_nos, matched_keys=None, users=No
             ono = _norm(o.get('order_no'))
             if (uname, ono) in _mk:
                 continue                      # 정산에 이미 붙은 건 — 거기서 뺀다
+            if (uname, ono) in _online:
+                continue                      # 온라인몰 직배송 — 창고를 거치지 않았다
             c = _cno.get(ono, '')
             if not c or c not in _nos:
                 continue
@@ -1103,6 +1116,11 @@ def compute_leftovers(receipt_items, rows, extra_used=None):
     for r in rows or []:
         c = _norm(r.get('costco_no'))
         if not c:
+            continue
+        # 코스트코 온라인몰 직배송분은 이 영수증으로 산 물건이 아니다. 같은 상품을
+        # 그날 매장에서도 샀으면 번호가 겹쳐, 온라인으로 나간 수량만큼 매장 잔량이
+        # 사라진다 — 실물은 창고에 그대로 남아 있는데 장부에서만 없어진다.
+        if str(r.get('via') or '') == 'online':
             continue
         used_by[c] = used_by.get(c, 0) + int(r.get('qty') or 0) * int(r.get('pack') or 1)
         # 같은 상품인데 사용자마다 소분 수가 다르면 큰 값을 기준으로 잡는다.
@@ -1234,6 +1252,122 @@ def build_memo_rows(assignments, order_date):
             # 남은 재고에서 팩 단위로 빠지도록 pack=split_qty (소비 units = qty x split)
             'split_qty': sq,
             'pack': sq,
+        })
+    return out
+
+
+def suggest_online_candidates(unmatched_orders):
+    """미매칭 주문에 '온라인몰이라면 얼마일까'를 붙여 돌려준다 — 관리자 확인용.
+
+    온라인몰 직배송 건은 매장 영수증에 없으니 언제나 미매칭 주문으로 남는다.
+    관리자가 그 목록에서 온라인으로 산 건을 고르면 되는데, 단가를 매번 손으로
+    적게 하면 실수가 난다. 공유DB에 크롤러가 채워 둔 online_price가 있으므로
+    그걸 기본값으로 제시한다.
+
+    **매장가를 기본값으로 쓰지 않는다.** 온라인몰가는 예외 없이 매장가보다
+    비싸서(실측 7~17%, 건당 1,000~4,500원) 매장가로 청구하면 차액이 그대로
+    손실이다. 온라인가가 없으면 0으로 두고 사람이 채우게 한다 — 틀린 값을
+    채워 두는 것보다 비어 있는 편이 눈에 띈다.
+
+    반환: [{...unmatched_order 원본..., 'costco_no', 'online_price',
+            'store_price', 'price_src'}]
+      price_src: 'online' 크롤링 온라인가 · '' 못 찾음
+    """
+    from db import get_shared_products
+
+    _sp = {}
+    try:
+        for p in (get_shared_products() or []):
+            pn = _norm(p.get('product_no'))
+            if pn:
+                _sp[pn] = p
+    except Exception:
+        _sp = {}
+
+    # 사용자별로 한 번씩만 만든다 — 주문마다 products를 다시 읽으면 느리다
+    _nmap, _ono2cno = {}, {}
+    out = []
+    for o in (unmatched_orders or []):
+        uname = _norm(o.get('username'))
+        if uname not in _nmap:
+            try:
+                _nmap[uname] = _naver_to_product_map(uname)
+            except Exception:
+                _nmap[uname] = {}
+            _m = {}
+            try:
+                _c = get_user_db(uname)
+                for _r in _c.execute(
+                        "SELECT order_no, COALESCE(costco_no,'') AS c FROM daily_orders "
+                        "WHERE TRIM(COALESCE(costco_no,''))<>''"):
+                    _m[_norm(_r['order_no'])] = _norm(_r['c'])
+                _c.close()
+            except Exception:
+                _m = {}
+            _ono2cno[uname] = _m
+
+        # 코스트코번호 — 주문 행에 굳어 있는 값이 1순위(수집 때 확정한 값)
+        cno = _norm(_ono2cno.get(uname, {}).get(_norm(o.get('order_no'))))
+        if not cno:
+            _p = _nmap[uname].get(_norm(o.get('naver_no')))
+            cno = _norm((_p or {}).get('product_no'))
+
+        sp = _sp.get(cno) or {}
+        try:
+            on_p = int(sp.get('online_price') or 0)
+        except (TypeError, ValueError):
+            on_p = 0
+        try:
+            st_p = int(sp.get('store_price') or 0)
+        except (TypeError, ValueError):
+            st_p = 0
+
+        r = dict(o)
+        r['costco_no'] = cno
+        r['online_price'] = on_p
+        r['store_price'] = st_p
+        r['price_src'] = 'online' if on_p > 0 else ''
+        out.append(r)
+    return out
+
+
+def build_online_rows(picks, settle_date):
+    """코스트코 온라인몰 직배송 건 → 배치행.
+
+    picks: [{username, order_no, costco_no, product_name, recipient, naver_no,
+             qty, unit_price, prev_cost, memo}]
+
+    **소분·묶음 나눗셈을 적용하지 않는다(split_qty=pack=1).**
+    매장 구매는 한 팩을 사서 여러 주문에 나눠 담기 때문에 (영수증단가 // split) 로
+    쪼갠다. 온라인몰은 코스트코가 그 주문 하나에 대해 상품을 그대로 보내므로
+    판매단위 = 배송단위다. 여기서 split으로 나누면 실제 낸 돈보다 적게 청구된다.
+
+    청구액 = 온라인 결제단가 × 수량.
+    """
+    out = []
+    for p in (picks or []):
+        u = _norm(p.get('username'))
+        ono = _norm(p.get('order_no'))
+        if not (u and ono):
+            continue
+        qty = max(1, int(p.get('qty', 1) or 1))
+        up = int(p.get('unit_price', 0) or 0)
+        out.append({
+            'username': u,
+            'order_no': ono,
+            'order_date': _norm(settle_date),
+            'costco_no': _norm(p.get('costco_no')),
+            'naver_no': _norm(p.get('naver_no')),
+            'product_name': _norm(p.get('product_name')),
+            'recipient': _norm(p.get('recipient')),
+            'qty': qty,
+            'unit_price': up,
+            'amount': up * qty,
+            'prev_cost': int(p.get('prev_cost', 0) or 0),
+            'via': 'online',
+            'memo': _norm(p.get('memo')) or '코스트코 온라인몰 직배송',
+            # 창고를 거치지 않은 물건이라 재고에서 뺄 것이 없다
+            'split_qty': 1, 'pack': 1,
         })
     return out
 
