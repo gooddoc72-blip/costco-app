@@ -501,14 +501,71 @@ def render_panel(dmap, USERNAME):
                   "기존 기록은 그대로 두고 이 날짜로 **한 건 더** 쌓입니다"
                   "(기존 날짜를 덮어쓰지 않습니다). 그만큼 택배비도 더 청구됩니다.")
         if _unknown:
-            with st.expander(f"❓ 미분류 {len(_unknown)}건 — 어느 사용자 것인지 못 찾음",
+            with st.expander(f"❓ 미분류 {len(_unknown)}건 — 사용자를 지정해 넣기",
                              expanded=False):
-                st.caption("주문번호가 비었거나, 어느 사용자 DB에도 없는 번호입니다. "
-                           "주문 수집이 안 된 건일 수 있습니다.")
-                st.dataframe(pd.DataFrame([{
-                    '행': u['_row'], '주문번호': u['order_no'], '수취인': u['recipient'],
-                    '상품명': u['product_name'][:34], '사유': u.get('_why', '')}
-                    for u in _unknown[:200]]), use_container_width=True, hide_index=True)
+                st.caption(
+                    "주문번호가 비었거나, 어느 사용자 DB에도 없는 번호입니다. "
+                    "주문 수집이 안 된 건일 수 있습니다. **누구 것인지 아시면 "
+                    "사용자를 골라 바로 넣으세요** — 그대로 두면 그 발송건은 "
+                    "청구에 잡히지 않습니다.")
+                _NOU = '— 지정 안 함 —'
+                _uopts = [_NOU] + [dmap.get(_u, _u) for _u in sorted(dmap)]
+                _ul2u = {dmap.get(_u, _u): _u for _u in dmap}
+                _urows = [{
+                    '사용자 지정': _NOU,
+                    '행': u['_row'], '주문번호': u['order_no'],
+                    '수취인': u['recipient'], '상품명': u['product_name'][:34],
+                    '수량': int(u.get('qty') or 1),
+                    '송장번호': u.get('tracking_no', ''),
+                    '집화일자': u.get('dispatched_at', ''),
+                    '사유': u.get('_why', ''),
+                } for u in _unknown[:200]]
+                _ued = st.data_editor(
+                    pd.DataFrame(_urows), use_container_width=True, hide_index=True,
+                    key=f"du_unknown_{_dd}",
+                    disabled=['행', '주문번호', '수취인', '상품명', '송장번호',
+                              '집화일자', '사유'],
+                    column_config={
+                        '사용자 지정': st.column_config.SelectboxColumn(
+                            '사용자 지정', options=_uopts, required=True,
+                            help='이 발송건이 누구 것인지 고르세요'),
+                        '수량': st.column_config.NumberColumn('수량', format='%d',
+                                                            min_value=1, step=1),
+                    })
+                _upick = {}
+                for _i, _r in enumerate(_ued.to_dict('records')):
+                    _un2 = _ul2u.get(str(_r.get('사용자 지정') or ''), '')
+                    if not _un2:
+                        continue
+                    _src = dict(_unknown[_i])
+                    _src['qty'] = max(1, int(_r.get('수량') or 1))
+                    if not str(_src.get('order_no') or '').strip():
+                        # 주문번호가 없으면 dispatch_log의 키가 안 잡힌다.
+                        # 송장번호로 대체 키를 만들어 최소한 발송건수에는 잡히게 한다.
+                        _src['order_no'] = ('NO-%s-%s'
+                                            % (_dd, _src.get('tracking_no') or _src['_row']))
+                    _upick.setdefault(_un2, []).append(_src)
+                _un_n = sum(len(v) for v in _upick.values())
+                if _un_n:
+                    st.caption("넣을 건 — " + " · ".join(
+                        f"{dmap.get(_u, _u)} {len(_v)}건" for _u, _v in _upick.items()))
+                if st.button(f"👤 {_un_n}건을 지정한 사용자로 저장",
+                             key=f"du_unknown_save_{_dd}", disabled=not _un_n):
+                    # 아래 옵션 체크박스는 이 블록보다 뒤에 그려지므로, 첫 렌더에는
+                    # session_state에 없다. 그때는 체크박스와 같은 기본값을 쓴다.
+                    _s2, _k2, _m2 = save_dispatch(
+                        _upick, str(_dd),
+                        skip_existing=bool(st.session_state.get('du_skip', True)),
+                        use_row_date=bool(st.session_state.get('du_rowdate',
+                                                              bool(_dates))),
+                        move_wrong_date=bool(st.session_state.get('du_fixdate',
+                                                                 bool(_dates))))
+                    _n2 = sum(_s2.values())
+                    st.session_state['_du_msg'] = (
+                        f"👤 미분류 {_n2}건을 지정한 사용자로 저장 — "
+                        + " · ".join(f"{dmap.get(u, u)} {c}건" for u, c in _s2.items())
+                        if _n2 else "ℹ️ 저장된 건이 없습니다(이미 기록돼 있습니다).")
+                    st.rerun()
 
         # 집화일자 = 택배사가 물건을 받아 간 날. 발송일의 진짜 근거다.
         #   앱의 일괄발송은 '버튼 누른 시각'을 쓰므로 자정을 넘기면 다음 날로
