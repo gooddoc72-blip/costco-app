@@ -273,6 +273,15 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     _st4.metric("장바구니", f"{len(_nr4_cart)}/{_CART_MAX}개",
                 delta="준비됨" if _nr4_cart else None)
 
+    # ── 🛍 사용자별 등록 집계 (관리자) ─────────────────────────────
+    #   관리자가 등록 작업을 하는 곳이 여기다. 누가 몇 개 올렸는지 보려고
+    #   관리자 탭으로 옮겨 다니지 않게 같은 표를 접어서 붙인다.
+    #   (표 코드는 관리자 탭과 _naver_reg_panel을 공유 — 한쪽만 고쳐지는 일 방지)
+    if IS_ADMIN:
+        with st.expander("🛍 사용자별 네이버 등록 집계 · 건별 로그", expanded=False):
+            from pages_lib import _naver_reg_panel
+            _naver_reg_panel.render(key_prefix="nvlog_nr", nested=True)
+
     # 장바구니가 있으면 상단에 일괄 등록 버튼 노출
     if _nr4_cart:
         _cart_c1, _cart_c2, _cart_c3 = st.columns([3, 1, 1])
