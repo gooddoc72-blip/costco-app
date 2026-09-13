@@ -330,6 +330,83 @@ def render_panel(dmap, USERNAME):
             "발송 기록에 넣습니다. 이후 영수증 정산이 그 발송건에 매입가를 채웁니다. "
             "**여러 개를 한 번에** 올릴 수 있고, 같은 파일을 두 번 올려도 "
             "중복 저장되지 않습니다.")
+        # ── ✍️ 발송건 직접 입력 ────────────────────────────────────
+        #   파일이 없는 경우가 있다. 이전 주문이 미발송으로 남아 있다가 나중에
+        #   손으로 보내는 건이 대표적이다 — 택배사 파일에도 안 잡히고, 그날 주문이
+        #   아니라 미발송 목록에도 안 뜬다. 그러면 그 발송건은 어디에도 기록되지
+        #   않아 청구에서 통째로 빠진다. 관리자가 직접 넣을 길을 둔다.
+        with st.expander("✍️ 발송건 직접 입력 — 파일 없이 손으로 넣기", expanded=False):
+            st.caption(
+                "택배사 파일에 없는 발송건을 직접 넣습니다. **이전 주문을 뒤늦게 "
+                "보낸 건**처럼 파일·목록 어디에도 안 잡히는 경우에 쓰세요. "
+                "주문번호를 넣으면 영수증 매칭까지 되고, 없으면 발송건수·택배비에만 "
+                "잡힙니다.")
+            _mu_opts = [dmap.get(_u, _u) for _u in sorted(dmap)]
+            _mu_l2u = {dmap.get(_u, _u): _u for _u in dmap}
+            if not _mu_opts:
+                st.caption("사용자가 없습니다.")
+            else:
+                _mdate = st.date_input("발송일 (집화일 기준)", value=date.today(),
+                                       key="du_man_date",
+                                       help="택배가 실제로 나간 날입니다. 그날 청구에 "
+                                            "잡힙니다.")
+                _mrows = [{'사용자': _mu_opts[0], '주문번호': '', '수취인': '',
+                           '상품명': '', '수량': 1, '송장번호': '', '택배사': ''}
+                          for _ in range(5)]
+                _med = st.data_editor(
+                    pd.DataFrame(_mrows), use_container_width=True, hide_index=True,
+                    num_rows="dynamic", key=f"du_man_ed_{_mdate}",
+                    column_config={
+                        '사용자': st.column_config.SelectboxColumn(
+                            '사용자', options=_mu_opts, required=True),
+                        '주문번호': st.column_config.TextColumn(
+                            '주문번호',
+                            help='상품주문번호. 넣으면 영수증 매칭까지 됩니다. '
+                                 '모르면 비워도 됩니다.'),
+                        '수량': st.column_config.NumberColumn('수량', format='%d',
+                                                            min_value=1, step=1),
+                        '송장번호': st.column_config.TextColumn(
+                            '송장번호', help='주문번호가 없을 때 이 값으로 키를 만듭니다.'),
+                    })
+                _mpick, _mbad = {}, 0
+                for _i, _r in enumerate(_med.to_dict('records')):
+                    _ono = str(_r.get('주문번호') or '').strip()
+                    _trk = str(_r.get('송장번호') or '').strip()
+                    _nm = str(_r.get('상품명') or '').strip()
+                    _rc = str(_r.get('수취인') or '').strip()
+                    if not (_ono or _trk or _nm or _rc):
+                        continue                      # 빈 줄은 넘어간다
+                    _u2 = _mu_l2u.get(str(_r.get('사용자') or ''), '')
+                    if not _u2 or not (_ono or _trk):
+                        _mbad += 1                    # 주문번호도 송장도 없으면 못 넣는다
+                        continue
+                    _mpick.setdefault(_u2, []).append({
+                        'order_no': _ono or ('NO-%s-%s' % (_mdate, _trk)),
+                        'recipient': _rc, 'product_name': _nm,
+                        'qty': max(1, int(_r.get('수량') or 1)),
+                        'tracking_no': _trk,
+                        'courier': str(_r.get('택배사') or '').strip(),
+                    })
+                if _mbad:
+                    st.warning(f"⚠️ {_mbad}줄은 **주문번호와 송장번호가 모두 비어** "
+                               "넣을 수 없습니다 — 둘 중 하나는 있어야 기록됩니다.")
+                _mn = sum(len(v) for v in _mpick.values())
+                if _mn:
+                    st.caption("넣을 건 — " + " · ".join(
+                        f"{dmap.get(_u, _u)} {len(_v)}건" for _u, _v in _mpick.items()))
+                if st.button(f"💾 {_mn}건 발송 기록 저장", key="du_man_save",
+                             type="primary", disabled=not _mn):
+                    _ms, _mk, _mm = save_dispatch(_mpick, str(_mdate),
+                                                  skip_existing=True)
+                    _mtot = sum(_ms.values())
+                    st.session_state['_du_msg'] = (
+                        (f"✍️ 발송 기록 {_mtot}건 직접 입력 ({_mdate}) — "
+                         + " · ".join(f"{dmap.get(u, u)} {c}건" for u, c in _ms.items()))
+                        if _mtot else
+                        "ℹ️ 저장된 건이 없습니다 — 그 날짜에 이미 기록돼 있습니다."
+                    ) + (f"  ·  ⏭ 건너뜀 {_mk}건" if _mk else "")
+                    st.rerun()
+
         _fs = st.file_uploader("발송 파일 (xlsx · xls · csv · 여러 개 가능)",
                                type=['xlsx', 'xls', 'csv'], key="du_file",
                                accept_multiple_files=True)
