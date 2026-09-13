@@ -1898,6 +1898,10 @@ def _render_unmatched_panel(alloc, dmap, d_day, USERNAME, receipt_items):
                      expanded=True):
         st.caption("발송은 됐는데 그날 영수증에서 상품을 못 찾은 건입니다. "
                    "**그대로 두면 청구에서 빠집니다.** 건별로 처리를 고르세요.")
+        if not _owners:
+            st.info("ℹ️ 재고 원장이 비어 있어 **재고 보유자·구입가를 자동으로 채울 수 "
+                    "없습니다.** 📦 재고 출고로 처리하려면 **금액 칸에 직접 적으세요** "
+                    "— 원장에 없어도 그 금액으로 청구됩니다.")
 
         # 재고 현황 — 상품별로 누가 몇 개 갖고 있나.
         try:
@@ -2019,6 +2023,8 @@ def _render_unmatched_panel(alloc, dmap, d_day, USERNAME, receipt_items):
                 _cost = int((_have.get(_own) or {}).get('cost') or 0)
                 _cross = bool(_own and _own != _me)
                 if not _amt:
+                    # 원장에 그 재고가 없으면 자동으로 채울 값이 없다. 사람이 적은
+                    # 금액이 있으면 그걸 쓰고, 둘 다 없을 때만 뺀다.
                     _amt = (_cost + (_surch if _cross else 0)) * _qty
                 if _amt <= 0:
                     _zero += 1
@@ -2049,9 +2055,10 @@ def _render_unmatched_panel(alloc, dmap, d_day, USERNAME, receipt_items):
                 'via': _via, 'split_qty': 1, 'pack': 1, 'memo': _memo})
 
         if _zero:
-            st.warning(f"⚠️ 금액이 0원인 {_zero}건은 제외됩니다 — 0원으로 청구하면 "
-                       "그만큼 그대로 손실입니다. **금액 칸을 직접 채우세요** "
-                       "(재고 현황이 '없음'이면 자동 계산할 값이 없습니다).")
+            st.warning(f"⚠️ 금액이 0원인 {_zero}건은 저장되지 않습니다 — 0원으로 "
+                       "청구하면 그만큼 그대로 손실입니다. **금액 칸에 직접 적으세요.** "
+                       "재고 현황이 '없음'이면 자동으로 채울 값이 없습니다 "
+                       "(재고 원장에 없어도 적은 금액으로 청구됩니다).")
         _tot_n = len(_rows_new)
         if _tot_n:
             st.markdown(f"**{_tot_n}건 · 청구액 "
