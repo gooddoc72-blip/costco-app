@@ -236,11 +236,25 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
 
     st.header("🛍 네이버 스마트스토어 상품 등록")
 
+    # ── 🛍 사용자별 등록 집계 (관리자) ─────────────────────────────
+    #   관리자가 등록 작업을 하는 곳이 여기다. 누가 몇 개 올렸는지 보려고
+    #   관리자 탭으로 옮겨 다니지 않게 같은 표를 접어서 붙인다.
+    #   (표 코드는 관리자 탭과 _naver_reg_panel을 공유 — 한쪽만 고쳐지는 일 방지)
+    #   ※ 아래 API 키 게이트보다 위에 둔다 — 관리자는 대행등록만 하고 본인
+    #     스토어 토큰이 없는 경우가 많아, 게이트 밑에 두면 st.stop()에 걸려
+    #     집계를 영영 못 본다. 이 표는 DB만 읽으므로 키와 무관하다.
+    if IS_ADMIN:
+        with st.expander("🛍 사용자별 네이버 등록 집계 · 건별 로그", expanded=False):
+            from pages_lib import _naver_reg_panel
+            _naver_reg_panel.render(key_prefix="nvlog_nr", nested=True)
+
     if not HAS_NAVER_API:
         st.error("naver_api.py 없음 — 관리자에게 문의하세요.")
         st.stop()
     if not api_id or not api_secret:
-        st.warning("⚙️ 설정 탭에서 네이버 API 키를 먼저 입력하세요.")
+        st.warning("⚙️ 설정 탭에서 네이버 API 키를 먼저 입력하세요."
+                   + ("  (관리자 본인 스토어에 등록하지 않는다면 위 집계만 보셔도 됩니다)"
+                      if IS_ADMIN else ""))
         st.stop()
 
     import json as _nr_json, re as _nr_re
@@ -272,15 +286,6 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     _nr4_cart = st.session_state.get("nr4_cart", [])
     _st4.metric("장바구니", f"{len(_nr4_cart)}/{_CART_MAX}개",
                 delta="준비됨" if _nr4_cart else None)
-
-    # ── 🛍 사용자별 등록 집계 (관리자) ─────────────────────────────
-    #   관리자가 등록 작업을 하는 곳이 여기다. 누가 몇 개 올렸는지 보려고
-    #   관리자 탭으로 옮겨 다니지 않게 같은 표를 접어서 붙인다.
-    #   (표 코드는 관리자 탭과 _naver_reg_panel을 공유 — 한쪽만 고쳐지는 일 방지)
-    if IS_ADMIN:
-        with st.expander("🛍 사용자별 네이버 등록 집계 · 건별 로그", expanded=False):
-            from pages_lib import _naver_reg_panel
-            _naver_reg_panel.render(key_prefix="nvlog_nr", nested=True)
 
     # 장바구니가 있으면 상단에 일괄 등록 버튼 노출
     if _nr4_cart:
