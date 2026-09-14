@@ -181,6 +181,21 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                            "차액은 택배·박스 원가와 수수료를 뺀 값이 아니므로 순이익이 아닙니다.")
                 st.divider()
 
+                # 🖨 합본 인쇄 — 사용자마다 따로 찍으면 3종짜리도 한 장을 통째로
+                #   쓴다. 주문이 적은 사용자끼리 같은 장에 이어 붙여 종이를 아낀다.
+                #   구현은 관리자 탭과 공용(_shopping_print).
+                with st.expander("🖨 합본 인쇄 — 주문 적은 사용자를 한 장에 모아 찍기",
+                                 expanded=False):
+                    try:
+                        from pages_lib import _shopping_print
+                        _shopping_print.render(
+                            _subs, _today_str_sub,
+                            lambda _s: _items_by_sub.get(_s['id'], []),
+                            key_prefix="ou_combo")
+                    except Exception as _pe:
+                        st.caption(f"⚠️ 합본 인쇄 화면을 열지 못했습니다: {_pe}")
+                st.divider()
+
                 for _sub in _subs:
                     _its = _items_by_sub.get(_sub['id'], [])
                     _sub_set = sum(int(_i.get('정산금액') or 0) for _i in _its)
