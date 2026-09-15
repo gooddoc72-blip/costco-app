@@ -380,10 +380,16 @@ def register_one(creds, save_tokens, product, margin, target, opts,
     _cf_name = _full.get('product_name') or _name
     _name = _cf_name
 
-    # 판매자상품코드 = 코스트코 번호. 우선순위:
+    # 판매자상품코드 = **코스트코 번호만** 넣는다. 우선순위:
     #   ① 카페24 자체상품코드(매칭·동기화가 기록한 코스트코 번호)
     #   ② 상품명 매칭(공용 코스트코 DB) — 고득점만 채택
-    #   ③ 카페24 상품번호(코스트코 매칭 실패 시 폴백)
+    #   못 찾으면 **비워 둔다.**
+    #
+    # 예전엔 카페24 상품번호로 폴백했는데, 그 값이 코스트코 번호인 척 들어갔다.
+    # 실측(이수진 계정): 판매자상품코드 117건 중 49건이 3~4자리 카페24 번호
+    # (839·1056·1123…)였다. 코스트코 번호는 6자리라 한눈에 구별되지도 않고,
+    # 그 코드로 코스트코 상품을 찾으면 엉뚱한 물건이 나온다.
+    # 틀린 번호가 들어가느니 비는 편이 낫다 — 네이버는 빈 값이면 아예 안 받는다.
     _costco_code = str(_full.get('custom_product_code') or '').strip()
     _code_src = '자체코드'
     if not _costco_code:
@@ -395,9 +401,9 @@ def register_one(creds, save_tokens, product, margin, target, opts,
         if _bp and _bs >= MATCH_MIN:
             _costco_code = str(_bp['product_no'] or '').strip()
             _code_src = '매칭(%s)' % _bs
-    _seller_code = _costco_code or str(_pno)
+    _seller_code = _costco_code
     if not _costco_code:
-        _code_src = '카페24번호'
+        _code_src = '없음(코스트코 미매칭)'
 
     # 중복 등록 방지 — 코스트코 번호·카페24 번호·상품명 중 하나라도 겹치면 건너뛴다
     # (두 코드 체계가 섞여 있어 둘 다 확인).
