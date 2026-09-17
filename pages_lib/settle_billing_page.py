@@ -320,9 +320,28 @@ def _render_items_detail(ds, invs, dmap, ded=None, by=''):
                            f"**{ds}** 를 열어 다시 매칭하세요.")
                 st.rerun()
 
-        st.caption(f"물건값 합계 {fmt(sum(int(i['amount'] or 0) for i in items))}원 "
-                   f"= 청구액 {fmt(int(_inv.get('total_amount') or 0))}원 "
+        _goods_sum = sum(int(i['amount'] or 0) for i in items)
+        _inv_amt = int(_inv.get('total_amount') or 0)
+        _fee = int(_inv.get('ship_fee') or 0) + int(_inv.get('pack_fee') or 0)
+        st.caption(f"물건값 합계 {fmt(_goods_sum)}원 = 청구액 {fmt(_inv_amt)}원 "
                    "— 택배비·포장비는 별도 청구합니다.")
+
+        # 둘이 어긋나면 반드시 말한다. 지금까지는 두 숫자를 나란히 적기만 해서
+        # 다른 것을 봐도 그냥 지나쳤다. 입금완료(paid) 뒤에 품목을 더하면
+        # recompute_invoice가 금액을 안 올리기 때문에 조용히 벌어진다.
+        _diff = _goods_sum + _fee - _inv_amt
+        if _diff:
+            _msg = (f"⚠️ **물건값 합계와 청구액이 {fmt(abs(_diff))}원 다릅니다.**  ")
+            if _paid and _diff > 0:
+                _msg += ("입금완료된 뒤에 품목이 추가됐습니다 — 받은 돈과 청구액이 "
+                         "달라지면 안 되므로 청구서 금액은 그대로 둡니다. "
+                         "예치금으로 결제한 날이면 **차감도 그만큼 덜 됐습니다**. "
+                         "고치려면 위 **↩️ 입금완료 취소** → 영수증 정산에서 "
+                         "**정산 요청** 다시 → 새 금액으로 청구·차감하세요.")
+            else:
+                _msg += ("청구서가 품목 합계에서 다시 계산되지 않은 상태입니다. "
+                         "영수증 정산에서 이 날짜를 **정산 요청**하면 맞춰집니다.")
+            st.warning(_msg)
 
         # 할인이 반영됐는지 한 줄로 답한다. 열만 보태면 행이 많을 때 다시 못 센다.
         _n_disc = sum(1 for r in _rows if int(r['할인(팩당)']) > 0)
