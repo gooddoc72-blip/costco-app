@@ -30,6 +30,7 @@ from db import (
     get_excluded_orders, remove_excluded_orders, get_excluded_order_nos,
     save_receipt_items, get_recent_receipt_items, delete_receipt_items_by_date, get_receipt_dates,
     get_date_range_stats, get_monthly_stats, get_product_ranking, get_saved_dates,
+    get_daily_order_date_counts, delete_daily_orders,
     get_dashboard_kpi, get_daily_profit_trend, get_week_best_products,
     get_price_history_monthly, save_price_changes_to_history, get_price_change_history,
     add_keyword_tracking, get_keyword_trackings, delete_keyword_tracking,
@@ -97,6 +98,106 @@ def _set_cache_helpers(shared_fn, user_fn, merged_fn, invalidate_fn, **kwargs):
     cached_user_products = user_fn
     cached_merged = merged_fn
     invalidate_data_cache = invalidate_fn
+
+
+def _render_saved_delete(USERNAME):
+    """🗑 저장된 주문(daily_orders) 삭제 — 날짜 통째 또는 건별.
+
+    '💾 저장하기'는 그날 daily_orders에 쌓기만 한다(같은 주문번호는 보존).
+    그래서 날짜를 잘못 골라 저장한 건, 취소된 주문, 두 번 수집된 건이 그대로
+    남아 수익계산이 계속 그걸 불러온다. 지우는 길이 **수익계산 화면에만** 있어서
+    정작 저장한 화면에서는 손댈 수 없었다 — 저장한 자리에서 지울 수 있어야 한다.
+
+    위 '영구 삭제'와 다른 일을 한다:
+      영구 삭제 = order_history 삭제 + 제외 목록 등록 (다시 수집돼도 안 들어옴)
+      여기       = 저장된 수집분만 삭제 (발송 추적·제외 목록은 그대로)
+    그래서 둘을 한 버튼으로 묶지 않았다. 취소된 주문은 둘 다, 날짜를 잘못 고른
+    저장은 여기만 필요하다.
+    """
+    st.divider()
+    try:
+        _dates = get_daily_order_date_counts(USERNAME, limit=60)
+    except Exception as _e:
+        st.caption(f"저장된 주문을 읽지 못했습니다 — {_e}")
+        return
+    if not _dates:
+        return
+
+    _tot = sum(c for _, c in _dates)
+    with st.expander(f"🗑 저장된 주문 삭제 — {len(_dates)}개 날짜 · {_tot}건", expanded=False):
+        st.caption("여기서 지우면 **수익계산에서 빠집니다**. 주문이력(발송 추적)과 "
+                   "제외 목록은 그대로 두므로, 다음 수집 때 그 주문이 다시 들어올 수 "
+                   "있습니다. 취소된 주문을 아주 막으려면 위 **영구 삭제**를 쓰세요.")
+
+        _lbl = [f"{d} — {c}건" for d, c in _dates]
+        _pick = st.selectbox("삭제할 날짜", _lbl, key="daily_del_date")
+        _d_sel = _dates[_lbl.index(_pick)][0]
+
+        try:
+            _rows = get_daily_orders(USERNAME, _d_sel) or []
+        except Exception:
+            _rows = []
+
+        # ① 건별 — 취소된 주문 한두 건만 빼는 쪽이 훨씬 흔하다
+        st.markdown("**① 주문 건별로 골라 삭제**")
+        _map = {}
+        for _r in _rows:
+            _r = dict(_r)
+            _ono = str(_r.get('order_no') or '').strip()
+            if not _ono:
+                continue
+            _plat = '🟡쿠팡' if '-' in _ono else '🟢네이버'
+            _map[f"{_plat} · {_r.get('recipient') or '-'} · "
+                 f"{str(_r.get('product_name') or '')[:34]} · "
+                 f"{int(_r.get('qty') or 1)}개 · {_ono}"] = _ono
+        if not _map:
+            st.caption("이 날짜에는 주문번호가 있는 행이 없습니다 — "
+                       "옛 저장분은 아래 날짜 단위 삭제로 지우세요.")
+        else:
+            _sel = st.multiselect("삭제할 주문 선택", list(_map.keys()),
+                                  key=f"daily_del_sel_{_d_sel}")
+            if st.button(f"🗑 선택한 {len(_sel)}건 삭제", key=f"daily_del_one_{_d_sel}",
+                         disabled=not _sel):
+                _n = delete_daily_orders(USERNAME, order_date=_d_sel,
+                                         order_nos=[_map[_k] for _k in _sel])
+                st.session_state.pop(f"daily_del_sel_{_d_sel}", None)
+                _invalidate_after_delete()
+                st.success(f"🗑 {_d_sel} 저장분 {_n}건 삭제 — 수익계산에서 빠집니다.")
+                st.rerun()
+
+        # ② 날짜 통째 — 되돌릴 수 없으니 두 번 눌러야 지운다
+        st.divider()
+        st.markdown("**② 이 날짜 통째로 삭제**")
+        _ck = f"_daily_del_confirm_{_d_sel}"
+        _confirming = bool(st.session_state.get(_ck))
+        _cnt = len(_rows)
+        if st.button("⚠️ 정말 삭제? (한번 더)" if _confirming
+                     else f"🗑 {_d_sel} 저장분 {_cnt}건 전체 삭제",
+                     key=f"daily_del_all_{_d_sel}",
+                     type="primary" if _confirming else "secondary",
+                     disabled=not _cnt):
+            if not _confirming:
+                st.session_state[_ck] = True
+                st.rerun()
+            else:
+                _n = delete_daily_orders(USERNAME, order_date=_d_sel)
+                st.session_state.pop(_ck, None)
+                _invalidate_after_delete()
+                st.success(f"🗑 {_d_sel} 저장분 {_n}건 전체 삭제했습니다.")
+                st.rerun()
+        if _confirming:
+            st.warning(f"**{_d_sel}** 저장분 {_cnt}건을 지웁니다 — 되돌릴 수 없습니다. "
+                       "다시 수집해 저장하면 복구됩니다(구입가·수익은 다시 계산).")
+
+
+def _invalidate_after_delete():
+    """삭제 뒤 캐시·매칭 버퍼를 비운다 — 안 비우면 지운 주문이 화면에 남는다."""
+    try:
+        if invalidate_data_cache:
+            invalidate_data_cache()
+    except Exception:
+        pass
+    st.session_state.pop('_pcalc_match_cache', None)
 
 
 def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
@@ -962,6 +1063,13 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 범위 삭제·건별 삭제가 같은 경로를 쓰도록 한 곳에 모았다."""
                 from db import delete_orders_from_history
                 _pn = delete_orders_from_history(USERNAME, _ids)
+                # 저장된 수집분까지 지울지는 **물어보고** 한다. 영구 삭제는 원래
+                # daily_orders를 건드리지 않아 수익 기록이 보존되는데, 취소된
+                # 주문은 그게 남아 수익계산에 계속 뜬다. 어느 쪽이 맞는지는
+                # 그 주문이 왜 지워지는지에 달려 있어 기본값으로 정할 수 없다.
+                _dn = 0
+                if st.session_state.get('perm_del_daily'):
+                    _dn = delete_daily_orders(USERNAME, order_nos=_ids)
                 for _k in ['orders', 'order_full', 'order_full_naver', 'order_full_coupang',
                            'order_excel_bytes', 'order_excel_bytes_coupang',
                            'order_coupang_excel_wing']:
@@ -975,8 +1083,17 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 except Exception:
                     pass
                 st.success(f"🗑 {_pn}건 영구 삭제 완료 — 제외 목록에 등록되어 "
-                           "다시 수집해도 복원되지 않습니다.")
+                           "다시 수집해도 복원되지 않습니다."
+                           + (f" (저장된 수집분 {_dn}건도 삭제 — 수익계산에서 빠집니다.)"
+                              if _dn else ""))
                 st.rerun()
+
+            # 취소된 주문을 지우는 경우엔 수익계산에서도 빠져야 한다. 반대로
+            # 이미 정산이 끝난 건을 목록에서만 치우는 경우엔 남아 있어야 한다.
+            st.checkbox("저장된 수집분(daily_orders)도 함께 삭제 — 수익계산에서도 빠짐",
+                        key="perm_del_daily",
+                        help="취소된 주문처럼 수익계산에서도 빼야 할 때 켜세요. "
+                             "끄면 종전대로 주문이력만 지우고 수익 기록은 남습니다.")
 
             # ── 건별 선택 삭제 ──────────────────────────────
             #   범위(플랫폼) 단위 삭제만 있어서, 목록에서 한두 건만 빼려면
@@ -1814,6 +1931,9 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 st.success("✅ 휴대폰으로 전송 완료!")
             elif not kakao_token:
                 st.warning("💡 설정에서 카카오톡을 설정해주세요.")
+
+    # ── 저장된 주문 삭제 ────────────────────────────────────────
+    _render_saved_delete(USERNAME)
 
     # ── 주문 이력 검색 ──────────────────────────────────────────
     st.divider()

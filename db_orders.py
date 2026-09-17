@@ -228,6 +228,69 @@ def get_daily_order_counts(username, date_from, date_to):
     return {r['order_date']: int(r['cnt']) for r in rows}
 
 
+def get_daily_order_date_counts(username, limit=60):
+    """저장된 주문 날짜 목록 — [(order_date, cnt), ...] 최신순.
+
+    삭제 화면이 '어느 날짜에 몇 건이 들어 있나'를 먼저 보여 줘야 한다.
+    날짜만 나열하면 지울 날짜를 고르면서 건수를 확인할 방법이 없다.
+    """
+    conn = get_user_db(username)
+    rows = conn.execute(
+        "SELECT order_date, COUNT(*) cnt FROM daily_orders "
+        "GROUP BY order_date ORDER BY order_date DESC LIMIT ?", (int(limit),)
+    ).fetchall()
+    conn.close()
+    return [(str(r['order_date']), int(r['cnt'])) for r in rows]
+
+
+def delete_daily_orders(username, order_date=None, order_nos=None):
+    """저장된 주문(daily_orders)을 지운다 — 날짜 통째 또는 주문번호 단위.
+
+    왜 필요한가:
+      '💾 저장하기'는 그날 daily_orders에 **쌓기만** 한다(같은 주문번호는 건너뛰어
+      보존한다). 그래서 잘못된 날짜로 저장한 건, 취소된 주문, 두 번 수집된 건이
+      그대로 남고 수익계산이 계속 그걸 불러온다. 지우는 길이 수익계산 화면에만
+      있어서, 정작 주문을 수집·저장한 화면에서는 손댈 수 없었다.
+
+      order_history(발송 추적)는 건드리지 않는다. 물건이 나갔는지와 수익계산에
+      무엇을 싣는지는 별개의 질문이고, 한 번에 지우면 발송 추적이 끊긴다.
+      주문 자체를 되살아나지 않게 막는 것은 delete_orders_from_history(제외 목록)다.
+
+    order_date만: 그 날짜 전체
+    order_nos만: 날짜와 무관하게 그 주문번호 전부
+    둘 다: 그 날짜 안의 그 주문번호만
+    반환: 지운 행 수
+    """
+    onos = [str(o).strip() for o in (order_nos or [])
+            if str(o).strip() and str(o).strip() != 'nan']
+    if not (order_date or onos):
+        return 0
+    conn = get_user_db(username)
+    deleted = 0
+    try:
+        if not onos:
+            cur = conn.execute("DELETE FROM daily_orders WHERE order_date=?",
+                               (str(order_date),))
+            deleted = cur.rowcount or 0
+        else:
+            CHUNK = 900                       # SQLite 변수 한도
+            for i in range(0, len(onos), CHUNK):
+                chunk = onos[i:i + CHUNK]
+                ph = ",".join("?" * len(chunk))
+                if order_date:
+                    cur = conn.execute(
+                        f"DELETE FROM daily_orders WHERE order_date=? AND order_no IN ({ph})",
+                        [str(order_date)] + chunk)
+                else:
+                    cur = conn.execute(
+                        f"DELETE FROM daily_orders WHERE order_no IN ({ph})", chunk)
+                deleted += cur.rowcount or 0
+        conn.commit()
+    finally:
+        conn.close()
+    return deleted
+
+
 # ── 주문 이력 (발송 추적용) ──────────────────────────────
 
 def get_orders_by_order_ids(username, order_ids):
