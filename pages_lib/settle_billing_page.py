@@ -794,6 +794,7 @@ def _tab_month(dmap):
     except Exception as _e:
         st.caption(f"⚠️ 발송건수 집계 실패: {_e}")
 
+    _order = [u for u, _ in sorted(summ.items(), key=lambda kv: -kv[1]['total'])]
     rows = [{
         '판매자': dmap.get(u, u),
         '청구액(물건값)': e['total'],
@@ -806,19 +807,87 @@ def _tab_month(dmap):
                  '미입금': sum(r['미입금'] for r in rows),
                  '택배 발송건': sum(r['택배 발송건'] for r in rows),
                  '정산일수': ''})
-    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True,
-                 column_config={k: st.column_config.NumberColumn(k, format='%d')
-                                for k in ('청구액(물건값)', '입금완료', '미입금',
-                                          '택배 발송건')})
+    # 행을 클릭하면 아래 상세가 그 사람으로 바뀐다. 이름을 표에서 찾아 놓고
+    # 아래 선택칸에서 또 고르는 동작이 반복돼 왔다.
+    _ev = st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True,
+                       on_select="rerun", selection_mode="single-row",
+                       key=f"sb_m_tbl_{_ym}",
+                       column_config={k: st.column_config.NumberColumn(k, format='%d')
+                                      for k in ('청구액(물건값)', '입금완료', '미입금',
+                                                '택배 발송건')})
+    _clicked = ''
+    try:
+        _sr = list(_ev.selection.rows)
+        if _sr and _sr[0] < len(_order):      # 마지막 '— 합계 —' 행은 사람이 아니다
+            _clicked = _order[_sr[0]]
+    except Exception:
+        _clicked = ''
+    st.caption("👆 판매자 행을 클릭하면 아래에 그 사람의 **일별 내역·예치금·품목**이 "
+               "펼쳐집니다.")
     st.caption("택배비·포장비는 이 청구에 포함되지 않습니다 — 별도로 청구합니다. "
                "**택배 발송건**은 그달 실제 발송한 주문 수(주문번호 기준)이며, "
                "코스트코 온라인몰 직배송은 빠집니다 — 포장 관리 › 택배·부자재비 "
                "청구의 발송건수와 같은 기준입니다.")
 
-    _month_detail(_ym, _last, summ, dmap, _ship_day)
+    _month_detail(_ym, _last, summ, dmap, _ship_day, clicked=_clicked)
 
 
-def _month_detail(_ym, _last, summ, dmap, ship_day):
+def _month_deposit(_ym, _from, _to, _u, dmap, invs, spend_dates):
+    """그 판매자의 그달 **돈 흐름** — 예치 입금 · 예치금 차감 · 계좌입금.
+
+    청구 표와 갈라 두면 "9월에 얼마 냈나"에 답할 수 없다. 낸 방법이 둘이라
+    (예치금 차감 / 계좌입금) 한쪽만 봐서는 늘 반쪽이다. 게다가 예치 입금은
+    청구와 날짜가 다르다 — 미리 맡기는 돈이라 그달 청구와 대응하지 않는다.
+    그래서 같은 화면에 놓되 **표는 따로** 둔다.
+    """
+    st.markdown("##### 💳 예치금 · 입금")
+
+    try:
+        _mt = _dep.totals(date_from=_from, date_to=_to, username=_u)
+    except Exception:
+        _mt = {'charged': 0, 'spent': 0, 'adjusted': 0, 'refunded': 0, 'net': 0}
+    try:
+        _bal_now = _dep.balance(_u)
+    except Exception:
+        _bal_now = 0
+    # 계좌입금 = 입금완료인데 예치금 차감이 아닌 날
+    _acct = sum(int(i['paid_amount'] or 0) for i in invs
+                if i['status'] == 'paid' and str(i['settle_date']) not in spend_dates)
+
+    d1, d2, d3, d4 = st.columns(4)
+    d1.metric("이달 예치 입금", f"{fmt(_mt['charged'])}원")
+    d2.metric("이달 예치금 차감", f"{fmt(_mt['spent'])}원")
+    d3.metric("이달 계좌입금", f"{fmt(_acct)}원")
+    d4.metric("현재 잔액", f"{fmt(_bal_now)}원",
+              f"이달 증감 {fmt(_mt['net'])}원", delta_color="off")
+    st.caption("**현재 잔액은 오늘 기준 전체 잔액**입니다 — 이달 증감만으로 계산되지 "
+               "않습니다. 예치금은 미리 맡기는 돈이라 청구와 날짜가 맞지 않습니다.")
+
+    try:
+        _lg = _dep.ledger(username=_u, date_from=_from, date_to=_to) or []
+    except Exception as _e:
+        st.caption(f"예치금 내역 조회 실패: {_e}")
+        return
+    if not _lg:
+        st.caption(f"{_ym}에 예치금 움직임이 없습니다 "
+                   + ("— 이달 청구는 계좌입금으로 받았거나 아직 미입금입니다."
+                      if _acct or any(i['status'] == 'billed' for i in invs) else ""))
+        return
+    st.dataframe(pd.DataFrame([{
+        '날짜': r['tx_date'],
+        '구분': _dep.KIND_LABEL.get(r['kind'], r['kind']),
+        '금액': int(r['amount'] or 0),
+        '정산일': r['settle_date'] or '',
+        '메모': r['memo'] or '',
+        '처리자': r['created_by'] or '',
+    } for r in sorted(_lg, key=lambda x: (str(x['tx_date']), int(x['id'])))]),
+        use_container_width=True, hide_index=True,
+        column_config={'금액': st.column_config.NumberColumn('금액', format='%d')})
+    st.caption(f"{len(_lg)}건 · 이달 증감 **{fmt(_mt['net'])}원** "
+               "— '차감 취소됨'과 '차감 되돌림'은 짝을 이뤄 서로 상쇄됩니다.")
+
+
+def _month_detail(_ym, _last, summ, dmap, ship_day, clicked=''):
     """월 합계 밑에 **사용자 한 명의 일별 내역**을 편다.
 
     합계만 있으면 "이 금액이 어디서 나왔나"에 답할 수 없다. 판매자가 금액을
@@ -826,9 +895,13 @@ def _month_detail(_ym, _last, summ, dmap, ship_day):
     있었다 — 한 달이면 30번이다. 계산서는 월 단위로 끊기므로, 그 한 장의
     근거도 월 단위 화면에서 나와야 한다.
 
-    두 겹으로 보여 준다:
-      ① 일별 — 며칠에 얼마가 청구됐고 입금됐나 (청구서 한 줄 = 하루)
-      ② 품목별 — 그 금액이 어느 상품에서 나왔나 (필요할 때만 편다)
+    세 겹으로 보여 준다:
+      ① 일별 — 며칠에 얼마가 청구됐고 **어떻게 냈나** (청구서 한 줄 = 하루)
+      ② 예치금 — 그달 맡긴 돈과 빠져나간 돈 (청구와 나란히 봐야 말이 된다)
+      ③ 품목별 — 그 금액이 어느 상품에서 나왔나 (필요할 때만 편다)
+
+    셋을 갈라 놓으면 판매자 문의 한 건에 화면을 세 번 옮겨야 한다. 물어보는
+    말은 늘 하나다 — "9월에 얼마 썼고 얼마 냈나".
     """
     _from, _to = '%s-01' % _ym, '%s-%02d' % (_ym, _last)
     st.divider()
@@ -837,7 +910,18 @@ def _month_detail(_ym, _last, summ, dmap, ship_day):
     _users = sorted(summ, key=lambda u: -summ[u]['total'])
     _lbl = [f"{dmap.get(u, u)} · {fmt(summ[u]['total'])}원 · {summ[u]['days']}일"
             for u in _users]
-    _pick = st.selectbox("판매자", _lbl, key=f"sb_m_u_{_ym}")
+    # 위 표에서 행을 클릭하면 선택칸을 그 사람으로 옮긴다. **새로 클릭했을
+    # 때만** 옮긴다 — 클릭 상태는 계속 남아 있어서, 매번 덮으면 선택칸으로
+    # 다른 사람을 고를 수가 없다.
+    _key, _seen = f"sb_m_u_{_ym}", f"_sb_m_click_{_ym}"
+    # 달을 바꾸면 옛 라벨이 남는다. 목록에 없는 값이 세션에 있으면 선택칸이
+    # 만들어지는 순간 예외가 난다 — 먼저 치운다.
+    if _key in st.session_state and st.session_state[_key] not in _lbl:
+        st.session_state.pop(_key, None)
+    if clicked and clicked in _users and st.session_state.get(_seen) != clicked:
+        st.session_state[_seen] = clicked
+        st.session_state[_key] = _lbl[_users.index(clicked)]
+    _pick = st.selectbox("판매자", _lbl, key=_key)
     _u = _users[_lbl.index(_pick)]
 
     _invs = _ds.list_invoices(_from, _to, username=_u)
@@ -845,9 +929,25 @@ def _month_detail(_ym, _last, summ, dmap, ship_day):
         st.caption("이 달에 정산 내역이 없습니다.")
         return
 
+    # 예치금으로 낸 날 — 결제수단을 같이 보여야 "청구는 됐는데 왜 잔액이
+    # 안 줄었나"를 이 표 안에서 답할 수 있다.
+    try:
+        _spd = _dep.spend_dates(_u)
+    except Exception:
+        _spd = set()
+
+    def _pay_label(i):
+        _d = str(i['settle_date'])
+        if _d in _spd:
+            return '💳 예치금'
+        if i['status'] == 'paid':
+            return '🏦 계좌입금'
+        return '🔴 미입금' if i['status'] == 'billed' else '⚪ 청구 전'
+
     _rows = [{
         '정산일': str(i['settle_date']),
         '상태': _ST_ICON.get(i['status'], i['status']),
+        '결제': _pay_label(i),
         '품목': int(i['item_count'] or 0),
         '청구액(물건값)': int(i['total_amount'] or 0),
         '입금액': int(i['paid_amount'] or 0),
@@ -856,7 +956,7 @@ def _month_detail(_ym, _last, summ, dmap, ship_day):
         '입금일시': str(i['paid_at'] or '')[:16],
     } for i in sorted(_invs, key=lambda x: str(x['settle_date']))]
     _rows.append({
-        '정산일': '— 합계 —', '상태': '',
+        '정산일': '— 합계 —', '상태': '', '결제': '',
         '품목': sum(r['품목'] for r in _rows),
         '청구액(물건값)': sum(r['청구액(물건값)'] for r in _rows),
         '입금액': sum(r['입금액'] for r in _rows),
@@ -875,6 +975,8 @@ def _month_detail(_ym, _last, summ, dmap, ship_day):
     if _draft:
         _line += f"  ·  ⚪ 아직 청구 안 함 **{fmt(_draft)}원**"
     st.markdown(_line)
+
+    _month_deposit(_ym, _from, _to, _u, dmap, _invs, _spd)
 
     # ── 품목별 — 그 금액이 어느 상품에서 나왔나 ──
     with st.expander(f"📦 {dmap.get(_u, _u)} · {_ym} 품목 내역", expanded=False):
