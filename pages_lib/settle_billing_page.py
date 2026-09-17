@@ -17,7 +17,7 @@ import pandas as pd
 
 import db_settle as _ds
 import db_deposit as _dep
-from db import get_all_users
+from db import get_all_users, get_receipt_items_by_date
 from utils import fmt
 
 _ST_ICON = {'draft': '⚪ 정산완료', 'billed': '🟡 청구됨', 'paid': '🟢 입금완료'}
@@ -111,7 +111,7 @@ def _tab_day(USERNAME, dmap):
                        for k in ('청구액(물건값)', '입금액', '예치금잔액')})
     st.caption("청구액은 **물건값만**입니다 — 택배비·포장비는 별도로 청구합니다.")
 
-    _render_items_detail(ds, invs, dmap)
+    _render_items_detail(ds, invs, dmap, ded=_ded, by=USERNAME)
 
     # ── ⑦ 청구 ──
     st.divider()
@@ -189,14 +189,23 @@ def _tab_day(USERNAME, dmap):
                             f"{'💳 예치금' if _isdep else '🏦 계좌입금'} · "
                             f"{str(i['paid_at'] or '')[:16]}")
                 if c1.button("취소", key=f"sb_unpay_{ds}_{_u}"):
-                    _ds.unmark_paid(ds, _u)
-                    if _isdep:
-                        # 청구서만 되돌리고 예치금을 그대로 두면 사용자는 쓰지도
-                        # 않은 돈이 빠진 채로 남는다. 둘은 반드시 함께 움직인다.
-                        _r = _dep.undo_deduct(ds, _u, by=USERNAME)
-                        st.toast(f"💳 {fmt(int(_ded.get(_u, 0)))}원 예치금 반환 "
-                                 f"(잔액 {fmt(_r['balance'])}원)", icon="↩️")
+                    _unpay(ds, _u, _isdep, USERNAME, _ded.get(_u, 0))
                     st.rerun()
+
+
+def _unpay(ds, username, is_dep, by, dep_amt=0):
+    """입금완료 취소 — 청구서와 예치금은 **반드시 함께** 되돌린다.
+
+    청구서만 되돌리고 예치금을 그대로 두면 사용자는 쓰지도 않은 돈이 빠진 채로
+    남는다. 부르는 곳이 둘이라(아래 '입금완료 취소' 목록, 청구 근거 패널의
+    인라인 버튼) 한 곳에 모아 둔다 — 나눠 두면 한쪽만 고쳐져 예치금이 안
+    돌아오는 경로가 생긴다.
+    """
+    _ds.unmark_paid(ds, username)
+    if is_dep:
+        _r = _dep.undo_deduct(ds, username, by=by)
+        st.toast(f"💳 {fmt(int(dep_amt or 0))}원 예치금 반환 "
+                 f"(잔액 {fmt(_r['balance'])}원)", icon="↩️")
 
 
 def _amt_of(invs, username):
@@ -206,7 +215,7 @@ def _amt_of(invs, username):
     return 0
 
 
-def _render_items_detail(ds, invs, dmap):
+def _render_items_detail(ds, invs, dmap, ded=None, by=''):
     """청구 근거 — 어느 주문의 어느 품목이 얼마인지. 청구액만으로는 설명이 안 된다.
 
     오매칭 품목을 여기서 뺄 수 있다. 지운 주문은 '이미 정산된 주문' 목록에서
@@ -223,27 +232,71 @@ def _render_items_detail(ds, invs, dmap):
         _inv = next((i for i in invs if i['username'] == _u), None) or {}
         _paid = str(_inv.get('status') or '') == 'paid'
 
-        _rows = [{
-            '삭제': False,
-            '근거': _ds.SOURCE_LABEL.get(it['source'], it['source']),
-            '상품명': str(it['product_name'])[:44],
-            '코스트코번호': it['product_no'],
-            '수량': int(it['qty'] or 1),
-            '팩단가': int(it['unit_price'] or 0),
-            '금액': int(it['amount'] or 0),
-            '주문번호': it['order_no'],
-            '_id': int(it['id']),
-        } for it in items]
+        # 영수증 원본의 정가·할인을 붙인다. 청구 근거에 실단가만 있으면
+        # "이 금액이 할인 반영된 값인가"에 답할 수 없다 — 숫자만 보고는
+        # 17,790이 할인 전인지 후인지 알 길이 없어 같은 질문이 반복됐다.
+        _rmap = _receipt_price_map(items)
+
+        _rows = []
+        for it in items:
+            _ri = _rmap.get((str(it.get('receipt_date') or ''),
+                             str(it.get('product_no') or ''))) or {}
+            _list = int(_ri.get('정가단가') or 0)
+            _paid_unit = int(_ri.get('단가') or 0)
+            # 할인은 영수증 줄 전체 금액이라 행마다 그대로 쓰면 안 된다.
+            # 팩 하나당 얼마를 덜 냈는지로 환산해야 팩단가와 나란히 읽힌다.
+            _dunit = max(0, _list - _paid_unit) if (_list and _paid_unit) else 0
+            _rows.append({
+                '삭제': False,
+                '근거': _ds.SOURCE_LABEL.get(it['source'], it['source']),
+                '상품명': str(it['product_name'])[:44],
+                '코스트코번호': it['product_no'],
+                '수량': int(it['qty'] or 1),
+                '정가': _list,
+                '할인(팩당)': _dunit,
+                '팩단가': int(it['unit_price'] or 0),
+                '금액': int(it['amount'] or 0),
+                '주문번호': it['order_no'],
+                '_id': int(it['id']),
+            })
         _cfg = {'삭제': st.column_config.CheckboxColumn('삭제'), '_id': None,
+                '정가': st.column_config.NumberColumn(
+                    '정가', format='%d', help='영수증에 찍힌 할인 전 단가. '
+                                            '0이면 그 날짜 영수증에서 이 상품을 못 찾은 것입니다.'),
+                '할인(팩당)': st.column_config.NumberColumn(
+                    '할인(팩당)', format='%d',
+                    help='정가 − 영수증 실단가. 0이면 그 영수증 줄에 쿠폰이 없었거나 '
+                         '판독이 할인을 못 가른 것입니다.'),
                 **{k: st.column_config.NumberColumn(k, format='%d')
                    for k in ('팩단가', '금액')}}
-        _dis = ['근거', '상품명', '코스트코번호', '수량', '팩단가', '금액', '주문번호', '_id']
+        _dis = ['근거', '상품명', '코스트코번호', '수량', '정가', '할인(팩당)',
+                '팩단가', '금액', '주문번호', '_id']
 
         if _paid:
             # 입금완료 건은 금액이 잠긴다 — 받은 돈과 청구액이 달라지면 무엇을
             # 받은 것인지 설명할 수 없다. 되돌리려면 '입금완료 취소'가 먼저다.
-            st.info("🟢 입금완료된 건이라 품목을 뺄 수 없습니다. 고치려면 위 "
-                    "**입금완료 취소**를 먼저 누르세요.")
+            #
+            # 취소 버튼은 여기 둔다. 전에는 "위 입금완료 취소를 누르세요"라고만
+            # 했는데, 그 목록은 이 패널보다 **아래**에 있는 접힌 expander라
+            # 가리키는 자리에 아무것도 없었다. 고치려는 자리에서 바로 눌러야 한다.
+            _isdep = _u in (ded or {})
+            _cu1, _cu2 = st.columns([3, 1])
+            _cu1.info("🟢 입금완료된 건이라 품목을 뺄 수 없습니다. "
+                      f"오른쪽 **입금완료 취소**를 누르면 '청구됨'으로 돌아가 "
+                      "고칠 수 있습니다."
+                      + (" 💳 예치금으로 결제한 건이라 **차감했던 금액도 "
+                         "예치금으로 되돌아갑니다.**" if _isdep else ""))
+            with _cu2:
+                st.write("")
+                if st.button("↩️ 입금완료 취소", key=f"sb_det_unpay_{ds}_{_u}",
+                             use_container_width=True,
+                             help="받은 돈과 청구액이 어긋나지 않게 입금완료를 먼저 "
+                                  "풀어야 품목을 뺄 수 있습니다."):
+                    _unpay(ds, _u, _isdep, by, (ded or {}).get(_u, 0))
+                    # success는 rerun에 씻겨 나간다 — toast는 다시 그려도 남는다
+                    st.toast(f"↩️ {dmap.get(_u, _u)} 입금완료 취소 — "
+                             "이제 품목을 뺄 수 있습니다.", icon="✅")
+                    st.rerun()
             st.dataframe(pd.DataFrame([{k: v for k, v in r.items()
                                         if k not in ('삭제', '_id')} for r in _rows]),
                          use_container_width=True, hide_index=True,
@@ -270,6 +323,41 @@ def _render_items_detail(ds, invs, dmap):
         st.caption(f"물건값 합계 {fmt(sum(int(i['amount'] or 0) for i in items))}원 "
                    f"= 청구액 {fmt(int(_inv.get('total_amount') or 0))}원 "
                    "— 택배비·포장비는 별도 청구합니다.")
+
+        # 할인이 반영됐는지 한 줄로 답한다. 열만 보태면 행이 많을 때 다시 못 센다.
+        _n_disc = sum(1 for r in _rows if int(r['할인(팩당)']) > 0)
+        _n_none = sum(1 for r in _rows if int(r['정가']) and not int(r['할인(팩당)']))
+        _n_miss = sum(1 for r in _rows if not int(r['정가']))
+        _saved = sum(int(r['할인(팩당)']) * int(r['수량']) for r in _rows)
+        if _n_disc:
+            st.success(f"💰 할인 반영 **{_n_disc}품목 · {fmt(_saved)}원** "
+                       f"(할인 없던 품목 {_n_none}개)")
+        elif _n_none:
+            st.info("ℹ️ 이 청구에는 **할인이 붙은 품목이 없습니다** — 그 날짜 영수증에 "
+                    "쿠폰이 없었거나, 판독이 쿠폰을 품목별로 가르지 못한 것입니다. "
+                    "영수증 정산에서 그 날짜를 열어 표의 **할인** 칸과 합계 줄의 "
+                    "'− 할인'이 영수증 **쿠폰합계**와 맞는지 확인하세요.")
+        if _n_miss:
+            st.caption(f"⚠️ {_n_miss}개 품목은 그 날짜 영수증에서 못 찾았습니다 "
+                       "(재고 출고·온라인몰·직접청구는 영수증 줄이 없는 것이 정상입니다).")
+
+
+def _receipt_price_map(items):
+    """{(영수증날짜, 코스트코번호): 영수증 줄} — 청구 금액의 출처를 되짚는다.
+
+    settle_item에는 실단가만 남는다(정가·할인은 영수증 쪽에 있다). 날짜를
+    행마다 다시 조회하면 같은 날짜를 수십 번 읽으므로 날짜별로 한 번만 읽는다.
+    """
+    out = {}
+    for _rd in {str(it.get('receipt_date') or '') for it in (items or [])}:
+        if not _rd:
+            continue
+        try:
+            for _ri in (get_receipt_items_by_date('', _rd) or []):
+                out[(_rd, str(_ri.get('상품번호') or ''))] = _ri
+        except Exception:
+            continue
+    return out
 
 
 # ── 💳 예치금 차감 (일별) ─────────────────────────────────────
@@ -298,7 +386,8 @@ def _deduct_section(ds, invs, dmap, bal, ded, USERNAME):
 
     st.caption("예치금이 있는 판매자는 입금을 기다리지 않고 여기서 바로 차감합니다. "
                "차감하면 그날 청구서가 **입금완료(💳 예치금)** 가 되고, 되돌리려면 "
-               "위 '입금완료 취소'를 쓰면 예치금도 함께 돌아갑니다.")
+               "아래 **💰 입금 확인 › ↩️ 입금완료 취소**를 쓰면 예치금도 함께 "
+               "돌아갑니다.")
 
     _all = st.checkbox("예치금이 없는 판매자도 보기 (차감하면 잔액이 마이너스가 됩니다)",
                        key=f"sb_dep_all_{ds}")
