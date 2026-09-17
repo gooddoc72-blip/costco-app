@@ -279,7 +279,23 @@ def build_stock_pool(date_upto, exclude_dates=None):
         if pn in pool:
             pool[pn]['units'] -= int(units or 0)
 
+    # ④ 반품요청 — 잘못 산 물건은 매장으로 돌아간다. 창고에 없는 물건이므로
+    #    가용 재고에 남겨 두면 다음 날 그 수량으로 남의 주문을 메꿨다고 계산한다.
+    for pn, units in return_request_units(date_upto, start=_start).items():
+        if pn in pool:
+            pool[pn]['units'] -= int(units or 0)
+
     return {k: v for k, v in pool.items() if v['units'] > 0}
+
+
+def return_request_units(date_upto, start=''):
+    """반품요청한 수량 — {코스트코번호: units}. 원장은 db_receipt_return."""
+    try:
+        import db_receipt_return as _rr
+        return {_norm(k): int(v or 0)
+                for k, v in (_rr.units_upto(date_upto, start=start) or {}).items()}
+    except Exception:
+        return {}
 
 
 def receipt_lot_units(date_upto, start=''):
@@ -370,8 +386,9 @@ def get_stock_status(date_upto=None):
     보여야 실물과 대조할 수 있다. 같은 원천(영수증 이력·정산 기록)을 쓰되
     차감 전 값도 함께 낸다.
     반환: [{costco_no, name, price, units_in, units_used, units_assigned,
-              units_left, amount}]
+              units_returned, units_left, amount}]
            units_assigned = 사용자 재고로 배정해 넘긴 수량
+           units_returned = 잘못 사서 반품요청한 수량 (매장으로 돌아갈 물건)
     """
     from datetime import datetime as _dt
     from db import get_shared_products
@@ -429,14 +446,18 @@ def get_stock_status(date_upto=None):
     # 배정 — 사용자 재고로 넘긴 수량은 더 이상 미배정 구입잔량이 아니다.
     # 이걸 안 빼서 '배정했는데 구입재고가 그대로'라는 질문이 계속 나왔다.
     _lots = receipt_lot_units(d, start=start)
+    # 반품요청 — 매장으로 돌아갈 물건이라 잔량에서 뺀다. 안 빼면 현황에는
+    # 있는데 창고에는 없는 수량이 남아 실물 대조가 영원히 안 맞는다.
+    _rets = return_request_units(d, start=start)
 
     out = []
     for e in pool.values():
         assigned = int(_lots.get(e['costco_no'], 0) or 0)
-        left = e['units_in'] - e['units_used'] - assigned
+        returned = int(_rets.get(e['costco_no'], 0) or 0)
+        left = e['units_in'] - e['units_used'] - assigned - returned
         sq = split_by.get(e['costco_no'], 1)
-        out.append({**e, 'units_assigned': assigned, 'units_left': left,
-                    'split_qty': sq,
+        out.append({**e, 'units_assigned': assigned, 'units_returned': returned,
+                    'units_left': left, 'split_qty': sq,
                     'amount': max(0, left) * (e['price'] // max(1, sq))})
     out.sort(key=lambda x: -x['amount'])
     return out

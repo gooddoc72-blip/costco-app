@@ -10,6 +10,7 @@ from services import parse_costco_receipt_pdf, render_pdf_to_images
 import receipt_settle as _rs
 import db_settle as _ds
 import db_online_purchase as _op
+import db_receipt_return as _rr
 import settle_core as _sc
 from receipt_settle import (
     allocate_receipt_to_orders, cleanup_orphan_settlements,
@@ -1088,7 +1089,9 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             st.caption("주문이 당일 없거나 코스트코↔네이버 번호 매핑이 없어 배치 못 한 품목과, "
                        "주문에 붙고 **남은 수량**입니다. 사용자를 고른 뒤 "
                        "**청구**(이전 주문의 교환·추가 발송분)할지 "
-                       "**재고로 입고**(안 팔려서 남은 것)할지 고르세요.")
+                       "**재고로 입고**(안 팔려서 남은 것)할지 고르세요. "
+                       "**잘못 산 물건은 ↩️ 반품요청**으로 빼세요 — 청구도 재고도 "
+                       "아닌 물건이라 사용자를 고르지 않아도 됩니다.")
             # 사용자는 표 안에서 고르지 않는다. 표 안 SelectboxColumn은
             #   · 기본값을 바꾸면 표 전체가 다시 그려져 체크와 행별 입력이 날아가고
             #   · 옵션에 없는 값(빈 문자열)은 None으로 렌더돼 아예 못 고른다.
@@ -1194,7 +1197,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 if _lf_msg.get('err'):
                     st.error(_lf_msg['err'])
 
-            _b1, _b2 = st.columns(2)
+            _b1, _b2, _b3 = st.columns(3)
             if _b1.button(f"🧑‍💼 {len(_um_pick)}종을 {_um_bulk}에게 **청구**",
                           key="rs_memo_apply", type="primary", disabled=not _um_pick,
                           use_container_width=True,
@@ -1229,8 +1232,10 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 _picks = [{'costco_no': str(r.get('상품번호') or ''),
                            'name': str(r.get('상품명') or ''),
                            'unit_price': int(r.get('팩단가') or 0),
-                           # 할인 전 정가 — 재고에 함께 남겨 할인액을 볼 수 있게
-                           'list_price': int(r.get('정가') or 0),
+                           # 할인 전 정가 — 재고에 함께 남겨 할인액을 볼 수 있게.
+                           # _um_pick에는 '정가'가 없다(표에만 있다) — 전에는
+                           # r.get('정가')를 읽어 언제나 0이 들어갔다.
+                           'list_price': int(_list_by.get(_n(r.get('상품번호')), 0)),
                            'split_qty': _split.get(str(r.get('상품번호') or ''), 1),
                            # 재고원장은 소분 단위다 — 팩 수 × split
                            'units_left': int(r.get('수량(팩)') or 1)
@@ -1254,6 +1259,44 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                            if _res['failed'] else '',
                 }
                 st.rerun()
+
+            # 잘못 산 물건 — 청구도 재고도 아니다. 사용자를 고르지 않는 유일한
+            # 버튼이라 '누구에게'가 필요 없다는 것이 화면에서 바로 읽혀야 한다.
+            if _b3.button(f"↩️ {len(_um_pick)}종 **반품요청**",
+                          key="rs_return_apply", disabled=not _um_pick,
+                          use_container_width=True,
+                          help="잘못 산 물건입니다. 매장에 돌려줄 것이므로 아무에게도 "
+                               "청구하지 않고 재고로도 잡지 않습니다. 배정 목록과 "
+                               "구입재고에서 빠집니다. (사용자 선택과 무관합니다.)"):
+                _split = {str(u['상품번호']): max(1, int(u.get('split_qty') or 1))
+                          for u in _assign_src}
+                _list_of = {str(r['상품번호']): int(_list_by.get(_n(r['상품번호']), 0))
+                            for r in _um_pick}
+                _rpicks = [{'costco_no': str(r.get('상품번호') or ''),
+                            'name': str(r.get('상품명') or ''),
+                            'qty': int(r.get('수량(팩)') or 1),
+                            'split_qty': _split.get(str(r.get('상품번호') or ''), 1),
+                            'unit_price': int(r.get('팩단가') or 0),
+                            'list_price': _list_of.get(str(r.get('상품번호') or ''), 0),
+                            'reason': str(r.get('메모') or '').strip()} for r in _um_pick]
+                _rres = _rr.add(str(d_day), _rpicks, created_by=USERNAME)
+                _ramt = sum(int(p['unit_price']) * int(p['qty']) for p in _rpicks)
+                if _rres['ok']:
+                    _rtext = (f"↩️ {_rres['ok']}종 · {fmt(_ramt)}원을 **반품요청**으로 "
+                              "뺐습니다 — 청구·재고 어디에도 들어가지 않습니다. "
+                              "아래 **반품요청 목록**에서 반품완료로 바꾸거나 취소하세요.")
+                else:
+                    _rtext = "반품요청으로 뺄 항목이 없습니다 (상품번호·수량 확인)."
+                _clear_assign_inputs(d_day, _um_pick)
+                st.session_state['_rs_um_open'] = True
+                st.session_state['_rs_rr_open'] = True    # 방금 뺀 것을 바로 보여 준다
+                st.session_state['_rs_lf_msg'] = {
+                    'ok': bool(_rres['ok']), 'text': _rtext, 'err': '',
+                }
+                st.rerun()
+
+    # ── 3.32) 반품요청 목록 — 잘못 산 물건의 행방을 한 곳에서 본다 ──
+    _render_return_panel(d_day, USERNAME)
 
     # ── 3.35) 코스트코 온라인몰 직배송 지정 ──
     #   매장 영수증에 없는 건은 언제나 여기(미매칭 주문)에 남는다. 그중
@@ -2188,11 +2231,23 @@ def _render_reconcile(receipt_items, alloc, goods_total, d_day):
     _goods = int(goods_total or 0) - _onl_amt - _stk_amt
     _rest = _r_total - _goods
 
+    # 반품요청 — 잘못 산 물건이라 청구에도 재고에도 안 간다. 배정 대기에 섞어
+    # 두면 "아직 처리 안 한 돈"으로 읽혀, 이미 판단이 끝난 금액을 매일 다시 본다.
+    try:
+        _ret = _rr.day_total(str(d_day))
+    except Exception:
+        _ret = {'count': 0, 'qty': 0, 'amount': 0}
+    _ret_amt = int(_ret.get('amount') or 0)
+    _wait = _rest - _ret_amt
+
     st.markdown("##### 🧮 영수증 ↔ 배치 대조")
     m1, m2, m3 = st.columns(3)
     m1.metric("영수증 합계", f"{fmt(_r_total)}원", f"{len(receipt_items or [])}종")
     m2.metric("그날 영수증분 청구", f"{fmt(_goods)}원")
-    m3.metric("배정 대기", f"{fmt(_rest)}원", delta_color="off")
+    m3.metric("배정 대기", f"{fmt(_wait)}원", delta_color="off")
+    if _ret_amt:
+        st.caption(f"↩️ **반품요청 {_ret['count']}건 · {fmt(_ret_amt)}원**은 배정 대기에서 "
+                   "빠져 있습니다 — 잘못 산 물건이라 청구도 재고도 아닙니다.")
     if _onl_amt or _stk_amt:
         _parts = []
         if _stk_amt:
@@ -2203,34 +2258,37 @@ def _render_reconcile(receipt_items, alloc, goods_total, d_day):
                    "그날 영수증으로 산 물건이 아니라 대조 대상이 아닙니다. "
                    f"**실제 청구액은 {fmt(int(goods_total or 0))}원**입니다.")
 
-    if _rest > 0:
+    if _wait > 0:
         # 왜 남았는지까지 말해 준다. '남았다'만으로는 실수인지 정상인지 알 수 없다.
         _lefts = _sc.leftovers(receipt_items, alloc.get('rows') or [], str(d_day))
         _undisp = len(alloc.get('unmatched_orders') or [])
         _msg = (f"영수증 {fmt(_r_total)}원 중 **{fmt(_goods)}원**만 이번 정산에 들어갑니다. "
-                f"나머지 **{fmt(_rest)}원**은 아직 주문에 안 붙은 물건입니다 — "
-                "**금액이 틀린 게 아니라** 그날 산 것이 전부 그날 나가지 않아서입니다.")
+                f"나머지 **{fmt(_wait)}원**은 아직 주문에 안 붙은 물건입니다 — "
+                "**금액이 틀린 게 아니라** 그날 산 것이 전부 그날 나가지 않아서입니다."
+                + (f" (반품요청 {fmt(_ret_amt)}원은 이미 뺐습니다.)" if _ret_amt else ""))
         if _lefts:
             _msg += (f"\n\n남은 품목 {len(_lefts)}종은 위 **배정할 영수증 품목**에서 "
-                     "사용자에게 청구하거나 재고로 넘기세요.")
+                     "사용자에게 청구하거나, 재고로 넘기거나, 잘못 산 것이면 "
+                     "**반품요청**으로 빼세요.")
         if _undisp:
             _msg += (f"\n\n미매칭 주문 {_undisp}건 — 송장이 등록됐는데 영수증에서 상품을 "
                      "못 찾은 건입니다.")
         st.info(_msg)
         # 절반도 안 붙었으면 매칭이 덜 된 쪽을 의심해야 한다. 그대로 정산하면
         # 나간 물건이 청구에서 빠지고, 남은 돈은 재고로 쌓이기만 한다.
-        if _goods * 2 < _r_total:
+        #   반품요청분은 애초에 주문에 붙을 수 없는 금액이라 분모에서 뺀다.
+        if _goods * 2 < (_r_total - _ret_amt):
             return True, (f"영수증 {fmt(_r_total)}원 중 **{fmt(_goods)}원**만 붙었습니다 "
                           f"(절반 미만). 매칭이 덜 된 것은 아닌지 확인하세요.")
         return False, ''
-    elif _rest < 0:
+    elif _wait < 0:
         # 재고·온라인몰은 위에서 이미 뺐다. 그래도 넘친다면 그날 영수증이 일부만
         # 올라왔거나 금액을 잘못 지정한 것이므로 그때만 확인을 받는다.
         st.warning(
-            f"⚠️ 영수증분 청구가 영수증 합계보다 **{fmt(-_rest)}원 많습니다**. "
-            "재고 출고·온라인몰은 이미 뺀 금액이라, 그날 영수증이 일부만 올라왔거나 "
-            "금액을 잘못 지정한 것입니다.")
-        return True, (f"영수증분 청구가 영수증 합계보다 **{fmt(-_rest)}원 많습니다.** "
+            f"⚠️ 영수증분 청구가 영수증 합계보다 **{fmt(-_wait)}원 많습니다**. "
+            "재고 출고·온라인몰·반품요청은 이미 뺀 금액이라, 그날 영수증이 일부만 "
+            "올라왔거나 금액을 잘못 지정한 것입니다.")
+        return True, (f"영수증분 청구가 영수증 합계보다 **{fmt(-_wait)}원 많습니다.** "
                       "재고·온라인몰은 이미 제외했으므로, 영수증이 일부만 올라온 것이라면 "
                       "그 금액이 그대로 잘못 청구됩니다.")
     else:
@@ -2263,6 +2321,12 @@ def _build_assign_rows(unmatched, receipt_items, alloc, d_day):
         _lots = _rs.receipt_lot_units(str(d_day), start=str(d_day))
     except Exception:
         _lots = {}
+    # 반품요청한 수량도 뺀다 — 매장으로 돌려보내기로 한 물건이 목록에 남아 있으면
+    # 매일 같은 품목을 다시 판단하게 되고, 실수로 청구하면 안 산 사람이 물어야 한다.
+    try:
+        _rets = _rr.units_by_date(str(d_day))
+    except Exception:
+        _rets = {}
 
     _price_by = {}
     for it in (receipt_items or []):
@@ -2277,7 +2341,8 @@ def _build_assign_rows(unmatched, receipt_items, alloc, d_day):
     for l in lefts:
         _c = str(l['costco_no'])
         _sq = max(1, int(l.get('split_qty') or 1))
-        _units = int(l.get('units_left') or 0) - int(_lots.get(_c, 0) or 0)
+        _units = (int(l.get('units_left') or 0) - int(_lots.get(_c, 0) or 0)
+                  - int(_rets.get(_c, 0) or 0))
         _packs = _units // _sq
         if _packs <= 0:
             continue
@@ -2304,6 +2369,89 @@ def _clear_assign_inputs(d_day, picks):
     for _r in (picks or []):
         for _sfx in ('_q', '_m'):
             st.session_state.pop(f"rs_asg_{d_day}_{_r['상품번호']}{_sfx}", None)
+
+
+def _render_return_panel(d_day, USERNAME):
+    """↩️ 반품요청 — 잘못 산 물건이 지금 어디까지 갔는지 본다.
+
+    표시만 하고 끝내면 '돌려주기로 한 물건'이 어디에도 안 보인다. 코스트코
+    반품에는 기한이 있어서, 요청해 놓고 잊으면 그 돈은 그대로 손실이 된다.
+    그래서 ① 그날 요청분과 ② 아직 안 가져간 지난 요청분을 함께 낸다.
+
+    되돌리기는 **삭제**다. 지우면 그 수량이 배정 대기와 구입재고로 돌아온다 —
+    '취소됨' 상태로 남겨 두면 재고에서 빼야 하는지를 조회하는 쪽마다 다시
+    판단해야 한다.
+    """
+    try:
+        rows = _rr.by_date(str(d_day))
+        older = [r for r in (_rr.pending() or [])
+                 if str(r.get('settle_date') or '') != str(d_day)]
+    except Exception as _e:
+        st.caption(f"반품요청 목록을 읽지 못했습니다 — {_e}")
+        return
+    if not (rows or older):
+        return
+
+    _amt = sum(int(r.get('amount') or 0) for r in rows)
+    _open = sum(1 for r in rows if str(r.get('status') or '') == 'requested')
+    with st.expander(f"↩️ 반품요청 {len(rows)}건 · {fmt(_amt)}원"
+                     + (f" (미완료 {_open}건)" if _open else ""),
+                     expanded=bool(st.session_state.get('_rs_rr_open'))):
+        st.caption("잘못 산 물건입니다 — **청구에도 재고에도 들어가지 않습니다.** "
+                   "매장에 돌려주고 환불까지 확인하면 '반품완료'로 바꾸세요. "
+                   "잘못 표시한 것은 '요청 취소'를 누르면 배정 대기로 돌아옵니다.")
+        if rows:
+            _rrows = [{'선택': False, '_id': int(r.get('id') or 0),
+                       '상품번호': str(r.get('costco_no') or ''),
+                       '상품명': str(r.get('product_name') or '')[:40],
+                       '수량(팩)': int(r.get('qty') or 0),
+                       '팩단가': int(r.get('unit_price') or 0),
+                       '금액': int(r.get('amount') or 0),
+                       '사유': str(r.get('reason') or ''),
+                       '상태': _rr.STATUS_LABEL.get(str(r.get('status') or ''),
+                                                  str(r.get('status') or '')),
+                       } for r in rows]
+            _red = st.data_editor(
+                pd.DataFrame(_rrows).drop(columns=['_id']),
+                use_container_width=True, hide_index=True,
+                key=f"rs_rr_ed_{d_day}",
+                disabled=['상품번호', '상품명', '수량(팩)', '팩단가', '금액',
+                          '사유', '상태'],
+                column_config={
+                    '선택': st.column_config.CheckboxColumn(
+                        '선택', help='아래 버튼이 이 행에 적용됩니다'),
+                    '수량(팩)': st.column_config.NumberColumn('수량(팩)', format='%d'),
+                    '팩단가': st.column_config.NumberColumn('팩단가', format='%d'),
+                    '금액': st.column_config.NumberColumn('금액', format='%d'),
+                })
+            _sel = [_rrows[i]['_id'] for i, r in enumerate(_red.to_dict('records'))
+                    if r.get('선택')]
+            _c1, _c2 = st.columns(2)
+            if _c1.button(f"✅ {len(_sel)}건 **반품완료**", key=f"rs_rr_done_{d_day}",
+                          disabled=not _sel, use_container_width=True,
+                          help="매장에 돌려주고 환불까지 확인했을 때 누르세요. "
+                               "재고에서는 요청한 순간 이미 빠져 있습니다."):
+                _n2 = _rr.mark_done(_sel, by=USERNAME)
+                st.session_state['_rs_rr_open'] = True
+                st.success(f"✅ {_n2}건을 반품완료로 바꿨습니다.")
+                st.rerun()
+            if _c2.button(f"↩️ {len(_sel)}건 **요청 취소**", key=f"rs_rr_undo_{d_day}",
+                          disabled=not _sel, use_container_width=True,
+                          help="반품할 물건이 아니었을 때. 지우면 그 수량이 "
+                               "'배정할 영수증 품목'과 구입재고로 돌아옵니다."):
+                _n3 = _rr.cancel(_sel)
+                st.session_state['_rs_rr_open'] = True
+                st.session_state['_rs_um_open'] = True
+                st.success(f"{_n3}건을 되돌렸습니다 — 배정 대기로 돌아왔습니다.")
+                st.rerun()
+        if older:
+            _oamt = sum(int(r.get('amount') or 0) for r in older)
+            st.warning(
+                f"⏳ **아직 매장에 안 가져간 반품요청 {len(older)}건 · {fmt(_oamt)}원**"
+                " — 코스트코 반품 기한을 넘기면 그대로 손실입니다.\n\n"
+                + " · ".join(f"{str(r.get('settle_date'))} {str(r.get('product_name'))[:16]} "
+                             f"{int(r.get('qty') or 0)}팩" for r in older[:8])
+                + (f" … 외 {len(older) - 8}건" if len(older) > 8 else ""))
 
 
 def _render_stock_status():
@@ -2368,15 +2516,17 @@ def _render_stock_status():
             st.dataframe(pd.DataFrame([
                 {'코스트코번호': r['costco_no'], '상품명': str(r['name'])[:34],
                  '입고': r['units_in'], '주문사용': r['units_used'],
-                 '재고배정': r.get('units_assigned', 0), '배정대기': r['units_left'],
+                 '재고배정': r.get('units_assigned', 0),
+                 '반품요청': r.get('units_returned', 0), '배정대기': r['units_left'],
                  '단가': r['price'], '묶인금액': r['amount']}
                 for r in _view
             ]), use_container_width=True, hide_index=True,
                 column_config={_k: st.column_config.NumberColumn(_k, format='%d')
-                               for _k in ('입고', '주문사용', '재고배정', '배정대기',
-                                          '단가', '묶인금액')})
+                               for _k in ('입고', '주문사용', '재고배정', '반품요청',
+                                          '배정대기', '단가', '묶인금액')})
             st.caption("**입고** = 영수증 구매 · **주문사용** = 정산에서 주문에 붙은 양 · "
-                       "**재고배정** = 사용자 재고로 넘긴 양 · **배정대기** = 남은 것. "
+                       "**재고배정** = 사용자 재고로 넘긴 양 · "
+                       "**반품요청** = 잘못 사서 매장에 돌려줄 양 · **배정대기** = 남은 것. "
                        "단위는 소분 단위입니다 — 1팩을 N개로 나눠 파는 상품은 낱개 기준입니다.")
             _render_wait_assign(_left)
         _render_wait_reset(_sd)
@@ -2573,8 +2723,10 @@ def _render_wait_assign(left_rows):
         _amt = sum(int(p['unit_price'] / max(1, p['split_qty']) * p['units_left'])
                    for p in _picks)
         st.markdown(f"**{_owner}** 에게 **{len(_picks)}종 · {fmt(_amt)}원** 배정합니다.")
-    if st.button(f"📦 {_owner} 재고로 입고 ({len(_picks)}종)", type="primary",
-                 key="rs_wait_assign_go", disabled=not _picks or bool(_over)):
+    _wb1, _wb2 = st.columns([2, 1])
+    if _wb1.button(f"📦 {_owner} 재고로 입고 ({len(_picks)}종)", type="primary",
+                   key="rs_wait_assign_go", disabled=not _picks or bool(_over),
+                   use_container_width=True):
         _res = _sc.receive_leftovers(str(date.today()), _picks)
         _msg = f"📦 {_owner} 재고로 {_res['ok']}종 입고했습니다."
         if _res.get('skipped'):
@@ -2582,6 +2734,28 @@ def _render_wait_assign(left_rows):
         if _res.get('failed'):
             _msg += " · 실패: " + ", ".join(_res['failed'][:3])
         st.session_state['_rs_wait_msg'] = {'ok': bool(_res['ok']), 'text': _msg}
+        st.rerun()
+
+    # 여기 쌓인 물건 중에는 **애초에 잘못 산 것**이 섞여 있다. 그건 누구 재고로도
+    # 가면 안 된다 — 넘기는 순간 그 사람이 팔 물건이 되고, 매장에 돌려줄 기한만
+    # 지나간다. 날짜는 오늘로 적는다(언제 산 것인지는 영수증에 남아 있고,
+    # 여기서 묻는 것은 '언제 돌려보내기로 했나'다).
+    if _wb2.button(f"↩️ 반품요청 ({len(_picks)}종)", key="rs_wait_return_go",
+                   disabled=not _picks or bool(_over), use_container_width=True,
+                   help="잘못 산 물건입니다. 아무에게도 배정하지 않고 배정 대기에서 "
+                        "빼며, 청구에도 들어가지 않습니다."):
+        _rp = [{'costco_no': p['costco_no'], 'name': p['name'],
+                'split_qty': p['split_qty'],
+                'qty': int(p['units_left']) // max(1, int(p['split_qty'])),
+                'units': int(p['units_left']),
+                'unit_price': int(p['unit_price']),
+                'amount': int(p['unit_price'] / max(1, p['split_qty']) * p['units_left']),
+                'reason': '배정 대기에서 반품요청'} for p in _picks]
+        _rres = _rr.add(str(date.today()), _rp)
+        _rmsg = (f"↩️ {_rres['ok']}종을 반품요청으로 뺐습니다 — 배정 대기와 "
+                 "구입재고에서 빠집니다."
+                 if _rres['ok'] else "반품요청으로 뺄 항목이 없습니다.")
+        st.session_state['_rs_wait_msg'] = {'ok': bool(_rres['ok']), 'text': _rmsg}
         st.rerun()
 
 
