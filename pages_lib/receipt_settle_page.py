@@ -207,6 +207,88 @@ _VIA_LABEL = {
 }
 
 
+def _render_dispatch_move(dmap, d_day):
+    """📅 발송 기록의 날짜를 옮긴다 — 잘못된 날로 들어간 건을 바로잡는다.
+
+    앱은 **일괄발송 버튼을 누른 시각**을 발송일로 쓴다. 04시 컷오프가 들어간
+    것은 2026-09-13이고, 그 전에는 자정을 넘겨 처리하면 그대로 다음 날로
+    들어갔다(9/11 발송이 9/12로). 그러면 9/11 정산에 발송건이 0으로 보인다.
+
+    택배사 파일을 다시 올려 고치는 길이 있지만(집화일자 + '다른 날짜로 잘못
+    기록된 건 옮기기'), **주문번호와 송장번호가 둘 다 같아야만** 옮겨진다.
+    하나라도 어긋나거나 파일이 없으면 조용히 0건으로 끝난다. 그때 쓸 손잡이다.
+
+    새로 만들지 않고 **옮긴다** — 새로 만들면 같은 택배가 두 날에 잡혀
+    택배비가 두 번 청구된다.
+    """
+    from db import get_dispatch_dates, get_dispatched_orders_with_details,         move_dispatch_date
+
+    with st.expander("📅 발송 기록 날짜 옮기기 — 잘못된 날로 들어간 건 바로잡기",
+                     expanded=False):
+        st.caption("일괄발송은 **버튼 누른 날**을 발송일로 씁니다. 자정을 넘겨 "
+                   "처리하면 다음 날로 들어가 그날 정산에서 발송건이 0으로 보입니다. "
+                   "여기서 날짜만 옮기면 됩니다 — **새로 만들지 않으므로 택배비가 "
+                   "두 번 청구되지 않습니다.** 재고는 건드리지 않습니다.")
+        _uopts = sorted(dmap.keys(), key=lambda u: dmap.get(u, u))
+        if not _uopts:
+            st.caption("사용자가 없습니다.")
+            return
+        _c1, _c2 = st.columns([1.2, 1.2])
+        _u = _c1.selectbox("판매자", _uopts, format_func=lambda v: dmap.get(v, v),
+                           key=f"rs_mv_u_{d_day}")
+        try:
+            _dates = get_dispatch_dates(_u, limit=30) or []
+        except Exception as _e:
+            st.caption(f"발송 날짜 조회 실패: {_e}")
+            return
+        if not _dates:
+            st.caption(f"{dmap.get(_u, _u)} 의 발송 기록이 없습니다.")
+            return
+        _src = _c2.selectbox("옮길 기록이 있는 날짜", _dates, key=f"rs_mv_d_{d_day}_{_u}")
+        try:
+            _rows = get_dispatched_orders_with_details(_u, _src) or []
+        except Exception:
+            _rows = []
+        if not _rows:
+            st.caption("그 날짜에 발송 기록이 없습니다.")
+            return
+
+        _tbl = [{'옮기기': True,
+                 '주문번호': str(r.get('order_no') or ''),
+                 '수취인': str(r.get('recipient') or ''),
+                 '상품명': str(r.get('product_name') or '')[:34],
+                 '송장번호': str(r.get('tracking_no') or ''),
+                 '택배사': str(r.get('courier') or ''),
+                 } for r in _rows]
+        _ed = st.data_editor(
+            pd.DataFrame(_tbl), use_container_width=True, hide_index=True,
+            key=f"rs_mv_ed_{d_day}_{_u}_{_src}",
+            disabled=['주문번호', '수취인', '상품명', '송장번호', '택배사'],
+            column_config={'옮기기': st.column_config.CheckboxColumn('옮기기')})
+        _sel = [r['주문번호'] for r in _ed.to_dict('records') if r.get('옮기기')]
+
+        _t1, _t2 = st.columns([1.2, 2])
+        _to = _t1.date_input("옮길 날짜", value=d_day, key=f"rs_mv_to_{d_day}_{_u}_{_src}",
+                             help="보통 실제로 택배가 나간 날입니다. 기본값은 지금 "
+                                  "보고 있는 정산일입니다.")
+        with _t2:
+            st.write("")
+            if str(_to) == str(_src):
+                st.caption("같은 날짜로는 옮길 수 없습니다 — 옮길 날짜를 바꾸세요.")
+            elif st.button(f"📅 선택한 {len(_sel)}건을 {_to} 로 옮기기",
+                           key=f"rs_mv_go_{d_day}_{_u}_{_src}", type="primary",
+                           disabled=not _sel or str(_to) == str(_src),
+                           use_container_width=True):
+                _r = move_dispatch_date(_u, _sel, str(_to), from_date=str(_src))
+                _msg = f"📅 {_r['moved']}건을 {_src} → {_to} 로 옮겼습니다."
+                if _r['merged']:
+                    _msg += (f" (옮길 날짜에 이미 있던 {_r['merged']}건은 한 줄로 "
+                             "합쳤습니다 — 택배비 이중청구를 막습니다.)")
+                st.session_state.pop('rs_alloc', None)   # 발송건이 바뀌면 배치도 다시
+                st.success(_msg + " **미리보기를 다시 눌러** 매칭을 새로 하세요.")
+                st.rerun()
+
+
 def _drop_online_marked(orders, username):
     """이미 온라인몰로 지정한 주문을 목록에서 뺀다. 반환: (남은 목록, 뺀 수)
 
@@ -374,14 +456,28 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     #   매칭을 돌리다 그 사용자 청구가 통째로 0원이 되는 일이 있었다.
     st.divider()
     st.subheader("📅 1. 정산일 · 그날 발송건")
+    # 정산일은 **우리 세션값('rs_day_val')이 정본**이고, 위젯은 그 값을 그리기만 한다.
+    #   전에는 '맞추기' 버튼이 위젯 키(rs_day)를 직접 고쳐 놓고 rerun했는데,
+    #   이미 만들어진 위젯의 키를 나중에 바꾸는 방식은 Streamlit이 default(value=)와
+    #   충돌로 보고 무시하는 경우가 있어 날짜가 그대로였다(버튼이 먹지 않았다).
+    #   위젯 key에 날짜를 넣어 **값이 바뀌면 위젯 자체가 새로 만들어지게** 한다.
     _pend_day = st.session_state.pop('_rs_day_pending', None)
     if _pend_day:
         try:
-            st.session_state['rs_day'] = date.fromisoformat(str(_pend_day))
+            st.session_state['rs_day_val'] = date.fromisoformat(str(_pend_day))
         except ValueError:
             pass
-    d_day = st.date_input("정산 날짜 (발송일 기준)", value=date.today(), key="rs_day",
+    _cur_day = st.session_state.get('rs_day_val')
+    if not isinstance(_cur_day, date):
+        _cur_day = date.today()
+        st.session_state['rs_day_val'] = _cur_day
+    d_day = st.date_input("정산 날짜 (발송일 기준)", value=_cur_day,
+                          key=f"rs_day_{_cur_day}",
                           help="이 날짜에 실제로 나간 발송건을 영수증과 맞춥니다.")
+    if isinstance(d_day, date) and d_day != _cur_day:
+        # 사람이 달력으로 고른 경우 — 정본을 따라 옮기고 배치를 버린다
+        st.session_state['rs_day_val'] = d_day
+        st.session_state.pop('rs_alloc', None)
     dmap = _disp_map()
 
     # 기준일보다 이른 날을 정산하면 그날 영수증이 재고에 잡히지 않는다. 조용히
@@ -450,6 +546,9 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                            key=f"rs_dsp_dl_{d_day}_{_du3}")
                     except Exception:
                         pass
+
+        # 잘못된 날짜로 들어간 발송 기록을 옮긴다 — 파일 없이도 고칠 수 있어야 한다
+        _render_dispatch_move(dmap, d_day)
 
         # 주문은 있는데 송장등록이 안 된 건 — **보여주기만** 한다.
         # 송장등록은 사용자가 자기 스토어에서 하는 일이라 관리자가 대신 누르면
@@ -698,7 +797,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 st.session_state['rs_receipt_items'] = list(_prev.values())
                 st.session_state['_rs_unsaved'] = True   # 저장은 사람이 확인한 뒤에
                 st.session_state.pop('rs_alloc', None)
-                # (rs_day는 위젯 생성 뒤라 건드리지 않는다 — 위 주석 참고)
+                # (정산일은 rs_day_val이 정본 — 위젯 생성 뒤라 여기선 안 건드린다)
                 st.success(f"📱 사진 {len(_ph)}장에서 {len(_merged_p)}품목 인식")
             st.session_state['_rs_pkey'] = _pkey
             st.session_state['_rs_fails'] = (st.session_state.get('_rs_fails') or []) + _pfails
@@ -891,10 +990,11 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         for _i, _rdx in enumerate(_rdates[:4]):
             if _fc[_i].button(f"📅 {_rdx} 로 맞추기", key=f"rs_dayfix_{_rdx}",
                               use_container_width=True):
-                # 위젯이 이미 만들어진 뒤라 rs_day를 직접 못 바꾼다 → 예약해 두고
-                # 다음 실행의 위젯 생성 직전에 반영한다.
+                # 위젯이 이미 만들어진 뒤라 여기서 바로 못 바꾼다 → 예약해 두고
+                # 다음 실행의 위젯 생성 직전에 반영한다(rs_day_val이 정본).
                 st.session_state['_rs_day_pending'] = str(_rdx)
                 st.session_state.pop('rs_alloc', None)   # 날짜가 바뀌면 배치도 다시
+                st.toast(f"📅 정산 날짜를 {_rdx} 로 맞췄습니다", icon="✅")
                 st.rerun()
     elif _rdates:
         st.caption(f"🧾 영수증 인식 날짜: **{', '.join(_rdates)}** — 정산 날짜와 일치합니다. "
@@ -1197,6 +1297,9 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     '근거': _via_lbl.get(str(r.get('via') or ''), r.get('via') or ''),
                     '메모': str(r.get('memo') or '')})
             st.dataframe(pd.DataFrame(drows), use_container_width=True, hide_index=True)
+
+    # ── 3.25) 수량이 안 맞는 품목 — 산 것보다 많이 붙었다 ──
+    _render_overflow_panel(alloc, dmap, receipt_items, d_day)
 
     # ── 3.3) 배정 — 주문 못 찾은 품목 + 팔고 남은 품목을 한 곳에서 ──
     #   예전엔 '주문 못 찾은 품목'(청구)과 '남은 재고 확인'(입고)이 따로 있었다.
@@ -1611,6 +1714,60 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             if _blocked:
                 st.caption("체크해야 아래 **정산 요청** 버튼이 켜집니다. "
                            "금액이 이상하면 영수증 표·매칭을 먼저 고치세요.")
+        # ── 산 것보다 많이 붙었으면 확인을 받는다 ──────────────────
+        #   위 패널에서 이미 보여 줬지만 접어 두고 지나칠 수 있다. 사지도 않은
+        #   물건값이 청구되는 일이라, 버튼 앞에서 한 번 더 세운다.
+        try:
+            _ov2 = _rs.receipt_overflow(receipt_items, rows)
+        except Exception:
+            _ov2 = []
+        if _ov2:
+            _ov_amt = sum(int(o['amount_over']) for o in _ov2)
+            st.error(
+                f"🛑 **주문보다 적게 산 품목이 {len(_ov2)}종** 있습니다 — "
+                f"모자란 값 **{fmt(_ov_amt)}원**  ·  "
+                + " · ".join(f"{str(o['name'])[:16]} {o['units_over']}개"
+                             for o in _ov2[:4])
+                + ("" if len(_ov2) <= 4 else f" 외 {len(_ov2) - 4}종")
+                + "\n\n모자란 분량은 그날 영수증으로 산 물건이 아닙니다. 위 "
+                  "**⚠️ 구입 수량이 모자란 품목**에서 끊어 **📦 재고 출고**로 "
+                  "돌리거나(재고에서 빌린 경우), 이번 청구에서 빼고 나중에 사서 "
+                  "보낸 날 붙이세요(덜 산 경우).")
+            _blocked = (not st.checkbox(
+                "재고에서 나간 것이 맞습니다 — 이대로 청구합니다",
+                key=f"rs_ov_ok_{d_day}_{_ov_amt}",
+                help="같은 상품을 그날 재고로도 내보냈다면 정상입니다. "
+                     "'📦 재고 출고'로 처리하지 않고 영수증 단가로 청구하게 됩니다.")
+            ) or _blocked
+
+        # ── 이미 입금완료된 날짜에 얹으려는 경우 ──────────────────
+        #   recompute_invoice는 paid 청구서의 금액을 건드리지 않는다(받은 돈과
+        #   청구액이 달라지면 안 되니까). 그래서 품목만 늘고 청구액은 그대로 남아
+        #   **조용히 어긋난다.** 예치금으로 결제한 날이면 차감도 이미 끝났고
+        #   같은 날 두 번 차감되지 않으므로 추가분은 영영 안 빠진다.
+        #   실제로 이 함정에 걸려 "금액이 안 맞는다"가 나왔다 — 막지는 않되
+        #   누르기 전에 반드시 보이게 한다.
+        try:
+            _paid_u = {str(i['username']) for i in (_ds.list_invoices(str(d_day)) or [])
+                       if str(i.get('status') or '') == 'paid'}
+        except Exception:
+            _paid_u = set()
+        _hit = sorted(set(_goods) & _paid_u)
+        if _hit:
+            st.error(
+                "🛑 **이미 입금완료된 청구서가 있습니다** — "
+                + " · ".join(f"**{dmap.get(_u, _u)}** {fmt(int(_goods.get(_u, 0)))}원"
+                             for _u in _hit)
+                + "\n\n지금 정산하면 품목은 들어가지만 **청구액은 늘지 않습니다.** "
+                  "받은 돈과 청구액이 달라지면 안 되기 때문입니다. 예치금으로 결제한 "
+                  "날이면 차감도 이미 끝나 추가분이 빠지지 않습니다.\n\n"
+                  "**정산·청구 › 🔍 청구 근거**에서 그 판매자의 **↩️ 입금완료 취소**를 "
+                  "먼저 누르고 오세요. 그다음 여기서 정산 요청 → 다시 청구·차감하면 "
+                  "금액이 맞습니다.")
+            _blocked = (not st.checkbox(
+                "위 내용을 알고 있습니다 — 청구액이 안 늘어나도 품목만 넣겠습니다",
+                key=f"rs_paid_ok_{d_day}_{len(_hit)}")) or _blocked
+
         if st.button(f"✅ 정산 요청 ({len(_goods)}명 · {fmt(_total)}원)",
                      type="primary", key="rs_apply_btn", disabled=_blocked):
             with st.spinner("정산 중..."):
@@ -2237,6 +2394,94 @@ def _render_unmatched_panel(alloc, dmap, d_day, USERNAME, receipt_items):
                 _done += len(_rows_new)
             st.success(f"✅ {_done}건을 청구에 넣었습니다 — '정산 요청'을 눌러 저장하세요. "
                        "잘못 넣었으면 아래 **매칭 수정**에서 끊을 수 있습니다.")
+            st.rerun()
+
+
+def _render_overflow_panel(alloc, dmap, receipt_items, d_day):
+    """⚠️ 영수증보다 많이 붙은 품목 — 수량이 안 맞는 지점을 짚는다.
+
+    매칭은 코스트코 번호만 본다. 번호가 맞으면 영수증 수량을 넘겨도 계속 붙어서,
+    그날 1개 산 물건에 주문 3개가 붙는 일이 생긴다(실측 9/1: 영수증 이디야 1개에
+    주문 7개가 붙어 293,930원 청구). 넘친 분량은 그날 영수증으로 산 물건이 아니다.
+
+    자동으로 끊지 않는 이유: 같은 상품을 재고로도 내보낸 날이 정상적으로 있다.
+    자동으로 끊으면 그런 날 미매칭이 쏟아져 매번 손으로 되돌려야 한다. 사실만
+    보여 주고, **넘친 분량을 어디로 보낼지는 사람이 정한다.**
+
+    갈 곳은 둘뿐이다:
+      📦 재고에서 나갔다  → 끊어서 아래 '영수증에 없는 발송건'에서 재고 출고로
+      📅 아직 안 나갔다/다음날 산다 → 끊어서 이번 정산에서 빼고 다음 날 붙인다
+    """
+    try:
+        _ov = _rs.receipt_overflow(receipt_items, alloc.get('rows') or [])
+    except Exception as _e:
+        st.caption(f"수량 대조 실패: {_e}")
+        return
+    if not _ov:
+        return
+
+    _tot = sum(int(o['amount_over']) for o in _ov)
+    with st.expander(f"⚠️ 구입 수량이 모자란 품목 {len(_ov)}종 · "
+                     f"모자란 값 {fmt(_tot)}원 — 확인하세요", expanded=True):
+        st.caption("**주문보다 적게 샀습니다.** 예: 주문 4개인데 영수증엔 3개 — "
+                   "모자란 1개는 그날 산 물건이 아닙니다. 그대로 정산하면 "
+                   "**사지도 않은 물건값이 청구됩니다.**")
+        st.markdown(
+            "모자란 분량은 셋 중 하나입니다:\n\n"
+            "- 📦 **재고에서 빌렸다** — 내 재고나 남의 재고에서 나갔다. "
+            "끊어서 아래 **📦 재고 출고**로 처리하세요(남의 재고면 웃돈이 붙습니다).\n"
+            "- 🛒 **덜 샀다(잘못 구입)** — 아직 안 나갔다. 끊어서 이번 청구에서 빼고, "
+            "다음에 사서 보낸 날 그 날짜 정산에 붙이세요.\n"
+            "- ✅ **재고로 내보낸 게 맞다** — 이미 재고에서 나간 것으로 처리했다면 "
+            "끊지 말고 그대로 두세요.")
+        st.dataframe(pd.DataFrame([{
+            '상품명': str(o['name'])[:34],
+            '코스트코번호': o['costco_no'],
+            '영수증(팩)': o['qty_receipt'],
+            '구입 수량': o['units_in'],
+            '주문 수량': o['units_used'],
+            '모자람': o['units_over'],
+            '모자란 금액': o['amount_over'],
+        } for o in _ov]), use_container_width=True, hide_index=True,
+            column_config={_k: st.column_config.NumberColumn(_k, format='%d')
+                           for _k in ('영수증(팩)', '구입 수량', '주문 수량', '모자람',
+                                      '모자란 금액')})
+        st.caption("수량 단위는 **소분 단위**입니다(1팩을 N개로 나눠 파는 상품은 낱개 기준). "
+                   "재고 출고·온라인몰로 처리한 건은 애초에 세지 않습니다.")
+
+        # 끊을 후보 — 나중에 붙은 행부터. 앞 행이 대개 그날 실제로 나간 건이다.
+        _cand = []
+        for o in _ov:
+            for r in o['orders']:
+                _cand.append((o, r))
+        if not _cand:
+            return
+        st.markdown("**모자란 분량으로 지목된 배치 건** — 끊을 것을 고르세요")
+        _lbl = [f"{dmap.get(str(r.get('username') or ''), r.get('username'))} · "
+                f"{str(o['name'])[:22]} · {int(r.get('qty') or 1)}개 · "
+                f"{fmt(int(r.get('amount') or 0))}원 · {r.get('order_no')}"
+                for o, r in _cand]
+        _sel = st.multiselect("끊을 배치 건", _lbl, default=_lbl,
+                              key=f"rs_ov_sel_{d_day}",
+                              help="끊으면 미매칭으로 돌아가 아래 '영수증에 없는 발송건'에 "
+                                   "나타납니다. 거기서 재고 출고로 처리하거나, 그대로 두고 "
+                                   "다음 날 정산에서 붙이면 됩니다.")
+        if _sel:
+            _amt = sum(int(_cand[_lbl.index(x)][1].get('amount') or 0) for x in _sel)
+            st.markdown(f"**{len(_sel)}건 · {fmt(_amt)}원**을 이번 청구에서 뺍니다.")
+        else:
+            st.caption("하나도 안 고르면 그대로 청구됩니다 — 재고로 내보낸 것이 "
+                       "맞을 때만 그렇게 하세요.")
+        if st.button(f"✂️ 선택한 {len(_sel)}건 매칭 끊기",
+                     key=f"rs_ov_cut_{d_day}", type="primary", disabled=not _sel,
+                     use_container_width=True):
+            _keys = {(str(_cand[_lbl.index(x)][1].get('username') or ''),
+                      str(_cand[_lbl.index(x)][1].get('order_no') or '')) for x in _sel}
+            _n = _unmatch_rows(alloc, _keys, receipt_items)
+            st.success(f"✂️ {_n}건을 끊었습니다 — 아래 **📋 영수증에 없는 발송건**에서 "
+                       "**📦 재고 출고**(재고에서 빌린 경우)로 처리하세요. "
+                       "덜 산 것이면 그대로 두면 이번 청구에서 빠지고, 나중에 사서 "
+                       "보낸 날 그 날짜 정산에 붙이면 됩니다.")
             st.rerun()
 
 

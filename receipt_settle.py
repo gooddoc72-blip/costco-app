@@ -1132,6 +1132,88 @@ def dispatch_consumption(dispatch_date, receipt_nos, matched_keys=None, users=No
     return used, rows
 
 
+def receipt_overflow(receipt_items, rows):
+    """영수증에 산 것보다 **많이 붙은** 품목 — 수량이 안 맞는 지점.
+
+    왜 필요한가:
+      매칭은 코스트코 상품번호만 본다. 번호가 맞으면 영수증 수량을 넘겨도
+      계속 붙는다. 실측(9/1): 영수증에 이디야 1개(41,990원)뿐인데 주문 7개가
+      붙어 293,930원이 청구됐다. 그날 산 것은 1개이므로 나머지 6개는
+      **재고에서 나갔거나 아직 안 나간 물건**인데, 화면 어디에도 그 사실이
+      드러나지 않아 그대로 청구까지 갔다.
+
+      여기서 동작을 바꾸지는 않는다 — 초과분을 자동으로 끊으면 정상인 날
+      (같은 상품을 재고로도 내보낸 날)까지 미매칭이 쏟아진다. 사실만 낸다.
+
+    단위는 compute_leftovers와 같은 **소분 단위**:
+      구입 units = 영수증 수량(팩) × split_qty
+      배치 units = Σ(주문 qty × pack)
+
+    재고 출고(via='stock')·온라인몰(via='online')은 세지 않는다 — 둘 다 그날
+    영수증으로 산 물건이 아니라 애초에 이 비교의 대상이 아니다.
+
+    반환: [{costco_no, name, unit_price, split_qty, qty_receipt,
+            units_in, units_used, units_over, packs_over, amount_over,
+            orders: [배치행...]}]  — 초과가 있는 품목만, 초과금액 큰 순
+    """
+    _EXCL = ('stock', 'online')
+    used_by, split_by, rows_by = {}, {}, {}
+    for r in (rows or []):
+        c = _norm(r.get('costco_no'))
+        if not c or str(r.get('via') or '') in _EXCL:
+            continue
+        used_by[c] = used_by.get(c, 0) + int(r.get('qty') or 0) * int(r.get('pack') or 1)
+        split_by[c] = max(split_by.get(c, 1), int(r.get('split_qty') or 1))
+        rows_by.setdefault(c, []).append(r)
+
+    in_by, name_by, price_by, qty_by = {}, {}, {}, {}
+    for it in (receipt_items or []):
+        c = _norm(it.get('상품번호'))
+        if not c:
+            continue
+        try:
+            qn = int(float(it.get('수량') or 0))
+        except (TypeError, ValueError):
+            qn = 0
+        try:
+            up = int(float(it.get('단가') or 0))
+        except (TypeError, ValueError):
+            up = 0
+        qty_by[c] = qty_by.get(c, 0) + qn
+        in_by[c] = in_by.get(c, 0) + qn * max(1, split_by.get(c, 1))
+        name_by[c] = name_by.get(c, '') or _norm(it.get('상품명'))
+        price_by[c] = price_by.get(c, 0) or up
+
+    out = []
+    for c, used in used_by.items():
+        _in = int(in_by.get(c, 0))
+        over = used - _in
+        if over <= 0:
+            continue
+        _sq = max(1, split_by.get(c, 1))
+        # 초과 금액 — 나중에 붙은 행부터 초과분만큼 떼어 낸 합. 뒤엣것부터 보는
+        # 이유는 앞 행이 대개 그날 영수증으로 실제 나간 건이기 때문이다.
+        _left, _amt, _hit = over, 0, []
+        for r in reversed(rows_by.get(c, [])):
+            if _left <= 0:
+                break
+            _u = int(r.get('qty') or 0) * int(r.get('pack') or 1)
+            _amt += int(r.get('amount') or 0) if _u <= _left else int(
+                int(r.get('amount') or 0) / max(1, _u) * _left)
+            _hit.append(r)
+            _left -= _u
+        out.append({
+            'costco_no': c, 'name': name_by.get(c, ''),
+            'unit_price': int(price_by.get(c, 0)), 'split_qty': _sq,
+            'qty_receipt': int(qty_by.get(c, 0)),
+            'units_in': _in, 'units_used': used, 'units_over': over,
+            'packs_over': round(over / _sq, 2), 'amount_over': _amt,
+            'orders': _hit,
+        })
+    out.sort(key=lambda d: -d['amount_over'])
+    return out
+
+
 def compute_leftovers(receipt_items, rows, extra_used=None):
     """영수증 구매수량에서 배치된 주문 소비량을 빼 '남은 수량'을 낸다.
 
