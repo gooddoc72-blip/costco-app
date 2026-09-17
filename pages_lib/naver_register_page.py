@@ -246,7 +246,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     if IS_ADMIN:
         with st.expander("🛍 사용자별 네이버 등록 집계 · 건별 로그", expanded=False):
             from pages_lib import _naver_reg_panel
-            _naver_reg_panel.render(key_prefix="nvlog_nr", nested=True)
+            _naver_reg_panel.render(key_prefix="nvlog_nr", nested=True, editable=True)
 
     if not HAS_NAVER_API:
         st.error("naver_api.py 없음 — 관리자에게 문의하세요.")

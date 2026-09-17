@@ -314,7 +314,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     st.divider()
     st.subheader("🛍 네이버 등록 집계 (사용자별)")
     from pages_lib import _naver_reg_panel
-    _naver_reg_panel.render(key_prefix="nvlog")
+    _naver_reg_panel.render(key_prefix="nvlog", editable=True)
 
     # ── 🤖 AI 사용량·비용 (사용자별) ──────────────────────────────
     #   AI 키는 관리자 전역키 하나를 전 사용자가 공유한다(get_ai_keys가 전역키
