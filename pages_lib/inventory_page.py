@@ -547,6 +547,69 @@ def _admin_settlement(sur):
                 st.rerun()
 
 
+def _name_key(s):
+    """상품명 비교용 정규화 — 띄어쓰기·기호를 지우고 소문자로.
+
+    영수증 축약어('KS메이플시럽1L')와 네이버 상품명('커클랜드 시그니처 메이플
+    시럽 1L 유기농')은 띄어쓰기와 기호가 달라 LIKE 한 방으로는 절대 안 맞는다.
+    """
+    import re as _re
+    return _re.sub(r'[^0-9a-z가-힣]', '', str(s or '').lower())
+
+
+def _name_tokens(s):
+    """검색어에서 **반드시 들어 있어야 할** 토막만 뽑는다.
+
+    'KS메이플시럽1L' → ['메이플시럽']
+
+    한글·영문·숫자 덩어리로 자른 뒤 세 글자 이상만 남긴다. 'KS'·'1L' 같은
+    짧은 토막을 필수로 걸면 안 된다 — 영수증 축약어의 브랜드 머리글자(KS,
+    CJ)와 용량 표기는 네이버 상품명에 없는 경우가 더 많아서, 요구하는 순간
+    진짜 그 상품까지 걸러진다('KS메이플시럽1L'로 '커클랜드 시그니처 유기농
+    메이플 시럽 1L'을 못 찾는다).
+
+    세 글자 이상이 하나도 없으면(예: '우유') 두 글자까지 받아 준다.
+    """
+    import re as _re
+    _t = _re.findall(r'[0-9]+|[a-z]+|[가-힣]+', str(s or '').lower())
+    _long = [x for x in _t if len(x) >= 3]
+    return _long or [x for x in _t if len(x) >= 2]
+
+
+def _search_orders(usernames, keyword, product_name, date_from, date_to, limit=3000):
+    """여러 판매자의 주문을 한 번에 훑는다 — 반환 행에 '_u'(판매자)를 붙인다.
+
+    고객 반품은 상자만 와서 **어느 판매자 주문인지 모르는 채로** 시작한다.
+    판매자를 먼저 고르게 하면 틀렸을 때 "주문이 없다"만 나오고, 맞는 사람을
+    찾을 때까지 계정을 하나씩 바꿔 봐야 한다.
+
+    상품명은 SQL LIKE에 맡기지 않는다. 축약어로 넣으면 한 글자도 안 맞기
+    때문이다('메이플시럽'은 '메이플 시럽'과 LIKE로 안 맞는다) — 기간 안의
+    주문을 받아 와 정규화한 뒤 토막이 전부 들어 있는지로 판단한다.
+    그래서 limit을 넉넉히 둔다. 여기서 잘리면 찾는 주문이 조용히 빠진다.
+    """
+    _q = _name_key(product_name)
+    _tok = _name_tokens(product_name)
+    out = []
+    for _u in (usernames or []):
+        try:
+            _rows = search_order_history(_u, keyword=keyword or '',
+                                         date_from=date_from, date_to=date_to,
+                                         limit=limit) or []
+        except Exception:
+            continue
+        for _r in _rows:
+            if _q:
+                _k = _name_key(_r.get('product_name'))
+                if _q not in _k and not all(t in _k for t in _tok):
+                    continue
+            _r = dict(_r)
+            _r['_u'] = _u
+            out.append(_r)
+    out.sort(key=lambda r: str(r.get('order_date') or ''), reverse=True)
+    return out[:200]
+
+
 # ── 고객 반품 ─────────────────────────────────────────────
 def _customer_returns(USERNAME):
     """📥 고객 반품 — 되돌아온 물건을 받아 적고, 재고로 되돌리거나 매장에 반품한다.
@@ -584,33 +647,55 @@ def _customer_returns(USERNAME):
 
     # ── ① 반품입고 입력 ───────────────────────────────────
     with st.expander("➕ 반품입고 등록 — 주문을 찾아 넣습니다", expanded=not _open['count']):
+        # 판매자를 먼저 고르게 하면 안 된다. 고객 반품은 상자만 와서 **어느
+        # 판매자 주문인지 모르는 채로** 시작한다. 상품명만 넣으면 전 판매자를
+        # 훑어 주인을 찾아 준다 — 판매자는 결과에서 확정된다.
         _c1, _c2 = st.columns([1, 2])
-        _u = _c1.selectbox("판매자", _users, key="cr_user",
-                           format_func=lambda v: _dmap.get(v, v))
+        _u_sel = _c1.selectbox("판매자", ['(전체)'] + _users, key="cr_user",
+                               format_func=lambda v: v if v == '(전체)'
+                               else _dmap.get(v, v),
+                               help="모르면 (전체)로 두세요. 상품명·수취인으로 "
+                                    "전 판매자를 훑어 누구 주문인지 찾아 줍니다.")
         _kw = _c2.text_input("수취인 · 구매자 · 주문번호로 검색", key="cr_kw",
                              placeholder="홍길동 / 2026000123456")
         _c3, _c4, _c5 = st.columns([2, 1, 1])
-        _pn = _c3.text_input("상품명 (일부)", key="cr_pn")
+        _pn = _c3.text_input("상품명 (일부)", key="cr_pn",
+                             help="영수증 축약어로 넣어도 됩니다 — 띄어쓰기·기호를 "
+                                  "무시하고 토막마다 찾습니다 (예: KS메이플시럽1L).")
         _df = _c4.date_input("주문일 시작", value=_date.today() - timedelta(days=60),
                              key="cr_from")
         _dt = _c5.date_input("주문일 끝", value=_date.today(), key="cr_to")
 
         if not (_kw or _pn):
-            st.caption("검색어를 넣으면 그 판매자의 주문이 나옵니다. "
-                       "수취인 이름으로 찾는 것이 가장 빠릅니다.")
+            st.caption("검색어를 넣으면 주문이 나옵니다. 상품명만 넣어도 "
+                       "**어느 판매자 주문인지 찾아 줍니다.**")
             _hits = []
         else:
-            _hits = search_order_history(_u, keyword=_kw, product_name=_pn,
-                                         date_from=str(_df), date_to=str(_dt),
-                                         limit=100) or []
+            _scope = _users if _u_sel == '(전체)' else [_u_sel]
+            with st.spinner("주문을 찾는 중..."):
+                _hits = _search_orders(_scope, _kw, _pn, str(_df), str(_dt))
         if (_kw or _pn) and not _hits:
-            st.caption("조건에 맞는 주문이 없습니다. 기간을 넓혀 보세요.")
+            st.caption("조건에 맞는 주문이 없습니다. 기간을 넓히거나 상품명을 "
+                       "더 짧게(예: '메이플시럽') 넣어 보세요.")
         elif _hits:
-            _lbl = [f"{h.get('order_date') or '-'} · {h.get('recipient') or '-'} · "
+            _byu = {}
+            for _x in _hits:
+                _byu[_x['_u']] = _byu.get(_x['_u'], 0) + 1
+            if _u_sel == '(전체)' and len(_byu) > 1:
+                st.caption("🔎 여러 판매자에서 찾았습니다 — "
+                           + " · ".join(f"**{_dmap.get(_k, _k)}** {_v}건"
+                                        for _k, _v in sorted(_byu.items(),
+                                                             key=lambda kv: -kv[1])))
+            _lbl = [f"{_dmap.get(h['_u'], h['_u'])} · {h.get('order_date') or '-'} · "
+                    f"{h.get('recipient') or '-'} · "
                     f"{str(h.get('product_name') or '')[:32]} · "
                     f"{int(h.get('qty') or 1)}개 · {h.get('order_no')}" for h in _hits]
             _pick = st.selectbox(f"반품된 주문 ({len(_hits)}건)", _lbl, key="cr_pick")
             _h = _hits[_lbl.index(_pick)]
+            # 판매자는 고른 주문에서 확정된다 — 위 선택칸은 검색 범위일 뿐이다
+            _u = str(_h.get('_u') or '')
+            st.markdown(f"➡️ **{_dmap.get(_u, _u)}** 판매자의 주문입니다 — "
+                        "재고로 되돌리면 이 판매자 재고가 됩니다.")
 
             # 이미 이 주문으로 들어온 반품 — 같은 건을 두 번 넣는 사고를 막는다
             _prev = _cr.by_order(_u, str(_h.get('order_no') or ''))
