@@ -2,12 +2,14 @@
 
 수량 단위는 전부 '소분 단위(판매 1개)'. 화면에는 팩 수도 함께 보여준다.
 """
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import streamlit as st
 
+import db_customer_return as _cr
 from db import (
     get_all_users, get_shared_products, get_all_products,
+    search_order_history, resolve_costco_no,
     create_bulk_deal, get_bulk_deals, get_bulk_deal, set_deal_status, delete_bulk_deal,
     request_bulk_purchase, get_bulk_requests, decide_bulk_request, get_deal_request_summary,
     receive_deal_lots, add_lot, get_inventory_lots, get_stock_summary,
@@ -37,7 +39,8 @@ def render(USERNAME, IS_ADMIN, settings):
 
     if IS_ADMIN:
         tabs = st.tabs(["📢 공지사항", "🏷 할인제품 등록", "✅ 요청 승인·입고",
-                        "📊 전체 재고", "💳 정산 장부", "↩️ 반품 대상", "📖 구매 가이드"])
+                        "📊 전체 재고", "💳 정산 장부", "↩️ 반품 대상",
+                        "📥 고객 반품", "📖 구매 가이드"])
         with tabs[0]:
             _admin_notices(USERNAME)
         with tabs[1]:
@@ -51,6 +54,8 @@ def render(USERNAME, IS_ADMIN, settings):
         with tabs[5]:
             _return_due(None)
         with tabs[6]:
+            _customer_returns(USERNAME)
+        with tabs[7]:
             _guide(sur, IS_ADMIN=True)
     else:
         tabs = st.tabs(["📢 대량구매 공지", "📥 내 요청", "📦 내 재고", "📖 구매 가이드"])
@@ -540,6 +545,253 @@ def _admin_settlement(sur):
                          type="primary", use_container_width=True):
                 mark_cross_settled(r['owner'], r['seller'], r['product_no'])
                 st.rerun()
+
+
+# ── 고객 반품 ─────────────────────────────────────────────
+def _customer_returns(USERNAME):
+    """📥 고객 반품 — 되돌아온 물건을 받아 적고, 재고로 되돌리거나 매장에 반품한다.
+
+    지금까지 고객 반품은 아무 데도 안 남았다. 물건은 창고에 쌓이는데 장부에는
+    '팔린 것'으로 남아 있어, 며칠 뒤에는 그게 어느 주문 반품인지도 모르게 된다.
+    매장 반품 기한(30일)은 그동안 계속 흐른다.
+
+    청구는 건드리지 않는다 — 반품분 차감은 관리자가 정산·청구에서 직접 한다.
+    여기가 자동으로 깎으면 이미 입금된 청구서까지 흔들린다.
+    """
+    import pandas as pd
+    from datetime import date as _date
+
+    st.subheader("📥 고객 반품 입고·정리")
+    st.caption("고객에게서 되돌아온 물건을 등록하고, **재고로 되돌릴지 매장에 반품할지** "
+               "정합니다. 청구는 자동으로 바뀌지 않습니다 — 차감이 필요하면 "
+               "**정산·청구** 화면에서 직접 하세요.")
+
+    _dmap = _name_map()
+    _users = [u['username'] for u in (get_all_users() or []) if not u.get('is_admin')]
+    if not _users:
+        st.info("등록된 판매자 계정이 없습니다.")
+        return
+
+    _sm = _cr.summary()
+    _open = _sm.get(_cr.OPEN) or {'count': 0, 'qty': 0, 'amount': 0}
+    _rs = _sm.get('restocked') or {'count': 0, 'qty': 0}
+    _sr = _sm.get('store_returned') or {'count': 0, 'qty': 0, 'amount': 0}
+    _m1, _m2, _m3 = st.columns(3)
+    _m1.metric("정리 대기", f"{_open['count']}건",
+               f"{fmt(_open['amount'])}원 묶임", delta_color="off")
+    _m2.metric("재고로 되돌림", f"{_rs['count']}건")
+    _m3.metric("매장 반품 완료", f"{_sr['count']}건")
+
+    # ── ① 반품입고 입력 ───────────────────────────────────
+    with st.expander("➕ 반품입고 등록 — 주문을 찾아 넣습니다", expanded=not _open['count']):
+        _c1, _c2 = st.columns([1, 2])
+        _u = _c1.selectbox("판매자", _users, key="cr_user",
+                           format_func=lambda v: _dmap.get(v, v))
+        _kw = _c2.text_input("수취인 · 구매자 · 주문번호로 검색", key="cr_kw",
+                             placeholder="홍길동 / 2026000123456")
+        _c3, _c4, _c5 = st.columns([2, 1, 1])
+        _pn = _c3.text_input("상품명 (일부)", key="cr_pn")
+        _df = _c4.date_input("주문일 시작", value=_date.today() - timedelta(days=60),
+                             key="cr_from")
+        _dt = _c5.date_input("주문일 끝", value=_date.today(), key="cr_to")
+
+        if not (_kw or _pn):
+            st.caption("검색어를 넣으면 그 판매자의 주문이 나옵니다. "
+                       "수취인 이름으로 찾는 것이 가장 빠릅니다.")
+            _hits = []
+        else:
+            _hits = search_order_history(_u, keyword=_kw, product_name=_pn,
+                                         date_from=str(_df), date_to=str(_dt),
+                                         limit=100) or []
+        if (_kw or _pn) and not _hits:
+            st.caption("조건에 맞는 주문이 없습니다. 기간을 넓혀 보세요.")
+        elif _hits:
+            _lbl = [f"{h.get('order_date') or '-'} · {h.get('recipient') or '-'} · "
+                    f"{str(h.get('product_name') or '')[:32]} · "
+                    f"{int(h.get('qty') or 1)}개 · {h.get('order_no')}" for h in _hits]
+            _pick = st.selectbox(f"반품된 주문 ({len(_hits)}건)", _lbl, key="cr_pick")
+            _h = _hits[_lbl.index(_pick)]
+
+            # 이미 이 주문으로 들어온 반품 — 같은 건을 두 번 넣는 사고를 막는다
+            _prev = _cr.by_order(_u, str(_h.get('order_no') or ''))
+            if _prev:
+                st.warning("⚠️ 이 주문은 이미 반품이 등록돼 있습니다 — "
+                           + " · ".join(f"{p['returned_at']} {p['qty']}개 "
+                                        f"({_cr.STATUS_LABEL.get(p['status'], p['status'])})"
+                                        for p in _prev[:5])
+                           + "\n\n나눠 들어온 반품이면 그대로 등록하세요.")
+
+            # 코스트코 번호는 재고로 되돌릴 때 반드시 필요하다. 자동으로 찾아
+            # 채우되 고칠 수 있게 둔다 — 틀린 번호로 입고하면 남의 재고가 된다.
+            try:
+                _cno = resolve_costco_no(_u, naver_no=str(_h.get('product_no') or ''),
+                                         product_name=str(_h.get('product_name') or ''))
+            except Exception:
+                _cno = ''
+            # 위젯 key에 주문번호를 넣는다 — 고정 key면 다른 주문을 골라도
+            # 수량·구입가·번호가 먼저 고른 주문 값 그대로 남는다(Streamlit은
+            # key가 같으면 value를 무시하고 세션 값을 쓴다).
+            _k = str(_h.get('order_no') or 'na')
+            _f1, _f2, _f3, _f4 = st.columns([1, 1, 1, 1.4])
+            _qty = _f1.number_input("반품 수량(개)", min_value=1, step=1,
+                                    max_value=max(1, int(_h.get('qty') or 1)),
+                                    value=int(_h.get('qty') or 1), key=f"cr_qty_{_k}")
+            _rdate = _f2.date_input("반품입고일", value=_date.today(), key="cr_rdate")
+            _cost = _f3.number_input("팩 구입가(원)", min_value=0, step=100,
+                                     value=int(_h.get('cost_price') or 0),
+                                     key=f"cr_cost_{_k}",
+                                     help="재고로 되돌릴 때 이 단가로 입고됩니다. "
+                                          "주문에 기록된 구입가를 기본값으로 씁니다.")
+            _cno_in = _f4.text_input("코스트코 상품번호", value=_cno, key=f"cr_cno_{_k}",
+                                     help="재고로 되돌리려면 필요합니다. 매장 반품만 할 "
+                                          "거라면 비워도 됩니다.")
+            _r1, _r2 = st.columns([1, 2])
+            _reason = _r1.selectbox("반품 사유", ["단순변심", "파손·불량", "오배송",
+                                               "배송지연", "기타"], key="cr_reason")
+            _memo = _r2.text_input("메모", key="cr_memo",
+                                   placeholder="예: 박스만 개봉, 재판매 가능")
+            if not _cno_in:
+                st.caption("ℹ️ 코스트코 번호가 없으면 **재고로 되돌리기는 안 되고** "
+                           "매장 반품 완료만 처리할 수 있습니다.")
+
+            if st.button("📥 반품입고 등록", type="primary", key="cr_add"):
+                _res = _cr.add([{
+                    'returned_at': str(_rdate), 'username': _u,
+                    'order_no': str(_h.get('order_no') or ''),
+                    'order_date': str(_h.get('order_date') or ''),
+                    'recipient': str(_h.get('recipient') or ''),
+                    'product_name': str(_h.get('product_name') or ''),
+                    'naver_no': str(_h.get('product_no') or ''),
+                    'costco_no': str(_cno_in or '').strip(),
+                    'qty': int(_qty), 'split_qty': 1,
+                    'unit_cost': int(_cost),
+                    'reason': _reason, 'memo': _memo,
+                }], created_by=USERNAME)
+                if _res['ok']:
+                    st.success(f"📥 반품입고 {_res['ok']}건 등록 — 아래 **정리 대기**에서 "
+                               "재고로 되돌리거나 매장 반품으로 넘기세요.")
+                    st.rerun()
+                else:
+                    st.error("등록하지 못했습니다 (판매자·수량 확인).")
+
+    # ── ② 정리 대기 ───────────────────────────────────────
+    st.divider()
+    _rows = _cr.open_returns()
+    st.markdown(f"##### 🧺 정리 대기 {len(_rows)}건")
+    if not _rows:
+        st.success("정리할 반품이 없습니다.")
+    else:
+        st.caption(f"물건이 창고에 있는 상태입니다. 매장 반품 기한({RETURN_DAYS}일)은 "
+                   "반품입고일부터가 아니라 **원래 구매일**부터 흐르므로, 오래된 주문일수록 "
+                   "먼저 처리하세요.")
+        _today_s = datetime.today().strftime("%Y-%m-%d")
+        _tbl = []
+        for _r in _rows:
+            try:
+                _age = (datetime.strptime(_today_s, "%Y-%m-%d")
+                        - datetime.strptime(str(_r['returned_at']), "%Y-%m-%d")).days
+            except Exception:
+                _age = 0
+            _tbl.append({
+                "선택": False, "번호": _r['id'],
+                "반품입고일": _r['returned_at'], "보관": _age_badge(_age),
+                "판매자": _dmap.get(_r['username'], _r['username']),
+                "수취인": _r['recipient'], "상품명": str(_r['product_name'])[:30],
+                "수량": _r['qty'], "구입가": _r['unit_cost'],
+                "코스트코번호": _r['costco_no'] or '—',
+                "사유": _r['reason'], "주문번호": _r['order_no'],
+            })
+        _ed = st.data_editor(
+            pd.DataFrame(_tbl), use_container_width=True, hide_index=True,
+            key="cr_open_ed",
+            disabled=[c for c in _tbl[0] if c != "선택"],
+            column_config={
+                "선택": st.column_config.CheckboxColumn("선택"),
+                **{_k: st.column_config.NumberColumn(_k, format='%d')
+                   for _k in ("번호", "수량", "구입가")},
+            })
+        _sel = [_tbl[i]['번호'] for i, _x in enumerate(_ed.to_dict('records'))
+                if _x.get('선택')]
+        _sel_rows = [_r for _r in _rows if _r['id'] in _sel]
+
+        st.markdown("**선택한 건을 어떻게 정리할까요**")
+        _a1, _a2 = st.columns(2)
+
+        # 재고로 되돌림 — 보유자를 바꿀 수 있어야 한다. 반품된 물건을 원래
+        # 판매자가 아니라 다른 사람이 가져가는 일이 있다.
+        with _a1:
+            _owner_same = st.checkbox("원래 판매자 재고로", value=True, key="cr_owner_same")
+            _owner = None
+            if not _owner_same:
+                _owner = st.selectbox("되돌릴 대상", _users, key="cr_owner",
+                                      format_func=lambda v: _dmap.get(v, v))
+            _no_cno = [r for r in _sel_rows if not str(r.get('costco_no') or '').strip()]
+            if st.button(f"📦 {len(_sel)}건 **재고로 되돌림**", key="cr_restock",
+                         disabled=not _sel or bool(_no_cno), use_container_width=True,
+                         help="상태가 멀쩡해 다시 팔 수 있는 건입니다. 그 사용자 "
+                              "재고로 입고되고, 재고 조정 이력에 반품 번호가 남습니다."):
+                _ok, _fail = 0, []
+                for _r in _sel_rows:
+                    _res = _cr.restock(_r['id'], owner=(_owner or ''), by=USERNAME)
+                    if _res['ok']:
+                        _ok += 1
+                    else:
+                        _fail.append(f"#{_r['id']} {_res['msg']}")
+                if _ok:
+                    st.success(f"📦 {_ok}건을 재고로 되돌렸습니다 — "
+                               "**📊 전체 재고**에서 확인하세요.")
+                if _fail:
+                    st.error(" / ".join(_fail[:4]))
+                st.rerun()
+            if _no_cno:
+                st.caption("⚠️ 코스트코 번호가 없는 건이 섞여 있어 재고로 되돌릴 수 "
+                           "없습니다 — " + " · ".join(f"#{r['id']}" for r in _no_cno[:5]))
+
+        # 매장 반품 — 환불금액은 영수증 한 장 기준이라 한 번만 적는다
+        with _a2:
+            # key에 선택한 건들을 넣어야 선택을 바꿀 때 기본 금액이 다시 계산된다
+            _refund = st.number_input("환불받은 금액(원, 합계)", min_value=0, step=100,
+                                      value=sum(int(r['unit_cost'] or 0) * int(r['qty'] or 1)
+                                                for r in _sel_rows),
+                                      key="cr_refund_" + "_".join(str(i) for i in _sel[:12]),
+                                      help="매장에서 실제로 돌려받은 총액입니다. "
+                                           "여러 건을 한 번에 처리하면 첫 건에 적힙니다.")
+            if st.button(f"↩️ {len(_sel)}건 **매장 반품 완료**", key="cr_store",
+                         disabled=not _sel, use_container_width=True,
+                         help="코스트코에 돌려주고 환불까지 확인했을 때 누르세요. "
+                              "재고로는 들어가지 않습니다."):
+                _res = _cr.store_return(_sel, refund_amount=int(_refund), by=USERNAME)
+                st.success(f"↩️ {_res['ok']}건 매장 반품 완료 "
+                           f"· 환불 {fmt(int(_refund))}원 기록")
+                st.rerun()
+
+        if st.button(f"🗑 선택한 {len(_sel)}건 삭제 (잘못 입력)", key="cr_del",
+                     disabled=not _sel):
+            _res = _cr.delete(_sel)
+            st.success(f"🗑 {_res['deleted']}건 삭제"
+                       + (f" · 이미 정리된 {len(_res['skipped'])}건은 남았습니다"
+                          if _res['skipped'] else ""))
+            st.rerun()
+
+    # ── ③ 처리 이력 ───────────────────────────────────────
+    with st.expander("📋 처리 이력 — 재고로 갔나, 매장으로 갔나", expanded=False):
+        _done = _cr.list_returns(status=['restocked', 'store_returned'], limit=300)
+        if not _done:
+            st.caption("아직 정리한 반품이 없습니다.")
+        else:
+            st.dataframe(pd.DataFrame([{
+                "반품입고일": _r['returned_at'],
+                "판매자": _dmap.get(_r['username'], _r['username']),
+                "수취인": _r['recipient'], "상품명": str(_r['product_name'])[:30],
+                "수량": _r['qty'], "사유": _r['reason'],
+                "처리": _cr.STATUS_LABEL.get(_r['status'], _r['status']),
+                "재고 대상": _dmap.get(_r['restock_owner'], _r['restock_owner']) or '—',
+                "환불금액": int(_r['refund_amount'] or 0) or '',
+                "처리일시": _r['done_at'], "처리자": _r['done_by'],
+                "주문번호": _r['order_no'],
+            } for _r in _done]), use_container_width=True, hide_index=True)
+            _ref = sum(int(_r['refund_amount'] or 0) for _r in _done)
+            st.caption(f"매장 환불 누계 **{fmt(_ref)}원** · 총 {len(_done)}건")
 
 
 # ── 반품 대상 ─────────────────────────────────────────────
