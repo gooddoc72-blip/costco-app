@@ -449,10 +449,17 @@ def _tab_deposit(USERNAME, dmap):
 
     _bal = _dep.balances()
     _users = [u['username'] for u in get_all_users()]
+    # 잔액만으로는 '얼마를 받았나'에 답할 수 없다 — 많이 받고 많이 쓴 사람과
+    # 조금 받고 안 쓴 사람의 잔액이 같다. 받은 돈·쓴 돈을 따로 낸다.
+    _sm = _dep.summaries()
+    _tt = _dep.totals()
 
     # ── 잔액 현황 ──
     _rows = [{'판매자': dmap.get(u, u),
+              '누적 입금': int((_sm.get(u) or {}).get('charged') or 0),
+              '누적 차감': int((_sm.get(u) or {}).get('spent') or 0),
               '잔액': int(_bal.get(u, 0)),
+              '최근 입금일': str((_sm.get(u) or {}).get('last_charge') or ''),
               '상태': ('⚠️ 부족(마이너스)' if int(_bal.get(u, 0)) < 0
                        else ('💳 사용 중' if int(_bal.get(u, 0)) > 0 else '— 예치 없음')),
               '_u': u} for u in _users]
@@ -460,11 +467,20 @@ def _tab_deposit(USERNAME, dmap):
     _pos = sum(r['잔액'] for r in _rows if r['잔액'] > 0)
     _neg = [r for r in _rows if r['잔액'] < 0]
 
-    m1, m2, m3 = st.columns(3)
-    m1.metric("예치금 총잔액", f"{fmt(_pos)}원",
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("예치 입금 총액", f"{fmt(_tt['charged'])}원",
+              f"{len([r for r in _rows if r['누적 입금'] > 0])}명 입금",
+              delta_color="off")
+    m2.metric("구매 차감 누계", f"{fmt(_tt['spent'])}원", delta_color="off")
+    m3.metric("예치금 총잔액", f"{fmt(_pos)}원",
               f"{len([r for r in _rows if r['잔액'] > 0])}명")
-    m2.metric("마이너스", f"{fmt(sum(r['잔액'] for r in _neg))}원", f"{len(_neg)}명")
-    m3.metric("예치 없음", f"{len([r for r in _rows if r['잔액'] == 0])}명")
+    m4.metric("마이너스", f"{fmt(sum(r['잔액'] for r in _neg))}원", f"{len(_neg)}명")
+    st.caption(f"**예치 입금 총액 {fmt(_tt['charged'])}원** = 지금까지 받은 돈 전부 · "
+               f"**구매 차감 누계 {fmt(_tt['spent'])}원** = 그중 정산에 쓴 돈 "
+               + (f"· 되돌린 차감 {fmt(_tt['refunded'])}원 " if _tt['refunded'] else "")
+               + (f"· 관리자 조정 {fmt(_tt['adjusted'])}원 " if _tt['adjusted'] else "")
+               + f"→ 잔액 합계 **{fmt(_tt['net'])}원** "
+                 f"(예치 없는 사람 {len([r for r in _rows if r['잔액'] == 0])}명)")
 
     if _neg:
         st.warning("⚠️ 잔액이 마이너스인 판매자 — 추가 예치를 받아야 합니다: "
@@ -472,7 +488,8 @@ def _tab_deposit(USERNAME, dmap):
 
     st.dataframe(pd.DataFrame([{k: v for k, v in r.items() if k != '_u'} for r in _rows]),
                  use_container_width=True, hide_index=True,
-                 column_config={'잔액': st.column_config.NumberColumn('잔액', format='%d')})
+                 column_config={k: st.column_config.NumberColumn(k, format='%d')
+                                for k in ('누적 입금', '누적 차감', '잔액')})
 
     # ── 예치 등록 ──
     st.divider()
@@ -539,8 +556,14 @@ def _tab_deposit(USERNAME, dmap):
         '처리자': r['created_by'] or '',
     } for r in _lg]), use_container_width=True, hide_index=True,
         column_config={'금액': st.column_config.NumberColumn('금액', format='%d')})
-    st.caption(f"{len(_lg)}건 · 이 기간 증감 "
-               f"{fmt(sum(int(r['amount'] or 0) for r in _lg))}원 — "
+    # 기간 합계도 받은 돈·쓴 돈을 갈라서 낸다. 증감 한 줄만으로는
+    # "이 달에 얼마 받았나"에 답할 수 없다(입금과 차감이 섞여 상쇄된다).
+    _pt = _dep.totals(date_from=str(_lf), date_to=str(_lt),
+                      username=None if _lu == '(전체)' else _lu)
+    st.markdown(f"📥 이 기간 **예치 입금 {fmt(_pt['charged'])}원** · "
+                f"📤 구매 차감 **{fmt(_pt['spent'])}원** · "
+                f"증감 **{fmt(_pt['net'])}원**")
+    st.caption(f"{len(_lg)}건 — "
                f"'차감 취소됨'은 바로 아래 '차감 되돌림'과 짝을 이뤄 서로 상쇄됩니다.")
 
     # 잘못 올린 예치·조정 치우기 (차감 관련 행은 db_deposit이 막는다)

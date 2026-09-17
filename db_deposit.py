@@ -140,6 +140,71 @@ def summary(username):
         conn.close()
 
 
+def summaries():
+    """{username: {balance, charged, spent, last_charge}} — 전 사용자 한 번에.
+
+    summary()를 사람 수만큼 부르면 같은 표를 사람 수만큼 다시 읽는다.
+    화면은 늘 전원을 한 표에 그리므로 한 번에 집계해 돌려준다.
+    """
+    conn = _conn()
+    ensure(conn)
+    try:
+        out = {}
+        for r in conn.execute(
+                "SELECT username, kind, COALESCE(SUM(amount),0) s, MAX(tx_date) last "
+                "FROM deposit_ledger GROUP BY username, kind"):
+            e = out.setdefault(str(r['username']), {
+                'balance': 0, 'charged': 0, 'spent': 0, 'last_charge': ''})
+            e['balance'] += _i(r['s'])
+            if str(r['kind']) == 'charge':
+                e['charged'] = _i(r['s'])
+                e['last_charge'] = str(r['last'] or '')
+            elif str(r['kind']) == 'spend':
+                # spend는 음수로 쌓인다 — 부호를 뒤집어 '쓴 돈'으로 낸다.
+                # 되돌린 차감은 kind가 spend_void로 바뀌므로 여기 안 잡힌다.
+                e['spent'] = -_i(r['s'])
+        return out
+    finally:
+        conn.close()
+
+
+def totals(date_from='', date_to='', username=None):
+    """기간 합계 — {charged, spent, refunded, adjusted, net, by_kind}.
+
+    '얼마를 받았나'는 잔액으로 답할 수 없다. 잔액은 받은 돈에서 쓴 돈을 뺀
+    결과라, **많이 받고 많이 쓴 사람과 조금 받고 안 쓴 사람이 같은 숫자**가
+    된다. 통장과 맞춰 보려면 받은 돈 자체가 따로 보여야 한다.
+    """
+    conn = _conn()
+    ensure(conn)
+    try:
+        sql = ("SELECT kind, COALESCE(SUM(amount),0) s FROM deposit_ledger WHERE 1=1")
+        args = []
+        if username:
+            sql += " AND username=?"
+            args.append(str(username))
+        if date_from:
+            sql += " AND tx_date>=?"
+            args.append(str(date_from))
+        if date_to:
+            sql += " AND tx_date<=?"
+            args.append(str(date_to))
+        by = {str(r['kind']): _i(r['s'])
+              for r in conn.execute(sql + " GROUP BY kind", args)}
+    except sqlite3.Error:
+        by = {}
+    finally:
+        conn.close()
+    return {
+        'charged': by.get('charge', 0),
+        'spent': -by.get('spend', 0),          # 음수로 쌓인다 — 뒤집어 '쓴 돈'으로
+        'refunded': by.get('refund', 0),
+        'adjusted': by.get('adjust', 0),
+        'net': sum(by.values()),               # 이 기간 증감 (= 잔액 변화)
+        'by_kind': by,
+    }
+
+
 def ledger(username=None, date_from=None, date_to=None, limit=500):
     """원장 내역 — 최신순. 되돌려진 차감(spend_void)도 그대로 보여 준다."""
     conn = _conn()
