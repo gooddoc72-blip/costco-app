@@ -325,6 +325,57 @@ def get_dispatch_counts(username: str, date_from: str, date_to: str) -> dict:
     return {r['dispatched_at']: int(r['c']) for r in rows}
 
 
+def move_dispatch_date(username: str, order_nos: list, to_date: str,
+                       from_date: str = '') -> dict:
+    """발송 기록의 **날짜만** 옮긴다 — 잘못된 날로 들어간 건을 바로잡는 유일한 경로.
+
+    앱은 일괄발송 버튼을 누른 시각을 발송일로 쓴다. 04시 컷오프(2026-09-13 도입)
+    이전에는 자정을 넘겨 처리하면 그대로 다음 날로 들어갔다(9/11 발송이 9/12로).
+    택배사 파일을 다시 올려 고치는 길이 있지만, 파일이 없거나 주문번호·송장번호가
+    한 글자라도 다르면 조용히 0건으로 끝난다. 그때 쓸 손잡이가 필요하다.
+
+    **새로 만들지 않고 옮긴다.** 새로 만들면 같은 택배가 두 날에 잡혀 택배비가
+    두 번 청구된다(UNIQUE는 order_no+날짜라 날짜가 다르면 새 행이 된다).
+
+    재고는 건드리지 않는다 — 발송 시점에 이미 차감됐고, 날짜를 옮긴다고 물건이
+    다시 나가거나 들어오지 않는다.
+
+    반환: {'moved': n, 'merged': n}  merged = 대상 날짜에 같은 주문이 이미 있어
+          한 줄로 합쳐진 수(중복이 생기지 않게 REPLACE로 처리한다).
+    """
+    onos = [str(o).strip() for o in (order_nos or []) if str(o).strip()]
+    if not (onos and str(to_date or '').strip()):
+        return {'moved': 0, 'merged': 0}
+    conn = get_user_db(username)
+    _ensure_table(conn)
+    out = {'moved': 0, 'merged': 0}
+    try:
+        CHUNK = 900
+        for i in range(0, len(onos), CHUNK):
+            chunk = onos[i:i + CHUNK]
+            ph = ",".join("?" * len(chunk))
+            # 대상 날짜에 이미 같은 주문이 있으면 그쪽이 살아남는다 — 옮기는 쪽을
+            # 지워 중복을 막는다. 그 사실을 따로 세어 화면에 알린다.
+            _args = [str(to_date)] + chunk
+            _sql = ("SELECT COUNT(*) FROM dispatch_log WHERE dispatched_at=? "
+                    "AND order_no IN (%s)" % ph)
+            _before = conn.execute(_sql, _args).fetchone()[0]
+            _q = ("UPDATE OR REPLACE dispatch_log SET dispatched_at=? "
+                  "WHERE order_no IN (%s) AND dispatched_at<>?" % ph)
+            _a = [str(to_date)] + chunk + [str(to_date)]
+            if from_date:
+                _q += " AND dispatched_at=?"
+                _a.append(str(from_date))
+            cur = conn.execute(_q, _a)
+            out['moved'] += cur.rowcount or 0
+            _after = conn.execute(_sql, _args).fetchone()[0]
+            out['merged'] += max(0, (_before + (cur.rowcount or 0)) - _after)
+        conn.commit()
+    finally:
+        conn.close()
+    return out
+
+
 def get_dispatch_dates(username: str, limit: int = 30) -> list:
     """일괄발송 이력이 있는 최근 날짜 목록."""
     conn = get_user_db(username)

@@ -180,6 +180,7 @@ from db_dispatch_log import (
     get_dispatched_orders_with_details,
     get_dispatch_dates,
     get_dispatch_counts,
+    move_dispatch_date,
 )
 
 from db_notices import (
