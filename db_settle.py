@@ -651,6 +651,31 @@ def monthly_summary(year_month):
     return out
 
 
+def totals_by_user(date_from='2000-01-01', date_to='2999-12-31'):
+    """{username: {billed, paid, unpaid, draft, days}} — 기간 전체 청구 집계.
+
+    예치금 잔액과 대조하는 데 쓴다. "예치금 넣은 돈 − 청구액 = 잔액"이 안 맞는다는
+    질문이 계속 나오는데, 안 맞는 게 맞다 — 잔액에서 빠지는 것은 **예치금으로
+    결제한 청구**뿐이고, 계좌로 입금했거나 아직 미입금인 청구는 잔액과 무관하다.
+    그 차이를 숫자로 보여 주려면 청구 쪽 합계가 사용자별로 필요하다.
+    """
+    out = {}
+    for r in list_invoices(date_from, date_to):
+        u = str(r['username'])
+        e = out.setdefault(u, {'billed': 0, 'paid': 0, 'unpaid': 0,
+                               'draft': 0, 'days': 0})
+        _amt = _i(r['total_amount'])
+        e['billed'] += _amt
+        e['days'] += 1
+        if r['status'] == 'paid':
+            e['paid'] += _i(r['paid_amount'])
+        elif r['status'] == 'billed':
+            e['unpaid'] += _amt
+        else:
+            e['draft'] += _amt
+    return out
+
+
 def settled_dates(limit=60):
     """정산이 있는 날짜 — [{settle_date, users, total, billed, paid}]."""
     conn = _conn()

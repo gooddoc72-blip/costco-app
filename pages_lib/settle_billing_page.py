@@ -455,10 +455,25 @@ def _tab_deposit(USERNAME, dmap):
     _tt = _dep.totals()
 
     # ── 잔액 현황 ──
+    # 청구 합계도 함께 놓는다. "예치금 − 청구액 = 잔액"이 안 맞는다는 질문이
+    # 계속 나오는데, 안 맞는 게 맞다 — 잔액에서 빠지는 것은 **예치금으로 결제한
+    # 청구**뿐이고, 계좌입금·미입금 청구는 잔액과 아무 관계가 없다. 숫자를
+    # 나란히 놓지 않으면 그 차이가 오류로 읽힌다.
+    try:
+        _inv = _ds.totals_by_user()
+    except Exception:
+        _inv = {}
+
     _rows = [{'판매자': dmap.get(u, u),
               '누적 입금': int((_sm.get(u) or {}).get('charged') or 0),
-              '누적 차감': int((_sm.get(u) or {}).get('spent') or 0),
+              '예치금 차감': int((_sm.get(u) or {}).get('spent') or 0),
+              # 조정 열이 없으면 '입금 − 차감 = 잔액'이 안 맞는 행이 생기고,
+              # 표만 보면 장부가 틀린 것으로 읽힌다(실제로 그 질문이 나왔다).
+              '관리자 조정': int((_sm.get(u) or {}).get('adjusted') or 0),
               '잔액': int(_bal.get(u, 0)),
+              '청구 합계': int((_inv.get(u) or {}).get('billed') or 0),
+              '예치금 외 결제': (int((_inv.get(u) or {}).get('billed') or 0)
+                            - int((_sm.get(u) or {}).get('spent') or 0)),
               '최근 입금일': str((_sm.get(u) or {}).get('last_charge') or ''),
               '상태': ('⚠️ 부족(마이너스)' if int(_bal.get(u, 0)) < 0
                        else ('💳 사용 중' if int(_bal.get(u, 0)) > 0 else '— 예치 없음')),
@@ -475,12 +490,24 @@ def _tab_deposit(USERNAME, dmap):
     m3.metric("예치금 총잔액", f"{fmt(_pos)}원",
               f"{len([r for r in _rows if r['잔액'] > 0])}명")
     m4.metric("마이너스", f"{fmt(sum(r['잔액'] for r in _neg))}원", f"{len(_neg)}명")
-    st.caption(f"**예치 입금 총액 {fmt(_tt['charged'])}원** = 지금까지 받은 돈 전부 · "
-               f"**구매 차감 누계 {fmt(_tt['spent'])}원** = 그중 정산에 쓴 돈 "
-               + (f"· 되돌린 차감 {fmt(_tt['refunded'])}원 " if _tt['refunded'] else "")
-               + (f"· 관리자 조정 {fmt(_tt['adjusted'])}원 " if _tt['adjusted'] else "")
-               + f"→ 잔액 합계 **{fmt(_tt['net'])}원** "
-                 f"(예치 없는 사람 {len([r for r in _rows if r['잔액'] == 0])}명)")
+    # 잔액은 '입금 − 차감 (± 조정)' 하나로 닫힌다. 되돌린 차감은 짝이 되는
+    # spend_void와 상쇄되므로 이 식에 나열하면 안 된다 — 전에 그렇게 적어 두어
+    # 화면의 숫자를 그대로 더하면 잔액이 685,970원 부풀어 보였다.
+    _eq = f"**{fmt(_tt['charged'])}원** 입금 − **{fmt(_tt['spent'])}원** 차감"
+    if _tt['adjusted']:
+        _eq += (f" {'+' if _tt['adjusted'] > 0 else '−'} "
+                f"관리자 조정 **{fmt(abs(_tt['adjusted']))}원**")
+    _eq += f" = 잔액 **{fmt(_tt['net'])}원**"
+    st.caption(_eq + f"  (예치 없는 사람 {len([r for r in _rows if r['잔액'] == 0])}명)")
+    if _tt.get('refunded'):
+        st.caption(f"↩️ 되돌린 차감 **{fmt(_tt['refunded'])}원**은 원래 차감과 짝을 "
+                   "이뤄 서로 상쇄되므로 위 계산에 들어가지 않습니다 "
+                   "— 내역에는 '차감 취소됨'과 '차감 되돌림' 두 줄로 남습니다.")
+    _chk = _tt['charged'] - _tt['spent'] + _tt['adjusted'] - _tt['net']
+    if _chk:
+        # 식이 안 닫히면 예상 못 한 종류의 행이 있다는 뜻이다. 숨기면 안 된다.
+        st.warning(f"⚠️ 위 식이 **{fmt(_chk)}원** 어긋납니다 — 원장에 예상하지 못한 "
+                   "종류의 행이 있습니다. 아래 예치금 내역을 확인하세요.")
 
     if _neg:
         st.warning("⚠️ 잔액이 마이너스인 판매자 — 추가 예치를 받아야 합니다: "
@@ -489,7 +516,16 @@ def _tab_deposit(USERNAME, dmap):
     st.dataframe(pd.DataFrame([{k: v for k, v in r.items() if k != '_u'} for r in _rows]),
                  use_container_width=True, hide_index=True,
                  column_config={k: st.column_config.NumberColumn(k, format='%d')
-                                for k in ('누적 입금', '누적 차감', '잔액')})
+                                for k in ('누적 입금', '예치금 차감', '관리자 조정',
+                                          '잔액', '청구 합계', '예치금 외 결제')})
+    st.info(
+        "**잔액 = 누적 입금 − 예치금 차감** (± 되돌림·조정)입니다. "
+        "**청구 합계에서 빼는 것이 아닙니다.** "
+        "청구했더라도 **계좌로 받았거나 아직 못 받은 건**은 예치금에서 빠지지 "
+        "않습니다. 그 몫이 **예치금 외 결제** 열입니다 "
+        "— `청구 합계 = 예치금 차감 + 예치금 외 결제`.")
+
+    _recon_user(_rows, dmap)
 
     # ── 예치 등록 ──
     st.divider()
@@ -583,6 +619,82 @@ def _tab_deposit(USERNAME, dmap):
 
 
 # ── ⑧ 미입금자 ───────────────────────────────────────────────
+def _recon_user(rows, dmap):
+    """한 판매자의 예치금 ↔ 청구 대조 — 차액이 어느 날에서 왔는지까지 짚는다.
+
+    "예치금 585만인데 청구가 554만이면 잔액이 31만이어야 하는 것 아니냐"는
+    질문에 답하는 자리다. 답은 **예치금으로 내지 않은 청구가 섞여 있다**인데,
+    그게 어느 날 건인지 못 짚으면 설명이 설명으로 안 들린다.
+    """
+    _cand = [r for r in rows if r['누적 입금'] or r['청구 합계']]
+    if not _cand:
+        return
+    with st.expander("🧮 예치금 ↔ 청구 대조 — 차액이 어디서 왔나", expanded=False):
+        _lbl = [f"{r['판매자']} · 잔액 {fmt(r['잔액'])}원" for r in _cand]
+        _p = st.selectbox("판매자", _lbl, key="dep_recon_u")
+        _r = _cand[_lbl.index(_p)]
+        _u = _r['_u']
+
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("누적 입금", f"{fmt(_r['누적 입금'])}원")
+        c2.metric("예치금 차감", f"{fmt(_r['예치금 차감'])}원")
+        c3.metric("관리자 조정", f"{fmt(_r['관리자 조정'])}원", delta_color="off")
+        c4.metric("잔액", f"{fmt(_r['잔액'])}원")
+        _eq = f"`{fmt(_r['누적 입금'])} − {fmt(_r['예치금 차감'])}"
+        if _r['관리자 조정']:
+            _eq += (f" {'+' if _r['관리자 조정'] > 0 else '−'} "
+                    f"{fmt(abs(_r['관리자 조정']))}")
+        _eq += f" = {fmt(_r['잔액'])}`"
+        _gap = (_r['누적 입금'] - _r['예치금 차감'] + _r['관리자 조정'] - _r['잔액'])
+        st.markdown(_eq + ("  ·  ✅ 잔액과 일치합니다" if not _gap else
+                           f"  ·  ⚠️ **{fmt(_gap)}원** 어긋납니다 — 아래 "
+                           "**예치금 내역**에서 원인을 확인하세요"))
+
+        st.divider()
+        st.markdown(f"**청구 합계 {fmt(_r['청구 합계'])}원** 중 "
+                    f"예치금으로 낸 것 **{fmt(_r['예치금 차감'])}원** · "
+                    f"그 밖 **{fmt(_r['예치금 외 결제'])}원**")
+        if not _r['예치금 외 결제']:
+            st.success("청구가 전부 예치금으로 결제됐습니다.")
+            return
+
+        # 예치금으로 결제하지 않은 날 — 계좌입금분과 미입금분을 갈라 보여 준다
+        _invs = _ds.list_invoices('2000-01-01', '2999-12-31', username=_u)
+        try:
+            _depd = _dep.spend_dates(_u)      # 날짜마다 조회하면 연결을 그만큼 연다
+        except Exception:
+            _depd = set()
+        _drows = []
+        for i in _invs:
+            _d = str(i['settle_date'])
+            _amt = int(i['total_amount'] or 0)
+            if not _amt or _d in _depd:
+                continue
+            _drows.append({
+                '정산일': _d,
+                '상태': _ST_ICON.get(i['status'], i['status']),
+                '금액': _amt,
+                '결제': ('🏦 계좌입금' if i['status'] == 'paid'
+                       else ('🔴 미입금' if i['status'] == 'billed' else '⚪ 청구 전')),
+                '입금일시': str(i['paid_at'] or '')[:16],
+            })
+        if not _drows:
+            st.caption("예치금 밖 결제 건을 찾지 못했습니다 — 금액 차이는 "
+                       "관리자 조정이나 차감 되돌림일 수 있습니다. "
+                       "아래 **예치금 내역**을 확인하세요.")
+            return
+        _drows.sort(key=lambda r: r['정산일'])
+        st.dataframe(pd.DataFrame(_drows), use_container_width=True, hide_index=True,
+                     column_config={'금액': st.column_config.NumberColumn('금액',
+                                                                        format='%d')})
+        _acc = sum(r['금액'] for r in _drows if r['결제'] == '🏦 계좌입금')
+        _un = sum(r['금액'] for r in _drows if r['결제'] == '🔴 미입금')
+        _dr = sum(r['금액'] for r in _drows if r['결제'] == '⚪ 청구 전')
+        st.caption(f"🏦 계좌입금 {fmt(_acc)}원 · 🔴 미입금 {fmt(_un)}원 · "
+                   f"⚪ 아직 청구 전 {fmt(_dr)}원 — 합계 {fmt(_acc + _un + _dr)}원. "
+                   "이 금액들은 예치금 잔액과 무관합니다.")
+
+
 def _tab_unpaid(USERNAME, dmap):
     st.subheader("🔴 미입금자")
     st.caption("청구했는데 아직 입금되지 않은 건입니다. 아직 청구하지 않은 정산분은 "

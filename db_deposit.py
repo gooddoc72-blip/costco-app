@@ -154,7 +154,8 @@ def summaries():
                 "SELECT username, kind, COALESCE(SUM(amount),0) s, MAX(tx_date) last "
                 "FROM deposit_ledger GROUP BY username, kind"):
             e = out.setdefault(str(r['username']), {
-                'balance': 0, 'charged': 0, 'spent': 0, 'last_charge': ''})
+                'balance': 0, 'charged': 0, 'spent': 0, 'adjusted': 0,
+                'last_charge': ''})
             e['balance'] += _i(r['s'])
             if str(r['kind']) == 'charge':
                 e['charged'] = _i(r['s'])
@@ -163,6 +164,10 @@ def summaries():
                 # spend는 음수로 쌓인다 — 부호를 뒤집어 '쓴 돈'으로 낸다.
                 # 되돌린 차감은 kind가 spend_void로 바뀌므로 여기 안 잡힌다.
                 e['spent'] = -_i(r['s'])
+            elif str(r['kind']) == 'adjust':
+                # 조정을 안 내보내면 '입금 − 차감 = 잔액'이 안 맞는 사람이
+                # 생기고, 화면만 보면 장부가 틀린 것으로 읽힌다.
+                e['adjusted'] = _i(r['s'])
         return out
     finally:
         conn.close()
@@ -198,7 +203,10 @@ def totals(date_from='', date_to='', username=None):
     return {
         'charged': by.get('charge', 0),
         'spent': -by.get('spend', 0),          # 음수로 쌓인다 — 뒤집어 '쓴 돈'으로
+        # refund(+)와 voided(−)는 **짝으로 상쇄된다.** 잔액 계산식에 넣으면 안
+        # 된다 — 되돌린 차감을 더하기만 하면 그만큼 잔액이 부풀어 보인다.
         'refunded': by.get('refund', 0),
+        'voided': -by.get(VOID_KIND, 0),
         'adjusted': by.get('adjust', 0),
         'net': sum(by.values()),               # 이 기간 증감 (= 잔액 변화)
         'by_kind': by,
@@ -237,6 +245,25 @@ def deducted(settle_date, username):
             "SELECT * FROM deposit_ledger WHERE username=? AND settle_date=? AND kind='spend'",
             (str(username), str(settle_date))).fetchone()
         return dict(r) if r else None
+    finally:
+        conn.close()
+
+
+def spend_dates(username):
+    """{정산일} — 그 사용자가 예치금으로 결제한 날짜 전부.
+
+    날짜마다 deducted()를 부르면 연결을 그 수만큼 연다. 한 사용자의 청구
+    전 기간을 훑는 대조 화면은 한 번에 받아 가야 한다.
+    """
+    conn = _conn()
+    ensure(conn)
+    try:
+        return {str(r['settle_date']) for r in conn.execute(
+            "SELECT DISTINCT settle_date FROM deposit_ledger "
+            "WHERE username=? AND kind='spend' AND COALESCE(settle_date,'')<>''",
+            (str(username),))}
+    except sqlite3.Error:
+        return set()
     finally:
         conn.close()
 
