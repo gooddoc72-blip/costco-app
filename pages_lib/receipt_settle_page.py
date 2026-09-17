@@ -207,6 +207,125 @@ _VIA_LABEL = {
 }
 
 
+def _drop_online_marked(orders, username):
+    """이미 온라인몰로 지정한 주문을 목록에서 뺀다. 반환: (남은 목록, 뺀 수)
+
+    지정된 건은 더 이상 '송장등록을 기다리는 주문'이 아니다 — 코스트코가 직접
+    보냈으니 송장은 영영 안 올라온다. 목록에 남겨 두면 사용자를 독촉하게 된다.
+    """
+    try:
+        _done = _op.order_nos(username) or set()
+    except Exception:
+        return list(orders or []), 0
+    _keep = [o for o in (orders or []) if str(o.get('order_no') or '') not in _done]
+    return _keep, len(orders or []) - len(_keep)
+
+
+def _render_online_mark(orders, username, d_day, USERNAME):
+    """📮 미등록 주문에서 **온라인몰 직배송 건**을 체크해 청구에 싣는다.
+
+    송장등록을 기다려도 소용없는 건이 여기 섞여 있다. 코스트코 온라인몰에서
+    주문해 코스트코가 고객에게 직접 보낸 건은 관리자가 발송하지 않으므로
+    발송 기록이 생기지 않는다. 그대로 두면 **물건값이 통째로 청구되지 않는다.**
+
+    아래 '온라인몰 직배송 지정' 패널이 같은 일을 하지만 그건 자동배치 미리보기를
+    돌린 뒤에야 나타난다. 미등록 목록을 확인하는 이 자리에서 바로 골라야
+    "왜 이 주문만 계속 남아 있나"가 그 자리에서 끝난다.
+
+    단가 기본값은 **온라인가**다. 매장가를 쓰면 안 된다 — 온라인몰가가 7~17%
+    비싸(건당 1,000~4,500원) 그 차액이 그대로 손실로 남는다.
+    """
+    if not orders:
+        return
+    try:
+        _sug = {str(c.get('order_no') or ''): c
+                for c in (suggest_online_candidates(orders) or [])}
+    except Exception:
+        _sug = {}
+    _rows = [{
+        '온라인몰': False,
+        '주문번호': str(o.get('order_no') or ''),
+        '수취인': str(o.get('recipient') or ''),
+        '상품명': str(o.get('product_name') or '')[:40],
+        '수량': int(o.get('qty') or 1),
+        '코스트코번호': str(o.get('costco_no') or ''),
+        '단가(온라인)': int((_sug.get(str(o.get('order_no') or '')) or {})
+                        .get('online_price') or 0),
+        '참고·매장가': int((_sug.get(str(o.get('order_no') or '')) or {})
+                       .get('store_price') or 0),
+        '메모': '',
+    } for o in orders]
+    _ed = st.data_editor(
+        pd.DataFrame(_rows), use_container_width=True, hide_index=True,
+        key=f"rs_md_onl_{d_day}_{username}",
+        disabled=['주문번호', '수취인', '상품명', '코스트코번호', '참고·매장가'],
+        column_config={
+            '온라인몰': st.column_config.CheckboxColumn(
+                '온라인몰', help='코스트코 온라인몰에서 사서 코스트코가 고객에게 '
+                              '직접 보낸 건. 체크하면 송장을 기다리지 않고 청구합니다.'),
+            '수량': st.column_config.NumberColumn('수량', format='%d', min_value=1, step=1),
+            '단가(온라인)': st.column_config.NumberColumn(
+                '단가(온라인)', format='%d', min_value=0, step=10,
+                help='온라인몰 결제 단가. 공유DB 온라인가를 채워 뒀습니다 — '
+                     '할인·쿠폰이 붙었다면 실제 결제액으로 고치세요.'),
+            '참고·매장가': st.column_config.NumberColumn(
+                '참고·매장가', format='%d',
+                help='매장 가격입니다. 온라인몰은 보통 이보다 비쌉니다 — 참고용.'),
+            '메모': st.column_config.TextColumn('메모'),
+        })
+
+    _picks, _zero = [], 0
+    for _i, _r in enumerate(_ed.to_dict('records')):
+        if not _r.get('온라인몰'):
+            continue
+        _up = int(_r.get('단가(온라인)') or 0)
+        if _up <= 0:
+            _zero += 1
+            continue
+        _o = orders[_i]
+        _picks.append({
+            'username': username, 'order_no': str(_o.get('order_no') or ''),
+            'settle_date': str(d_day),
+            'costco_no': str(_o.get('costco_no') or ''),
+            'naver_no': str(_o.get('product_no') or ''),
+            'product_name': str(_o.get('product_name') or ''),
+            'recipient': str(_o.get('recipient') or ''),
+            'qty': max(1, int(_r.get('수량') or 1)),
+            'unit_price': _up, 'prev_cost': 0,
+            'memo': str(_r.get('메모') or '').strip(),
+        })
+    if _zero:
+        # 0원으로 청구하면 to_ledger_rows가 버려 그 물건이 공짜로 나간다.
+        st.warning(f"⚠️ 체크했지만 **단가가 0원인 {_zero}건**은 제외됩니다 — "
+                   "공유DB에 온라인가가 없는 상품입니다. 단가를 직접 넣으세요.")
+    if _picks:
+        st.markdown(f"**{len(_picks)}건 · 청구액 "
+                    f"{fmt(sum(p['unit_price'] * p['qty'] for p in _picks))}원** — "
+                    "택배비·포장비는 붙지 않습니다(코스트코가 직접 보냈으므로).")
+    if st.button(f"🛒 {len(_picks)}건을 온라인몰 직배송으로 **청구 추가**",
+                 key=f"rs_md_onl_apply_{d_day}_{username}", type="primary",
+                 disabled=not _picks, use_container_width=True):
+        try:
+            _saved = _op.mark(_picks, created_by=USERNAME)
+        except Exception as _e:
+            st.error(f"저장 실패: {_e}")
+            return
+        if not _saved:
+            st.error("지정된 건이 없습니다 (주문번호·사용자 확인).")
+            return
+        # 미리보기를 이미 돌렸다면 그 배치에 바로 얹는다. 아직이면 지정만
+        # 남겨 두고, 미리보기를 누를 때 복원 경로가 알아서 다시 싣는다.
+        _al = st.session_state.get('rs_alloc')
+        if _al:
+            _merge_matches(_al, build_online_rows(_picks, str(d_day)), [])
+            st.session_state['rs_alloc'] = _al
+        st.session_state['_rs_onl_open'] = True
+        st.success(f"✅ {_saved}건을 온라인몰 직배송으로 지정했습니다 — 물건값이 "
+                   "청구되고 택배비·포장비는 빠집니다."
+                   + ("" if _al else " **자동배치 미리보기**를 누르면 정산표에 실립니다."))
+        st.rerun()
+
+
 def _disp_map():
     return {u['username']: (u.get('display_name') or u['username']) for u in get_all_users()}
 
@@ -356,12 +475,16 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 if not _ulist:
                     st.caption("미등록 주문이 없습니다.")
                 else:
-                    st.dataframe(pd.DataFrame([{
-                        '주문번호': o['order_no'], '수취인': o['recipient'],
-                        '상품명': o['product_name'][:44], '수량': o['qty'],
-                        '코스트코번호': o['costco_no'] or '',
-                    } for o in _ulist]), use_container_width=True, hide_index=True)
-                    st.caption(f"{dmap.get(_pu, _pu)} · {len(_ulist)}건 미등록")
+                    # 미등록 주문에는 **온라인몰에서 사서 코스트코가 직접 보낸 건**이
+                    # 섞여 있다. 그 건은 기다려도 송장이 영영 안 올라온다 — 관리자가
+                    # 보낸 게 아니기 때문이다. 그대로 두면 물건값이 청구되지 않는다.
+                    # 지정 패널이 아래에 따로 있지만 **미리보기를 돌린 뒤에야** 나온다.
+                    # 미등록 목록을 들여다보는 이 자리에서 바로 골라야 한다.
+                    _ulist, _dropped = _drop_online_marked(_ulist, _pu)
+                    st.caption(f"{dmap.get(_pu, _pu)} · {len(_ulist)}건 미등록"
+                               + (f" · 이미 온라인몰로 지정된 {_dropped}건은 뺐습니다"
+                                  if _dropped else ""))
+                    _render_online_mark(_ulist, _pu, d_day, USERNAME)
                     try:
                         _csv = pd.DataFrame(_ulist).to_csv(index=False).encode('utf-8-sig')
                         st.download_button("📥 미등록 목록 CSV", data=_csv,

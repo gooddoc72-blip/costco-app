@@ -549,7 +549,10 @@ def undispatched_orders(username, the_date):
                     'qty': int(r['qty'] or 1) if str(r['qty'] or '').strip() else 1,
                     'settlement': int(r['settlement'] or 0)
                     if str(r['settlement'] or '').strip() else 0,
-                    'costco_no': str(r['costco_no'] or '')})
+                    'costco_no': str(r['costco_no'] or ''),
+                    # 네이버번호 — 조회는 하면서 안 내보내고 있었다. 온라인몰
+                    # 지정이 이 값을 청구 행에 싣는데 늘 비어 있었다.
+                    'product_no': str(r['product_no'] or '')})
     return out
 
 
