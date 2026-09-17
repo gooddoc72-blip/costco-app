@@ -645,13 +645,17 @@ def _tab_month(dmap):
     import calendar as _cal
     _last = _cal.monthrange(int(_ym[:4]), int(_ym[5:7]))[1]
     _ship = {u: 0 for u in summ}
+    _ship_day = {}          # {(사용자, 날짜): 발송건} — 일별 표가 그대로 쓴다
     try:
         import settle_core as _sc
         with st.spinner(f"{_ym} 발송건수를 세는 중..."):
             for _d in range(1, _last + 1):
                 _dt = '%s-%02d' % (_ym, _d)
                 for _u, _f in (_sc.fees_for_users(list(summ), _dt) or {}).items():
-                    _ship[_u] = _ship.get(_u, 0) + int(_f.get('ship_count') or 0)
+                    _c = int(_f.get('ship_count') or 0)
+                    _ship[_u] = _ship.get(_u, 0) + _c
+                    if _c:
+                        _ship_day[(_u, _dt)] = _c
     except Exception as _e:
         st.caption(f"⚠️ 발송건수 집계 실패: {_e}")
 
@@ -675,3 +679,111 @@ def _tab_month(dmap):
                "**택배 발송건**은 그달 실제 발송한 주문 수(주문번호 기준)이며, "
                "코스트코 온라인몰 직배송은 빠집니다 — 포장 관리 › 택배·부자재비 "
                "청구의 발송건수와 같은 기준입니다.")
+
+    _month_detail(_ym, _last, summ, dmap, _ship_day)
+
+
+def _month_detail(_ym, _last, summ, dmap, ship_day):
+    """월 합계 밑에 **사용자 한 명의 일별 내역**을 편다.
+
+    합계만 있으면 "이 금액이 어디서 나왔나"에 답할 수 없다. 판매자가 금액을
+    물어올 때 관리자가 일별 정산·청구 탭에서 날짜를 하나씩 바꿔 가며 세고
+    있었다 — 한 달이면 30번이다. 계산서는 월 단위로 끊기므로, 그 한 장의
+    근거도 월 단위 화면에서 나와야 한다.
+
+    두 겹으로 보여 준다:
+      ① 일별 — 며칠에 얼마가 청구됐고 입금됐나 (청구서 한 줄 = 하루)
+      ② 품목별 — 그 금액이 어느 상품에서 나왔나 (필요할 때만 편다)
+    """
+    _from, _to = '%s-01' % _ym, '%s-%02d' % (_ym, _last)
+    st.divider()
+    st.markdown("##### 🔎 사용자별 일별 내역")
+
+    _users = sorted(summ, key=lambda u: -summ[u]['total'])
+    _lbl = [f"{dmap.get(u, u)} · {fmt(summ[u]['total'])}원 · {summ[u]['days']}일"
+            for u in _users]
+    _pick = st.selectbox("판매자", _lbl, key=f"sb_m_u_{_ym}")
+    _u = _users[_lbl.index(_pick)]
+
+    _invs = _ds.list_invoices(_from, _to, username=_u)
+    if not _invs:
+        st.caption("이 달에 정산 내역이 없습니다.")
+        return
+
+    _rows = [{
+        '정산일': str(i['settle_date']),
+        '상태': _ST_ICON.get(i['status'], i['status']),
+        '품목': int(i['item_count'] or 0),
+        '청구액(물건값)': int(i['total_amount'] or 0),
+        '입금액': int(i['paid_amount'] or 0),
+        '택배 발송건': int(ship_day.get((_u, str(i['settle_date'])), 0)),
+        '청구일시': str(i['billed_at'] or '')[:16],
+        '입금일시': str(i['paid_at'] or '')[:16],
+    } for i in sorted(_invs, key=lambda x: str(x['settle_date']))]
+    _rows.append({
+        '정산일': '— 합계 —', '상태': '',
+        '품목': sum(r['품목'] for r in _rows),
+        '청구액(물건값)': sum(r['청구액(물건값)'] for r in _rows),
+        '입금액': sum(r['입금액'] for r in _rows),
+        '택배 발송건': sum(r['택배 발송건'] for r in _rows),
+        '청구일시': '', '입금일시': '',
+    })
+    st.dataframe(pd.DataFrame(_rows), use_container_width=True, hide_index=True,
+                 column_config={k: st.column_config.NumberColumn(k, format='%d')
+                                for k in ('품목', '청구액(물건값)', '입금액',
+                                          '택배 발송건')})
+    _unpaid = sum(int(i['total_amount'] or 0) for i in _invs if i['status'] == 'billed')
+    _draft = sum(int(i['total_amount'] or 0) for i in _invs if i['status'] == 'draft')
+    _line = f"**{dmap.get(_u, _u)}** · {_ym} · 정산 {len(_invs)}일"
+    if _unpaid:
+        _line += f"  ·  🔴 미입금 **{fmt(_unpaid)}원**"
+    if _draft:
+        _line += f"  ·  ⚪ 아직 청구 안 함 **{fmt(_draft)}원**"
+    st.markdown(_line)
+
+    # ── 품목별 — 그 금액이 어느 상품에서 나왔나 ──
+    with st.expander(f"📦 {dmap.get(_u, _u)} · {_ym} 품목 내역", expanded=False):
+        try:
+            _items = _ds.get_items_range(_from, _to, username=_u) or []
+        except Exception as _e:
+            st.caption(f"품목 조회 실패: {_e}")
+            _items = []
+        if not _items:
+            st.caption("품목 내역이 없습니다 (비용만 청구된 달).")
+        else:
+            _irows = [{
+                '정산일': str(it['settle_date']),
+                '근거': _ds.SOURCE_LABEL.get(it['source'], it['source']),
+                '상품명': str(it['product_name'])[:40],
+                '코스트코번호': str(it['product_no'] or ''),
+                '수량': int(it['qty'] or 1),
+                '팩단가': int(it['unit_price'] or 0),
+                '금액': int(it['amount'] or 0),
+                '주문번호': str(it['order_no'] or ''),
+            } for it in _items]
+            st.dataframe(pd.DataFrame(_irows), use_container_width=True,
+                         hide_index=True,
+                         column_config={k: st.column_config.NumberColumn(k, format='%d')
+                                        for k in ('수량', '팩단가', '금액')})
+            # 상품별로도 한 번 접어 본다 — "이 상품을 한 달에 얼마어치 가져갔나"
+            _by_p = {}
+            for r in _irows:
+                e = _by_p.setdefault(r['상품명'], {'수량': 0, '금액': 0})
+                e['수량'] += r['수량']
+                e['금액'] += r['금액']
+            st.caption(f"{len(_irows)}줄 · 합계 {fmt(sum(r['금액'] for r in _irows))}원 "
+                       f"· 상품 {len(_by_p)}종")
+            if st.checkbox("상품별로 묶어 보기", key=f"sb_m_grp_{_ym}_{_u}"):
+                st.dataframe(pd.DataFrame(sorted(
+                    [{'상품명': k, '수량': v['수량'], '금액': v['금액']}
+                     for k, v in _by_p.items()], key=lambda r: -r['금액'])),
+                    use_container_width=True, hide_index=True,
+                    column_config={k: st.column_config.NumberColumn(k, format='%d')
+                                   for k in ('수량', '금액')})
+            try:
+                _csv = pd.DataFrame(_irows).to_csv(index=False).encode('utf-8-sig')
+                st.download_button("📥 품목 내역 CSV", data=_csv,
+                                   file_name=f"정산내역_{_u}_{_ym}.csv",
+                                   mime="text/csv", key=f"sb_m_dl_{_ym}_{_u}")
+            except Exception:
+                pass
