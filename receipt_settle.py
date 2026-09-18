@@ -329,7 +329,10 @@ def receipt_lot_units(date_upto, start=''):
                 out[pn] = out.get(pn, 0) + int(units or 0)
         c.close()
     except Exception:
-        return {}
+        # 조용히 {}를 돌려주면 '이미 입고한 만큼'을 못 빼서 배정 화면이 같은
+        # 수량을 다시 보여 주고, 누를 때마다 재고가 쌓인다. 부르는 쪽이 알 수
+        # 있게 표시를 남긴다.
+        return {'_error': 1}
     return out
 
 

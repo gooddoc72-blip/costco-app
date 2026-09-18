@@ -1474,6 +1474,16 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                              "아래 **재고 현황 › 사용자별 재고**에서 확인하세요.")
                     if _res['skipped']:
                         _text += f" (이미 입고돼 건너뜀 {_res['skipped']}종)"
+                    if _res.get('dupe'):
+                        # 버튼을 두 번 누른 것과 더 넣은 것은 화면이 구분해 주지
+                        # 않으면 알 수 없다 — 쌓인 양을 그대로 보여 준다.
+                        _text += ("\n\n⚠️ 오늘 **이미 이 사람 재고로 들어간 것**이 "
+                                  "있습니다 — "
+                                  + " · ".join(f"{d['name']} {d['have']}개"
+                                               for d in _res['dupe'][:5])
+                                  + ". 이번 것까지 **더해집니다.** 두 번 누른 것이면 "
+                                    "**재고 현황 › ↩️ 재고 입고 되돌리기**에서 "
+                                    "지우세요.")
                 else:
                     _text = (f"입고된 항목이 없습니다 — 선택한 {_res['skipped']}종은 "
                              f"이 날짜({d_day})로 이미 입고돼 있습니다. "
@@ -2724,6 +2734,35 @@ def _render_reconcile(receipt_items, alloc, goods_total, d_day):
             _msg += (f"\n\n미매칭 주문 {_undisp}건 — 송장이 등록됐는데 영수증에서 상품을 "
                      "못 찾은 건입니다.")
         st.info(_msg)
+
+        # 금액만 말하고 품목을 안 보여 주면 '어느 것인지' 찾으러 위로 올라가야
+        # 한다. 남은 돈이 어느 물건인지는 이 자리에서 답해야 한다.
+        if _lefts:
+            _dm2 = _disp_map()
+            _lrows = []
+            for _l in _lefts:
+                _sq2 = max(1, int(_l.get('split_qty') or 1))
+                _lrows.append({
+                    '상품명': str(_l.get('name') or '')[:34],
+                    '코스트코번호': str(_l.get('costco_no') or ''),
+                    '영수증(팩)': int(_l.get('qty_receipt') or 0),
+                    '쓴 수량': int(_l.get('units_used') or 0),
+                    '남은 수량': int(_l.get('units_left') or 0),
+                    '남은 팩': round(int(_l.get('units_left') or 0) / _sq2, 2),
+                    '금액': int(_l.get('amount') or 0),
+                    '요청자': _dm2.get(str(_l.get('owner') or ''), ''),
+                })
+            _lrows.sort(key=lambda r: -r['금액'])
+            st.dataframe(pd.DataFrame(_lrows), use_container_width=True,
+                         hide_index=True,
+                         column_config={_k: st.column_config.NumberColumn(_k, format='%d')
+                                        for _k in ('영수증(팩)', '쓴 수량', '남은 수량',
+                                                   '금액')})
+            st.caption("수량은 **소분 단위**입니다. **요청자**는 그날 장보기 목록에서 "
+                       "이 상품을 요청한 사람 — 누구 물건인지에 가장 가까운 답입니다. "
+                       "이미 재고로 넘겼거나 반품요청한 분량은 위 배정 목록에서 빠지지만 "
+                       "이 표에는 남아 있을 수 있습니다.")
+
         # 절반도 안 붙었으면 매칭이 덜 된 쪽을 의심해야 한다. 그대로 정산하면
         # 나간 물건이 청구에서 빠지고, 남은 돈은 재고로 쌓이기만 한다.
         #   반품요청분은 애초에 주문에 붙을 수 없는 금액이라 분모에서 뺀다.
@@ -2770,7 +2809,14 @@ def _build_assign_rows(unmatched, receipt_items, alloc, d_day):
     try:
         _lots = _rs.receipt_lot_units(str(d_day), start=str(d_day))
     except Exception:
-        _lots = {}
+        _lots = {'_error': 1}
+    if _lots.get('_error'):
+        # 이미 입고한 만큼을 못 빼면 같은 수량이 다시 보이고, 누를 때마다
+        # 재고가 쌓인다. 틀린 목록을 보여 주느니 열지 않는다.
+        st.error("🚫 **재고 입고 이력을 읽지 못해 배정 목록을 열 수 없습니다.** "
+                 "이대로 배정하면 이미 넣은 재고가 한 번 더 들어갑니다 — "
+                 "잠시 뒤 다시 시도하거나 관리자에게 알려 주세요.")
+        return []
     # 반품요청한 수량도 뺀다 — 매장으로 돌려보내기로 한 물건이 목록에 남아 있으면
     # 매일 같은 품목을 다시 판단하게 되고, 실수로 청구하면 안 산 사람이 물어야 한다.
     try:

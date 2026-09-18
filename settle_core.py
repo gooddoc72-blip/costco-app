@@ -271,11 +271,29 @@ def receive_leftovers(settle_date, picks):
     넣는 것이 정상 흐름이기 때문이다. 이중 입고는 부르는 쪽이 '남은 수량'에서
     이미 입고한 만큼을 뺀 목록을 주는 것으로 막는다(_build_assign_rows).
 
-    반환: {'ok': n, 'skipped': n, 'failed': [msg...]}
+    같은 날·같은 사람·같은 상품에 **이미 영수증 배정으로 넣은 lot**이 있으면
+    그 사실을 돌려준다(dupe). 막지는 않는다 — 나눠 배정하다 더 넣는 일이 정상
+    흐름이기 때문이다. 다만 화면이 말해 주지 않으면, 버튼을 두 번 누른 것과
+    더 넣은 것을 구분할 수 없어 재고가 조용히 불어난다.
+
+    반환: {'ok': n, 'skipped': n, 'failed': [msg...], 'dupe': [{name, owner, have}]}
     """
     from db_inventory import add_lot_units
 
-    res = {'ok': 0, 'skipped': 0, 'failed': []}
+    # 그날 영수증 배정으로 이미 들어간 양 — (상품번호, 보유자): units
+    _have = {}
+    try:
+        from db_inventory import find_lots
+        for _l in (find_lots(date_from=str(settle_date),
+                             date_to=str(settle_date)) or []):
+            if not str(_l.get('memo') or '').startswith('영수증정산'):
+                continue
+            _k = (str(_l.get('product_no') or ''), str(_l.get('owner') or ''))
+            _have[_k] = _have.get(_k, 0) + _i(_l.get('qty_in'))
+    except Exception:
+        _have = {}
+
+    res = {'ok': 0, 'skipped': 0, 'failed': [], 'dupe': []}
     for p in (picks or []):
         cno = str(p.get('costco_no') or '')
         owner = str(p.get('owner') or '')
@@ -283,6 +301,10 @@ def receive_leftovers(settle_date, picks):
         if not (cno and owner and units > 0):
             res['skipped'] += 1
             continue
+        _k = (cno, owner)
+        if _have.get(_k):
+            res['dupe'].append({'name': str(p.get('name') or '')[:24],
+                                'owner': owner, 'have': int(_have[_k])})
         try:
             lid = add_lot_units(
                 product_no=cno, product_name=str(p.get('name') or ''), owner=owner,
