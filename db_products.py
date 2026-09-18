@@ -588,14 +588,135 @@ def collect_shared_naver_map(dry_run=False):
             'candidates': len(rows), 'conflicts': conflicts}
 
 
+# ── 옵션별 매핑 ───────────────────────────────────────────────
+#   한 네이버 상품에 **서로 다른 코스트코 상품**이 옵션으로 묶여 있는 경우가 있다
+#   (부침명장 모둠전 / 동그랑땡 …). 지금까지 매핑은 상품번호 하나 → 코스트코번호
+#   하나였으므로, 어느 옵션이 팔렸든 같은 번호로 잡혔다. 그러면 영수증 매칭도
+#   재고 차감도 엉뚱한 상품에서 일어난다.
+#
+#   shared_naver_map은 UNIQUE(username, naver_pno)라 옵션을 넣을 자리가 없다.
+#   기존 키를 흔들면 이미 쌓인 매핑이 위험해서 표를 따로 둔다.
+def _ensure_option_map(conn):
+    conn.execute("""CREATE TABLE IF NOT EXISTS naver_option_map (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        username    TEXT DEFAULT '',
+        naver_pno   TEXT NOT NULL,
+        option_code TEXT NOT NULL,
+        option_name TEXT DEFAULT '',
+        costco_pno  TEXT DEFAULT '',
+        product_name TEXT DEFAULT '',
+        updated_by  TEXT DEFAULT '',
+        updated_at  TEXT DEFAULT '',
+        UNIQUE(username, naver_pno, option_code)
+    )""")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_nom_pno "
+                 "ON naver_option_map(naver_pno, option_code)")
+    conn.commit()
+
+
+def get_option_map(username=''):
+    """{(네이버번호, 옵션코드): 코스트코번호} — 옵션 하나가 곧 상품 하나."""
+    conn = get_auth_db()
+    _ensure_option_map(conn)
+    try:
+        sql = ("SELECT naver_pno, option_code, costco_pno FROM naver_option_map "
+               "WHERE TRIM(COALESCE(costco_pno,''))<>''")
+        args = []
+        if username:
+            sql += " AND (username=? OR COALESCE(username,'')='')"
+            args.append(str(username))
+        return {(str(r[0]), str(r[1])): str(r[2])
+                for r in conn.execute(sql, args)}
+    except Exception:
+        return {}
+    finally:
+        conn.close()
+
+
+def list_option_map(username=''):
+    """화면용 전체 행."""
+    conn = get_auth_db()
+    conn.row_factory = sqlite3.Row
+    _ensure_option_map(conn)
+    try:
+        sql = "SELECT * FROM naver_option_map"
+        args = []
+        if username:
+            sql += " WHERE username=? OR COALESCE(username,'')=''"
+            args.append(str(username))
+        return [dict(r) for r in conn.execute(
+            sql + " ORDER BY naver_pno, option_code", args)]
+    except Exception:
+        return []
+    finally:
+        conn.close()
+
+
+def upsert_option_map(rows, updated_by=''):
+    """옵션 → 코스트코번호 매핑 저장. costco_pno가 비면 그 줄은 지운다.
+
+    rows: [{username, naver_pno, option_code, option_name, costco_pno, product_name}]
+    반환: {'saved': n, 'removed': n}
+    """
+    out = {'saved': 0, 'removed': 0}
+    if not rows:
+        return out
+    conn = get_auth_db()
+    _ensure_option_map(conn)
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        for r in rows:
+            _np = str(r.get('naver_pno') or '').strip()
+            _oc = str(r.get('option_code') or '').strip()
+            if not (_np and _oc):
+                continue
+            _cn = str(r.get('costco_pno') or '').strip()
+            _un = str(r.get('username') or '').strip()
+            if not _cn:
+                cur = conn.execute(
+                    "DELETE FROM naver_option_map WHERE username=? AND naver_pno=? "
+                    "AND option_code=?", (_un, _np, _oc))
+                out['removed'] += cur.rowcount or 0
+                continue
+            conn.execute("""INSERT INTO naver_option_map
+                (username, naver_pno, option_code, option_name, costco_pno,
+                 product_name, updated_by, updated_at)
+                VALUES (?,?,?,?,?,?,?,?)
+                ON CONFLICT(username, naver_pno, option_code) DO UPDATE SET
+                    option_name=excluded.option_name,
+                    costco_pno=excluded.costco_pno,
+                    product_name=excluded.product_name,
+                    updated_by=excluded.updated_by,
+                    updated_at=excluded.updated_at""",
+                (_un, _np, _oc, str(r.get('option_name') or ''), _cn,
+                 str(r.get('product_name') or ''), str(updated_by or ''), now))
+            out['saved'] += 1
+        conn.commit()
+    finally:
+        conn.close()
+    return out
+
+
 def resolve_costco_no(username, naver_no='', naver_origin_no='', product_name='',
-                      _user_prods=None, _shared_prods=None):
+                      _user_prods=None, _shared_prods=None,
+                      option_code='', _opt_map=None):
     """네이버번호(또는 상품명)로 코스트코 상품번호를 찾는다. 없으면 ''.
 
-    순서: 공유맵 -> 사용자 제품DB -> 공유DB 이름매칭.
+    순서: **옵션 매핑** -> 공유맵 -> 사용자 제품DB -> 공유DB 이름매칭.
+    옵션이 맨 앞인 이유: 한 상품에 서로 다른 코스트코 상품이 옵션으로 묶여
+    있으면, 상품번호만 보는 뒤의 단계들은 어느 옵션이든 같은 번호를 준다.
     이름매칭은 확실할 때만 쓴다 — 틀린 번호가 주문 행에 굳으면 되돌리기 어렵다.
     """
     from services import is_costco_pno, get_shared_naver_map, match_product_to_db
+    _oc = str(option_code or '').strip()
+    if _oc:
+        _m = _opt_map if _opt_map is not None else get_option_map(username)
+        for k in (str(naver_no or '').strip(), str(naver_origin_no or '').strip()):
+            if not k:
+                continue
+            _c = str((_m or {}).get((k, _oc)) or '').strip()
+            if is_costco_pno(_c):
+                return _c
     for k in (str(naver_no or '').strip(), str(naver_origin_no or '').strip()):
         if not k:
             continue

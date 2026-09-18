@@ -411,6 +411,118 @@ def _render_benefit_section(USERNAME, api_id, api_secret):
                 st.json(_cb or {"(비어 있음)": "혜택 미설정"})
 
 
+def _render_option_map(USERNAME, IS_ADMIN):
+    """🏷 옵션별 코스트코 상품번호 — 한 리스팅에 여러 상품이 묶인 경우.
+
+    매핑은 지금까지 **상품번호 하나 → 코스트코번호 하나**였다. 그래서 한 상품에
+    서로 다른 코스트코 상품이 옵션으로 묶여 있으면(모둠전 / 동그랑땡 …) 어느
+    옵션이 팔렸든 같은 번호로 잡혔다 — 영수증 매칭도 재고 차감도 엉뚱한 상품에서
+    일어난다. products.naver_option_code 컬럼은 진작 만들어 뒀지만 읽고 쓰는
+    코드가 없어 비어 있었다.
+
+    목록은 **주문에 실제로 나타난 옵션**만 낸다. 네이버에서 옵션 조합을 전부
+    끌어오면 안 팔리는 옵션까지 채우느라 시간이 든다.
+    """
+    from datetime import date as _date, timedelta as _td
+    from db import get_option_rows, get_option_map, upsert_option_map, get_all_users
+
+    with st.expander("🏷 옵션별 코스트코 상품번호 — 한 상품에 여러 코스트코 상품이 "
+                     "묶여 있을 때", expanded=False):
+        st.caption("옵션마다 **다른 코스트코 상품**이면 여기서 옵션별로 번호를 지정하세요. "
+                   "지정하면 다음 주문 수집부터 그 옵션은 그 번호로 잡혀 "
+                   "**영수증 매칭·재고 차감이 옵션 단위로 맞습니다.** "
+                   "옵션이 같은 상품의 수량 차이일 뿐이면 여기 건드리지 말고 "
+                   "제품 DB의 **묶음수량**을 쓰세요.")
+
+        _tu = USERNAME
+        c0, c1, c2 = st.columns([1.4, 1, 1])
+        if IS_ADMIN:
+            try:
+                _us = [u['username'] for u in (get_all_users() or [])
+                       if not u.get('is_admin')]
+            except Exception:
+                _us = []
+            if _us:
+                _dm = {u: u for u in _us}
+                try:
+                    _dm = {u['username']: (u.get('display_name') or u['username'])
+                           for u in get_all_users()}
+                except Exception:
+                    pass
+                _opts = [USERNAME] + [u for u in _us if u != USERNAME]
+                _tu = c0.selectbox("판매자", _opts,
+                                   format_func=lambda v: _dm.get(v, v), key="pdb_opt_u")
+        _df = c1.date_input("주문일 시작", value=_date.today() - _td(days=60),
+                            key="pdb_opt_from")
+        _dt = c2.date_input("주문일 끝", value=_date.today(), key="pdb_opt_to")
+
+        _rows = get_option_rows(_tu, str(_df), str(_dt)) or []
+        if not _rows:
+            st.caption("그 기간 주문에 옵션이 붙은 건이 없습니다. "
+                       "(옵션 없는 단일 상품은 여기 나오지 않습니다)")
+            return
+        _map = get_option_map(_tu)
+
+        _tbl = [{
+            '상품명': str(r['product_name'])[:34],
+            '네이버번호': str(r['product_no']),
+            '옵션': str(r['option_info'])[:28],
+            '옵션번호': str(r['option_code']),
+            '팔린건수': int(r['cnt'] or 0),
+            '현재 붙은 번호': str(r.get('costco_no') or ''),
+            '코스트코번호': str(_map.get((str(r['product_no']), str(r['option_code'])),
+                                    '') or ''),
+        } for r in _rows]
+        _ed = st.data_editor(
+            pd.DataFrame(_tbl), use_container_width=True, hide_index=True,
+            key=f"pdb_opt_ed_{_tu}_{_df}_{_dt}",
+            disabled=['상품명', '네이버번호', '옵션', '옵션번호', '팔린건수',
+                      '현재 붙은 번호'],
+            column_config={
+                '팔린건수': st.column_config.NumberColumn('팔린건수', format='%d'),
+                '현재 붙은 번호': st.column_config.TextColumn(
+                    '현재 붙은 번호', help='지금 주문에 굳어 있는 코스트코번호입니다. '
+                                      '옵션이 달라도 같은 번호면 구분이 안 되고 있는 것입니다.'),
+                '코스트코번호': st.column_config.TextColumn(
+                    '코스트코번호', help='이 옵션이 실제로 어느 코스트코 상품인지 적으세요. '
+                                    '비우면 매핑이 지워지고 상품번호 기준으로 돌아갑니다.'),
+            })
+
+        _new = _ed.to_dict('records')
+        _chg = []
+        for _i, _r in enumerate(_new):
+            _was = _tbl[_i]['코스트코번호']
+            _now = str(_r.get('코스트코번호') or '').strip()
+            if _now != _was:
+                _chg.append({'username': _tu,
+                             'naver_pno': _tbl[_i]['네이버번호'],
+                             'option_code': _tbl[_i]['옵션번호'],
+                             'option_name': _tbl[_i]['옵션'],
+                             'costco_pno': _now,
+                             'product_name': _tbl[_i]['상품명']})
+        # 같은 번호가 여러 옵션에 붙어 있으면 구분이 안 되고 있다는 신호다
+        _same = {}
+        for _r in _tbl:
+            _k = (_r['네이버번호'], _r['현재 붙은 번호'])
+            if _r['현재 붙은 번호']:
+                _same.setdefault(_k, 0)
+                _same[_k] += 1
+        _dupe = [k for k, v in _same.items() if v > 1]
+        if _dupe:
+            st.warning(f"⚠️ **옵션이 여러 개인데 같은 코스트코번호가 붙은 상품 "
+                       f"{len(_dupe)}종** — 지금은 옵션이 구분되지 않고 있습니다. "
+                       "옵션마다 다른 상품이라면 아래 표에서 번호를 나눠 적으세요.")
+
+        if st.button(f"💾 옵션 매핑 {len(_chg)}건 저장", key=f"pdb_opt_save_{_tu}",
+                     type="primary", disabled=not _chg):
+            _r2 = upsert_option_map(_chg, updated_by=USERNAME)
+            st.success(f"✅ 저장 {_r2['saved']}건"
+                       + (f" · 지움 {_r2['removed']}건" if _r2['removed'] else "")
+                       + " — **다음 주문 수집부터** 이 번호로 잡힙니다. "
+                         "이미 저장된 주문은 바뀌지 않습니다.")
+            st.rerun()
+
+
 def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     """📦 제품 DB 탭 렌더링."""
     def _gs(k, default=""):
@@ -1115,6 +1227,9 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             products = [p for p in products if (p.get('status') or 'SALE').upper() in ('SUSPENSION', 'STOP', 'PAUSE', 'CLOSE', 'PROHIBITION')]
 
         st.caption(f"{_db_filter} 표시 중 — {len(products)}개")
+
+        # ── 옵션별 코스트코번호 매핑 ──
+        _render_option_map(USERNAME, IS_ADMIN)
 
         # ── 카테고리 탭 ──
         _all_cats = sorted({p.get('category', '') for p in products if p.get('category', '')})

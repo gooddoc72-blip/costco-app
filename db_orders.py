@@ -66,10 +66,13 @@ def save_daily_orders(username, order_date, orders_df, shipping_cost, box_cost):
     #   (취소건은 수익계산 '선택 삭제'로 제거. 옛 order_no 없는 행은 전환 정리 후 재삽입.)
     # 코스트코번호 해석용 — 주문마다 다시 읽으면 느리다
     try:
-        from db_products import get_all_products, get_shared_products
+        from db_products import get_all_products, get_shared_products, get_option_map
         _uprods, _sprods = get_all_products(username), get_shared_products()
+        # 옵션별 매핑 — 한 상품에 서로 다른 코스트코 상품이 묶여 있으면
+        # 상품번호만으로는 어느 옵션이 팔렸는지 구분되지 않는다.
+        _optmap = get_option_map(username)
     except Exception:
-        _uprods, _sprods = None, None
+        _uprods, _sprods, _optmap = None, None, {}
     conn.execute("DELETE FROM daily_orders WHERE order_date=? AND COALESCE(order_no,'')=''", (order_date,))
     _existing_onos = {row[0] for row in conn.execute(
         "SELECT order_no FROM daily_orders WHERE order_date=? AND COALESCE(order_no,'')<>''",
@@ -102,7 +105,9 @@ def save_daily_orders(username, order_date, orders_df, shipping_cost, box_cost):
             from db_products import resolve_costco_no
             _cno = resolve_costco_no(username, naver_no=p_no,
                                      product_name=str(r.get('상품명', '') or ''),
-                                     _user_prods=_uprods, _shared_prods=_sprods)
+                                     _user_prods=_uprods, _shared_prods=_sprods,
+                                     option_code=_s(r.get('옵션번호')),
+                                     _opt_map=_optmap)
         except Exception:
             _cno = ''
         conn.execute("""INSERT INTO daily_orders
@@ -120,6 +125,42 @@ def save_daily_orders(username, order_date, orders_df, shipping_cost, box_cost):
     conn.commit()
     conn.close()
     return len(orders_df)
+
+
+def get_option_rows(username, date_from='', date_to=''):
+    """주문에 **실제로 나타난** 옵션 목록 — 옵션별 코스트코번호 매핑 화면용.
+
+    네이버에서 옵션 조합을 전부 끌어오면 안 팔리는 옵션까지 채우느라 시간이
+    든다. 팔린 옵션만 나오면 그게 곧 정리해야 할 목록이다.
+
+    반환: [{product_no, option_code, option_info, product_name, cnt, costco_no}]
+          cnt = 그 기간에 팔린 건수(많이 팔린 것부터).
+    """
+    conn = get_user_db(username)
+    try:
+        _cols = {r[1] for r in conn.execute("PRAGMA table_info(daily_orders)")}
+        if 'option_code' not in _cols:
+            return []
+        _cno = "MAX(COALESCE(costco_no,''))" if 'costco_no' in _cols else "''"
+        sql = (f"""SELECT COALESCE(product_no,'') AS product_no,
+                          COALESCE(option_code,'') AS option_code,
+                          MAX(COALESCE(option_info,'')) AS option_info,
+                          MAX(COALESCE(product_name,'')) AS product_name,
+                          COUNT(*) AS cnt, {_cno} AS costco_no
+                   FROM daily_orders
+                   WHERE TRIM(COALESCE(option_code,''))<>''
+                     AND TRIM(COALESCE(product_no,''))<>''""")
+        args = []
+        if date_from:
+            sql += " AND order_date >= ?"; args.append(str(date_from))
+        if date_to:
+            sql += " AND order_date <= ?"; args.append(str(date_to))
+        sql += " GROUP BY product_no, option_code ORDER BY cnt DESC, product_name"
+        return [dict(r) for r in conn.execute(sql, args)]
+    except Exception:
+        return []
+    finally:
+        conn.close()
 
 
 def get_daily_orders(username, order_date):
