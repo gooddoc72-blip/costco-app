@@ -144,8 +144,12 @@ def to_ledger_rows(alloc_rows, settle_date, receipt_date=''):
 
 # ── ④ 정산 확정 ──────────────────────────────────────────────
 def finalize(settle_date, alloc_rows, created_by='', with_fees=False,
-             apply_cost=True, learn=True):
+             apply_cost=True, learn=True, replace=False):
     """정산 요청 — 원장에 쓰고 청구서를 만든다. 이 함수가 유일한 확정 경로다.
+
+    replace=True면 이번 배치에 등장한 사용자의 그 날짜 품목을 통째로 교체한다
+    (다시 정산할 때 옛 값이 남아 금액이 불어나는 것을 막는다). 기본은 병합 —
+    영수증을 나눠 올린 날 앞 회차가 사라지면 안 되기 때문이다.
 
     with_fees=False가 기본 — **청구액은 물건값만이다.**
     택배비·포장비는 별도로 청구한다. 물건값과 한 청구서에 섞으면 사용자가
@@ -178,7 +182,7 @@ def finalize(settle_date, alloc_rows, created_by='', with_fees=False,
         fees = fees_for_users({r['username'] for r in rows}, settle_date)
 
     totals = _ds.save_settlement(settle_date, rows, fees_by_user=fees,
-                                 created_by=created_by)
+                                 created_by=created_by, replace=replace)
     return {'saved': len(rows), 'applied': applied, 'dropped': dropped,
             'totals': totals, 'learned': learned, 'fees': fees}
 

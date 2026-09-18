@@ -238,13 +238,23 @@ def replace_items(settle_date, username, rows, created_by=''):
     return n
 
 
-def save_settlement(settle_date, rows, fees_by_user=None, created_by=''):
+def save_settlement(settle_date, rows, fees_by_user=None, created_by='',
+                    replace=False):
     """정산 확정 — 사용자별로 품목을 교체하고 청구서를 만든다.
 
     rows에 등장하지 않는 사용자는 건드리지 않는다. 그날 정산 대상이 아닌
     사람의 기존 청구서를 0원으로 지워 버리면 안 되기 때문이다.
-    같은 이유로 품목도 병합한다(merge_items) — 이번 회차에 안 나온 주문은
-    앞서 정산한 값을 그대로 둔다.
+
+    replace=False(기본) — 품목을 **병합**한다(merge_items). 이번 회차에 안 나온
+      주문은 앞서 정산한 값을 그대로 둔다. 영수증을 오전·오후로 나눠 올리는 날이
+      있어서다: 두 번째 회차는 첫 영수증의 상품을 몰라 그 주문들이 미매칭으로
+      떨어지는데, 통째로 교체하면 오전에 정산한 것이 사라진다.
+
+    replace=True — 이번 배치에 **등장한 사용자**의 그 날짜 품목을 통째로 교체한다
+      (replace_items). "이 날짜는 이게 전부"라고 단언할 때만 쓴다. 다시 정산할
+      때 옛 값이 남아 금액이 불어나는 것을 막는다.
+      배치에 없는 사용자는 이 모드에서도 건드리지 않는다.
+
     fees_by_user: {username: {'ship_fee': int, 'pack_fee': int}}
     반환: {username: 청구액}
     """
@@ -255,7 +265,8 @@ def save_settlement(settle_date, rows, fees_by_user=None, created_by=''):
             by_user.setdefault(u, []).append(r)
     out = {}
     for u, urows in by_user.items():
-        merge_items(settle_date, u, urows, created_by=created_by)
+        (replace_items if replace else merge_items)(
+            settle_date, u, urows, created_by=created_by)
         f = (fees_by_user or {}).get(u) or {}
         if f:
             set_fees(settle_date, u, _i(f.get('ship_fee')), _i(f.get('pack_fee')))
