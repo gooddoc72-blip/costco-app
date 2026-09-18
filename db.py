@@ -38,6 +38,7 @@ from db_products import (
     get_price_log, PRICE_SOURCES,
     find_shared_by_code, set_shared_barcode,
     collect_shared_naver_map, resolve_costco_no,
+    get_option_map, list_option_map, upsert_option_map,
     get_costco_conflicts, resolve_costco_conflict, clear_costco_mapping,
     upsert_shared_online_price,
     upsert_shared_product,
@@ -62,6 +63,7 @@ from db_products import (
 from db_orders import (
     save_daily_orders,
     get_daily_orders,
+    get_option_rows,
     recalc_daily_orders_for_products,
     get_saved_dates,
     get_daily_order_counts,

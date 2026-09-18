@@ -30,11 +30,47 @@ def _pack_factor(conn, product_no: str, product_name: str) -> int:
     return resolve_pack_factor(prod, product_name)
 
 
-def _resolve_order_items(conn, order_nos: list) -> dict:
-    """order_no → {product_no, qty, product_name}.
+def _daily_costco_map(conn, order_nos: list) -> dict:
+    """order_no → 코스트코 상품번호. daily_orders가 수집 시점에 확정해 둔 값이다."""
+    out = {}
+    if not order_nos:
+        return out
+    try:
+        _cols = {r[1] for r in conn.execute("PRAGMA table_info(daily_orders)")}
+    except Exception:
+        return out
+    if 'costco_no' not in _cols or 'order_no' not in _cols:
+        return out       # 옛 DB — 컬럼이 없으면 조용히 넘어간다
+    CHUNK = 900
+    for i in range(0, len(order_nos), CHUNK):
+        chunk = order_nos[i:i + CHUNK]
+        ph = ",".join("?" * len(chunk))
+        try:
+            for r in conn.execute(
+                    f"""SELECT order_no, MAX(COALESCE(costco_no,'')) AS cno
+                        FROM daily_orders WHERE order_no IN ({ph}) GROUP BY order_no""",
+                    chunk):
+                _c = str(r['cno'] or '').strip()
+                if _c:
+                    out[str(r['order_no'])] = _c
+        except Exception:
+            continue
+    return out
+
+
+def _resolve_order_items(conn, order_nos: list, username: str = '') -> dict:
+    """order_no → {costco_no, naver_no, qty, product_name}.
 
     dispatch_log에는 상품번호도 수량도 없다(product_name 자유 텍스트뿐).
     order_history를 JOIN해야 상품을 특정할 수 있다.
+
+    ⚠️ order_history.product_no는 **네이버 상품번호**다. 재고 원장
+    (inventory_lots.product_no)은 **코스트코 상품번호**를 쓴다. 전에는 이 둘을
+    그대로 맞춰 보느라 발송해도 재고가 거의 차감되지 않았다 — 번호 체계가 달라
+    사실상 항상 빗나갔다. 코스트코번호를 세 단계로 찾는다:
+      ① daily_orders.costco_no (수집 시점에 확정해 둔 값)
+      ② resolve_costco_no(네이버번호 → 공유 매핑 → 제품DB)
+      ③ 그래도 없으면 빈 값 — 차감하지 않는다(틀린 상품을 빼는 것보다 낫다)
     """
     out = {}
     order_nos = [str(o).strip() for o in (order_nos or []) if str(o).strip()]
@@ -52,7 +88,30 @@ def _resolve_order_items(conn, order_nos: list) -> dict:
         except Exception:
             return out   # order_history 미존재 — 재고 차감 생략
         for r in rows:
-            out[str(r['order_no'])] = dict(r)
+            _d = dict(r)
+            _d['naver_no'] = str(_d.pop('product_no', '') or '')
+            _d['costco_no'] = ''
+            out[str(r['order_no'])] = _d
+
+    for _o, _c in _daily_costco_map(conn, list(out)).items():
+        if _o in out:
+            out[_o]['costco_no'] = _c
+
+    _todo = [o for o, v in out.items() if not v['costco_no']]
+    if _todo and username:
+        try:
+            from db_products import resolve_costco_no, get_all_products, get_shared_products
+            _up, _sp = get_all_products(username), get_shared_products()
+        except Exception:
+            return out
+        for _o in _todo:
+            try:
+                out[_o]['costco_no'] = str(resolve_costco_no(
+                    username, naver_no=out[_o]['naver_no'],
+                    product_name=out[_o].get('product_name') or '',
+                    _user_prods=_up, _shared_prods=_sp) or '')
+            except Exception:
+                continue
     return out
 
 
@@ -71,7 +130,7 @@ def _consume_inventory(conn, username: str, orders: list, dispatched_at: str,
 
     order_nos = [str(o.get('order_no') or o.get('상품주문번호') or '').strip()
                  for o in orders]
-    items = _resolve_order_items(conn, order_nos)
+    items = _resolve_order_items(conn, order_nos, username=username)
     if not items:
         return res
 
@@ -82,9 +141,9 @@ def _consume_inventory(conn, username: str, orders: list, dispatched_at: str,
         it = items.get(ono)
         if not it:
             continue
-        pno = str(it.get('product_no') or '').strip()
+        pno = str(it.get('costco_no') or '').strip()
         if not pno:
-            continue   # 코스트코 번호 없는 주문 — 재고 매칭 불가
+            continue   # 코스트코 번호를 못 찾은 주문 — 틀린 상품을 빼느니 넘어간다
         try:
             qty = max(1, int(it.get('qty') or 1))
         except (TypeError, ValueError):
@@ -267,7 +326,7 @@ def get_dispatched_orders_with_details(username: str, dispatched_at: str,
 
     Returns: dict 리스트. 키:
         order_no, dispatched_at, platform, tracking_no, courier,
-        recipient, product_name, option_info, product_no, qty,
+        recipient, product_name, option_info, product_no(네이버), costco_no, qty,
         order_amount, shipping_fee, settlement, cost_price, profit
     """
     conn = get_user_db(username)
@@ -284,6 +343,7 @@ def get_dispatched_orders_with_details(username: str, dispatched_at: str,
             COALESCE(oh.product_name, dl.product_name)             AS product_name,
             COALESCE(oh.option_info, '')                            AS option_info,
             COALESCE(oh.product_no, '')                             AS product_no,
+            COALESCE(dord.costco_no, '')                              AS costco_no,
             COALESCE(oh.qty, 1)                                     AS qty,
             COALESCE(oh.order_amount, 0)                            AS order_amount,
             COALESCE(oh.shipping_fee, dl.customer_shipping_fee, 0)  AS shipping_fee,
@@ -292,6 +352,11 @@ def get_dispatched_orders_with_details(username: str, dispatched_at: str,
             COALESCE(oh.profit, 0)                                  AS profit
         FROM dispatch_log dl
         LEFT JOIN order_history oh ON dl.order_no = oh.order_no
+        -- 코스트코번호는 order_history에 없다(거긴 네이버번호). 재고·영수증 매칭이
+        -- 쓰는 번호이므로 daily_orders에서 끌어온다.
+        LEFT JOIN (SELECT order_no, MAX(COALESCE(costco_no,'')) AS costco_no
+                   FROM daily_orders WHERE COALESCE(order_no,'')<>''
+                   GROUP BY order_no) dord ON dl.order_no = dord.order_no
         WHERE dl.dispatched_at = ?
     """
     params = [dispatched_at]
