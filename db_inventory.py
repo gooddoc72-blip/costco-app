@@ -751,6 +751,36 @@ def delete_lots(lot_ids: list) -> dict:
     return out
 
 
+def find_lots(date_from: str = '', date_to: str = '', owner: str = None,
+              product_no: str = '') -> list:
+    """입고 lot 전부 — 되돌리기 화면용. 출처(memo)를 그대로 실어 보낸다.
+
+    find_receipt_lots는 영수증 정산으로 넣은 것(memo LIKE '영수증정산%')만 낸다.
+    그래서 '재고 직접 입고'·대량구매 입고·고객 반품 재입고로 잘못 들어간 건은
+    화면에 아예 안 보여 되돌릴 방법이 없었다. 잘못 넣는 경로는 여러 개인데
+    되돌리는 경로만 하나였다.
+
+    삭제 가능 여부는 여기서 판단하지 않는다 — delete_lots가 판매에 쓰인 lot을
+    거른다(그 lot을 지우면 '누구 재고에서 나갔나'와 웃돈 근거를 잃는다).
+    """
+    conn = _conn()
+    _ensure_tables(conn)
+    sql = ("SELECT l.*, (SELECT COUNT(*) FROM inventory_moves m WHERE m.lot_id=l.id) used "
+           "FROM inventory_lots l WHERE l.status='ACTIVE'")
+    args = []
+    if date_from:
+        sql += " AND l.received_at >= ?"; args.append(str(date_from))
+    if date_to:
+        sql += " AND l.received_at <= ?"; args.append(str(date_to))
+    if owner:
+        sql += " AND l.owner = ?"; args.append(str(owner))
+    if product_no:
+        sql += " AND l.product_no = ?"; args.append(str(product_no))
+    rows = conn.execute(sql + " ORDER BY l.received_at DESC, l.id DESC", args).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
 def find_receipt_lots(date_from: str = '', date_to: str = '', owner: str = None) -> list:
     """영수증 정산에서 입고한 lot 목록 — 되돌리기 화면용."""
     conn = _conn()

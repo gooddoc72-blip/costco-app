@@ -2946,8 +2946,11 @@ def _render_stock_status():
         _render_lot_undo()
 
 
-def _render_manual_stock(lots):
+def _render_manual_stock(lots, key_prefix="rs"):
     """관리자 수동 입출고 — 실물과 장부가 어긋났을 때 맞춘다.
+
+    key_prefix: 같은 화면을 두 곳(영수증 정산·재고 관리)에서 부르므로 위젯 키를
+                갈라 둔다. 같은 키를 쓰면 한쪽에서 고른 값이 다른 쪽에 끌려간다.
 
     자동 경로(영수증 배정·판매 차감)만으로는 맞출 수 없는 일이 생긴다.
     파손·분실·반품, 매장에서 직접 더 사 온 것, 세어 보니 장부와 다른 것.
@@ -2971,7 +2974,7 @@ def _render_manual_stock(lots):
                    "그쪽을 쓰는 게 낫습니다. **수량은 소분 단위**입니다.")
 
         c1, c2 = st.columns([1.5, 2.5])
-        _owner_l = c1.selectbox("보유자", _labels, key="rs_adj_owner")
+        _owner_l = c1.selectbox("보유자", _labels, key=f"{key_prefix}_adj_owner")
         _owner = _l2u.get(_owner_l, _owner_l)
 
         # 그 사람이 이미 가진 상품은 골라서, 없는 상품은 번호를 직접 넣어 입고한다.
@@ -2979,15 +2982,15 @@ def _render_manual_stock(lots):
         _pick_opts = ['(직접 입력 — 새 상품 입고)'] + [
             "%s · %s (남음 %s)" % (r['product_no'], str(r['product_name'])[:22],
                                    int(r['qty_left'] or 0)) for r in _mine]
-        _pick = c2.selectbox("상품", _pick_opts, key="rs_adj_pick")
+        _pick = c2.selectbox("상품", _pick_opts, key=f"{key_prefix}_adj_pick")
 
         _direct = _pick == _pick_opts[0]
         if _direct:
             d1, d2, d3, d4 = st.columns([1.2, 2.2, 1.2, 1])
-            _pno = d1.text_input("코스트코번호", key="rs_adj_pno")
-            _pnm = d2.text_input("상품명", key="rs_adj_pnm")
-            _cost = d3.number_input("팩단가(원)", min_value=0, step=100, key="rs_adj_cost")
-            _sq = d4.number_input("소분수", min_value=1, step=1, value=1, key="rs_adj_sq")
+            _pno = d1.text_input("코스트코번호", key=f"{key_prefix}_adj_pno")
+            _pnm = d2.text_input("상품명", key=f"{key_prefix}_adj_pnm")
+            _cost = d3.number_input("팩단가(원)", min_value=0, step=100, key=f"{key_prefix}_adj_cost")
+            _sq = d4.number_input("소분수", min_value=1, step=1, value=1, key=f"{key_prefix}_adj_sq")
         else:
             _src = _mine[_pick_opts.index(_pick) - 1]
             _pno = str(_src['product_no'])
@@ -2997,14 +3000,14 @@ def _render_manual_stock(lots):
             st.caption(f"선택: **{_pnm[:40]}** · 남은 수량 **{int(_src['qty_left'] or 0)}개**")
 
         q1, q2 = st.columns([1, 3])
-        _qty = q1.number_input("수량 (+입고 / −출고)", step=1, value=0, key="rs_adj_qty")
-        _why = q2.text_input("사유 (필수)", key="rs_adj_why",
+        _qty = q1.number_input("수량 (+입고 / −출고)", step=1, value=0, key=f"{key_prefix}_adj_qty")
+        _why = q2.text_input("사유 (필수)", key=f"{key_prefix}_adj_why",
                              placeholder="예: 아이스박스 파손 2개 폐기 / 매장 추가구매 5개")
 
         if _qty and _pno:
             st.markdown(f"**{_owner_l}** · `{_pno}` 재고를 "
                         f"**{'+' if _qty > 0 else ''}{int(_qty)}개** 조정합니다.")
-        if st.button("🛠 조정 적용", type="primary", key="rs_adj_go",
+        if st.button("🛠 조정 적용", type="primary", key=f"{key_prefix}_adj_go",
                      disabled=not (_qty and str(_pno).strip() and str(_why).strip())):
             from db_inventory import adjust_stock
             _r = adjust_stock(_owner, str(_pno).strip(), int(_qty), _why,
@@ -3211,8 +3214,24 @@ def _render_wait_reset(_sd):
             st.caption(f"날짜를 고르고 **{_need}** 를 입력해야 버튼이 켜집니다.")
 
 
-def _render_lot_undo():
+def _lot_source(memo):
+    """입고 memo → 사람이 읽는 출처. 무엇으로 들어온 건지 알아야 지울지 정한다."""
+    _m = str(memo or '')
+    if _m.startswith('영수증정산'):
+        return '🧾 영수증 정산'
+    if '고객 반품 재입고' in _m:
+        return '📥 고객 반품'
+    if _m.startswith('관리자 수동 입고'):
+        return '🛠 수동 입출고'
+    if _m.startswith('대량구매') or '추천건' in _m:
+        return '🏷 대량구매'
+    return '➕ 직접 입고' if not _m else _m[:16]
+
+
+def _render_lot_undo(key_prefix="rs"):
     """영수증 정산에서 넣은 재고 입고를 되돌린다.
+
+    key_prefix: 영수증 정산·재고 관리 두 곳에서 부른다 — 위젯 키를 갈라 둔다.
 
     입고는 사람이 판단해 넣는 값이라 틀릴 수 있는데, 되돌릴 방법이 화면에 없어서
     잘못 넣으면 그대로 남았다. 지운 만큼 '배정 대기'로 돌아오므로 다시 배정하면 된다.
@@ -3226,18 +3245,21 @@ def _render_lot_undo():
 
     with st.expander("↩️ 재고 입고 되돌리기 — 잘못 넣은 입고 취소", expanded=False):
         try:
-            from db_inventory import find_receipt_lots, delete_lots
-            lots = find_receipt_lots() or []
+            # 잘못 넣는 경로는 여럿인데(영수증 정산 배정·재고 직접 입고·대량구매
+            # 입고·고객 반품 재입고) 되돌리는 화면은 영수증 정산 것만 보여 줬다.
+            # 전부 보여 주고, 무엇으로 들어온 것인지 '출처'로 구분한다.
+            from db_inventory import find_lots, delete_lots
+            lots = find_lots() or []
         except Exception as e:
             st.error(f"입고 이력 조회 실패: {e}")
             return
         if not lots:
-            st.caption("영수증 정산으로 입고한 재고가 없습니다.")
+            st.caption("입고된 재고가 없습니다.")
             return
 
         _dm = _disp_map()
         _dates = sorted({str(l['received_at']) for l in lots}, reverse=True)
-        _pick_d = st.selectbox("입고일", ["(전체)"] + _dates, key="rs_lot_date")
+        _pick_d = st.selectbox("입고일", ["(전체)"] + _dates, key=f"{key_prefix}_lot_date")
         _view = [l for l in lots
                  if _pick_d == "(전체)" or str(l['received_at']) == _pick_d]
 
@@ -3250,13 +3272,14 @@ def _render_lot_undo():
                 '보유자': _dm.get(str(l['owner']), str(l['owner'])),
                 '상품명': str(l['product_name'])[:30],
                 '코스트코번호': str(l['product_no']),
+                '출처': _lot_source(l.get('memo')),
                 '입고': int(l['qty_in'] or 0),
                 '남음': int(l['qty_left'] or 0),
                 '판매사용': int(l.get('used') or 0),
                 '_id': int(l['id']),
             } for l in _view]),
             use_container_width=True, hide_index=True,
-            key=f"rs_lot_ed_{_pick_d}",
+            key=f"{key_prefix}_lot_ed_{_pick_d}",
             disabled=['입고일', '보유자', '상품명', '코스트코번호', '입고', '남음',
                       '판매사용', '_id'],
             column_config={
@@ -3278,7 +3301,7 @@ def _render_lot_undo():
         st.markdown(f"취소할 입고 **{len(_picked) - len(_blocked)}건** · "
                     f"수량 {sum(int(r['입고']) for r in _picked if r not in _blocked)}소분")
 
-        if st.button(f"↩️ 선택한 {len(_picked)}건 입고 취소", key="rs_lot_del"):
+        if st.button(f"↩️ 선택한 {len(_picked)}건 입고 취소", key=f"{key_prefix}_lot_del"):
             _res = delete_lots([int(r['_id']) for r in _picked])
             if _res['deleted']:
                 _text = (f"↩️ 입고 {_res['deleted']}건을 취소했습니다 — "

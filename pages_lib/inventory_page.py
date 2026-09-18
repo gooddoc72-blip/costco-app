@@ -508,6 +508,23 @@ def _admin_stock():
                     st.success("입고 완료")
                     st.rerun()
 
+    # ── 잘못 들어간 재고를 고치는 두 길 ──────────────────────
+    #   재고를 보는 화면과 고치는 화면이 갈라져 있어, 틀린 걸 발견해도 영수증
+    #   정산으로 건너가야 했다. 보는 자리에서 고칠 수 있어야 한다.
+    #   구현은 영수증 정산과 공용(receipt_settle_page) — 한쪽만 고쳐지는 일을 막는다.
+    st.divider()
+    st.subheader("🛠 재고 고치기")
+    st.caption("**수량만 틀렸다면 수동 입출고**로 차액만 ± 하세요(사유 필수). "
+               "**입고 자체를 잘못 넣었다면 입고 취소**로 통째로 지웁니다 — 단 "
+               "이미 판매에 쓰인 입고는 지울 수 없습니다(누구 재고에서 나갔는지와 "
+               "웃돈 근거를 잃습니다). 그런 건은 수동 입출고로 맞추세요.")
+    try:
+        from pages_lib import receipt_settle_page as _rsp
+        _rsp._render_manual_stock(rows, key_prefix="inv")
+        _rsp._render_lot_undo(key_prefix="inv")
+    except Exception as _e:
+        st.caption(f"재고 수정 화면을 열지 못했습니다: {_e}")
+
     st.divider()
     st.subheader("🔄 최근 차감 내역")
     mv = get_moves(limit=100)
