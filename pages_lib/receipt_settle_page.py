@@ -1299,7 +1299,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             st.dataframe(pd.DataFrame(drows), use_container_width=True, hide_index=True)
 
     # ── 3.25) 수량이 안 맞는 품목 — 산 것보다 많이 붙었다 ──
-    _render_overflow_panel(alloc, dmap, receipt_items, d_day)
+    _render_overflow_panel(alloc, dmap, receipt_items, d_day,
+                           settings=settings, USERNAME=USERNAME)
 
     # ── 3.3) 배정 — 주문 못 찾은 품목 + 팔고 남은 품목을 한 곳에서 ──
     #   예전엔 '주문 못 찾은 품목'(청구)과 '남은 재고 확인'(입고)이 따로 있었다.
@@ -1768,10 +1769,54 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 "위 내용을 알고 있습니다 — 청구액이 안 늘어나도 품목만 넣겠습니다",
                 key=f"rs_paid_ok_{d_day}_{len(_hit)}")) or _blocked
 
-        if st.button(f"✅ 정산 요청 ({len(_goods)}명 · {fmt(_total)}원)",
+        # ── 이어서 정산할지, 덮어쓸지 ──────────────────────────────
+        #   기본은 '이어서'(merge)다. 영수증을 오전·오후로 나눠 올리는 날이 있는데
+        #   통째로 교체하면 앞 회차가 사라진다.
+        #   다시 정산하는 경우엔 반대가 필요하다 — 옛 품목이 남아 있으면 이번에
+        #   빠진 건까지 청구에 남아 금액이 실제보다 커진다.
+        _MODE_ADD = "➕ 이어서 정산 — 앞서 정산한 건은 그대로 두고 이번 것만 반영"
+        _MODE_REP = "♻️ 이 날짜 다시 정산 — 이번 배치로 **통째 교체**(빠진 건은 청구에서 사라짐)"
+        _mode = st.radio("정산 방식", [_MODE_ADD, _MODE_REP],
+                         key=f"rs_mode_{d_day}", horizontal=False,
+                         help="같은 날짜를 다시 정산할 때는 '통째 교체'를 쓰세요. "
+                              "영수증을 나눠 올리는 중이면 '이어서'로 두세요.")
+        _replace = (_mode == _MODE_REP)
+        if _replace:
+            # 무엇이 사라지는지 먼저 보여 준다. 교체는 되돌리기 어렵다.
+            _batch = {}
+            for _r5 in rows:
+                _batch.setdefault(str(_r5.get('username') or ''), set()).add(
+                    str(_r5.get('order_no') or ''))
+            _gone = []
+            for _u5, _onos in _batch.items():
+                try:
+                    for _it5 in (_ds.get_items(str(d_day), username=_u5) or []):
+                        if str(_it5.get('order_no') or '') not in _onos:
+                            _gone.append((_u5, _it5))
+                except Exception:
+                    continue
+            if _gone:
+                _ga = sum(int(i.get('amount') or 0) for _, i in _gone)
+                _gu = {}
+                for _u5, _i5 in _gone:
+                    _gu[_u5] = _gu.get(_u5, 0) + int(_i5.get('amount') or 0)
+                st.warning(
+                    f"♻️ 교체하면 이번 배치에 없는 **{len(_gone)}개 품목 · "
+                    f"{fmt(_ga)}원**이 청구에서 빠집니다 — "
+                    + " · ".join(f"{dmap.get(_u5, _u5)} {fmt(_v5)}원"
+                                 for _u5, _v5 in sorted(_gu.items(),
+                                                        key=lambda kv: -kv[1]))
+                    + "\n\n이번 배치에 **등장하지 않은 사용자**는 건드리지 않습니다.")
+            else:
+                st.caption("교체해도 없어지는 품목이 없습니다 — 이번 배치가 "
+                           "그 날짜 품목을 모두 덮습니다.")
+
+        if st.button(f"✅ 정산 요청 ({len(_goods)}명 · {fmt(_total)}원)"
+                     + (" · ♻️ 통째 교체" if _replace else ""),
                      type="primary", key="rs_apply_btn", disabled=_blocked):
             with st.spinner("정산 중..."):
-                res = _sc.finalize(str(d_day), rows, created_by=USERNAME)
+                res = _sc.finalize(str(d_day), rows, created_by=USERNAME,
+                                   replace=_replace)
             try:
                 if invalidate_data_cache:
                     invalidate_data_cache()
@@ -1859,8 +1904,18 @@ def _merge_matches(alloc, new_rows, matched_order_indices, sticky=True):
         st.session_state['rs_sticky'] = _st
     alloc['rows'].extend(new_rows)
     idxset = set(matched_order_indices)
-    alloc['unmatched_orders'] = [o for i, o in enumerate(alloc.get('unmatched_orders', []))
-                                 if i not in idxset]
+    # **배치에 있는 주문은 미매칭일 수 없다.** 인덱스만으로 빼면 인덱스를 안 주고
+    # 부르는 경로(sticky 복원·온라인몰 복원)에서 같은 주문이 양쪽에 남는다.
+    #   실측: 미리보기를 두 번 누르면 AI로 붙었던 건이 배치에도 있고 '영수증에
+    #   없는 발송건'에도 그대로 떠, 거기서 또 처리하면 금액이 두 배가 됐다.
+    #   (1차 미리보기에서 AI가 붙인 행은 sticky로 보관됐다가, 2차 미리보기에서
+    #    alloc이 새로 만들어질 때 인덱스 없이 다시 얹히기 때문이다.)
+    # 키로도 빼면 부르는 쪽이 인덱스를 잊어도 이 불변식이 유지된다.
+    _in_rows = {(r.get('username'), r.get('order_no')) for r in alloc['rows']}
+    alloc['unmatched_orders'] = [
+        o for i, o in enumerate(alloc.get('unmatched_orders', []))
+        if i not in idxset
+        and (o.get('username'), o.get('order_no')) not in _in_rows]
     # 주문에 붙은 품목은 목록에서 뺀다. 다만 '사용자에게 직접 배정(memo)'한 것은
     # 수량이 남아 있을 수 있다 — 2개 중 1개를 A에게 줬으면 1개는 B 몫이다.
     # 전에는 배정하는 순간 통째로 사라져 나머지를 줄 방법이 없었다.
@@ -2397,7 +2452,8 @@ def _render_unmatched_panel(alloc, dmap, d_day, USERNAME, receipt_items):
             st.rerun()
 
 
-def _render_overflow_panel(alloc, dmap, receipt_items, d_day):
+def _render_overflow_panel(alloc, dmap, receipt_items, d_day,
+                           settings=None, USERNAME=''):
     """⚠️ 영수증보다 많이 붙은 품목 — 수량이 안 맞는 지점을 짚는다.
 
     매칭은 코스트코 번호만 본다. 번호가 맞으면 영수증 수량을 넘겨도 계속 붙어서,
@@ -2448,6 +2504,32 @@ def _render_overflow_panel(alloc, dmap, receipt_items, d_day):
                                       '모자란 금액')})
         st.caption("수량 단위는 **소분 단위**입니다(1팩을 N개로 나눠 파는 상품은 낱개 기준). "
                    "재고 출고·온라인몰로 처리한 건은 애초에 세지 않습니다.")
+
+        # 왜 이 숫자가 나왔는지는 계산 규칙을 알아야 읽힌다. 규칙을 아는 도우미를
+        # 그 자리에 둔다 — 화면에 떠 있는 값만 넘기므로 조회가 늘지 않는다.
+        try:
+            from pages_lib import _ask_ai
+            _ask_ai.render(
+                {'화면': '영수증 정산 — 구입 수량이 모자란 품목',
+                 '정산일': str(d_day),
+                 '모자란 품목': [{
+                     '상품명': o['name'], '코스트코번호': o['costco_no'],
+                     '영수증_팩': o['qty_receipt'], '소분수': o['split_qty'],
+                     '구입_units': o['units_in'], '주문_units': o['units_used'],
+                     '모자람_units': o['units_over'], '모자란_금액': o['amount_over'],
+                     '붙은_배치': [{'판매자': str(r.get('username') or ''),
+                                 '주문번호': str(r.get('order_no') or ''),
+                                 '주문수량_qty': int(r.get('qty') or 1),
+                                 '묶음배수_pack': int(r.get('pack') or 1),
+                                 '소분수_split': int(r.get('split_qty') or 1),
+                                 '금액': int(r.get('amount') or 0),
+                                 '근거_via': str(r.get('via') or '')}
+                                for r in o['orders']],
+                 } for o in _ov]},
+                key=f"rs_ov_{d_day}", settings=settings, username=USERNAME,
+                hint="예: 주문은 1건인데 주문 수량이 왜 5개인가요?")
+        except Exception as _e:
+            st.caption(f"AI 질문 패널을 열지 못했습니다: {_e}")
 
         # 끊을 후보 — 나중에 붙은 행부터. 앞 행이 대개 그날 실제로 나간 건이다.
         _cand = []
