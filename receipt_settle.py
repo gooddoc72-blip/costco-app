@@ -260,8 +260,15 @@ def build_stock_pool(date_upto, exclude_dates=None):
         _st = get_settle_start_date()
         # 입고는 소분 단위(팩×split)인데 사용을 판매수량만 빼면 단위가 안 맞는다.
         # 묶음상품(pack>1)은 1개 팔릴 때 pack개를 먹는다 — 그만큼 재고가 부풀었다.
+        #
+        # **온라인몰 직배송(source='online')은 빼지 않는다.** 코스트코가 고객에게
+        # 직접 보낸 것이라 내 영수증으로 산 물건이 나간 게 아니다. 그걸 사용으로
+        # 세면 있지도 않은 소비가 잡혀 '사용량이 입고량을 넘었다'가 된다.
+        # (compute_leftovers는 진작 via='online'을 빼고 있었는데, 여기와
+        #  get_stock_status만 settle_item을 통째로 세고 있었다.)
         _q = ("SELECT product_no, SUM(qty * COALESCE(NULLIF(pack,0),1)) FROM settle_item "
-              "WHERE settle_date <= ?" + (" AND settle_date >= ?" if _st else "") +
+              "WHERE COALESCE(source,'') <> 'online' AND settle_date <= ?"
+              + (" AND settle_date >= ?" if _st else "") +
               " GROUP BY product_no")
         _args = (str(date_upto), _st) if _st else (str(date_upto),)
         for pn, used in c.execute(_q, _args):
@@ -432,8 +439,10 @@ def get_stock_status(date_upto=None):
     try:
         import db_settle as _dsx
         c = _dsx._conn(); _dsx.ensure(c)
+        # 온라인몰 직배송은 내 영수증에서 나간 물건이 아니다 — build_stock_pool과
+        # 같은 규칙을 쓴다. 안 그러면 두 화면의 잔량이 서로 다르게 나온다.
         q = ("SELECT product_no, SUM(qty * COALESCE(NULLIF(pack,0),1)) FROM settle_item "
-             "WHERE settle_date <= ?"
+             "WHERE COALESCE(source,'') <> 'online' AND settle_date <= ?"
              + (" AND settle_date >= ?" if start else "") + " GROUP BY product_no")
         for pn, used in c.execute(q, (d, start) if start else (d,)):
             pn = _norm(pn)
@@ -1149,14 +1158,20 @@ def receipt_overflow(receipt_items, rows):
       구입 units = 영수증 수량(팩) × split_qty
       배치 units = Σ(주문 qty × pack)
 
-    재고 출고(via='stock')·온라인몰(via='online')은 세지 않는다 — 둘 다 그날
-    영수증으로 산 물건이 아니라 애초에 이 비교의 대상이 아니다.
+    세지 않는 것:
+      · 재고 출고(stock)·온라인몰(online) — 그날 영수증으로 산 물건이 아니다.
+      · 금액 직접 지정(manual) — 영수증 단가가 아니라 **사람이 정한 금액**이다.
+        영수증에 없는 발송건을 '✍️ 금액 지정'으로 처리한 건이라, 영수증 수량과
+        견줄 대상이 아니다.
+      · **영수증에 아예 없는 상품** — 산 적이 없으니 '모자란다'가 성립하지 않는다.
+        그건 '📋 영수증에 없는 발송건'이 다루는 일이고, 여기 넣으면 상품명·
+        영수증 수량이 빈칸인 줄이 떠서 무슨 말인지 알 수 없다.
 
     반환: [{costco_no, name, unit_price, split_qty, qty_receipt,
             units_in, units_used, units_over, packs_over, amount_over,
             orders: [배치행...]}]  — 초과가 있는 품목만, 초과금액 큰 순
     """
-    _EXCL = ('stock', 'online')
+    _EXCL = ('stock', 'online', 'manual')
     used_by, split_by, rows_by = {}, {}, {}
     for r in (rows or []):
         c = _norm(r.get('costco_no'))
@@ -1186,6 +1201,8 @@ def receipt_overflow(receipt_items, rows):
 
     out = []
     for c, used in used_by.items():
+        if c not in in_by:
+            continue          # 영수증에 없는 상품 — 이 대조의 대상이 아니다
         _in = int(in_by.get(c, 0))
         over = used - _in
         if over <= 0:
