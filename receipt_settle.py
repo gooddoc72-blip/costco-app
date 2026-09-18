@@ -201,6 +201,32 @@ def snap_items_to_catalog(items, min_score=0.55):
     return items, _log
 
 
+def _settled_split_map(conn, date_upto, start=''):
+    """settle_item에 기록된 소분수의 최댓값 — {코스트코번호: split_qty}.
+
+    입고(영수증 수량 × 소분수)와 사용(주문 qty × pack)은 **같은 소분 기준**으로
+    세야 한다. 그런데 입고는 공유DB의 split_qty를, 사용은 정산 당시 사용자
+    제품DB에서 정한 split_qty를 써 왔다. 둘이 다르면(공유 1 / 사용자 24처럼)
+    입고만 과소계산돼 '사용량이 입고량을 넘었다'거나 배정 대기가 음수로 나온다.
+
+    compute_leftovers는 진작 '사용자마다 소분 수가 다르면 큰 값을 기준으로
+    잡는다'고 해 두었다. 같은 규칙을 여기서도 쓴다.
+    """
+    out = {}
+    try:
+        q = ("SELECT product_no, MAX(COALESCE(NULLIF(split_qty,0),1)) FROM settle_item "
+             "WHERE settle_date <= ?" + (" AND settle_date >= ?" if start else "") +
+             " GROUP BY product_no")
+        args = (str(date_upto), str(start)) if start else (str(date_upto),)
+        for pn, sq in conn.execute(q, args):
+            pn = _norm(pn)
+            if pn:
+                out[pn] = max(1, int(sq or 1))
+    except Exception:
+        return {}
+    return out
+
+
 def build_stock_pool(date_upto, exclude_dates=None):
     """지정일까지의 '가용 재고'를 계산한다 — {코스트코번호: {units, price, name}}.
 
@@ -258,6 +284,13 @@ def build_stock_pool(date_upto, exclude_dates=None):
         import db_settle as _dsx
         c = _dsx._conn(); _dsx.ensure(c)
         _st = get_settle_start_date()
+        # 입고와 사용의 소분 기준을 맞춘다 — 공유DB보다 정산에 기록된 값이 크면
+        # 그쪽이 실제 판매 단위다. 안 맞추면 입고만 과소계산된다.
+        for _pn2, _sq2 in _settled_split_map(c, date_upto, _st).items():
+            if _pn2 in pool and _sq2 > split_by.get(_pn2, 1):
+                pool[_pn2]['units'] = int(
+                    pool[_pn2]['units'] / max(1, split_by.get(_pn2, 1)) * _sq2)
+                split_by[_pn2] = _sq2
         # 입고는 소분 단위(팩×split)인데 사용을 판매수량만 빼면 단위가 안 맞는다.
         # 묶음상품(pack>1)은 1개 팔릴 때 pack개를 먹는다 — 그만큼 재고가 부풀었다.
         #
@@ -442,6 +475,14 @@ def get_stock_status(date_upto=None):
     try:
         import db_settle as _dsx
         c = _dsx._conn(); _dsx.ensure(c)
+        # 입고와 사용의 소분 기준을 맞춘다 — build_stock_pool과 같은 규칙.
+        # 공유DB 소분수가 1인데 정산에는 24로 기록돼 있으면 입고만 1배로 세어
+        # '사용량이 입고량을 넘었다'가 된다.
+        for _pn3, _sq3 in _settled_split_map(c, d, start).items():
+            if _pn3 in pool and _sq3 > split_by.get(_pn3, 1):
+                pool[_pn3]['units_in'] = int(
+                    pool[_pn3]['units_in'] / max(1, split_by.get(_pn3, 1)) * _sq3)
+                split_by[_pn3] = _sq3
         # 온라인몰 직배송은 내 영수증에서 나간 물건이 아니다 — build_stock_pool과
         # 같은 규칙을 쓴다. 안 그러면 두 화면의 잔량이 서로 다르게 나온다.
         q = ("SELECT product_no, SUM(qty * COALESCE(NULLIF(pack,0),1)) FROM settle_item "
