@@ -926,7 +926,94 @@ def _tab_month(dmap):
                "코스트코 온라인몰 직배송은 빠집니다 — 포장 관리 › 택배·부자재비 "
                "청구의 발송건수와 같은 기준입니다.")
 
+    _month_online(_ym, _last, dmap)
     _month_detail(_ym, _last, summ, dmap, _ship_day, clicked=_clicked)
+
+
+def _month_online(_ym, _last, dmap):
+    """🛒 그달 온라인몰 직배송 — 카드 명세서와 맞춰 보는 자리.
+
+    온라인몰 결제는 카드 한 장으로 여러 판매자 몫을 한꺼번에 한다. 그런데
+    시스템에는 '지정한 건'만 남아서, **지정하지 않은 주문은 청구에서 통째로
+    빠진 채 아무도 모른다.** 실제로 9월에 두 건(제스프리 32,490 · 치즈피자
+    43,990 = 76,480원)이 그렇게 빠져 있었고, 카드 명세서와 맞춰 보고 나서야
+    드러났다.
+
+    실제 결제액을 적어 두면 차액을 늘 띄운다 — 빠진 건을 찾으러 날짜를 하나씩
+    뒤질 필요가 없다.
+    """
+    import db_online_purchase as _op
+    from db import get_global_setting, set_global_setting
+
+    _from, _to = '%s-01' % _ym, '%s-%02d' % (_ym, _last)
+    try:
+        _rows = _op.list_range(_from, _to) or []
+    except Exception as _e:
+        st.caption(f"온라인몰 내역 조회 실패: {_e}")
+        return
+
+    _tot = sum(int(r.get('amount') or 0) for r in _rows)
+    st.divider()
+    st.markdown(f"##### 🛒 온라인몰 직배송 — {_ym}")
+
+    _key = 'online_actual_%s' % _ym
+    try:
+        _actual = int(float(get_global_setting(_key) or 0))
+    except (TypeError, ValueError):
+        _actual = 0
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("정산에 잡힌 금액", f"{fmt(_tot)}원", f"{len(_rows)}건")
+    _new_actual = c2.number_input("실제 온라인몰 결제액(원)", min_value=0, step=1000,
+                                  value=_actual, key=f"sb_onl_act_{_ym}",
+                                  help="코스트코 온라인몰 주문내역·카드 명세서의 "
+                                       "그달 합계를 적어 두세요. 차액이 늘 보입니다.")
+    _diff = int(_new_actual) - _tot
+    c3.metric("차액 (실제 − 정산)", f"{fmt(_diff)}원",
+              "맞음" if not _diff else ("정산 누락 의심" if _diff > 0 else "정산이 더 큼"),
+              delta_color="off")
+    if int(_new_actual) != _actual:
+        set_global_setting(_key, str(int(_new_actual)))
+        st.rerun()
+
+    if _new_actual and _diff > 0:
+        st.error(f"⚠️ **{fmt(_diff)}원이 정산에 안 잡혀 있습니다.** 온라인몰로 "
+                 "**지정하지 않은 주문**이 있거나, 단가를 실제 결제액보다 낮게 "
+                 "넣은 건이 있습니다. 그대로 두면 그 금액이 그대로 손실입니다 — "
+                 "영수증 정산에서 그 날짜를 열어 **📮 송장등록 안 된 주문** 또는 "
+                 "**📋 영수증에 없는 발송건**에서 온라인몰로 지정하세요.")
+    elif _new_actual and _diff < 0:
+        st.warning(f"⚠️ 정산이 실제 결제액보다 **{fmt(-_diff)}원 많습니다.** "
+                   "단가를 실제보다 높게 넣었거나, 온라인몰이 아닌 건을 "
+                   "온라인몰로 지정했을 수 있습니다.")
+    elif _new_actual:
+        st.success("✅ 실제 결제액과 정산 금액이 일치합니다.")
+
+    if not _rows:
+        st.caption("이 달에 온라인몰로 지정된 건이 없습니다.")
+        return
+    st.dataframe(pd.DataFrame([{
+        '정산일': str(r.get('settle_date') or ''),
+        '판매자': dmap.get(str(r.get('username') or ''), str(r.get('username') or '')),
+        '주문번호': str(r.get('order_no') or ''),
+        '수취인': str(r.get('recipient') or ''),
+        '상품명': str(r.get('product_name') or '')[:36],
+        '수량': int(r.get('qty') or 1),
+        '단가': int(r.get('unit_price') or 0),
+        '청구액': int(r.get('amount') or 0),
+        '메모': str(r.get('memo') or ''),
+    } for r in sorted(_rows, key=lambda x: (str(x.get('settle_date') or ''),
+                                            str(x.get('username') or '')))]),
+        use_container_width=True, hide_index=True,
+        column_config={_k: st.column_config.NumberColumn(_k, format='%d')
+                       for _k in ('수량', '단가', '청구액')})
+    _byd = {}
+    for r in _rows:
+        _d = str(r.get('settle_date') or '')
+        _byd[_d] = _byd.get(_d, 0) + int(r.get('amount') or 0)
+    st.caption("날짜별 — " + " · ".join(f"**{_d}** {fmt(_v)}원"
+                                      for _d, _v in sorted(_byd.items()))
+               + "  ·  이 건들은 택배비·포장비에서 제외됩니다.")
 
 
 def _month_deposit(_ym, _from, _to, _u, dmap, invs, spend_dates):
