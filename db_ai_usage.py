@@ -58,6 +58,7 @@ FEATURE_LABELS = {
     'name':     '상품명 최적화',
     'category': '카테고리 판단',
     'brief':    '정산 브리핑',
+    'ask':      '화면 질문',
     '':         '기타',
 }
 
