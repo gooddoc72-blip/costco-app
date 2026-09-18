@@ -408,8 +408,12 @@ def unmark_paid(settle_date, username):
     return recompute_invoice(settle_date, username)
 
 
-def delete_settlement(settle_date, username=None):
+def delete_settlement(settle_date, username=None, only_status=None):
     """정산 취소 — 품목과 청구서를 지운다. 입금 완료분은 남긴다.
+
+    only_status: 이 상태인 청구서만 지운다(예: ('draft',) = 아직 청구 전만).
+      청구까지 끝난 건을 지우면 사용자가 이미 받아 본 금액이 말없이 사라진다.
+      '청구 전 초기화'는 그 위험이 없는 범위만 건드려야 한다.
 
     반환: (지운 사용자 수, 입금돼서 건너뛴 사용자 목록)
     """
@@ -423,9 +427,12 @@ def delete_settlement(settle_date, username=None):
             args.append(str(username))
         paid = {str(r['username']) for r in conn.execute(
             "SELECT username FROM settle_invoice WHERE %s AND status='paid'" % _w, args)}
-        targets = [str(r['username']) for r in conn.execute(
-            "SELECT DISTINCT username FROM settle_invoice WHERE %s" % _w, args)
-            if str(r['username']) not in paid]
+        _rows = [(str(r['username']), str(r['status'] or ''))
+                 for r in conn.execute(
+                     "SELECT username, status FROM settle_invoice WHERE %s" % _w, args)]
+        _ok = set(only_status) if only_status else None
+        targets = [u for u, stt in _rows
+                   if u not in paid and (_ok is None or stt in _ok)]
         for u in targets:
             conn.execute("DELETE FROM settle_item WHERE settle_date=? AND username=?",
                          (str(settle_date), u))

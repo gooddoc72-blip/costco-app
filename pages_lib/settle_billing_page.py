@@ -27,6 +27,19 @@ _ST_ICON = {'draft': '⚪ 정산완료', 'billed': '🟡 청구됨', 'paid': '�
 _DEP_MEMO = '예치금 차감'
 
 
+def _ask(context, *, key, settings=None, username='', hint=''):
+    """AI 질문 패널 — 화면마다 자기 데이터를 넘겨 부른다.
+
+    한 화면에만 두면 정작 물어보고 싶은 자리(정산·예치금·재고)에서는 못 쓴다.
+    """
+    try:
+        from pages_lib import _ask_ai
+        _ask_ai.render(context, key=key, settings=settings, username=username,
+                       hint=hint)
+    except Exception as _e:
+        st.caption(f"AI 질문 패널을 열지 못했습니다: {_e}")
+
+
 def _disp_map():
     return {u['username']: (u.get('display_name') or u['username']) for u in get_all_users()}
 
@@ -113,6 +126,21 @@ def _tab_day(USERNAME, dmap):
 
     _render_items_detail(ds, invs, dmap, ded=_ded, by=USERNAME)
 
+    # ── 청구 전 초기화 ──────────────────────────────────────
+    _render_reset_draft(ds, _draft, dmap, USERNAME)
+
+    _ask(  # 이 날짜 정산·청구 상태를 그대로 넘겨 물어본다
+        {'화면': '정산·청구 — 일별', '정산일': ds,
+         '청구서': [{'판매자': dmap.get(i['username'], i['username']),
+                  '상태': _ST_ICON.get(i['status'], i['status']),
+                  '청구액': int(i['total_amount'] or 0),
+                  '입금액': int(i['paid_amount'] or 0),
+                  '품목수': int(i['item_count'] or 0),
+                  '예치금결제': i['username'] in _ded,
+                  '예치금잔액': int(_bal.get(i['username'], 0))} for i in invs]},
+        key=f"sb_day_{ds}", settings=None, username=USERNAME,
+        hint="예: 김혜림 청구액이 왜 이 금액인가요?")
+
     # ── ⑦ 청구 ──
     st.divider()
     st.subheader("📨 청구")
@@ -191,6 +219,49 @@ def _tab_day(USERNAME, dmap):
                 if c1.button("취소", key=f"sb_unpay_{ds}_{_u}"):
                     _unpay(ds, _u, _isdep, USERNAME, _ded.get(_u, 0))
                     st.rerun()
+
+
+def _render_reset_draft(ds, drafts, dmap, USERNAME):
+    """🗑 청구 전 정산 초기화 — 아직 사용자에게 안 보낸 것만 지운다.
+
+    잘못 매칭한 채로 정산해 버렸을 때, 지금까지는 그 날짜를 다시 정산해 덮는
+    수밖에 없었다. 그런데 이번 배치에 안 붙은 옛 품목은 그대로 남아 금액이
+    실제보다 커진다. 통째로 비우고 다시 쌓는 길이 있어야 한다.
+
+    **청구 전(⚪ 정산완료)만 지운다.** 청구까지 간 건을 지우면 사용자가 이미
+    받아 본 금액이 말없이 사라진다. 그건 정산·청구가 아니라 '정산 취소'로
+    따로 판단할 일이다(영수증 정산 › 정산 이력).
+    """
+    if not drafts:
+        return
+    _amt = sum(int(i['total_amount'] or 0) for i in drafts)
+    with st.expander(f"🗑 청구 전 정산 초기화 — {len(drafts)}명 · {fmt(_amt)}원",
+                     expanded=False):
+        st.caption("아직 **청구하지 않은** 정산만 지웁니다. 지우면 그 날짜 품목과 "
+                   "청구서가 없어지고, 영수증 정산에서 처음부터 다시 매칭할 수 "
+                   "있습니다. 잘못 매칭한 채로 정산했을 때 쓰세요.")
+        st.dataframe(pd.DataFrame([{
+            '판매자': dmap.get(i['username'], i['username']),
+            '품목': int(i['item_count'] or 0),
+            '청구액': int(i['total_amount'] or 0),
+        } for i in sorted(drafts, key=lambda x: -int(x['total_amount'] or 0))]),
+            use_container_width=True, hide_index=True,
+            column_config={_k: st.column_config.NumberColumn(_k, format='%d')
+                           for _k in ('품목', '청구액')})
+        st.warning("🟡 **청구됨**·🟢 **입금완료**인 사용자는 지우지 않습니다 — "
+                   "이미 사용자가 받아 본 금액이라 말없이 없앨 수 없습니다. "
+                   "그 건까지 되돌리려면 **입금완료 취소** 후 "
+                   "**영수증 정산 › 정산 이력**에서 그 날짜를 취소하세요.")
+        _ok = st.checkbox(f"{len(drafts)}명 · {fmt(_amt)}원을 지웁니다 — 확인했습니다",
+                          key=f"sb_reset_ok_{ds}_{_amt}")
+        if st.button(f"🗑 청구 전 {len(drafts)}명 정산 초기화", key=f"sb_reset_{ds}",
+                     type="primary", disabled=not _ok):
+            _n, _kept = _ds.delete_settlement(ds, only_status=('draft',))
+            st.success(f"🗑 {ds} 청구 전 정산 {_n}명분을 지웠습니다 — "
+                       "영수증 정산에서 그 날짜를 다시 매칭해 정산하세요."
+                       + (f" (입금완료라 남긴 사용자: "
+                          f"{', '.join(dmap.get(u, u) for u in _kept)})" if _kept else ""))
+            st.rerun()
 
 
 def _unpay(ds, username, is_dep, by, dep_amt=0):
@@ -545,6 +616,13 @@ def _tab_deposit(USERNAME, dmap):
         "— `청구 합계 = 예치금 차감 + 예치금 외 결제`.")
 
     _recon_user(_rows, dmap)
+
+    _ask({'화면': '정산·청구 — 예치금',
+          '합계': {'입금총액': _tt['charged'], '차감누계': _tt['spent'],
+                 '관리자조정': _tt['adjusted'], '잔액합계': _tt['net']},
+          '사용자별': [{k: v for k, v in r.items() if k != '_u'} for r in _rows]},
+         key="sb_dep", settings=None, username=USERNAME,
+         hint="예: 고영부 잔액이 왜 이 금액인가요?")
 
     # ── 예치 등록 ──
     st.divider()
