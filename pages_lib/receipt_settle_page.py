@@ -2068,6 +2068,10 @@ def _render_online_panel(alloc, dmap, d_day, USERNAME=''):
         # ── 이미 지정된 건 ──
         if _marked:
             st.markdown("##### ✅ 이 날짜에 지정된 온라인몰 건")
+            # 지정만 하고 미리보기를 다시 안 누르면 배치에 안 실린다 — 그러면
+            # 청구에서 통째로 빠지는데 이 표만 보면 다 된 것처럼 보인다.
+            _inrows = {(str(r.get('username') or ''), str(r.get('order_no') or ''))
+                       for r in (alloc.get('rows') or [])}
             _mrows = [{
                 '판매자': dmap.get(str(m.get('username') or ''), str(m.get('username') or '')),
                 '주문번호': str(m.get('order_no') or ''),
@@ -2076,6 +2080,9 @@ def _render_online_panel(alloc, dmap, d_day, USERNAME=''):
                 '수량': int(m.get('qty') or 1),
                 '단가': int(m.get('unit_price') or 0),
                 '청구액': int(m.get('amount') or 0),
+                '청구 반영': ('✅' if (str(m.get('username') or ''),
+                                   str(m.get('order_no') or '')) in _inrows
+                           else '⚠️ 안 실림'),
                 '메모': str(m.get('memo') or ''),
                 '_u': str(m.get('username') or ''),
             } for m in _marked]
@@ -2084,8 +2091,21 @@ def _render_online_panel(alloc, dmap, d_day, USERNAME=''):
                 use_container_width=True, hide_index=True,
                 column_config={_k: st.column_config.NumberColumn(_k, format='%d')
                                for _k in ('수량', '단가', '청구액')})
-            st.caption(f"합계 **{fmt(sum(r['청구액'] for r in _mrows))}원** · "
-                       f"{len(_mrows)}건 — 이 건들은 택배비·포장비에서 제외됩니다.")
+            _miss = [r for r in _mrows if r['청구 반영'] != '✅']
+            _tot_m = sum(r['청구액'] for r in _mrows)
+            st.caption(f"합계 **{fmt(_tot_m)}원** · {len(_mrows)}건 — "
+                       "이 건들은 택배비·포장비에서 제외됩니다.")
+            if _miss:
+                st.error(
+                    f"⚠️ **{len(_miss)}건 · {fmt(sum(r['청구액'] for r in _miss))}원이 "
+                    "아직 청구에 안 실렸습니다.** 지정만 하고 배치를 다시 만들지 "
+                    "않아서입니다 — **🔎 당일 자동배치 미리보기를 한 번 더 누르세요.** "
+                    "그다음 정산 요청까지 눌러야 청구에 들어갑니다.\n\n"
+                    + " · ".join(f"{r['판매자']} {r['상품명'][:14]} {fmt(r['청구액'])}원"
+                                 for r in _miss[:5]))
+            else:
+                st.success(f"✅ {len(_mrows)}건 전부 이번 배치에 실려 있습니다 "
+                           f"— 정산 요청하면 {fmt(_tot_m)}원이 청구됩니다.")
             _cc1, _cc2 = st.columns([2, 1.2])
             _cancel = _cc1.multiselect(
                 "지정 취소할 주문 (매장 구매였다면)",

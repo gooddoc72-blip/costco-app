@@ -525,6 +525,21 @@ def _admin_stock():
     except Exception as _e:
         st.caption(f"재고 수정 화면을 열지 못했습니다: {_e}")
 
+    # 재고 숫자가 왜 이런지 묻는 자리 — 화면에 뜬 값만 넘긴다
+    try:
+        from pages_lib import _ask_ai
+        _ask_ai.render(
+            {'화면': '재고 관리 — 전체 재고',
+             '재고': [{'상품번호': r['product_no'], '상품명': r['product_name'],
+                     '보유자': r['owner'], '잔여': r['qty_left'], '입고': r['qty_in'],
+                     '구입가': int(r.get('unit_cost') or 0),
+                     '최초입고': r['oldest_at'], '경과일': r['age_days']}
+                    for r in (rows or [])[:80]]},
+            key="inv_stock", username='',
+            hint="예: 이 상품 재고가 왜 안 줄어드나요?")
+    except Exception as _e:
+        st.caption(f"AI 질문 패널을 열지 못했습니다: {_e}")
+
     st.divider()
     st.subheader("🔄 최근 차감 내역")
     mv = get_moves(limit=100)
