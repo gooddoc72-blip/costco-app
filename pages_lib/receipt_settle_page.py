@@ -553,9 +553,27 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         # 주문은 있는데 송장등록이 안 된 건 — **보여주기만** 한다.
         # 송장등록은 사용자가 자기 스토어에서 하는 일이라 관리자가 대신 누르면
         # 실제 상태와 어긋난다. 관리자에게 필요한 건 '누가 아직 안 했나'다.
-        _pend = [c for c in _cov if c['orders'] > c['dispatched']]
+        # 건수는 **목록과 같은 방법으로** 센다. 전에는 라벨이 '주문 수 − 발송 수'
+        # 였는데 그건 서로 다른 두 집계의 뺄셈이라 목록과 안 맞았다(실측: 라벨
+        # 14건 / 목록 5건). 주문번호가 빈 옛 행은 목록에서 빠지고, 발송 기록에
+        # 다른 날짜 주문이 섞이면 뺄셈이 어긋난다. 실제 목록 길이가 정답이다.
+        #   온라인몰로 지정한 건은 송장을 기다릴 이유가 없으니 여기서도 뺀다 —
+        #   라벨·목록·설명 세 숫자가 같은 기준을 써야 한다.
+        _pend, _plist, _pdrop = [], {}, {}
+        for _c in _cov:
+            if not _c.get('orders'):
+                continue
+            try:
+                _ul = _rs.undispatched_orders(_c['username'], str(d_day)) or []
+            except Exception:
+                _ul = []
+            _ul, _nd = _drop_online_marked(_ul, _c['username'])
+            if _ul:
+                _plist[_c['username']] = _ul
+                _pdrop[_c['username']] = _nd
+                _pend.append(_c)
         if _pend:
-            _pend_n = sum(c['orders'] - c['dispatched'] for c in _pend)
+            _pend_n = sum(len(v) for v in _plist.values())
             with st.expander(f"📮 송장등록 안 된 주문 {_pend_n}건 — 어느 건인지 보기",
                              expanded=False):
                 st.caption("송장등록은 **각 사용자가 자기 스토어에서** 하는 일입니다. "
@@ -563,11 +581,11 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                            "알려주세요. 등록이 끝나면 자동으로 발송으로 잡혀 "
                            "영수증과 매칭됩니다.")
                 _plabels = [f"{dmap.get(c['username'], c['username'])} "
-                            f"— 미등록 {c['orders'] - c['dispatched']}건" for c in _pend]
+                            f"— 미등록 {len(_plist[c['username']])}건" for c in _pend]
                 _pk = st.selectbox("사용자", _plabels, key=f"rs_md_u_{d_day}")
                 _pu = _pend[_plabels.index(_pk)]['username']
                 try:
-                    _ulist = _rs.undispatched_orders(_pu, str(d_day))
+                    _ulist = list(_plist.get(_pu) or [])
                 except Exception as _e:
                     _ulist = []
                     st.error(f"목록 조회 실패: {_e}")
@@ -579,7 +597,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     # 보낸 게 아니기 때문이다. 그대로 두면 물건값이 청구되지 않는다.
                     # 지정 패널이 아래에 따로 있지만 **미리보기를 돌린 뒤에야** 나온다.
                     # 미등록 목록을 들여다보는 이 자리에서 바로 골라야 한다.
-                    _ulist, _dropped = _drop_online_marked(_ulist, _pu)
+                    _dropped = int(_pdrop.get(_pu) or 0)
                     st.caption(f"{dmap.get(_pu, _pu)} · {len(_ulist)}건 미등록"
                                + (f" · 이미 온라인몰로 지정된 {_dropped}건은 뺐습니다"
                                   if _dropped else ""))
