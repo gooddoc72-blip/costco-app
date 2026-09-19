@@ -433,6 +433,18 @@ def delete_settlement(settle_date, username=None, only_status=None):
         _ok = set(only_status) if only_status else None
         targets = [u for u, stt in _rows
                    if u not in paid and (_ok is None or stt in _ok)]
+        # '직접구매' 계정은 청구서를 안 만든다(is_billable). 그래서 settle_invoice에
+        # 행이 없고, 지금까지 그 사람 품목은 **영영 지워지지 않았다** — 정산을
+        # 취소해도 재고(build_stock_pool)를 계속 갉아먹었다. 품목 쪽에서도 찾는다.
+        _seen = {u for u, _ in _rows}
+        for r in conn.execute(
+                "SELECT DISTINCT username FROM settle_item WHERE %s" % _w, args):
+            _u = str(r['username'])
+            if _u in _seen or _u in paid:
+                continue
+            if _ok is not None and 'draft' not in _ok:
+                continue      # 청구서가 없으니 '청구 전'으로만 볼 수 있다
+            targets.append(_u)
         for u in targets:
             conn.execute("DELETE FROM settle_item WHERE settle_date=? AND username=?",
                          (str(settle_date), u))

@@ -202,7 +202,11 @@ def snap_items_to_catalog(items, min_score=0.55):
 
 
 def _settled_split_map(conn, date_upto, start=''):
-    """settle_item에 기록된 소분수의 최댓값 — {코스트코번호: split_qty}.
+    """settle_item에 기록된 **가장 최근** 소분수 — {코스트코번호: split_qty}.
+
+    ⚠️ MAX를 쓰면 안 된다. 오래전 한 번 24로 기록된 행이 남아 있으면 지금은
+    소분을 안 하는 상품까지 입고를 24배로 부풀리고, 그 유령 재고가 다음 날
+    '재고 이월'로 청구된다. 지금 쓰는 값은 **마지막 정산의 값**이다.
 
     입고(영수증 수량 × 소분수)와 사용(주문 qty × pack)은 **같은 소분 기준**으로
     세야 한다. 그런데 입고는 공유DB의 split_qty를, 사용은 정산 당시 사용자
@@ -214,9 +218,14 @@ def _settled_split_map(conn, date_upto, start=''):
     """
     out = {}
     try:
-        q = ("SELECT product_no, MAX(COALESCE(NULLIF(split_qty,0),1)) FROM settle_item "
-             "WHERE settle_date <= ?" + (" AND settle_date >= ?" if start else "") +
-             " GROUP BY product_no")
+        # 상품별 최신 정산일의 split_qty — 같은 날 여러 행이면 그중 최댓값.
+        q = ("SELECT s.product_no, MAX(COALESCE(NULLIF(s.split_qty,0),1)) "
+             "FROM settle_item s JOIN ("
+             "  SELECT product_no, MAX(settle_date) d FROM settle_item "
+             "  WHERE settle_date <= ?" + (" AND settle_date >= ?" if start else "") +
+             "  GROUP BY product_no) t "
+             "ON s.product_no = t.product_no AND s.settle_date = t.d "
+             "GROUP BY s.product_no")
         args = (str(date_upto), str(start)) if start else (str(date_upto),)
         for pn, sq in conn.execute(q, args):
             pn = _norm(pn)
@@ -315,7 +324,13 @@ def build_stock_pool(date_upto, exclude_dates=None):
     # ③ 배정 — 사용자 재고로 넘긴 수량. 이걸 안 빼면 '아직 임자 없는 물건'과
     #    '이미 누군가의 재고가 된 물건'이 같은 숙에 섮여, 배정해도 재고가 그대로 남아
     #    다음 날 그 재고로 또 메꿠다고 계산한다.
-    for pn, units in receipt_lot_units(date_upto, start=_start).items():
+    _lots0 = receipt_lot_units(date_upto, start=_start)
+    if _lots0.get('_error'):
+        # 배정분을 못 빼면 '아직 아무에게도 안 준 물건'이 그대로 남아 재고가
+        # 부풀고, 그 유령 재고가 다음 날 남의 주문을 메꿨다고 계산된다.
+        # 부풀린 값을 쓰느니 이월을 포기한다.
+        return {}
+    for pn, units in _lots0.items():
         if pn in pool:
             pool[pn]['units'] -= int(units or 0)
 
@@ -499,18 +514,22 @@ def get_stock_status(date_upto=None):
     # 배정 — 사용자 재고로 넘긴 수량은 더 이상 미배정 구입잔량이 아니다.
     # 이걸 안 빼서 '배정했는데 구입재고가 그대로'라는 질문이 계속 나왔다.
     _lots = receipt_lot_units(d, start=start)
+    _lots_err = bool(_lots.get('_error'))
     # 반품요청 — 매장으로 돌아갈 물건이라 잔량에서 뺀다. 안 빼면 현황에는
     # 있는데 창고에는 없는 수량이 남아 실물 대조가 영원히 안 맞는다.
     _rets = return_request_units(d, start=start)
 
     out = []
     for e in pool.values():
+        # 배정분을 못 읽었으면 '모른다'를 0으로 읽지 않는다 — 화면이 그 사실을
+        # 보고 경고할 수 있게 표시를 함께 싣는다.
         assigned = int(_lots.get(e['costco_no'], 0) or 0)
         returned = int(_rets.get(e['costco_no'], 0) or 0)
         left = e['units_in'] - e['units_used'] - assigned - returned
         sq = split_by.get(e['costco_no'], 1)
         out.append({**e, 'units_assigned': assigned, 'units_returned': returned,
                     'units_left': left, 'split_qty': sq,
+                    'lots_error': _lots_err,
                     'amount': max(0, left) * (e['price'] // max(1, sq))})
     out.sort(key=lambda x: -x['amount'])
     return out

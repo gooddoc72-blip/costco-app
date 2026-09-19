@@ -2591,11 +2591,16 @@ def _render_overflow_panel(alloc, dmap, receipt_items, d_day,
                 f"{str(o['name'])[:22]} · {int(r.get('qty') or 1)}개 · "
                 f"{fmt(int(r.get('amount') or 0))}원 · {r.get('order_no')}"
                 for o, r in _cand]
-        _sel = st.multiselect("끊을 배치 건", _lbl, default=_lbl,
+        # 기본을 전체 선택으로 두면 안 된다. 지목된 행에는 **일부만 초과인 건**이
+        # 섞여 있어(4개 중 1개만 모자란 주문) 통째로 끊으면 정상 구매분까지
+        # 청구에서 빠진다. 무엇을 뺄지는 사람이 고른다.
+        _sel = st.multiselect("끊을 배치 건", _lbl, default=[],
                               key=f"rs_ov_sel_{d_day}",
                               help="끊으면 미매칭으로 돌아가 아래 '영수증에 없는 발송건'에 "
                                    "나타납니다. 거기서 재고 출고로 처리하거나, 그대로 두고 "
-                                   "다음 날 정산에서 붙이면 됩니다.")
+                                   "다음 날 정산에서 붙이면 됩니다. "
+                                   "한 주문이 통째로 빠지므로, 그 주문의 일부만 "
+                                   "모자란 경우라면 끊지 말고 재고 출고로 처리하세요.")
         if _sel:
             _amt = sum(int(_cand[_lbl.index(x)][1].get('amount') or 0) for x in _sel)
             st.markdown(f"**{len(_sel)}건 · {fmt(_amt)}원**을 이번 청구에서 뺍니다.")
@@ -2796,10 +2801,19 @@ def _render_reconcile(receipt_items, alloc, goods_total, d_day):
                          column_config={_k: st.column_config.NumberColumn(_k, format='%d')
                                         for _k in ('영수증(팩)', '쓴 수량', '남은 수량',
                                                    '금액')})
+            _ltot = sum(r['금액'] for r in _lrows)
             st.caption("수량은 **소분 단위**입니다. **요청자**는 그날 장보기 목록에서 "
                        "이 상품을 요청한 사람 — 누구 물건인지에 가장 가까운 답입니다. "
                        "이미 재고로 넘겼거나 반품요청한 분량은 위 배정 목록에서 빠지지만 "
                        "이 표에는 남아 있을 수 있습니다.")
+            # 위 '배정 대기' 금액과 이 표 합계는 기준이 달라 자주 어긋난다
+            # (지표는 재고 출고·온라인몰을 청구에서 빼고 계산하고, 이 표는
+            #  영수증 잔량에서 온라인몰만 뺀다). 다르면 그 사실을 적어 준다.
+            if _ltot != _wait:
+                st.caption(f"ℹ️ 이 표 합계 **{fmt(_ltot)}원**은 위 배정 대기 "
+                           f"**{fmt(_wait)}원**과 다를 수 있습니다 — 배정 대기는 "
+                           "청구에서 재고 출고·온라인몰을 뺀 값이고, 이 표는 "
+                           "**영수증에서 아직 주문에 안 붙은 물건**입니다.")
 
         # 절반도 안 붙었으면 매칭이 덜 된 쪽을 의심해야 한다. 그대로 정산하면
         # 나간 물건이 청구에서 빠지고, 남은 돈은 재고로 쌓이기만 한다.
@@ -3033,6 +3047,10 @@ def _render_stock_status():
                          "매칭 후 **정산 요청**까지 누르면 여기서 빠집니다."]
                 st.error("\n".join(_msg))
 
+            if any(r.get('lots_error') for r in rows):
+                st.error("🚫 **재고 배정 이력을 읽지 못했습니다.** 아래 '재고배정'이 "
+                         "0으로 보이고 **배정 대기가 실제보다 크게** 나옵니다 — "
+                         "이 숫자로 판단하지 마세요. 잠시 뒤 다시 열어 보세요.")
             _left = [r for r in rows if r['units_left'] > 0]
             _neg = [r for r in rows if r['units_left'] < 0]
             _amt = sum(r['amount'] for r in _left)

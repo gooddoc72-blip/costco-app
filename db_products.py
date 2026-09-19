@@ -619,14 +619,25 @@ def get_option_map(username=''):
     conn = get_auth_db()
     _ensure_option_map(conn)
     try:
-        sql = ("SELECT naver_pno, option_code, costco_pno FROM naver_option_map "
-               "WHERE TRIM(COALESCE(costco_pno,''))<>''")
+        sql = ("SELECT naver_pno, option_code, costco_pno, COALESCE(username,'') u "
+               "FROM naver_option_map WHERE TRIM(COALESCE(costco_pno,''))<>''")
         args = []
         if username:
             sql += " AND (username=? OR COALESCE(username,'')='')"
             args.append(str(username))
-        return {(str(r[0]), str(r[1])): str(r[2])
-                for r in conn.execute(sql, args)}
+        # 전역 행(username='')은 **기본값**이고, 그 사용자 행이 있으면 그쪽이
+        # 이긴다. 한 키에 섞어 넣으면 읽는 순서에 따라 전역이 이겨 엉뚱한
+        # 코스트코번호가 주문에 박힌다.
+        out, _global = {}, {}
+        for r in conn.execute(sql, args):
+            _k = (str(r[0]), str(r[1]))
+            if str(r[3]):
+                out[_k] = str(r[2])
+            else:
+                _global[_k] = str(r[2])
+        for _k, _v in _global.items():
+            out.setdefault(_k, _v)
+        return out
     except Exception:
         return {}
     finally:
