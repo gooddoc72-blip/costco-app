@@ -566,10 +566,16 @@ def billable_users():
 
 
 def undispatched_orders(username, the_date):
-    """그날 주문 중 아직 발송 기록이 없는 건. [{order_no, recipient, product_name, qty, ...}]
+    """그날 주문 중 **아직 한 번도 발송되지 않은** 건.
+    [{order_no, recipient, product_name, qty, ...}]
 
     송장을 안 올리는 계정이 있어 그 사람 몫이 통째로 매칭에서 빠진다.
     관리자가 직접 발송처리할 수 있게 목록을 낸다.
+
+    발송 여부는 **날짜를 보지 않고** 판단한다. 전에는 그날 dispatch_log만 봐서,
+    12일 주문을 13일에 보내면 12일 화면에서 영영 '송장등록 안 됨'으로 남았다
+    (실측: 이미 발송된 건이 미등록 목록에 그대로 떴다). 주문은 하루 뒤에
+    나가는 일이 흔하므로, 어느 날짜로든 발송 기록이 있으면 미등록이 아니다.
     """
     try:
         conn = get_user_db(username)
@@ -577,8 +583,8 @@ def undispatched_orders(username, the_date):
         return []
     try:
         _done = {str(r[0]) for r in conn.execute(
-            "SELECT order_no FROM dispatch_log WHERE substr(dispatched_at,1,10)=?",
-            (str(the_date),))}
+            "SELECT DISTINCT order_no FROM dispatch_log "
+            "WHERE TRIM(COALESCE(order_no,''))<>''")}
     except Exception:
         _done = set()
     try:

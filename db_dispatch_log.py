@@ -331,6 +331,15 @@ def get_dispatched_orders_with_details(username: str, dispatched_at: str,
     """
     conn = get_user_db(username)
     _ensure_table(conn)
+    # daily_orders.costco_no는 나중에 붙인 컬럼이라 없는 DB가 있다. 없는 채로
+    # JOIN하면 쿼리가 통째로 실패해 except가 bare dispatch_log로 떨어지고,
+    # qty·settlement·cost_price가 전부 사라져 수익계산·택배비까지 어긋난다.
+    # 코스트코번호 하나 때문에 나머지를 잃을 수는 없다 — 있을 때만 조인한다.
+    try:
+        _dcols = {r[1] for r in conn.execute("PRAGMA table_info(daily_orders)")}
+        _has_cno = ('costco_no' in _dcols and 'order_no' in _dcols)
+    except Exception:
+        _has_cno = False
     # order_history 테이블이 존재해야 JOIN 가능 (db_products.init_user_db 에서 생성)
     base_sql = """
         SELECT
@@ -343,7 +352,7 @@ def get_dispatched_orders_with_details(username: str, dispatched_at: str,
             COALESCE(oh.product_name, dl.product_name)             AS product_name,
             COALESCE(oh.option_info, '')                            AS option_info,
             COALESCE(oh.product_no, '')                             AS product_no,
-            COALESCE(dord.costco_no, '')                              AS costco_no,
+            %(cno_sel)s                                             AS costco_no,
             COALESCE(oh.qty, 1)                                     AS qty,
             COALESCE(oh.order_amount, 0)                            AS order_amount,
             COALESCE(oh.shipping_fee, dl.customer_shipping_fee, 0)  AS shipping_fee,
@@ -353,12 +362,16 @@ def get_dispatched_orders_with_details(username: str, dispatched_at: str,
         FROM dispatch_log dl
         LEFT JOIN order_history oh ON dl.order_no = oh.order_no
         -- 코스트코번호는 order_history에 없다(거긴 네이버번호). 재고·영수증 매칭이
-        -- 쓰는 번호이므로 daily_orders에서 끌어온다.
+        -- 쓰는 번호이므로 daily_orders에서 끌어온다(컬럼이 있을 때만).%(cno_join)s
+        WHERE dl.dispatched_at = ?
+    """ % {
+        'cno_sel': ("COALESCE(dord.costco_no, '')" if _has_cno else "''"),
+        'cno_join': ("""
         LEFT JOIN (SELECT order_no, MAX(COALESCE(costco_no,'')) AS costco_no
                    FROM daily_orders WHERE COALESCE(order_no,'')<>''
-                   GROUP BY order_no) dord ON dl.order_no = dord.order_no
-        WHERE dl.dispatched_at = ?
-    """
+                   GROUP BY order_no) dord ON dl.order_no = dord.order_no"""
+                     if _has_cno else ""),
+    }
     params = [dispatched_at]
     if platform:
         base_sql += " AND dl.platform = ?"
@@ -419,22 +432,34 @@ def move_dispatch_date(username: str, order_nos: list, to_date: str,
         for i in range(0, len(onos), CHUNK):
             chunk = onos[i:i + CHUNK]
             ph = ",".join("?" * len(chunk))
-            # 대상 날짜에 이미 같은 주문이 있으면 그쪽이 살아남는다 — 옮기는 쪽을
-            # 지워 중복을 막는다. 그 사실을 따로 세어 화면에 알린다.
+            # 대상 날짜에 이미 같은 주문이 있으면 **그쪽이 살아남는다** — 옮기는
+            # 쪽을 지워 중복을 막는다. 그 수를 따로 세어 화면에 알린다.
             _args = [str(to_date)] + chunk
-            _sql = ("SELECT COUNT(*) FROM dispatch_log WHERE dispatched_at=? "
-                    "AND order_no IN (%s)" % ph)
-            _before = conn.execute(_sql, _args).fetchone()[0]
-            _q = ("UPDATE OR REPLACE dispatch_log SET dispatched_at=? "
-                  "WHERE order_no IN (%s) AND dispatched_at<>?" % ph)
-            _a = [str(to_date)] + chunk + [str(to_date)]
-            if from_date:
-                _q += " AND dispatched_at=?"
-                _a.append(str(from_date))
-            cur = conn.execute(_q, _a)
-            out['moved'] += cur.rowcount or 0
-            _after = conn.execute(_sql, _args).fetchone()[0]
-            out['merged'] += max(0, (_before + (cur.rowcount or 0)) - _after)
+            # UPDATE OR REPLACE는 **옮기는 행을 살리고 목적지의 기존 행을 지운다**
+            # — 제대로 기록돼 있던 쪽의 송장·택배비·정산예정이 날아간다.
+            # 목적지에 이미 있는 주문은 옮기지 않고 **출발지 행만 지운다**
+            # (같은 택배가 두 날에 잡히는 것만 막으면 된다).
+            _dup = sorted({str(r[0]) for r in conn.execute(
+                ("SELECT order_no FROM dispatch_log WHERE dispatched_at=? "
+                 "AND order_no IN (%s)" % ph), _args)})
+            _mv = [o for o in chunk if o not in set(_dup)]
+            if _dup:
+                _dq = ("DELETE FROM dispatch_log WHERE order_no IN (%s) "
+                       "AND dispatched_at<>?" % ",".join("?" * len(_dup)))
+                _da = list(_dup) + [str(to_date)]
+                if from_date:
+                    _dq += " AND dispatched_at=?"
+                    _da.append(str(from_date))
+                out['merged'] += conn.execute(_dq, _da).rowcount or 0
+            if _mv:
+                _q = ("UPDATE dispatch_log SET dispatched_at=? "
+                      "WHERE order_no IN (%s) AND dispatched_at<>?"
+                      % ",".join("?" * len(_mv)))
+                _a = [str(to_date)] + _mv + [str(to_date)]
+                if from_date:
+                    _q += " AND dispatched_at=?"
+                    _a.append(str(from_date))
+                out['moved'] += conn.execute(_q, _a).rowcount or 0
         conn.commit()
     finally:
         conn.close()
