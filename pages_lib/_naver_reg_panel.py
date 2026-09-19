@@ -43,6 +43,7 @@ def _with_all_users(rows):
         rows.append({
             'username': u['username'], 'display_name': u.get('display_name') or '',
             'total': 0, 'period': 0, 'by_source': {}, 'agency': 0, 'last_at': '',
+            'counted': 0,
             'limit': q['limit'], 'remaining': q['remaining'], 'blocked': q['blocked'],
         })
     rows.sort(key=lambda d: -d['total'])
@@ -97,6 +98,7 @@ def render(key_prefix="nvlog", show_backfill=True, nested=False, editable=False)
             "무인": _bs.get('auto', 0),
             "카페24대행": _bs.get('cafe24', 0),
             "과거분": _bs.get('backfill', 0),
+            "한도 대상": int(_r.get('counted') or 0),
             # 편집 가능한 열이라 숫자로 통일한다 — '무제한'을 글자로 넣으면
             # 숫자 열이 되지 못해 표 안에서 고칠 수 없다. 0이 곧 무제한이다.
             "한도(0=무제한)": int(_r['limit'] or 0),
@@ -111,7 +113,8 @@ def render(key_prefix="nvlog", show_backfill=True, nested=False, editable=False)
         st.dataframe(_ro, use_container_width=True, hide_index=True)
         st.caption(f"총 {sum(r['total'] for r in _rows):,}건 · "
                    f"사용자 {len(_rows)}명  ·  집계 주체는 **토큰 소유자**입니다 "
-                   "(관리자가 대행등록해도 그 사용자 몫으로 셉니다).")
+                   "(관리자가 대행등록해도 그 사용자 몫으로 셉니다). "
+                   "**한도는 '한도 대상' 열로 겁니다 — 카페24 대행은 뺍니다.**")
         return _render_log(_rows, key_prefix, nested)
 
     # ── 한도를 이 표에서 바로 고친다 ──────────────────────────
@@ -125,8 +128,13 @@ def render(key_prefix="nvlog", show_backfill=True, nested=False, editable=False)
         column_config={
             "한도(0=무제한)": st.column_config.NumberColumn(
                 "한도(0=무제한)", format='%d', min_value=0, max_value=1000000, step=50,
-                help="이 사용자의 네이버 토큰으로 등록할 수 있는 **누적** 상품 수. "
-                     "수동등록·무인자동·카페24 대행을 모두 합산합니다. 0이면 제한 없음."),
+                help="이 사용자가 코코비즈에서 **자기 스토어에 스스로 올릴 수 있는** "
+                     "누적 상품 수(수동등록·무인자동). **관리자가 대신 올려 주는 "
+                     "카페24 대행등록은 세지 않습니다.** 0이면 제한 없음."),
+            "한도 대상": st.column_config.NumberColumn(
+                "한도 대상", format='%d',
+                help="한도에 세는 건수입니다. **카페24 대행등록은 빠집니다** — "
+                     "관리자가 대신 올려 주는 건이라 사용자 한도로 막지 않습니다."),
             **{_k: st.column_config.NumberColumn(_k, format='%d')
                for _k in ("누적", "기간내", "수동", "무인", "카페24대행", "과거분")},
         })
@@ -156,12 +164,14 @@ def render(key_prefix="nvlog", show_backfill=True, nested=False, editable=False)
             + " — **저장을 눌러야 적용됩니다.**")
     else:
         _sc2.caption("한도 칸을 고치고 저장을 누르면 즉시 적용됩니다. "
-                     "소진되면 수동등록·무인자동·카페24 대행이 모두 막히고, "
-                     "사용자에게는 관리자에게 상향을 요청하라는 안내가 나갑니다.")
+                     "소진되면 **사용자가 직접 올리는 등록(수동·무인자동)** 이 막히고, "
+                     "사용자에게는 관리자에게 상향을 요청하라는 안내가 나갑니다. "
+                     "**카페24 대행등록은 한도와 무관하게 계속됩니다.**")
 
     st.caption(f"총 {sum(r['total'] for r in _rows):,}건 · "
                f"사용자 {len(_rows)}명  ·  집계 주체는 **토큰 소유자**입니다 "
-               "(관리자가 대행등록해도 그 사용자 몫으로 셉니다).")
+               "(관리자가 대행등록해도 그 사용자 몫으로 셉니다). "
+               "**한도는 '한도 대상' 열로 겁니다 — 카페24 대행은 뺍니다.**")
 
     return _render_log(_rows, key_prefix, nested)
 

@@ -333,14 +333,13 @@ def register_one(creds, save_tokens, product, margin, target, opts,
                     'detail': '카페24 등록 한도 초과 (%d/%d) — 관리자에게 한도 상향을 요청하세요.'
                               % (_q.get('used', 0), _q.get('limit', 0)),
                     'reason': 'QUOTA'}
-        # 네이버 등록 한도(누적) — 카페24 카탈로그 한도와 별개다.
-        #   카페24 한도는 '이 카탈로그를 얼마나 썼나', 이건 '그 사용자 스토어에
-        #   우리 프로그램으로 몇 개를 올렸나'. 둘 중 하나라도 소진되면 막는다.
-        try:
-            from db_naver_reg import naver_reg_quota
-            _nq = naver_reg_quota(_tu)
-        except Exception:
-            _nq = {'blocked': False}
+        # 네이버 등록 한도는 **여기서 보지 않는다.**
+        #   한도는 '사용자가 코코비즈에서 자기 스토어에 스스로 올리는 양'을
+        #   조절하려고 둔 것이다. 카페24 대행등록은 관리자가 카탈로그를 골라
+        #   대신 올려 주는 일이라, 그 몫까지 사용자 한도에 세면 관리자가 일을
+        #   할수록 사용자가 막힌다(실측: 82/5로 24건 전부 실패).
+        #   기록은 그대로 남는다 — 집계에서는 '카페24 대행'으로 보인다.
+        _nq = {'blocked': False, 'used': 0, 'limit': 0}
         if _nq.get('blocked'):
             return {'status': 'fail', 'name': _name, 'code': '', 'code_src': '',
                     'category': '', 'tags': 0, 'price': 0,

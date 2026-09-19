@@ -31,6 +31,13 @@ SOURCE_LABELS = {
 
 LIMIT_KEY = 'naver_register_limit'   # 사용자 설정. 0/빈값 = 무제한.
 
+#: 한도에서 빼는 경로 — **관리자가 대신 올려 주는 건**이다.
+#   한도는 '사용자가 코코비즈에서 자기 스토어에 올리는 양'을 조절하려고 둔 것이다.
+#   카페24 대행등록은 관리자가 카탈로그를 골라 대신 올려 주는 일이라, 그 몫까지
+#   사용자 한도에 세면 관리자가 일을 할수록 사용자가 막힌다(실측: 82/5로 24건
+#   전부 실패). 기록은 그대로 남기되 한도 계산과 차단에서만 뺀다.
+LIMIT_EXEMPT_SOURCES = ('cafe24',)
+
 _id_cache = {}                       # client_id → username 역인덱스
 _id_cache_at = 0.0
 _ID_CACHE_TTL = 300                  # 초. 키를 새로 넣은 사용자가 5분 내 반영된다.
@@ -192,16 +199,23 @@ def log_by_client_id(client_id, origin_no, product_info=None):
 # ── 한도 ──────────────────────────────────────────────────────────
 
 def get_naver_reg_count(username):
-    """누적 등록 수 — 같은 상품 재등록은 1로 본다(DISTINCT origin_no)."""
+    """한도에 세는 누적 등록 수 — 같은 상품 재등록은 1로 본다(DISTINCT origin_no).
+
+    **카페24 대행등록은 빼고 센다**(LIMIT_EXEMPT_SOURCES). 관리자가 대신 올려
+    주는 건이라 사용자 한도로 막을 일이 아니다. 화면의 '누적'(naver_reg_summary)은
+    전 경로를 그대로 보여 주므로 두 숫자가 다를 수 있다 — 한도는 이 값으로 건다.
+    """
     if not str(username or '').strip():
         return 0
     conn = get_auth_db()
     try:
         _ensure(conn)
+        _ph = ",".join("?" * len(LIMIT_EXEMPT_SOURCES))
         row = conn.execute(
             "SELECT COUNT(DISTINCT origin_no) FROM naver_register_log "
-            " WHERE username=? AND TRIM(COALESCE(origin_no,''))<>''",
-            (str(username),)).fetchone()
+            " WHERE username=? AND TRIM(COALESCE(origin_no,''))<>''"
+            "   AND COALESCE(source,'') NOT IN (%s)" % _ph,
+            [str(username)] + list(LIMIT_EXEMPT_SOURCES)).fetchone()
         return int(row[0] or 0)
     except Exception:
         return 0
@@ -240,12 +254,17 @@ def naver_reg_quota(username):
     return {'limit': lim, 'used': used, 'remaining': rem, 'blocked': rem <= 0}
 
 
-def block_reason_by_client_id(client_id):
+def block_reason_by_client_id(client_id, source=''):
     """등록 전 차단 사유 문자열, 통과면 None.
 
     토큰 주인을 못 찾으면 차단하지 않는다 — 기록이 목적이고, 매칭 실패로
     정상 등록을 막으면 손해가 더 크다(미매칭분은 client_tag로 남는다).
+
+    source가 LIMIT_EXEMPT_SOURCES면 아예 보지 않는다 — 관리자가 대신 올려
+    주는 건(카페24 대행)은 사용자 한도로 막을 일이 아니다.
     """
+    if str(source or '') in LIMIT_EXEMPT_SOURCES:
+        return None
     un = resolve_user_by_client_id(client_id)
     if not un:
         return None
@@ -316,6 +335,8 @@ def naver_reg_summary(date_from='', date_to=''):
             'username': un or '(미매칭 토큰)',
             'display_name': names.get(un, ''),
             'total': len(a['seen']),
+            # 한도는 카페24 대행을 빼고 센다 — '누적'과 다를 수 있어 따로 낸다
+            'counted': get_naver_reg_count(un) if un else 0,
             'period': len(a['period_seen']),
             'by_source': a['by_source'],
             'agency': a['agency'],

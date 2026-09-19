@@ -477,11 +477,15 @@ def _reg_log_hook(client_id, pno, product_info):
         pass
 
 
-def _reg_limit_gate(client_id):
-    """한도 초과 시 사유 문자열, 통과면 None."""
+def _reg_limit_gate(client_id, source=''):
+    """한도 초과 시 사유 문자열, 통과면 None.
+
+    source를 함께 넘긴다 — 카페24 대행등록은 관리자가 대신 올려 주는 건이라
+    사용자 한도로 막지 않는다(db_naver_reg.LIMIT_EXEMPT_SOURCES).
+    """
     try:
         import db_naver_reg
-        return db_naver_reg.block_reason_by_client_id(client_id)
+        return db_naver_reg.block_reason_by_client_id(client_id, source=source)
     except Exception:
         return None
 
@@ -498,7 +502,8 @@ def register_product(client_id, client_secret, product_info):
         payload에는 안 들어가고 db_naver_reg 기록에만 쓰인다. 안 넘기면 manual.
     반환: ({"origin_product_no": str}, error_msg)
     """
-    _blocked = _reg_limit_gate(client_id)
+    _blocked = _reg_limit_gate(
+        client_id, source=str((product_info or {}).get('reg_source') or ''))
     if _blocked:
         return None, _blocked
 
