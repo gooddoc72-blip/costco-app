@@ -124,6 +124,31 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         st.success("✅ 설정 저장 완료!")
         st.rerun()
 
+    # ── 🔑 내(관리자) 비밀번호 변경 ─────────────────────────────────
+    # 사용자 목록의 '비밀번호 초기화'는 is_admin 계정엔 안 나오므로, 관리자 본인은
+    # 여기서만 바꿀 수 있다. 세션이 탈취된 상태에서 비번까지 바뀌지 않도록 현재 비번 확인 필수.
+    st.divider()
+    with st.expander("🔑 내 비밀번호 변경", expanded=False):
+        with st.form("admin_change_pw_form", clear_on_submit=True):
+            _cur_pw = st.text_input("현재 비밀번호", type="password")
+            _new_pw = st.text_input("새 비밀번호 (8자 이상)", type="password")
+            _new_pw2 = st.text_input("새 비밀번호 확인", type="password")
+            _submit_pw = st.form_submit_button("비밀번호 변경", type="primary")
+        if _submit_pw:
+            _new = (_new_pw or "").strip()
+            if not isinstance(check_login(USERNAME, _cur_pw or ""), dict):
+                st.error("❌ 현재 비밀번호가 올바르지 않습니다.")
+            elif len(_new) < 8:
+                st.warning("새 비밀번호는 8자 이상이어야 합니다.")
+            elif _new != (_new_pw2 or "").strip():
+                st.warning("새 비밀번호와 확인 값이 일치하지 않습니다.")
+            elif _new == (_cur_pw or "").strip():
+                st.warning("현재 비밀번호와 다른 비밀번호를 입력해주세요.")
+            elif change_password(USERNAME, _new):
+                st.success("✅ 비밀번호가 변경되었습니다. 다음 로그인부터 새 비밀번호를 사용하세요.")
+            else:
+                st.error("❌ 계정을 찾지 못해 변경하지 못했습니다.")
+
     st.divider()
     st.subheader("👥 사용자 목록")
     users = get_all_users()
