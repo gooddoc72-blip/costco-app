@@ -754,11 +754,16 @@ def _customer_returns(USERNAME):
                                     max_value=max(1, int(_h.get('qty') or 1)),
                                     value=int(_h.get('qty') or 1), key=f"cr_qty_{_k}")
             _rdate = _f2.date_input("반품입고일", value=_date.today(), key="cr_rdate")
-            _cost = _f3.number_input("팩 구입가(원)", min_value=0, step=100,
-                                     value=int(_h.get('cost_price') or 0),
+            # order_history.cost_price는 주문 한 줄의 **합계**다(수량 2면 2개 값).
+            # 그대로 단가 칸에 넣으면 재고 단가·묶인 금액이 수량배로 부풀었다
+            # (9/17 등록 2건이 이렇게 들어감). 주문 수량으로 나눠 개당 값을 쓴다.
+            _oqty = max(1, int(_h.get('qty') or 1))
+            _ocost = int(_h.get('cost_price') or 0)
+            _cost = _f3.number_input("개당 구입가(원)", min_value=0, step=100,
+                                     value=round(_ocost / _oqty),
                                      key=f"cr_cost_{_k}",
                                      help="재고로 되돌릴 때 이 단가로 입고됩니다. "
-                                          "주문에 기록된 구입가를 기본값으로 씁니다.")
+                                          "주문 구입가 합계 ÷ 주문 수량으로 자동 계산합니다.")
             _cno_in = _f4.text_input("코스트코 상품번호", value=_cno, key=f"cr_cno_{_k}",
                                      help="재고로 되돌리려면 필요합니다. 매장 반품만 할 "
                                           "거라면 비워도 됩니다.")
@@ -767,6 +772,12 @@ def _customer_returns(USERNAME):
                                                "배송지연", "기타"], key="cr_reason")
             _memo = _r2.text_input("메모", key="cr_memo",
                                    placeholder="예: 박스만 개봉, 재판매 가능")
+            if _ocost <= 0:
+                st.caption("⚠️ 이 주문엔 구입가가 아직 기록되지 않았습니다(영수증 정산 전). "
+                           "개당 구입가를 직접 넣어 주세요.")
+            elif _oqty > 1:
+                st.caption(f"ℹ️ 구입가 {fmt(_ocost)}원 ÷ 주문 {_oqty}개 = "
+                           f"개당 {fmt(round(_ocost / _oqty))}원")
             if not _cno_in:
                 st.caption("ℹ️ 코스트코 번호가 없으면 **재고로 되돌리기는 안 되고** "
                            "매장 반품 완료만 처리할 수 있습니다.")
