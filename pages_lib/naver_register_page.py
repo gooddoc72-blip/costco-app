@@ -1016,7 +1016,10 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                 "category_id": _ec.strip(),
                                 "seller_code": _costco_no.strip(),
                                 "seller_tags": _sel_tags,
-                                # 용량은 식품고시 '내용량'으로도 반영 (입력값 우선)
+                                # 라벨 정보는 상세페이지 표로 들어간다(아래 detail_html).
+                                # 고시는 기타(ETC)로 나가 '상품 상세페이지 참조'로 표기된다
+                                # — 식품고시는 제조연월일·유통기한이 날짜 타입이라
+                                #   '상세페이지 참조'를 넣을 수 없다.
                                 "food_notice": ({**_food, 'volume': _vol_in.strip()}
                                                 if (_food and _vol_in.strip()) else _food),
                                 "detail_html": _build_detail(_en.strip(), _cdns, _desc,

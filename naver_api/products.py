@@ -695,9 +695,15 @@ def register_product(client_id, client_secret, product_info):
         else:
             _has_tags = False
 
-    # 식품 상품정보제공고시(FOOD) — 라벨 데이터 있으면 ETC 대신 FOOD 사용
+    # 상품정보제공고시 — **기본은 기타(ETC)**. 모든 칸이 글자라 '상품 상세페이지
+    # 참조'로 표기된다(운영 방침). 식품고시(FOOD)를 쓰면 제조연월일·유통기한이
+    # **날짜 타입**이라 '상세페이지 참조'를 못 넣는다(넣으면 400: "날짜 필드를
+    # 파싱 실패하였습니다"). 라벨에서 읽은 원재료·내용량·보관방법은 상세페이지
+    # 표로 이미 들어가므로 정보가 사라지지도 않는다.
+    #   FOOD로 내보내려면 product_info['use_food_notice']=True + 날짜를 넣어야 한다.
     _etc_notice = payload["originProduct"]["detailAttribute"]["productInfoProvidedNotice"]
-    _food_notice_obj = _build_food_notice(product_info.get("food_notice"), name)
+    _food_notice_obj = (_build_food_notice(product_info.get("food_notice"), name)
+                        if product_info.get("use_food_notice") else None)
     _has_food = bool(_food_notice_obj)
     if _has_food:
         payload["originProduct"]["detailAttribute"]["productInfoProvidedNotice"] = _food_notice_obj
