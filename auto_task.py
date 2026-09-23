@@ -23,6 +23,19 @@ from logging.handlers import RotatingFileHandler
 from datetime import datetime, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+# ── 동시 실행 제한 (무거운 import보다 먼저!) ───────────────────
+# 12시 마감 때문에 모든 사용자의 작업이 12시 정각에 동시에 뜬다. 그대로 두면
+# 2GB 서버 메모리가 바닥나 앱이 강제 종료된다(9/23 사고). 여기서 순번을 받아
+# 동시 실행을 3개로 묶는다. **pandas·naver_api import 위에 있어야** 대기 중인
+# 프로세스가 메모리를 잡지 않는다.
+if __name__ == "__main__":
+    try:
+        import task_gate as _task_gate
+        _task_gate.gate_from_argv()
+    except Exception as _ge:                     # 순번표 고장이 작업을 막으면 안 된다
+        print("task_gate 건너뜀: %s" % _ge, flush=True)
+
 import naver_api
 from utils import fmt, extract_pack_qty
 from db import (
