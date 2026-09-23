@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 
 import streamlit as st
 import pandas as pd
+import pricing
 import plotly.graph_objects as go
 try:
     import plotly.express as px
@@ -208,6 +209,84 @@ def _render_photo_delivery(USERNAME, kp="phdv"):
             st.success("✅ 저장했습니다 — 이후 모든 등록 경로에 적용됩니다.")
             st.rerun()
     return _new
+
+
+def _render_margin_calc(kp, cost_default, ship_default, box_default, margin_default,
+                        customer_ship_default=0, sale_init=None, cost_help=""):
+    """🧮 마진계산기 — 판매가·고객배송비 입력칸을 이 안에서 만든다.
+
+    마진금액 = 판매가 + 고객배송비 − 판매수수료 − 배송비수수료 − 택배비 − 포장비 − 매입가.
+    · 매입가는 호출자가 가격 DB에서 찾아 넘긴다(이 건만 고칠 수 있다).
+    · 마진율(판매가 대비 %)·매입가·고객배송비·택배비·포장비를 바꾸면 판매가를
+      역산해 칸에 **다시 채운다**(on_change). 판매가를 직접 고치면 그 값이 유지되고
+      마진금액만 다시 계산된다 — 자동값과 수동값이 서로 덮어쓰지 않게 하려는 것.
+    · sale_init: 첫 표시 판매가. None이면 마진율로 계산(신규 등록). 기존 상품
+      수정처럼 현재가로 시작해야 할 때만 넘긴다.
+    kp에 상품 식별자를 넣어야 한다 — 고정 key면 다른 상품을 골라도 앞 상품 값이 남는다.
+    반환: margin_breakdown dict (+ 'margin_pct' 입력값). 호출자는 ['sale']·['customer_ship']을
+    등록에 쓴다.
+    """
+    _ss = st.session_state
+    _k = {n: f"{kp}_mc_{n}" for n in ('cost', 'cship', 'ship', 'box', 'rate', 'sale')}
+    _init = {'cost': max(0, int(cost_default or 0)),
+             'cship': max(0, int(customer_ship_default or 0)),
+             'ship': max(0, int(ship_default or 0)),
+             'box': max(0, int(box_default or 0)),
+             'rate': float(margin_default or 0)}
+    for _n, _v in _init.items():
+        _ss.setdefault(_k[_n], _v)
+
+    def _calc():
+        return pricing.sale_for_margin(_ss[_k['cost']], _ss[_k['rate']], _ss[_k['ship']],
+                                       _ss[_k['box']], _ss[_k['cship']])
+
+    def _recalc():
+        _ss[_k['sale']] = _calc()
+
+    if _k['sale'] not in _ss:
+        _ss[_k['sale']] = int(sale_init) if sale_init is not None else _calc()
+
+    with st.container(border=True):
+        st.markdown("**🧮 마진계산기**")
+        _m1, _m2, _m3 = st.columns(3)
+        _m1.number_input("매입가", min_value=0, step=100, key=_k['cost'],
+                         on_change=_recalc, help=cost_help or None)
+        _m2.number_input("택배비", min_value=0, step=100, key=_k['ship'],
+                         on_change=_recalc, help="택배사에 내는 실제 원가입니다.")
+        _m3.number_input("포장비", min_value=0, step=50, key=_k['box'], on_change=_recalc)
+        _n1, _n2, _n3 = st.columns(3)
+        _n1.number_input("마진율 % (판매가 대비)", min_value=0.0, max_value=80.0, step=1.0,
+                         key=_k['rate'], on_change=_recalc,
+                         help="바꾸면 판매가가 자동으로 다시 계산됩니다.")
+        _n2.number_input("고객 배송비", min_value=0, step=500, key=_k['cship'],
+                         on_change=_recalc,
+                         help="구매자가 내는 배송비입니다. 무료배송이면 0. "
+                              "네이버는 이 금액에도 정산 수수료를 뗍니다.")
+        _n3.number_input("네이버 판매가", min_value=0, step=100, key=_k['sale'],
+                         help="마진율로 자동 계산됩니다. 직접 고쳐도 됩니다.")
+        _b = pricing.margin_breakdown(_ss[_k['sale']], _ss[_k['cost']], _ss[_k['ship']],
+                                      _ss[_k['box']], customer_ship=_ss[_k['cship']])
+        _b['margin_pct'] = float(_ss[_k['rate']])
+        _pct = pricing.NAVER_FEE_RATE * 100
+        _spct = pricing.NAVER_SHIP_FEE_RATE * 100
+        _ship_part = (f"+ 고객배송비 {fmt(_b['customer_ship'])} " if _b['customer_ship'] else "")
+        _ship_fee_part = (f"− 배송비수수료({_spct:g}%) {fmt(_b['ship_fee'])} "
+                          if _b['customer_ship'] else "")
+        st.caption(f"판매가 {fmt(_b['sale'])} {_ship_part}"
+                   f"− 판매수수료({_pct:g}%) {fmt(_b['fee'])} {_ship_fee_part}"
+                   f"− 택배비 {fmt(_b['ship'])} − 포장비 {fmt(_b['box'])} "
+                   f"− 매입가 {fmt(_b['cost'])}")
+        _col = "#d32f2f" if _b['margin'] < 0 else "#2e7d32"
+        st.markdown(
+            f"마진금액 <span style='color:{_col};font-size:1.25em;font-weight:700'>"
+            f"{fmt(_b['margin'])}원</span> "
+            f"<span style='color:{_col}'>(판매가 대비 {_b['margin_rate']:.1f}%)</span>",
+            unsafe_allow_html=True)
+        if _b['cost'] <= 0:
+            st.caption("⚠️ 가격 DB에 매입가가 없습니다 — 직접 넣으면 판매가가 계산됩니다.")
+        elif _b['margin'] < 0:
+            st.caption("🔻 역마진입니다 — 이 가격으로 팔면 건마다 손해입니다.")
+    return _b
 
 
 # app.py 라우터에서 주입되는 cached wrapper들
@@ -774,9 +853,9 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                             st.session_state.pop('_ph_food', None)
                             st.rerun()
 
+                # 판매가는 아래 🧮 마진계산기에서 정한다 (마진율 → 자동 계산, 수정 가능)
                 _ecols = st.columns(2)
-                _es = _ecols[0].number_input("네이버 판매가", value=int(_pv['sale']), min_value=0, step=100, key="ph_es")
-                _ec = _ecols[1].text_input("카테고리ID (자동판단)", value=_pv['cat_id'],
+                _ec = _ecols[0].text_input("카테고리ID (자동판단)", value=_pv['cat_id'],
                                            key="ph_ec", help=f"{_pv['cat_full'] or '카테고리 자동판단 실패 — 직접 입력'}")
                 if _pv['cat_full']:
                     st.caption(f"📂 {_pv['cat_full']}")
@@ -882,6 +961,32 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
 
                 # ── 🚚 배송 설정 (프리셋 기본값 · 이 건만 변경 가능) ──
                 _ph_delivery = _render_photo_delivery(USERNAME)
+                # 배송 설정 뒤에 둬야 유료/무료 선택이 고객 배송비에 반영된다.
+                # 새 사진을 분석하면 매입가 기본값이 바뀌어야 하므로 key에 판독값을 넣는다.
+                _ph_cship = (int(_ph_delivery.get('base_fee') or 0)
+                             if _ph_delivery.get('fee_type') != 'FREE' else 0)
+                # 매입가는 가격 DB 우선 — 없으면(신상품) 가격사진 판독가
+                _ph_cno = str(_costco_no or '').strip()
+                _ph_dbp = next((p for p in _nr_all if _ph_cno
+                                and str(p.get('product_no') or '').strip() == _ph_cno), None)
+                _ph_dbcost = pricing.purchase_cost(_ph_dbp) if _ph_dbp else 0
+                _ph_mc = _render_margin_calc(
+                    f"ph_{_ph_cno}_{int(_pv['cost'] or 0)}_{_ph_cship}",
+                    _ph_dbcost or _pv['cost'], _gs('shipping_cost') or 2000,
+                    _gs('box_cost') or 300, _ph_margin, customer_ship_default=_ph_cship,
+                    cost_help=(f"가격 DB 값입니다 (가격사진 판독가 {fmt(_pv['cost'])}원)."
+                               if _ph_dbcost else "가격 DB에 없어 가격사진 판독가를 씁니다."))
+                _es = int(_ph_mc['sale'])
+                # 계산기에서 고객 배송비를 바꿨으면 실제 등록 배송비에도 반영한다
+                if int(_ph_mc['customer_ship']) != _ph_cship:
+                    _cs = int(_ph_mc['customer_ship'])
+                    _ph_delivery = naver_api.merge_delivery({
+                        **_ph_delivery,
+                        'fee_type': ('FREE' if _cs <= 0 else
+                                     ('PAID' if _ph_delivery.get('fee_type') == 'FREE'
+                                      else _ph_delivery.get('fee_type'))),
+                        'base_fee': _cs})
+                    st.caption("🚚 계산기의 고객 배송비로 등록합니다: " + _delivery_label(_ph_delivery))
                 # 혜택(리뷰포인트) 프리셋도 다른 등록 경로와 동일하게 함께 건다.
                 _ph_benefits = _load_json_preset(USERNAME, 'naver_benefit_preset')
 
@@ -929,8 +1034,10 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                                  or "상품 상세페이지 참조"),
                                 "model_name": _model_in.strip(),
                             })
-                            if _res and _res.get('origin_product_no'):
-                                st.success(f"✅ 네이버 등록 완료! (origin #{_res.get('origin_product_no')}) "
+                            if _res and _res.get('warning'):
+                                st.warning("⚠️ " + str(_res['warning']))
+                            if _res and not _re2:
+                                st.success(f"✅ 네이버 등록 완료! (origin #{_res.get('origin_product_no') or '번호 미수신'}) "
                                            f"— {_name_final[:20]} / {fmt(int(_es))}원 / 이미지 {len(_cdns)}장"
                                            + (f" / 태그 {len(_sel_tags)}개" if _sel_tags else ""))
                                 st.caption("🚚 적용된 배송: " + _delivery_label(_ph_delivery))
@@ -1012,6 +1119,10 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                'ed_tag_editor', 'ed_newimgs', '_ed_tags',
                                'ed_cat_kw', 'ed_cat_results', 'ed_cat_sel'):
                         st.session_state.pop(_k, None)
+                    # 마진계산기 잔상도 지운다 — 다시 불러오면 현재 네이버 가격으로 시작
+                    for _k in [k for k in st.session_state
+                               if str(k).startswith('ed_') and '_mc_' in str(k)]:
+                        st.session_state.pop(_k, None)
                     st.session_state['_ed_cur'] = {
                         'origin_no': _ed_ono,
                         'name': _op.get('name', ''),
@@ -1019,6 +1130,11 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         'cat_id': str(_op.get('leafCategoryId') or ''),
                         'rep': _rep, 'extra': _extra,
                         'seller_code': _code_cur,
+                        # 마진계산기용 — 무료배송이면 0
+                        'ship_fee': (0 if ((_op.get('deliveryInfo') or {}).get('deliveryFee')
+                                           or {}).get('deliveryFeeType', 'FREE') == 'FREE'
+                                     else int(((_op.get('deliveryInfo') or {}).get('deliveryFee')
+                                               or {}).get('baseFee') or 0)),
                     }
                     st.session_state['_ed_tags'] = [
                         {'text': t.get('text'), 'code': t.get('code')}
@@ -1036,11 +1152,24 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 st.caption(f"현재 등록 이미지 {len(_all_imgs)}장 — 아래에서 새 사진을 올리면 교체됩니다(안 올리면 유지).")
 
             _ed_name = st.text_input("상품명", value=_ed_cur['name'], key="ed_name")
-            _edcc = st.columns(2)
-            _ed_sale = _edcc[0].number_input("판매가", value=int(_ed_cur['sale']),
-                                             min_value=0, step=100, key="ed_sale")
-            _ed_code = _edcc[1].text_input("코스트코 상품번호(자체코드)",
-                                           value=_ed_cur.get('seller_code', ''), key="ed_code")
+            _ed_code = st.text_input("코스트코 상품번호(자체코드)",
+                                     value=_ed_cur.get('seller_code', ''), key="ed_code")
+            # 매입가는 자체코드(코스트코 상품번호)로 가격 DB에서 찾는다.
+            # 판매가는 현재 네이버 가격으로 시작 — 마진율을 바꾸면 그때 다시 계산된다.
+            _ed_code_s = str(_ed_code or '').strip()
+            _ed_dbp = next((p for p in _nr_all
+                            if _ed_code_s and str(p.get('product_no') or '').strip() == _ed_code_s),
+                           None)
+            _ed_mc = _render_margin_calc(
+                f"ed_{_ed_cur['origin_no']}_{_ed_code_s}",
+                pricing.purchase_cost(_ed_dbp) if _ed_dbp else 0,
+                _gs('shipping_cost') or 2000, _gs('box_cost') or 300,
+                int(_gs('cafe24_naver_margin') or 10),
+                customer_ship_default=int(_ed_cur.get('ship_fee') or 0),
+                sale_init=int(_ed_cur['sale']),
+                cost_help=("가격 DB의 코스트코가(소분이면 ÷ 소분수)입니다."
+                           if _ed_dbp else "가격 DB에서 이 상품번호를 못 찾았습니다 — 직접 입력하세요."))
+            _ed_sale = int(_ed_mc['sale'])
 
             # 카테고리 — 현재 ID 표시 + 검색으로 변경
             _ed_cat = st.text_input("카테고리ID", value=_ed_cur['cat_id'], key="ed_cat",
@@ -1147,6 +1276,9 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     'sale_price': int(_ed_sale),
                     'seller_tags': _ed_sel_tags,
                 }
+                # 배송비는 계산기에서 바꾼 경우에만 보낸다 (조건부무료 등 기존 설정 보존)
+                if int(_ed_mc['customer_ship']) != int(_ed_cur.get('ship_fee') or 0):
+                    _updates['shipping_fee'] = int(_ed_mc['customer_ship'])
                 if _ed_cat.strip():
                     _updates['category_id'] = _ed_cat.strip()
                 if _ed_code.strip():
@@ -1339,7 +1471,9 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                             _rows.append({
                                 '상품': _name[:26], '카테고리': str(_cat_full or '')[:24],
                                 '판매가': _sale,
-                                '상태': ('✅ 등록완료' if not _re2 else f'❌ {str(_re2)[:28]}'),
+                                # 28자로 자르면 '상품 등록 실패(400): 상품 등록에 실패했습'에서 끊겨
+                                #   원인이 사라진다 → 그대로 싣고 표에서 펼쳐 본다.
+                                '상태': ('✅ 등록완료' if not _re2 else f'❌ {_re2}'),
                             })
                         _ok_n = sum(1 for r in _rows if r.get('상태', '').startswith('✅'))
                         st.success(f"🤖 AI 자동등록 완료 — 성공 {_ok_n} / 전체 {len(_rows)}건")
@@ -1354,12 +1488,20 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         st.caption("💡 카테고리가 잘못 잡힌 건은 아래에서 상품 펼쳐 수동 카테고리로 다시 등록하세요.")
             for _p in _cf2n_list[:50]:
                 _pno = _p['product_no']; _cfprice = int(_p['price'])
-                _nprice_default = int(round(_cfprice * (1 + _margin / 100.0) / 0.945 / 10) * 10)
+                _cf_ship = int(_gs('shipping_cost') or 2000)
+                _cf_box = int(_gs('box_cost') or 300)
+                # 제목 가격은 펼친 뒤 계산기 기본값과 같은 식(판매가 대비 마진율)으로 보여준다
+                _nprice_default = pricing.sale_for_margin(_cfprice, _margin, _cf_ship, _cf_box)
                 with st.expander(f"{str(_p['product_name'])[:44]} · 카페24 {fmt(_cfprice)}원 "
                                  f"→ 네이버 {fmt(_nprice_default)}원", expanded=False):
+                    # 매입가 = 카페24 공급가. 고객 배송비 기본 0(무료배송) — 계산기에서
+                    # 바꾸면 그 금액으로 유료배송 등록된다.
+                    _cf_mc = _render_margin_calc(
+                        f"cf2n_{_pno}", _cfprice, _cf_ship, _cf_box, _margin,
+                        cost_help="카페24 공급가입니다.")
+                    _sale = int(_cf_mc['sale'])
                     _rc1, _rc2 = st.columns([1, 2])
-                    _sale = _rc1.number_input("네이버 판매가", value=_nprice_default, min_value=0,
-                                              step=100, key=f"cf2n_price_{_pno}")
+                    _rc1.caption(f"카페24 공급가 {fmt(_cfprice)}원")
                     _rcc1, _rcc2 = _rc2.columns([4, 1])
                     _catkw = _rcc1.text_input("네이버 카테고리 검색", key=f"cf2n_catkw_{_pno}",
                                               placeholder="예: 어묵, 반찬, 냉동식품",
@@ -1396,7 +1538,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                                 "detail_html": _cafe24_detail(_cf_dmode,
                                                     _full.get('product_name', _p['product_name']),
                                                     _cdn, _full.get('description')),
-                                                "shipping_fee": 0, "origin_code": "03",
+                                                "shipping_fee": int(_cf_mc['customer_ship']),
+                                                "origin_code": "03",
                                                 "after_service_tel": _gs("naver_as_tel") or "1588-1234",
                                             })
                                             if _re2:
@@ -1446,11 +1589,17 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 _nr_cat = st.text_input("카테고리 ID", value=_saved_cat,
                                         placeholder="예: 50000803", key="nr2_cat",
                                         label_visibility="collapsed")
-            _nr_c3, _nr_c4, _nr_c5 = st.columns(3)
-            _nr_defprice = int(_nr_prod.get("sale_price") or 0) or int(_nr_prod.get("unit_price") or 0)
-            _nr_price = _nr_c3.number_input("판매가", value=_nr_defprice, step=100, key="nr2_price")
-            _nr_fee   = _nr_c4.number_input("배송비", value=int(_nr_prod.get("shipping_fee") or 0), step=500, key="nr2_fee")
-            _nr_stock = _nr_c5.number_input("재고",   value=100, step=10, key="nr2_stock")
+            # 판매가·배송비는 🧮 마진계산기가 정한다. 예전엔 판매가 기본값이
+            # sale_price 없으면 unit_price(=원가)라 마진 0으로 등록될 수 있었다.
+            _nr_mc = _render_margin_calc(
+                f"nr2_{_nr_prod['match_keyword']}", pricing.purchase_cost(_nr_prod),
+                _gs('shipping_cost') or 2000, _gs('box_cost') or 300,
+                int(_gs('cafe24_naver_margin') or 10),
+                customer_ship_default=int(_nr_prod.get("shipping_fee") or 0),
+                cost_help="가격 DB의 코스트코가(소분이면 ÷ 소분수)입니다.")
+            _nr_price = int(_nr_mc['sale'])
+            _nr_fee = int(_nr_mc['customer_ship'])
+            _nr_stock = st.number_input("재고", value=100, step=10, key="nr2_stock")
             _nr_as    = st.text_input("A/S 전화번호", value=_gs("naver_as_tel") or "",
                                       placeholder="010-0000-0000", key="nr2_as")
             _nr_img = _nr_prod.get("local_image") or _nr_prod.get("image_url") or ""

@@ -544,18 +544,33 @@ def register_product(client_id, client_secret, product_info):
     extra_image_urls = product_info.get("extra_image_urls") or []
     optional_images = [{"url": u} for u in extra_image_urls if u]
 
+    # ── 필수값 점검 — 예전엔 여기서 KeyError가 나 화면엔 빨간 트레이스백이,
+    #    자동등록 루프에서는 **배치 전체가 죽는** 일이 있었다(payload 조립이 try 밖).
+    _cat = str(product_info.get("category_id") or "").strip()
+    _img = str(product_info.get("image_url") or "").strip()
+    try:
+        _price = int(float(str(product_info.get("sale_price", 0)).replace(",", "") or 0))
+    except (TypeError, ValueError):
+        _price = 0
+    _missing = ([] if _cat else ["카테고리"]) + ([] if _img else ["대표이미지"])         + ([] if _price > 0 else ["판매가"])
+    if _missing:
+        return None, "등록 전 확인 필요: " + "·".join(_missing) + "가 비어 있습니다."
+    # 네이버는 판매가를 10원 단위로만 받는다. 올림해서 맞춘다(내리면 마진이 준다).
+    if _price % 10:
+        _price = ((_price // 10) + 1) * 10
+
     payload = {
         "originProduct": {
             "statusType": "SALE",
             "saleType": "NEW",
-            "leafCategoryId": str(product_info["category_id"]),
+            "leafCategoryId": _cat,
             "name": name,
             "detailContent": detail,
             "images": {
-                "representativeImage": {"url": product_info["image_url"]},
+                "representativeImage": {"url": _img},
                 "optionalImages": optional_images,
             },
-            "salePrice": int(product_info["sale_price"]),
+            "salePrice": _price,
             "stockQuantity": int(product_info.get("stock", 100)),
             "deliveryInfo": _build_delivery_info(product_info, fee_type, shipping_fee),
             # ⚠️ 키 이름은 'customerBenefit'이다. 예전엔 'benefitInfo'로 보내고 있었는데
@@ -672,7 +687,12 @@ def register_product(client_id, client_secret, product_info):
             pno = str(data.get("originProductNo") or data.get("productNo") or "")
             if pno:
                 _reg_log_hook(client_id, pno, product_info)
-            return {"origin_product_no": pno}, None
+                return {"origin_product_no": pno}, None
+            # 200인데 번호가 없다 — **등록은 된 것**이다. 실패로 돌려주면 호출측이
+            # 다시 올려 같은 상품이 두 번 등록된다(화면엔 '등록 실패: None'만 떴다).
+            return {"origin_product_no": "",
+                    "warning": "네이버가 상품번호를 주지 않았습니다 — 등록은 된 것으로 "
+                               "보이니 스마트스토어에서 확인하세요. 다시 등록하면 중복됩니다."}, None
         return None, f"상품 등록 실패({resp.status_code}): {_format_naver_err(resp)}"
 
     try:
@@ -685,17 +705,27 @@ def register_product(client_id, client_secret, product_info):
         # 재시도 — 예전엔 실패하면 무조건 태그를 통째로 버렸다. 그래서 태그와
         # 무관한 오류(가격·카테고리 등)에도 태그가 사라졌다.
         # 이제는 네이버가 지목한 필드를 보고 원인만 뺀다.
-        _le = str(_err).lower()
-        _tag_blamed = any(k in _le for k in ('seoinfo', 'sellertags', 'tag', '태그'))
-        _food_blamed = any(k in _le for k in
-                           ('productinfoprovidednotice', 'notice', '고시', '상품정보제공'))
-        # 속성(브랜드·제조사·모델명·카테고리속성)이 거부되면 그것만 빼고 재시도한다.
-        _attr_blamed = any(k in _le for k in
-                           ('navershoppingsearchinfo', 'productattributes', 'brand',
-                            'manufacturer', 'attribute', '브랜드', '제조사', '속성'))
-        # _format_naver_err가 '[field] message' 형태로 필드를 실어준다.
-        # 다른 필드를 콕 집어 지목했다면 태그·고시·속성은 죄가 없다 → 그대로 둔다.
+        # _format_naver_err가 '[originProduct.detailAttribute.xxx] 메시지' 형태로
+        # 필드 경로를 실어준다. **경로에서만** 범인을 찾는다.
+        #   ⚠️ 예전엔 오류 문자열 전체에서 'attribute'를 찾았다. 그런데 네이버 경로는
+        #      무조건 'originProduct.detailAttribute.…'라서 **거의 모든 오류가
+        #      '속성 탓'으로 오인**됐다 → 죄 없는 브랜드·제조사를 뺀 채 2차 요청을
+        #      매번 날렸다(실패 1건당 호출 2배 · 429 가속).
         _named = [f.lower() for f in _re_mod.findall(r'\[([^\]]+)\]', str(_err))]
+        _le = str(_err).lower()
+
+        def _hit(keys):
+            # 지목된 필드 경로에 키가 들어 있으면 그 항목이 범인이다.
+            if _named:
+                return any(k in f for f in _named for k in keys)
+            return False
+
+        _tag_blamed = _hit(('seoinfo', 'sellertags')) or (
+            not _named and any(k in _le for k in ('태그', 'sellertag')))
+        _food_blamed = _hit(('productinfoprovidednotice',)) or (
+            not _named and any(k in _le for k in ('고시', '상품정보제공')))
+        _attr_blamed = _hit(('navershoppingsearchinfo', 'productattributes')) or (
+            not _named and any(k in _le for k in ('브랜드', '제조사', 'brand', 'manufacturer')))
         _blames_other = bool(_named) and not (_tag_blamed or _food_blamed or _attr_blamed)
         if _blames_other:
             return _res, _err
@@ -720,6 +750,9 @@ def register_product(client_id, client_secret, product_info):
             return _res, _err
 
         _res2, _err2 = _do_post(payload)
+        if _err2:
+            # 예전엔 1차 오류만 돌려줘, '무엇을 빼고 다시 해도 왜 안 되는지'가 사라졌다.
+            return _res, "%s / %s 빼고 재시도 → %s" % (_err, '·'.join(_dropped), _err2)
         if not _err2:
             # 등록은 성공했다 — err로 돌려주면 호출측이 실패로 처리해 큐가
             # 'failed'가 되고, 이미 올라간 상품을 다시 올리려 든다.
@@ -1742,7 +1775,8 @@ def update_product_full(client_id, client_secret, product_no, updates):
     """기존 상품 종합 수정 — GET origin-products → 필드 교체 → PUT (나머지 원본 보존).
     updates 지원 키(있는 것만 반영):
       name, sale_price, category_id, image_url(대표), extra_image_urls(추가 목록),
-      detail_html(상세HTML), seller_tags([{code,text}]), seller_code(자체코드).
+      detail_html(상세HTML), seller_tags([{code,text}]), seller_code(자체코드),
+      shipping_fee(고객 배송비, 0=무료배송).
     update_product_name/price/tags 와 동일한 GET→sanitize→PUT 구조.
     반환: (ok, err, used_origin_no)
     """
@@ -1803,6 +1837,22 @@ def update_product_full(client_id, client_secret, product_no, updates):
             if 'extra_image_urls' in updates:
                 _imgs['optionalImages'] = [{"url": u} for u in (updates.get('extra_image_urls') or []) if u]
             origin_product['images'] = _imgs
+
+        # 고객 배송비 — 호출자가 '바꾼 경우에만' 넣는다. 0이면 무료배송.
+        # 이미 유료 계열(조건부무료·수량별 등)이면 유형은 두고 기본 배송비만 바꾼다.
+        if updates.get('shipping_fee') is not None:
+            _di = origin_product.get('deliveryInfo')
+            if isinstance(_di, dict):
+                _fee = max(0, int(updates['shipping_fee'] or 0))
+                _df = dict(_di.get('deliveryFee') or {})
+                if _fee <= 0:
+                    _df = {"deliveryFeeType": "FREE", "baseFee": 0}
+                elif _df.get('deliveryFeeType', 'FREE') == 'FREE':
+                    _df = {"deliveryFeeType": "PAID", "baseFee": max(10, _fee),
+                           "deliveryFeePayType": "PREPAID"}
+                else:
+                    _df['baseFee'] = max(10, _fee)
+                _di['deliveryFee'] = _df
 
         _da = origin_product.setdefault('detailAttribute', {})
         if not isinstance(_da, dict):

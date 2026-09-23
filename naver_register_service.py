@@ -559,6 +559,10 @@ def register_one(username, api_id, api_secret, product, cat_id, opts=None):
         return None, e2 or "등록 실패"
 
     origin_no = res.get("origin_product_no", "")
+    # 일부 항목(태그·고시·속성)이 거부돼 빼고 등록된 경우 그 사실을 로그에 남긴다.
+    # 예전엔 res['warning']을 버려서, 태그가 통째로 빠져도 아무도 몰랐다.
+    if res.get("warning"):
+        log(f"  ⚠️ {name}: {res['warning']}")
 
     # 등록 완료 표시 (merged view에서 등록됨으로 잡혀 재등록 방지) + 카테고리 저장
     try:
@@ -723,8 +727,10 @@ def auto_register(username, api_id, api_secret, *, margin=10, max_count=20,
                   "source": source, "actor": username})
         if err or not origin_no:
             out["fail"] += 1
-            out["results"].append({"상품명": name, "결과": "fail", "내용": str(err)[:80]})
-            log(f"  ❌ {name}: {str(err)[:80]}")
+            # 오류는 자르지 않는다 — 예전엔 80자에서 끊겨 네이버가 지목한 항목이
+            # 통째로 사라졌다(실패 분석 자체가 불가능했다).
+            out["results"].append({"상품명": name, "결과": "fail", "내용": str(err)})
+            log(f"  ❌ {name}: {err}")
             # 구조적 거부(400: 권한·인증·유효성)는 재시도해도 실패 → 스킵 목록 등록
             _es = str(err or "")
             if any(t in _es for t in ("400", "권한", "인증", "유효하지")):
