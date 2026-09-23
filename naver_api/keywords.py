@@ -1027,7 +1027,7 @@ def ai_screen_keywords(seed, candidates, category='', brand='', ai_key=None,
         return [], []
     try:
         import ai_service
-        _d = ai_service._extract_json(_txt)
+        _d = ai_service._extract_json(_txt, where='keyword(상품명 키워드 선별)')
     except Exception:
         _d = None
     _valid = {_k.lower().replace(' ', ''): _k for _k in _cands}

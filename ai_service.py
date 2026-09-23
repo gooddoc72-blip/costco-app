@@ -3,7 +3,9 @@
 anthropic SDK 없이 HTTPS 직접 호출 (서버 의존성 최소화).
 API 키는 사용자 설정 'anthropic_api_key' (설정 탭 > AI 설정).
 """
+import os
 import json
+import time
 import base64
 import requests
 from datetime import datetime, timedelta
@@ -73,6 +75,50 @@ def _track_gemini(model, feature, body_json):
                        + int(_u.get("thoughtsTokenCount") or 0)))
 
 
+def _claude_post(api_key, body, feature, timeout):
+    """Claude 호출 1회 + **잘림 자동 복구**. 반환: (text, error).
+
+    왜: 응답이 max_tokens에 걸려 잘리면 JSON 중괄호가 안 닫혀 파싱이 실패한다
+    (가격표 판독의 30%가 한 번에 못 읽고 다른 모델을 또 부르던 주원인).
+    Gemini 쪽에는 이미 같은 복구가 있는데(_gemini_post) Claude에만 없었다.
+    → stop_reason이 'max_tokens'면 예산을 키워 한 번만 다시 부른다.
+    재시도분도 과금되지만 실패해서 다른 모델을 또 부르는 것보다 싸다.
+    """
+    _headers = {"x-api-key": str(api_key).strip(),
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json"}
+
+    def _once(_b):
+        r = requests.post(ANTHROPIC_URL, headers=_headers, json=_b, timeout=timeout)
+        if r.status_code != 200:
+            try:
+                _e = r.json().get("error", {}).get("message") or r.text[:200]
+            except Exception:
+                _e = r.text[:200]
+            return None, f"[{r.status_code}] {_e}", None
+        _j = r.json()
+        _track_claude(_b.get("model"), feature, _j)
+        _txt = "".join(b.get("text", "") for b in (_j.get("content") or [])
+                       if b.get("type") == "text")
+        return _txt.strip(), None, str(_j.get("stop_reason") or "")
+
+    _text, _err, _stop = _once(body)
+    if _err:
+        return None, _err
+    if _stop == "max_tokens":
+        _cur = int(body.get("max_tokens") or 0)
+        _b2 = dict(body)
+        _b2["max_tokens"] = min(8192, max(_cur * 4, _cur + 1024))
+        _t2, _e2, _s2 = _once(_b2)
+        if not _e2 and _t2:
+            if _s2 == "max_tokens":          # 두 배로도 모자라면 알려준다(조용한 절단 금지)
+                return _t2, None
+            return _t2, None
+        if not _text:
+            return None, _e2 or "빈 응답(출력 한도 초과)"
+    return (_text or None), (None if _text else "빈 응답")
+
+
 def claude_complete(api_key: str, system: str, user_msg: str,
                     max_tokens: int = 1200, model: str = DEFAULT_MODEL,
                     thinking: dict = None, feature: str = ''):
@@ -93,27 +139,7 @@ def claude_complete(api_key: str, system: str, user_msg: str,
         }
         if thinking is not None:
             _body["thinking"] = thinking
-        r = requests.post(
-            ANTHROPIC_URL,
-            headers={
-                "x-api-key": api_key.strip(),
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json",
-            },
-            json=_body,
-            timeout=60,
-        )
-        if r.status_code != 200:
-            try:
-                _e = r.json().get("error", {}).get("message") or r.text[:200]
-            except Exception:
-                _e = r.text[:200]
-            return None, f"[{r.status_code}] {_e}"
-        _body_json = r.json()
-        _track_claude(model, feature, _body_json)
-        _blocks = _body_json.get("content") or []
-        _text = "".join(b.get("text", "") for b in _blocks if b.get("type") == "text")
-        return (_text.strip() or None), (None if _text.strip() else "빈 응답")
+        return _claude_post(api_key, _body, feature, 60)
     except Exception as e:
         return None, str(e)
 
@@ -426,29 +452,14 @@ def claude_vision(api_key, image_bytes, media_type, system, user_text,
     try:
         image_bytes, media_type = _shrink_for_ai(image_bytes, media_type, max_edge)
         _b64 = base64.standard_b64encode(image_bytes).decode("ascii")
-        r = requests.post(
-            ANTHROPIC_URL,
-            headers={"x-api-key": api_key.strip(), "anthropic-version": "2023-06-01",
-                     "content-type": "application/json"},
-            json={
-                "model": model or VISION_MODEL, "max_tokens": max_tokens, "system": system,
-                "messages": [{"role": "user", "content": [
-                    {"type": "image", "source": {"type": "base64",
-                                                 "media_type": media_type, "data": _b64}},
-                    {"type": "text", "text": user_text},
-                ]}],
-            }, timeout=90)
-        if r.status_code != 200:
-            try:
-                _e = r.json().get("error", {}).get("message") or r.text[:200]
-            except Exception:
-                _e = r.text[:200]
-            return None, f"[{r.status_code}] {_e}"
-        _body_json = r.json()
-        _track_claude(model or VISION_MODEL, feature, _body_json)
-        _blocks = _body_json.get("content") or []
-        _text = "".join(b.get("text", "") for b in _blocks if b.get("type") == "text")
-        return (_text.strip() or None), (None if _text.strip() else "빈 응답")
+        return _claude_post(api_key, {
+            "model": model or VISION_MODEL, "max_tokens": max_tokens, "system": system,
+            "messages": [{"role": "user", "content": [
+                {"type": "image", "source": {"type": "base64",
+                                             "media_type": media_type, "data": _b64}},
+                {"type": "text", "text": user_text},
+            ]}],
+        }, feature, 90)
     except Exception as e:
         return None, str(e)
 
@@ -513,17 +524,54 @@ def ai_vision(system, user_text, image_bytes, media_type, *,
     return None, "AI 키 없음 (설정 탭 > 🤖 AI 설정에서 Gemini 또는 Claude 키 등록)", ''
 
 
-def _extract_json(text):
+PARSE_FAIL_LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                              "data", "ai_parse_fail.log")
+
+
+def log_parse_fail(where, text, reason=""):
+    """AI 응답 파싱 실패를 **원문째로** 남긴다 (data/ai_parse_fail.log).
+
+    왜: 지금까지 파싱 실패는 화면에 앞 120자만 떴다가 사라져, 무엇이 왜
+    깨졌는지 확인할 방법이 없었다. 고쳐도 고쳐졌는지 알 수 없다는 뜻이다.
+    응답 원문 4000자까지 남긴다(잘림·설명문 혼입 여부를 보려면 끝부분이 필요).
+    """
+    try:
+        os.makedirs(os.path.dirname(PARSE_FAIL_LOG), exist_ok=True)
+        if os.path.exists(PARSE_FAIL_LOG) and os.path.getsize(PARSE_FAIL_LOG) > 3 * 1024 * 1024:
+            with open(PARSE_FAIL_LOG, encoding="utf-8", errors="replace") as _rf:
+                _keep = _rf.readlines()[-1500:]
+            with open(PARSE_FAIL_LOG, "w", encoding="utf-8") as _wf:
+                _wf.writelines(_keep)
+        _raw = str(text or "")
+        with open(PARSE_FAIL_LOG, "a", encoding="utf-8", errors="replace") as _f:
+            _f.write("[%s] %s%s · 응답 %d자 · 사용자 %s\n%s\n%s\n" % (
+                time.strftime("%Y-%m-%d %H:%M:%S"), where,
+                (" — " + reason) if reason else "", len(_raw), current_user() or "-",
+                _raw[:4000], "-" * 60))
+    except Exception:
+        pass
+
+
+def _extract_json(text, where=""):
     """모델 응답에서 JSON 본문만 추출 → dict. 실패 시 None.
-    코드블록/설명이 앞뒤에 붙어 나와도 첫 '{' ~ 마지막 '}'만 잘라 파싱한다."""
+    코드블록/설명이 앞뒤에 붙어 나와도 첫 '{' ~ 마지막 '}'만 잘라 파싱한다.
+    where를 주면 실패 원문을 data/ai_parse_fail.log에 남긴다."""
     _s = (text or "").strip()
     _i, _j = _s.find("{"), _s.rfind("}")
     if _i >= 0 and _j > _i:
         _s = _s[_i:_j + 1]
     try:
         _d = json.loads(_s)
-        return _d if isinstance(_d, dict) else None
-    except Exception:
+        if isinstance(_d, dict):
+            return _d
+        if where:
+            log_parse_fail(where, text, "JSON이 dict가 아님(%s)" % type(_d).__name__)
+        return None
+    except Exception as e:
+        if where:
+            # 잘린 응답인지 바로 알아볼 수 있게 사유에 적는다
+            _hint = "중괄호 안 닫힘(응답 잘림 의심)" if (_i >= 0 and _j <= _i) else str(e)[:80]
+            log_parse_fail(where, text, _hint)
         return None
 
 
@@ -704,7 +752,7 @@ def analyze_product_photo(api_key, image_bytes, media_type, *, gemini_key=''):
                                   feature='photo')
     if _err or not _txt:
         return None, _err or "빈 응답"
-    _d = _extract_json(_txt)
+    _d = _extract_json(_txt, where='photo(제품사진 분석)')
     if _d is None:
         return None, f"JSON 파싱 실패: {_txt[:120]}"
     try:
@@ -768,7 +816,7 @@ def analyze_food_label(api_key, image_bytes, media_type, *, gemini_key=''):
                                   max_tokens=700, max_edge=1568, feature='label')
     if _err or not _txt:
         return None, _err or "빈 응답"
-    _d = _extract_json(_txt)
+    _d = _extract_json(_txt, where='label(식품 라벨 분석)')
     if _d is None:
         return None, f"JSON 파싱 실패: {_txt[:120]}"
     _keys = ("food_type", "volume", "ingredients", "storage", "origin",
@@ -796,7 +844,7 @@ _PRICETAG_USER = "이 코스트코 가격표에서 상품번호와 최종 판매
 
 def _parse_price_tag_json(txt):
     """가격표 응답 → dict|None."""
-    _d = _extract_json(txt)
+    _d = _extract_json(txt, where='pricetag(가격표 판독)')
     if _d is None:
         return None
     try:
@@ -942,7 +990,7 @@ def _parse_receipt_json(txt):
             item_kinds, total_amount, discount_amount, card_last4,
             cash_receipt_no, items:[{상품번호,상품명,수량,단가,금액,할인}]}
     """
-    _d = _extract_json(txt)
+    _d = _extract_json(txt, where='receipt(영수증 판독)')
     if _d is None:
         return None
 
