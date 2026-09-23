@@ -401,6 +401,28 @@ def _sanitize_detail_html(html):
     return h.strip()
 
 
+def _as_date(v):
+    """날짜로 읽히면 'yyyy-MM-dd', 아니면 None.
+
+    네이버 식품고시의 제조연월일·유통기한은 **날짜 타입**이다. 여기에 글자를
+    넣으면 등록이 통째로 거부된다(실측 400: "날짜 필드[상품 상세페이지 참조]를
+    파싱 실패하였습니다 — Text ... could not be parsed at index 0").
+    라벨에서 읽은 값은 '2026.12.31' · '제조일로부터 12개월'처럼 제각각이라,
+    날짜로 읽히는 것만 통과시키고 나머지는 **필드를 아예 빼는** 쪽을 택한다.
+    """
+    _s = str(v or "").strip()
+    if not _s:
+        return None
+    # '2026년 12월 31일'처럼 구분자가 여러 글자인 경우도 읽는다
+    _m = _re_mod.search(r'(20\d{2})\D{0,3}(\d{1,2})\D{0,3}(\d{1,2})', _s)
+    if not _m:
+        return None
+    _y, _mo, _d = int(_m.group(1)), int(_m.group(2)), int(_m.group(3))
+    if not (1 <= _mo <= 12 and 1 <= _d <= 31):
+        return None
+    return "%04d-%02d-%02d" % (_y, _mo, _d)
+
+
 def _build_food_notice(fn, name):
     """식품 라벨 dict(fn) → 네이버 FOOD 상품정보제공고시 객체. fn 없으면 None.
     fn 키: food_type, volume, ingredients, storage, manufacturer, importer, expiration, nutrition.
@@ -417,10 +439,15 @@ def _build_food_notice(fn, name):
         "producer":           _producer,
         "weight":             _vol,
         "amount":             _vol,
-        "packDate":           _ref,
-        "expirationDate":     (fn.get("expiration") or "").strip() or _ref,
         "productComposition": (fn.get("ingredients") or "").strip() or _ref,
     }
+    # 날짜 칸은 날짜로 읽힐 때만 넣는다 (글자를 넣으면 등록 전체가 거부된다)
+    _pack = _as_date(fn.get("pack_date") or fn.get("packDate"))
+    if _pack:
+        food["packDate"] = _pack
+    _exp = _as_date(fn.get("expiration"))
+    if _exp:
+        food["expirationDate"] = _exp
     _keep = (fn.get("storage") or "").strip()
     if _keep:
         food["keep"] = _keep
