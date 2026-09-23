@@ -184,8 +184,12 @@ def find_or_create_tracking(conn, row):
     return cur.lastrowid
 
 
-def ingest_rank_rows(username, rows, source="crawler_pro"):
+def ingest_rank_rows(username, rows, source="crawler_pro", create_missing=True):
     """외부 수집기가 보낸 순위 결과를 저장한다. 반환: {saved, created, skipped}
+
+    행에 tracking_id가 있으면 그 항목에 바로 저장한다. 없으면 식별값으로 찾고,
+    create_missing이면 새 추적 항목을 만든다(관리자 일괄 수집은 남의 계정에 항목을
+    만들면 안 되므로 False로 부른다).
 
     '미노출'은 순위가 없는 게 아니라 **찾지 못했다는 사실 자체가 데이터**라서
     rank_total=NULL 로 한 줄 남긴다(그날 측정을 했다는 기록이 남아야 추이가 끊기지 않는다).
@@ -208,7 +212,19 @@ def ingest_rank_rows(username, rows, source="crawler_pro"):
             skipped += 1
             continue
         try:
-            tid = find_or_create_tracking(conn, row)
+            tid = row.get("tracking_id")
+            if tid:
+                # 서버에서 받아간 목록을 그대로 잰 결과 — 식별값 추측 없이 그 항목에 바로 쌓는다.
+                # 그새 삭제·비활성된 항목이면 되살리지 않고 버린다.
+                if not conn.execute("SELECT 1 FROM keyword_tracking WHERE id=? AND active=1",
+                                    (tid,)).fetchone():
+                    skipped += 1
+                    continue
+            elif not create_missing:
+                skipped += 1
+                continue
+            else:
+                tid = find_or_create_tracking(conn, row)
             checked_at = (row.get("checked_at") or "").strip() or \
                 datetime.now().strftime("%Y-%m-%d %H:%M")
             conn.execute(

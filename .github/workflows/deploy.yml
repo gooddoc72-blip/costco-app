@@ -19,6 +19,8 @@ jobs:
             git pull origin main
             /opt/costco-app/venv/bin/pip install -r requirements.txt -q
             sudo systemctl restart costco-app
+            # FastAPI(/api/*)는 별도 서비스라 같이 재시작해야 새 코드가 반영된다
+            sudo systemctl restart costco-api || true
             # 모바일 빌드/재시작 — mobile/ 변경 있을 때만
             if git diff --name-only HEAD@{1} HEAD 2>/dev/null | grep -q '^mobile/'; then
               cd /opt/costco-app/mobile

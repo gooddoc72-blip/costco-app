@@ -324,11 +324,21 @@ class RankRow(BaseModel):
     is_ad: Optional[int] = None
     page: Optional[int] = None
     checked_at: str = ""             # 'YYYY-MM-DD HH:MM' (비우면 서버 시각)
+    tracking_id: Optional[int] = None  # /api/ranks/latest 로 받아간 항목 id (있으면 식별값 대신 이걸로 저장)
 
 
 class RankIngestRequest(BaseModel):
     rows: list[RankRow]
     source: str = "crawler_pro"
+
+
+class AdminRankRow(RankRow):
+    username: str                    # 이 결과를 저장할 사용자
+
+
+class AdminRankIngestRequest(BaseModel):
+    rows: list[AdminRankRow]
+    source: str = "crawler_pro_admin"
 
 
 @app.post("/api/ranks/ingest")
@@ -351,3 +361,63 @@ def ranks_latest(user: dict = Depends(require_user)):
     """추적 중인 항목별 최신 순위 — 수집기가 '무엇을 추적 중인지' 받아갈 때도 쓴다."""
     rows = get_latest_ranks(user["username"])
     return {"count": len(rows), "items": rows}
+
+
+# ── 관리자 일괄 수집: 관리자 sid 하나로 전체 사용자의 순위체크를 잰다 ──────
+# 사용자마다 PC에서 수집기를 돌릴 필요 없이, 관리자 PC 한 대가 모든 사용자의 목록을
+# 받아 재고 사용자별 DB에 나눠 저장한다. 같은 키워드는 한 번만 검색하면 되므로
+# 사용자가 늘어도 검색 횟수는 '서로 다른 키워드 수'만큼만 는다.
+def _rank_users():
+    """순위를 수집할 사용자 — 활성 상태이고 DB 파일이 이미 있는 사용자만.
+    (get_user_db는 없는 파일을 새로 만들어 버리므로 존재를 먼저 확인한다)"""
+    import os
+    from db import get_all_users, DATA_DIR
+    out = []
+    for u in get_all_users():
+        name = u.get("username") or ""
+        if not name or (u.get("status") or "active") != "active":
+            continue
+        if os.path.isfile(os.path.join(DATA_DIR, f"{name}.db")):
+            out.append(name)
+    return out
+
+
+@app.get("/api/admin/ranks/targets")
+def admin_rank_targets(admin: dict = Depends(require_admin)):
+    """전체 사용자의 추적 항목(각 항목에 username 포함)."""
+    items, users_with_items = [], 0
+    for name in _rank_users():
+        try:
+            rows = get_latest_ranks(name)
+        except Exception:
+            continue
+        if rows:
+            users_with_items += 1
+        for r in rows:
+            r["username"] = name
+            items.append(r)
+    return {"count": len(items), "users": users_with_items, "items": items}
+
+
+@app.post("/api/admin/ranks/ingest")
+def admin_rank_ingest(req: AdminRankIngestRequest, admin: dict = Depends(require_admin)):
+    """관리자가 잰 결과를 사용자별로 저장한다. tracking_id가 있는 행만 받는다
+    (남의 계정에 추적 항목을 새로 만들지 않기 위해)."""
+    if len(req.rows) > 2000:
+        raise HTTPException(status_code=413, detail="한 번에 2000건까지 보낼 수 있습니다")
+    valid = set(_rank_users())
+    grouped, total = {}, {"saved": 0, "created": 0, "skipped": 0}
+    for r in req.rows:
+        if r.username not in valid or not r.tracking_id:
+            total["skipped"] += 1
+            continue
+        d = r.model_dump()
+        d.pop("username", None)
+        grouped.setdefault(r.username, []).append(d)
+    source = (req.source or "crawler_pro_admin")[:40]
+    for name, rows in grouped.items():
+        res = ingest_rank_rows(name, rows, source=source, create_missing=False)
+        for k in total:
+            total[k] += res.get(k, 0)
+    total["users"] = len(grouped)
+    return total
