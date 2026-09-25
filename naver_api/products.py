@@ -183,6 +183,26 @@ def _exif_upright(im):
         return im
 
 
+def _flatten_alpha(im, bg=(255, 255, 255)):
+    """투명 배경을 흰 바탕에 합성한 뒤 RGB로 내린다.
+
+    PIL의 RGBA→RGB 변환은 알파만 버리고 밑에 깔린 RGB를 그대로 남긴다. 그런데
+    대부분의 투명 PNG는 투명 영역을 (0,0,0,0) — 검정+알파0 으로 저장하므로,
+    그냥 convert("RGB")하면 투명이었던 자리가 (0,0,0)=검정이 된다. JPEG는
+    투명을 지원하지 않아 한 번 저장되면 되돌릴 수 없다.
+    실측: 스마트스토어 목록 썸네일(대표이미지) 배경이 검게 나왔다.
+    """
+    from PIL import Image
+    _has_alpha = im.mode in ("RGBA", "LA", "PA") or (
+        im.mode == "P" and "transparency" in im.info)
+    if not _has_alpha:
+        return im.convert("RGB")
+    im = im.convert("RGBA")
+    _canvas = Image.new("RGB", im.size, bg)
+    _canvas.paste(im, mask=im.split()[-1])   # 알파를 마스크로 — 투명 자리에 흰색이 남는다
+    return _canvas
+
+
 def _square_canvas(im, size=1000, bg=(255, 255, 255)):
     """PIL 이미지를 '가운데 기준 정사각 크롭'으로 size×size 로 변환 (흰 여백 없음).
     짧은 변을 한 변으로 하는 정사각을 이미지 중앙에서 잘라냄:
@@ -190,7 +210,8 @@ def _square_canvas(im, size=1000, bg=(255, 255, 255)):
       · 가로로 긴 사진 → 세로에 맞추고 좌·우를 균등하게 잘라냄
     _resize_square(업로드)와 resize_square_bytes(미리보기)의 공용 로직 = 결과 동일."""
     from PIL import Image
-    im = _exif_upright(im).convert("RGB")   # 폰 사진 90도 눕는 것 방지
+    im = _exif_upright(im)                  # 폰 사진 90도 눕는 것 방지
+    im = _flatten_alpha(im, bg)             # 투명 배경 → 흰 바탕(검게 나오는 것 방지)
     _w, _h = im.size
     _s = min(_w, _h)                       # 정사각 한 변 = 짧은 변
     _left = (_w - _s) // 2                  # 가운데 정렬
@@ -215,7 +236,7 @@ def _resize_fit(src_path, max_w=1000, max_h=12000):
             _r = min(max_w / _w, max_h / _h, 1.0)
             if _r >= 1.0 and not _rot:
                 return None                      # 이미 작고 회전도 없음 → 원본 그대로
-            _im = _im1.convert("RGB")
+            _im = _flatten_alpha(_im1)   # 투명 배경 → 흰 바탕(검게 나오는 것 방지)
             if _r < 1.0:
                 _im = _im.resize(
                     (max(1, int(_w * _r)), max(1, int(_h * _r))), Image.LANCZOS)

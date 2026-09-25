@@ -1654,15 +1654,25 @@ def run_cafe24_register_task(username="admin", limit=None, target=None,
 
     # 처리 대상 지정 — 비어 있으면 대기열이 있는 전 사용자.
     # 여러 계정에 대기열이 남아 있을 때 의도치 않은 스토어에 등록되는 걸 막는다.
-    _only = str(target or get_global_setting('cafe24_register_target') or '').strip()
+    # 쉼표로 여러 계정을 지정할 수 있다(''=전체). 단일 계정명만 저장된
+    # 예전 값도 원소 1개짜리 목록으로 읽히므로 하위호환이 깨지지 않는다.
+    _only_raw = str(target or get_global_setting('cafe24_register_target') or '').strip()
+    _only = [u for u in (x.strip() for x in _only_raw.split(',')) if u]
     if _only:
         _all_names = [u for u, _ in _pending]
-        _pending = [(u, n) for u, n in _pending if u == _only]
+        # 지정한 순서대로 세운다 — 예산(_max)은 앞 계정부터 순차로 쓴다.
+        _rank = {u: i for i, u in enumerate(_only)}
+        _pending = sorted([(u, n) for u, n in _pending if u in _rank],
+                          key=lambda t: _rank[t[0]])
         if not _pending:
-            log(f"⏭ 지정 대상 '{_only}'의 대기열이 비어 있음 "
+            log(f"⏭ 지정 대상({', '.join(_only)})의 대기열이 모두 비어 있음 "
                 f"(대기 중인 다른 계정: {', '.join(_all_names) or '없음'}) — 건너뜀")
             return True
-        log(f"  🎯 지정 대상 '{_only}'만 처리 (다른 계정 대기열은 건드리지 않음)")
+        _idle = [u for u in _only if u not in {x for x, _ in _pending}]
+        log(f"  🎯 지정 대상 {len(_only)}개 계정만 처리: {', '.join(_only)} "
+            "(다른 계정 대기열은 건드리지 않음)")
+        if _idle:
+            log(f"     (이 중 대기열이 빈 계정: {', '.join(_idle)})")
     else:
         log("  ⚠️ 처리 대상 미지정 — 대기열이 있는 전 계정을 처리합니다")
     log("  대기 중인 대상: " + ", ".join(f"{u}({n})" for u, n in _pending))
@@ -2002,7 +2012,8 @@ if __name__ == "__main__":
                         help="cafe24reg: 이번 실행에서 처리할 건수(회당 설정값 대신) / "
                              "sellercode: 한 번에 처리할 최대 상품 수(미지정 시 50)")
     parser.add_argument("--target", default=None,
-                        help="cafe24reg: 처리할 대상 계정(설정값 대신)")
+                        help="cafe24reg: 처리할 대상 계정(설정값 대신). "
+                             "쉼표로 여러 계정 지정 가능 — 예: sonb,hail9003")
     args = parser.parse_args()
     # 이 실행의 모든 로그를 해당 사용자 전용 로그에도 기록 (타 사용자 로그 노출 방지)
     set_log_user(args.user)

@@ -110,6 +110,48 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             _ad_cust = get_global_setting('naver_ad_customer_id') or settings.get('naver_ad_customer_id', '')
             _ad_creds = (_ad_key, _ad_sec, _ad_cust) if all((_ad_key, _ad_sec, _ad_cust)) else None
 
+            # ── 📦 배치 상태 한 줄 — 계정을 바꾼 즉시 확인할 수 있어야 한다 ──
+            # 크론이 보는 값은 위 드롭다운(_ag_tuser)이 아니라 별개 설정
+            # cafe24_register_target이다. 둘이 다르면 담아놔도 영영 등록되지
+            # 않는데, 지금은 아래 '📦 대기열 배치 등록'을 펼쳐 스크롤해야만
+            # 알 수 있다. 실제로 이 불일치로 몇 시간을 날린 적이 있어 여기로 끌어올린다.
+            _bt_on = get_global_setting('cafe24_register_enabled') == '1'
+            _bt_tgt = str(get_global_setting('cafe24_register_target') or '').strip()
+            _bt_list = [u for u in (x.strip() for x in _bt_tgt.split(',')) if u]
+            try:
+                _bt_max = int(get_global_setting('cafe24_register_max') or 30)
+            except (TypeError, ValueError):
+                _bt_max = 30
+            _bt_pend = _c24q.counts(_ag_tuser)['pending']
+            if not _bt_on:
+                _bt_msg = "⏸ **자동 배치 꺼짐** — 대기열에 담아둬도 등록되지 않습니다."
+            elif not _bt_list:
+                _bt_msg = ("⚠️ **전체 모드** — 대기열이 있는 "
+                           f"{len(_c24q.all_counts() or [])}개 계정 전부에 실제 등록이 나갑니다.")
+            elif _ag_tuser not in _bt_list:
+                _bt_msg = (f"🔴 **'{_ag_tuser}'는 배치 대상이 아닙니다** — "
+                           f"현재 대상 {len(_bt_list)}곳: "
+                           + ", ".join(f"{u}·{_disp_name(u)}" for u in _bt_list)
+                           + ". 이 계정 대기열은 크론이 건드리지 않습니다.")
+            elif not _bt_pend:
+                _bt_msg = ("🟡 **배치 대상이지만 대기열이 비어 있습니다** — "
+                           "아래에서 상품을 먼저 담으세요.")
+            else:
+                # 앞 순번 스토어가 회당 예산을 먼저 쓴다 - 내 앞의 대기 건수까지 더해
+                # 소요 시간을 잡아야 실제와 맞는다(순차 처리).
+                _bt_ahead = sum(_c24q.counts(u)['pending']
+                                for u in _bt_list[:_bt_list.index(_ag_tuser)])
+                _bt_hr = (_bt_ahead + _bt_pend + _bt_max - 1) // max(1, _bt_max)
+                _bt_msg = (f"🟢 **배치 대상 · 대기 {_bt_pend}건** — "
+                           f"매시 {_bt_max}건씩 약 {_bt_hr}시간 소요 예정"
+                           + (f" (앞 순번 {_bt_ahead}건 먼저 처리)" if _bt_ahead else "")
+                           + f" · 목록 {len(_bt_list)}곳 중 "
+                           f"{_bt_list.index(_ag_tuser) + 1}번째.")
+            st.markdown(f"📦 배치: {_bt_msg}")
+            st.caption("⏰ 자동 실행은 **매시 30분**이며 **서버에서 돕니다 — 이 컴퓨터를 "
+                       "켜둘 필요가 없습니다**(브라우저를 닫아도 계속 진행됩니다). "
+                       "설정·대기열은 아래 **📦 대기열 배치 등록**에서 다룹니다.")
+
             if not (_ag_tid and _ag_tsecret):
                 st.warning(f"⚠️ '{_ag_tuser}'의 네이버 커머스 API 키가 없어 등록할 수 없습니다. "
                            "그 사용자 설정 탭에 네이버 키를 먼저 입력하세요.")
@@ -250,15 +292,51 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         and _ag_dv['fee_type'] == 'FREE'):
                     st.warning("⚠️ 무료배송인데 택배비가 판매가에 안 들어갑니다 — "
                                "건당 배송비만큼 손해입니다.")
+                # 혜택도 배송비처럼 여기서 바로 고친다. '제품 DB' 탭까지 건너가
+                # 저장하고 돌아오는 동선이 길어, 등록 직전에 확인·수정이 안 됐다.
+                # 저장 위치는 배송 설정과 같은 '대상 사용자' 설정이다.
+                with st.expander("🎁 구매/리뷰 혜택 (스마트스토어 포인트)",
+                                 expanded=not bool(_ag_benefits)):
+                    st.caption(
+                        f"**'{_ag_tuser}'** 에 저장되며, 등록 시점에 함께 걸립니다 — "
+                        "나중에 '혜택 일괄 적용'을 다시 돌리지 않아도 됩니다. "
+                        "0은 지급 안 함입니다.")
+                    _bn_new = {}
+                    _bn_cols = st.columns(3)
+                    for _bi, _bk in enumerate(naver_api.BENEFIT_KEYS):
+                        # 위젯 key에 계정명을 넣는다 — 고정 key만 쓰면 대상 사용자를
+                        # 바꿔도 Streamlit이 이전 계정 값을 그대로 들고 있어서,
+                        # 남의 혜택을 저장해 버린다.
+                        _bn_new[_bk] = _bn_cols[_bi % 3].number_input(
+                            naver_api.BENEFIT_LABELS.get(_bk, _bk),
+                            min_value=0, max_value=100000, step=10,
+                            value=int(_ag_benefits.get(_bk) or 0),
+                            key=f"ag_bn_{_ag_tuser}_{_bk}")
+                    if not any(_bn_new.values()):
+                        st.info("모두 0 — 혜택 없이 등록됩니다.")
+                    _bn_b1, _bn_b2 = st.columns([1, 2])
+                    if _bn_b1.button("💾 혜택 저장", key="ag_bn_save"):
+                        set_setting(_ag_tuser, 'naver_benefit_preset',
+                                    _json_bn.dumps(_bn_new, ensure_ascii=False))
+                        st.success(f"'{_ag_tuser}' 혜택을 저장했습니다. "
+                                   "다음 등록부터 적용됩니다.")
+                        st.rerun()
+                    if _ag_benefits and _bn_b2.button(
+                            "🧹 혜택 설정 지우기 (관리자 기본값으로 되돌림)",
+                            key="ag_bn_clear"):
+                        set_setting(_ag_tuser, 'naver_benefit_preset', '')
+                        st.warning(f"'{_ag_tuser}' 혜택 설정을 지웠습니다.")
+                        st.rerun()
+                    # 저장을 안 눌러도 이번 등록에는 화면 값이 쓰인다(배송비와 동일).
+                    _ag_benefits = {_k: _v for _k, _v in _bn_new.items() if _v}
                 if _ag_benefits:
                     _bl = ", ".join(
                         f"{naver_api.BENEFIT_LABELS.get(_k, _k)} {_v}"
                         for _k, _v in _ag_benefits.items() if _v)
                     st.caption(f"🎁 구매/리뷰 혜택 — {_bl}")
                 else:
-                    st.caption("🎁 구매/리뷰 혜택 — 설정 없음 "
-                               "(‘제품 DB’ 탭 › 혜택 일괄 적용에서 값을 저장하면 "
-                               "등록 시 자동으로 함께 걸립니다)")
+                    st.caption("🎁 구매/리뷰 혜택 — 설정 없음 (위 🎁 칸에서 값을 넣고 "
+                               "저장하면 등록 시 자동으로 함께 걸립니다)")
                 _ag_photo_ai = st.checkbox(
                     "📷 AI 제품사진 분석으로 상품명·속성 생성 (제품사진 등록 방식)",
                     value=bool(_ag_ai or _ag_gai), key="ag_photoai",
@@ -364,32 +442,74 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         if _du2.button(f"🗑 '{_duser}' 대기열 삭제", key="ag_q_del_btn",
                                        disabled=not (_dcnt and _dok)):
                             _n = _c24q.clear(_duser)
-                            # 지운 계정이 처리 대상으로 지정돼 있었다면 지정도 해제한다
-                            if (get_global_setting('cafe24_register_target') or '') == _duser:
-                                set_global_setting('cafe24_register_target', '')
-                                st.info(f"'{_duser}'가 처리 대상이었어서 지정도 해제했습니다.")
+                            # 지운 계정이 배치 대상 목록에 있으면 그 계정만 빼낸다.
+                            # 예전처럼 통째로 ''로 만들면 목록이 전부 날아가고,
+                            # ''는 '전체 모드'라 오히려 모든 계정에 등록이 나간다.
+                            _cur_l = [u for u in (x.strip() for x in str(
+                                get_global_setting('cafe24_register_target') or ''
+                            ).split(',')) if u]
+                            if _duser in _cur_l:
+                                _left = [u for u in _cur_l if u != _duser]
+                                set_global_setting('cafe24_register_target',
+                                                   ",".join(_left))
+                                if _left:
+                                    st.info(f"'{_duser}'를 배치 대상 목록에서 뺐습니다 "
+                                            f"(남은 대상: {', '.join(_left)}).")
+                                else:
+                                    # 목록이 비면 '전체 모드'가 되어버린다 - 의도치 않은
+                                    # 전체 등록을 막으려고 자동 스위치까지 내린다.
+                                    set_global_setting('cafe24_register_enabled', '0')
+                                    st.info(f"'{_duser}'가 마지막 배치 대상이어서 "
+                                            "목록이 비었습니다 — 의도치 않은 전체 "
+                                            "등록을 막으려고 **자동 배치도 껐습니다.**")
                             st.warning(f"'{_duser}' 대기열 {_n}건을 삭제했습니다.")
                             st.rerun()
                         st.divider()
-                    _tgt_cur = str(get_global_setting('cafe24_register_target') or '').strip()
-                    _tgt_opts = [_ag_tuser] + [u for u, _ in _q_all if u != _ag_tuser]
-                    _tgt_labels = {u: f"{_disp_name(u)} ({u})" for u in _tgt_opts}
-                    _ALL = "⚠️ 전체 — 대기열 있는 모든 계정"
-                    _pick_opts = [_tgt_labels[u] for u in _tgt_opts] + [_ALL]
-                    _cur_lbl = _tgt_labels.get(_tgt_cur) or (_ALL if not _tgt_cur
-                                                             else _tgt_labels[_tgt_opts[0]])
-                    _q_target_lbl = st.selectbox(
-                        "🎯 배치 처리 대상 (이 계정만 등록)", _pick_opts,
-                        index=_pick_opts.index(_cur_lbl) if _cur_lbl in _pick_opts else 0,
+                    # -- 배치 처리 대상: 스토어를 '목록'으로 등록한다 --
+                    # 예전엔 한 계정만 고를 수 있어, 스토어 여러 곳을 돌리려면
+                    # 하나가 끝날 때까지 기다렸다 손으로 바꿔야 했다. 저장 형식은
+                    # 쉼표 구분 문자열이라 단일 계정만 저장된 옛 값도 그대로 읽힌다.
+                    _tgt_cur = [u for u in (x.strip() for x in str(
+                        get_global_setting('cafe24_register_target') or '').split(','))
+                        if u]
+                    # 후보는 '등록 가능한 전 계정' + '대기열만 남은 계정'. 아직 아무것도
+                    # 담지 않은 계정도 미리 목록에 넣어둘 수 있어야 한다.
+                    _tgt_opts = [t[0] for t in _ag_meta]
+                    _tgt_opts += [u for u in ([x for x, _ in _q_all] + _tgt_cur)
+                                  if u not in _tgt_opts]
+                    _tgt_pend = {u: _c24q.counts(u)['pending'] for u in _tgt_opts}
+                    _tgt_labels = {
+                        u: (f"{u} · {_disp_name(u)}"
+                            + (f" — 대기 {_tgt_pend[u]}건" if _tgt_pend[u]
+                               else " — 대기 없음"))
+                        for u in _tgt_opts}
+                    _lbl2user = {l: u for u, l in _tgt_labels.items()}
+                    _q_tgt_lbls = st.multiselect(
+                        "🎯 배치 처리 대상 — "
+                        "자동 등록할 스토어 목록",
+                        [_tgt_labels[u] for u in _tgt_opts],
+                        default=[_tgt_labels[u] for u in _tgt_cur if u in _tgt_labels],
                         key="ag_q_target",
-                        help="지정한 계정의 대기열만 등록합니다. 다른 계정에 대기열이 "
-                             "남아 있어도 건드리지 않습니다. '전체'는 대기열이 있는 모든 "
-                             "계정을 처리하므로 의도한 경우에만 쓰세요.")
-                    _q_target = '' if _q_target_lbl == _ALL else \
-                        next(u for u, l in _tgt_labels.items() if l == _q_target_lbl)
-                    if not _q_target:
-                        st.warning("⚠️ '전체'로 두면 대기열이 있는 계정 전부에 등록됩니다 — "
-                                   f"현재 {len(_q_all)}개 계정.")
+                        help="여기 등록한 스토어의 대기열만 자동 등록합니다. 목록에 없는 "
+                             "계정은 대기열이 남아 있어도 건드리지 않습니다. 여러 개를 "
+                             "넣으면 먼저 넣은 순서대로 처리하며, 회당 건수를 앞 "
+                             "스토어부터 순차로 씁니다. 비워두면 '전체'가 됩니다.")
+                    _q_targets = [_lbl2user[l] for l in _q_tgt_lbls]
+                    _q_target = ",".join(_q_targets)     # 저장 형식(쉼표 구분)
+                    if not _q_targets:
+                        st.warning("⚠️ **비어 있음 = 전체 모드** — 대기열이 있는 "
+                                   f"계정 {len(_q_all)}곳 전부의 실제 스토어에 등록이 "
+                                   "나갑니다. 특정 스토어만 돌리려면 위에서 골라 넣으세요.")
+                    else:
+                        _tot_pend = sum(_tgt_pend.get(u, 0) for u in _q_targets)
+                        _nokey = [u for u in _q_targets
+                                  if not next((m[2] for m in _ag_meta if m[0] == u), False)]
+                        st.caption(
+                            f"→ 스토어 {len(_q_targets)}곳 · 대기 합계 "
+                            f"**{_tot_pend}건** · 처리 순서: "
+                            + " → ".join(_q_targets)
+                            + (f"   ⚠️ 커머스키 없음: {', '.join(_nokey)}"
+                               if _nokey else ""))
 
                     _q_on = st.checkbox(
                         "🟢 자동 배치 등록 켜기 (크론이 매시간 대기열을 소화)",
@@ -405,7 +525,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                              "매시간 30건이면 300건을 약 10시간에 소화합니다.")
                     # ── 지금 실행 — 크론(:30)을 기다리지 않고 바로 돌린다 ──
                     st.markdown("**지금 실행**")
-                    _rn_user = _q_target or _ag_tuser
+                    _rn_user = (_q_targets[0] if _q_targets else _ag_tuser)
                     _rn1, _rn2 = st.columns([1, 2])
                     _rn_cnt = _rn1.number_input(
                         "시험 건수", min_value=1, max_value=20, step=1, value=3,
@@ -437,8 +557,11 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         if _lines:
                             st.code("\n".join(_lines[-14:]), language=None)
                         st.rerun()
-                    st.caption("⏰ 자동 실행은 **매시 30분**입니다. 위 버튼은 그와 별개로 "
-                               "지금 1회만 돌립니다(자동 스위치가 꺼져 있어도 실행됩니다).")
+                    st.caption("⏰ 자동 실행은 **매시 30분**이며 **서버(cocobiz.shop)에서 "
+                               "돕니다 — 이 컴퓨터를 켜둘 필요가 없습니다.** 브라우저를 닫아도, "
+                               "PC를 꺼도 계속 진행됩니다. 위 버튼은 그와 별개로 지금 1회만 "
+                               "돌립니다(자동 스위치가 꺼져 있어도 실행되며, 실행 중 페이지를 "
+                               "닫으면 결과 표시를 못 봅니다).")
                     st.divider()
 
                     if st.button("💾 배치 설정 저장", key="ag_q_save"):
@@ -483,6 +606,23 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         if _enq_now['total']:
                             st.caption(f"'{_enq_user}' 기존 대기열 — 대기 {_enq_now['pending']}건 "
                                        f"· 합계 {_enq_now['total']}건")
+                        # -- 담을 계정이 배치 대상 목록에 없으면 크론이 영영 안 본다 --
+                        # 이 화면에서 가장 흔한 사고라 담기 전에 여기서 막는다.
+                        if _q_targets and _enq_user not in _q_targets:
+                            st.error(f"🔴 담을 계정 **'{_enq_user}'** 이 배치 대상 "
+                                     f"목록에 없습니다(현재 목록: {', '.join(_q_targets)}) "
+                                     "— 지금 담으면 크론이 이 대기열을 건드리지 "
+                                     "않습니다. 위 **배치 처리 대상**에 "
+                                     f"'{_enq_user}'를 추가하고 **배치 설정 저장**을 누르세요.")
+                        elif not _q_targets:
+                            st.warning("⚠️ 배치 처리 대상이 **전체**입니다 — "
+                                       "대기열이 있는 모든 계정의 실제 스토어에 등록이 "
+                                       "나갑니다.")
+                        elif _bt_tgt != _q_target:
+                            st.warning(f"⚠️ 배치 대상 목록을 바꾸셨지만 아직 저장되지 "
+                                       f"않았습니다(저장된 값: '{_bt_tgt or '전체'}' / "
+                                       f"화면 값: '{_q_target or '전체'}'). 담기 전에 "
+                                       "**배치 설정 저장**을 누르세요.")
                         _qlabel = ("➕ 이 진열영역 전체를" if _is_disp else "➕ 이 분류 전체를")
                         if st.button(f"{_qlabel} '{_enq_user}' 대기열에 담기",
                                      key="ag_q_fill",
@@ -731,6 +871,38 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     if _npages > 1:
                         st.caption(f"페이지 {int(_pg)}/{_npages} 표시 중 · "
                                    f"전체 선택 {len(_ag_sel)}개")
+
+                    # -- 고른 상품을 '대기열에 담기' --
+                    # 여기엔 즉시 등록 버튼밖에 없어서, 목록을 눈으로 확인하고
+                    # 고른 뒤 배치에 맡기는 경로가 끊겨 있었다. 즉시 등록은 건당
+                    # 20~60초라 브라우저를 켜둬야 하고 수십 건이 한계다.
+                    _eq_user = (_q_targets[0] if _q_targets else _ag_tuser)
+                    _eqc1, _eqc2 = st.columns([2, 1])
+                    _eq_pick = _eqc2.selectbox(
+                        "담을 스토어", [t[0] for t in _ag_meta],
+                        index=([t[0] for t in _ag_meta].index(_eq_user)
+                               if _eq_user in [t[0] for t in _ag_meta] else 0),
+                        format_func=lambda u: f"{u} · {_disp_name(u)}",
+                        key="ag_sel_enq_user")
+                    if _eqc1.button(
+                            f"📥 선택 {len(_ag_sel)}개 → '{_eq_pick}' "
+                            "대기열에 담기",
+                            key="ag_sel_enq", disabled=not _ag_sel,
+                            help="지금 등록하지 않고 대기열에만 넣습니다. 서버가 매시 "
+                                 "30분에 회당 건수만큼 자동으로 등록합니다 — "
+                                 "브라우저를 닫아도 됩니다."):
+                        _eq_added, _eq_skip = _c24q.enqueue(
+                            _eq_pick, [_p for _p, _px in _ag_sel])
+                        st.success(f"'{_eq_pick}' 대기열 — 새로 담음 {_eq_added}건 / "
+                                   f"이미 있음 {_eq_skip}건")
+                        if _eq_pick not in (_q_targets or []):
+                            st.warning(f"⚠️ '{_eq_pick}'는 배치 대상 목록에 "
+                                       "없습니다 — 위 **배치 처리 대상**에 추가하고 "
+                                       "**배치 설정 저장**을 눌러야 자동 등록됩니다.")
+                        st.rerun()
+                    st.caption("ℹ️ 대기열에 담으면 손으로 고친 판매가는 "
+                               "반영되지 않습니다(등록 시점에 마진 설정으로 다시 "
+                               "계산됩니다). 고친 값을 쓰려면 아래 즉시 등록을 쓰세요.")
                     if st.button(f"🚀 선택 {len(_ag_sel)}개 → '{_ag_tuser}' 스토어 등록", type="primary",
                                  key="ag_reg", disabled=not (_ag_sel and _ag_oc and _ag_os)):
                         _ag_rows = []; _agprog = st.progress(0.0)
