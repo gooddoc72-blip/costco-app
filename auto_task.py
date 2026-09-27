@@ -1633,6 +1633,8 @@ def run_cafe24_register_task(username="admin", limit=None, target=None,
         'detail_mode': _dmode,
         'price_mode': _pmode,
         'photo_ai':   get_global_setting('cafe24_register_photo_ai', '0') == '1',
+        # 인증 대상 카테고리 거부 시 '인증대상 아님' 표시로 1회 재시도 (대행등록 화면과 같은 설정)
+        'cert_exclude': (get_global_setting('naver_cert_exclude', '1') or '1') == '1',
         'gen_tags':   get_global_setting('cafe24_register_gen_tags', '1') == '1',
         'opt_name':   get_global_setting('cafe24_register_opt_name', '1') == '1',
         'ai_key': _ai, 'gemini_key': _gai, 'ad_creds': _ad_creds,

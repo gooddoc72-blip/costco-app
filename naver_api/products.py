@@ -538,6 +538,27 @@ def _reg_limit_gate(client_id, source=''):
         return None
 
 
+#: '인증대상 아님' 표시 — 스마트스토어센터 상품등록의 인증정보 '대상 아님' 체크와 같다.
+#  KC만 문자열("TRUE"/"FALSE"/"KC_EXEMPTION_OBJECT")이고 나머지는 boolean이다.
+CERT_EXCLUDE_ALL = {
+    "kcCertifiedProductExclusionYn": "TRUE",
+    "childCertifiedProductExclusionYn": True,
+    "greenCertifiedProductExclusionYn": True,
+    "chemicalCertifiedProductExclusionYn": True,
+}
+
+
+def _is_cert_error(err):
+    """네이버 거부 사유가 '인증정보 필요'인가.
+
+    어린이인증은 인증칸이 아니라 모델명 칸(naverShoppingSearchInfo.modelName)을
+    지목하며 '어린이인증 대상'이라고 말한다 — 필드 경로만 보면 놓친다.
+    """
+    _l = str(err or "").lower()
+    return any(k in _l for k in ("productcertificationinfos", "certificationtargetexclude",
+                                 "인증대상", "인증 대상", "어린이인증"))
+
+
 def register_product(client_id, client_secret, product_info):
     """
     네이버 스마트스토어 상품 등록.
@@ -751,6 +772,23 @@ def register_product(client_id, client_secret, product_info):
 
     try:
         _res, _err = _do_post(payload)
+        # ── 인증대상 아님 표시 — 인증 때문에 거부됐을 때만 붙여 1회 재시도 ──
+        #   KC·어린이·친환경·생활화학 인증 대상 카테고리는 인증정보를 넣거나
+        #   '인증대상 아님'을 표시해야 등록된다(스마트스토어센터의 그 체크박스).
+        #   처음부터 붙이지 않는 이유: 인증과 무관한 카테고리에까지 '아님'을
+        #   선언할 필요가 없고, 판매자가 책임지는 표시라 필요한 곳에만 남긴다.
+        #   형식: detailAttribute.certificationTargetExcludeContent
+        #     kc = 문자열 "TRUE"(대상 아님) / 나머지는 boolean true
+        #   (commerce-api-naver discussions #704)
+        if _err and product_info.get("cert_exclude") and _is_cert_error(_err):
+            payload["originProduct"]["detailAttribute"][
+                "certificationTargetExcludeContent"] = dict(CERT_EXCLUDE_ALL)
+            _res, _err = _do_post(payload)
+            if not _err:
+                _res = dict(_res or {})
+                _res["warning"] = ("인증 대상 카테고리라 '인증대상 아님'으로 표시해 등록했습니다"
+                                   + (" · " + _res["warning"] if _res.get("warning") else ""))
+                return _res, None
         if not _err:
             return _res, None
         if not (_has_tags or _has_food or _has_nsi or _has_attrs):

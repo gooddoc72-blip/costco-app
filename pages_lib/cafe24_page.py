@@ -511,6 +511,17 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     disabled=not (_ag_ai or _ag_gai),
                     help="대표 제품이미지를 AI 비전(Gemini 우선·Claude 폴백)으로 분석해 상품명·원산지·브랜드를 뽑고, "
                          "그 상품명으로 카테고리 판단·연관키워드 최적화까지 진행합니다.")
+                # 인증대상 아님 — 화면과 크론(대기열)이 같은 전역 설정을 쓴다
+                _ag_cert_cur = (get_global_setting('naver_cert_exclude') or '1') == '1'
+                _ag_cert_ex = st.checkbox(
+                    "🏷 인증 대상 카테고리면 '인증대상 아님'으로 표시해 등록 (KC·어린이·친환경·생활화학)",
+                    value=_ag_cert_cur, key="ag_cert_ex",
+                    help="네이버가 '인증정보 필요'로 거부한 상품만 '인증대상 아님'을 표시해 "
+                         "한 번 더 등록합니다(스마트스토어센터의 '대상 아님' 체크와 같음). "
+                         "인증과 무관한 상품에는 붙지 않습니다. ⚠️ 실제 인증 대상 상품을 "
+                         "'아님'으로 표시하면 판매자 책임입니다. 대기열(자동) 등록에도 적용됩니다.")
+                if _ag_cert_ex != _ag_cert_cur:
+                    set_global_setting('naver_cert_exclude', '1' if _ag_cert_ex else '0')
                 # 조회 방식: 상품명 검색 / 카테고리 (카페24 분류)
                 _ag_mode = st.radio("조회 방식",
                                     ["상품명 검색", "카테고리", "메인 진열"],
@@ -1111,6 +1122,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                             'price_mode': _ag_price_mode,
                             'benefits': _ag_benefits,
                             'photo_ai': _ag_photo_ai,
+                            'cert_exclude': _ag_cert_ex,
                             'gen_tags': True, 'opt_name': True,
                             'ai_key': _ag_ai, 'gemini_key': _ag_gai,
                             'ad_creds': _ad_creds,
