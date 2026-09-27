@@ -507,6 +507,31 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict, embedded: bool = False
         embedded: True면 다른 페이지 내부에서 호출됨 → st.header() 생략
         order_date: 수익계산 선택 날짜 (embedded 시 미매칭 교차매칭에 사용)
     """
+    # 직접구매 계정은 여기서 영수증을 올리지 못한다. 이 화면은 공용 영수증
+    # (receipt_items = 관리자 매장 구매 장부)에 쓰는데, 거기 섞이면 관리자가 영수증
+    # 정산에서 매칭할 때 **자기 돈으로 산 물건이 대리구매로 청구**되고, 그 물건이
+    # 관리자 창고 재고로도 잡힌다. 직접구매자 영수증은 '내 영수증 정산'
+    # (self_receipt_items, 별도 저장)으로만 받는다.
+    if not IS_ADMIN:
+        try:
+            from receipt_settle import is_self_purchase
+            _sp = is_self_purchase(USERNAME)
+        except Exception:
+            _sp = False
+        if _sp:
+            try:
+                from pages_lib.self_receipt_page import is_open as _sr_open
+                _opened = _sr_open(USERNAME)
+            except Exception:
+                _opened = False
+            st.info("🏪 직접구매 계정은 영수증을 **운영 › 내 영수증 정산**에서 올립니다 — "
+                    "구입가 반영·재고 입고·가격 갱신이 거기서 한 번에 됩니다."
+                    if _opened else
+                    "🏪 직접구매 계정은 이 화면에서 영수증을 올릴 수 없습니다. "
+                    "**관리자에게 '영수증 직접 정산' 허용을 요청**하세요 — 허용되면 "
+                    "운영 › 내 영수증 정산 메뉴가 생깁니다.")
+            return
+
     def _gs(k, default=""):
         return settings.get(k) or default
     api_id = _gs("api_client_id")
