@@ -305,6 +305,22 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 if _sp_cur:
                     st.caption("🏪 영수증 매칭·재고 정리는 정상 동작하고, **청구서만 "
                                "만들어지지 않습니다.**")
+                    # ── 🧾 영수증 직접 정산 — 직접구매 계정에만 연다 ──
+                    #   구매대행 계정에 열면 관리자가 청구할 물건값(구입가)을
+                    #   사용자가 스스로 바꾸게 된다. 그래서 직접구매일 때만 보인다.
+                    _sr_cur = get_setting(u['username'], 'self_receipt_open') == '1'
+                    _sr_new = st.checkbox(
+                        "🧾 영수증 직접 정산 허용 (자기 영수증으로 구입가·재고 정리)",
+                        value=_sr_cur, key=f"selfrcpt_{u['username']}",
+                        help="켜면 이 사용자 '운영' 메뉴에 '내 영수증 정산'이 보입니다. "
+                             "자기 영수증을 올려 자기 주문의 구입가를 실단가로 맞추고, "
+                             "남은 물건을 자기 재고로 넣을 수 있습니다. 남의 주문·재고는 "
+                             "건드릴 수 없습니다.")
+                    if _sr_new != _sr_cur:
+                        set_setting(u['username'], 'self_receipt_open', '1' if _sr_new else '')
+                        st.success("🧾 영수증 직접 정산 열림" if _sr_new
+                                   else "🙈 영수증 직접 정산 닫힘")
+                        st.rerun()
 
                 # ── 📦 고정비용 (택배비·박스비) — 사용자는 수정 불가, 여기서만 설정 ──
                 st.markdown("<hr style='margin:6px 0'>", unsafe_allow_html=True)

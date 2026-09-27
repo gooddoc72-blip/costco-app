@@ -100,7 +100,7 @@ from pages_lib import (
     product_db_page, admin_page, naver_register_page,
     guide_page, settlement_page, cafe24_page, inventory_page,
     receipt_settle_page, billing_page, purchase_settle_page, my_purchase_page,
-    settle_billing_page,
+    settle_billing_page, self_receipt_page,
 )
 
 # 페이지 모듈에 캐시 헬퍼 주입 (페이지 모듈이 동일한 캐시 인스턴스 공유)
@@ -494,6 +494,10 @@ def run_my_purchase():
     my_purchase_page.render(USERNAME, IS_ADMIN, settings)
 
 
+def run_self_receipt():
+    self_receipt_page.render(USERNAME, IS_ADMIN, settings)
+
+
 # 페이지 정의 (섹션 그룹)
 _pages = {
     "운영": [
@@ -523,6 +527,12 @@ _pages = {
 #   (관리자 페이지에서 사용자별 cafe24_menu_open 체크로 오픈/숨김)
 if IS_ADMIN or get_setting(USERNAME, 'cafe24_menu_open') == '1':
     _pages["상품 관리"].insert(3, st.Page(run_cafe24, title="카페24", icon=":material/sync_alt:"))
+
+# 내 영수증 정산 — 직접구매 계정 중 관리자가 허용한 사용자에게만(내 구매내역 정산 아래).
+#   관리자는 '영수증 정산'이 있으므로 띄우지 않는다.
+if not IS_ADMIN and self_receipt_page.is_open(USERNAME):
+    _pages["운영"].insert(6, st.Page(run_self_receipt, title="내 영수증 정산",
+                                   icon=":material/receipt:"))
 
 if IS_ADMIN:
     _pages["관리자"] = [

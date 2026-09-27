@@ -115,6 +115,10 @@ def ensure(conn=None):
         _cols = {r[1] for r in conn.execute("PRAGMA table_info(settle_item)")}
         if 'prev_cost' not in _cols:
             conn.execute("ALTER TABLE settle_item ADD COLUMN prev_cost INTEGER DEFAULT 0")
+        # 대리구매 — 직접구매 계정의 물건을 관리자가 대신 산 행. 이 행만 청구된다.
+        # 기존 행은 0이다: 예전 매칭분은 대리구매인지 알 수 없으므로 소급 청구하지 않는다.
+        if 'proxy' not in _cols:
+            conn.execute("ALTER TABLE settle_item ADD COLUMN proxy INTEGER DEFAULT 0")
     except sqlite3.Error:
         pass
     conn.execute("CREATE INDEX IF NOT EXISTS idx_si_date ON settle_item(settle_date)")
@@ -171,15 +175,16 @@ def _write_items(conn, settle_date, username, rows, created_by, now):
             """INSERT OR REPLACE INTO settle_item
                (settle_date, username, order_no, product_no, naver_no, product_name,
                 recipient, qty, split_qty, pack, unit_price, amount, prev_cost,
-                source, receipt_date, memo, created_by, created_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                source, receipt_date, memo, created_by, created_at, proxy)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (str(settle_date), str(username), str(r.get('order_no') or ''),
              str(r.get('product_no') or ''), str(r.get('naver_no') or ''),
              str(r.get('product_name') or ''), str(r.get('recipient') or ''),
              _i(r.get('qty')) or 1, _i(r.get('split_qty')) or 1, _i(r.get('pack')) or 1,
              _i(r.get('unit_price')), _i(r.get('amount')), _i(r.get('prev_cost')),
              str(r.get('source') or 'receipt'), str(r.get('receipt_date') or ''),
-             str(r.get('memo') or ''), str(created_by or ''), now))
+             str(r.get('memo') or ''), str(created_by or ''), now,
+             1 if r.get('proxy') else 0))
         n += 1
     return n
 
@@ -281,12 +286,13 @@ def set_fees(settle_date, username, ship_fee, pack_fee):
     월말에 한 달치를 몰아 붙이면 그달 마지막 날 청구서만 유독 커지고, 중간에
     그만둔 사용자에게는 영영 못 받는다. 발생한 날에 그날 것만 싣는다.
 
-    '직접구매' 계정은 청구서를 만들지 않으므로 비용도 싣지 않는다 — 여기서
-    막지 않으면 INSERT가 0원 청구서를 되살린다.
+    '직접구매' 계정은 청구서에 택배·포장비를 싣지 않는다. 대리구매도 **택배비만**
+    받는데, 택배비는 포장 관리 › 택배·부자재비 청구(발송건수 × 택배단가)로 이미
+    따로 청구된다. 여기서는 금액만 다시 계산한다(INSERT하면 대리구매가 없는 날
+    0원 청구서가 되살아난다).
     """
     if not is_billable(username):
-        _drop_invoice(settle_date, username)
-        return 0
+        return recompute_invoice(settle_date, username)
     conn = _conn()
     ensure(conn)
     now = _now()
@@ -311,19 +317,25 @@ def recompute_invoice(settle_date, username, created_by=''):
     이미 입금 완료(paid)된 청구서는 금액을 건드리지 않는다. 받은 돈과 청구액이
     달라지면 무엇을 받은 것인지 설명할 수 없게 된다.
 
-    '직접구매' 계정은 청구서를 만들지 않는다 — 품목만 남기고 0을 돌려준다.
+    '직접구매' 계정은 **대리구매 행(proxy=1)만** 청구한다. 자기 돈으로 산 것은
+    청구할 게 없지만, 못 사서 관리자가 대신 산 것은 관리자 돈이 나갔다.
+    대리구매가 없는 날은 예전처럼 청구서를 만들지 않는다(0원 청구서 방지).
     """
-    if not is_billable(username):
-        _drop_invoice(settle_date, username)
-        return 0
+    _proxy_only = not is_billable(username)
     conn = _conn()
     ensure(conn)
     try:
         r = conn.execute(
             "SELECT COALESCE(SUM(amount),0) amt, COUNT(*) n FROM settle_item "
-            "WHERE settle_date=? AND username=?",
+            "WHERE settle_date=? AND username=?"
+            + (" AND COALESCE(proxy,0)=1" if _proxy_only else ""),
             (str(settle_date), str(username))).fetchone()
         goods, cnt = _i(r['amt']), _i(r['n'])
+        if _proxy_only and goods <= 0:
+            conn.close()
+            conn = None
+            _drop_invoice(settle_date, username)
+            return 0
         cur = conn.execute(
             "SELECT * FROM settle_invoice WHERE settle_date=? AND username=?",
             (str(settle_date), str(username))).fetchone()
@@ -347,7 +359,8 @@ def recompute_invoice(settle_date, username, created_by=''):
                 (goods, total, cnt, now, str(settle_date), str(username)))
         conn.commit()
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
     return total
 
 

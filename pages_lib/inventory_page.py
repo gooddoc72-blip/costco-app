@@ -458,6 +458,69 @@ def _admin_requests(USERNAME):
                 st.warning("이미 입고 처리된 추천건입니다.")
 
 
+# ── 관리자: 직접구매자 재고·영수증 ────────────────────────────
+def _admin_self_purchase_view():
+    """직접구매자 한 사람의 재고와 그 사람이 직접 올린 영수증을 본다.
+
+    전체 재고 표에도 섞여 있지만, 대리구매를 할지 판단하려면 '이 사람이 지금
+    무엇을 얼마나 갖고 있나'를 한 사람 단위로 봐야 한다. 직접구매자 영수증은
+    관리자 영수증과 따로 저장되므로(db_self_receipt) 영수증 정산 화면에는 안 보인다
+    — 여기서만 볼 수 있다.
+    """
+    import pandas as pd
+    try:
+        import receipt_settle as _rs
+        _sp = [u['username'] for u in get_all_users()
+               if not u.get('is_admin') and _rs.is_self_purchase(u['username'])]
+    except Exception:
+        _sp = []
+    if not _sp:
+        return
+    _nm = _name_map()
+    with st.expander(f"🏪 직접구매자 재고·영수증 ({len(_sp)}명)", expanded=False):
+        _u = st.selectbox("직접구매자", _sp, format_func=lambda u: _nm.get(u, u),
+                          key="inv_sp_user")
+        _rows = get_stock_summary(owner=_u) or []
+        if _rows:
+            st.dataframe(pd.DataFrame([{
+                "상품번호": r['product_no'], "상품명": r['product_name'],
+                "잔여(개)": r['qty_left'], "입고(개)": r['qty_in'],
+                "구입가": int(r.get('unit_cost') or 0),
+                "재고금액": int(r.get('unit_cost') or 0) * int(r['qty_left'] or 0),
+                "최초입고": r['oldest_at'], "경과": _age_badge(r['age_days']),
+            } for r in _rows]), use_container_width=True, hide_index=True,
+                column_config={_k: st.column_config.NumberColumn(_k, format='%d')
+                               for _k in ("구입가", "재고금액")})
+            st.caption(f"재고 {len(_rows)}종 · 재고금액 "
+                       f"{sum(int(r.get('unit_cost') or 0) * int(r['qty_left'] or 0) for r in _rows):,}원")
+        else:
+            st.caption("보유 재고가 없습니다.")
+
+        try:
+            import db_self_receipt as _sr
+            _ds = _sr.dates(_u, limit=30)
+        except Exception as _e:
+            _ds = []
+            st.caption(f"⚠️ 영수증 조회 실패: {_e}")
+        if not _ds:
+            st.caption("직접 올린 영수증이 없습니다.")
+            return
+        _opts = [f"{d} ({c}종)" for d, c in _ds]
+        _pick = st.selectbox("직접 올린 영수증", _opts, key=f"inv_sp_rcpt_{_u}")
+        _items = _sr.items_by_date(_u, _ds[_opts.index(_pick)][0])
+        st.dataframe(pd.DataFrame([{
+            "상품번호": i['상품번호'], "상품명": i['상품명'], "수량": i['수량'],
+            "정가": i['정가단가'], "할인": i['할인'], "실단가": i['단가'],
+            "금액": i['단가'] * i['수량']} for i in _items]),
+            use_container_width=True, hide_index=True,
+            column_config={_k: st.column_config.NumberColumn(_k, format='%d')
+                           for _k in ("정가", "할인", "실단가", "금액")})
+        st.caption(f"실지불 합계 {sum(i['단가'] * i['수량'] for i in _items):,}원 — "
+                   "직접구매자 본인 돈으로 산 것이라 청구 대상이 아닙니다. "
+                   "관리자가 대신 산 것(대리구매)은 **영수증 정산**에서 관리자 영수증으로 "
+                   "매칭하면 그 행만 청구됩니다.")
+
+
 # ── 관리자: 전체 재고 ─────────────────────────────────────
 def _admin_stock():
     st.subheader("📊 전체 재고")
@@ -482,6 +545,8 @@ def _admin_stock():
                                     for _k in ("정가", "구입가", "할인", "재고금액")})
         st.caption("정가는 할인 전 영수증 단가, 구입가는 실제 지불 단가입니다 "
                    "(판매 1개 기준). 이 기능 이전 입고분은 정가가 0입니다.")
+
+    _admin_self_purchase_view()
 
     st.divider()
     with st.expander("➕ 재고 직접 입고 (추천건 없이)"):

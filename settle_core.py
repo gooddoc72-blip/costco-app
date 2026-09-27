@@ -27,6 +27,9 @@ _VIA_TO_SOURCE = {
     'memo': 'direct',        # 주문 없이 관리자가 직접 배정한 교환·추가 발송분
     'direct': 'direct',
     'online': 'online',      # 코스트코 온라인몰에서 사서 코스트코가 직접 보낸 건
+    # 직접구매자가 자기 영수증(self_receipt_items)으로 정산한 건. 관리자 창고
+    # 물건이 나간 게 아니라 공용 재고 계산(build_stock_pool 등)에서 뺀다.
+    'self': 'self',
 }
 
 
@@ -117,6 +120,17 @@ def to_ledger_rows(alloc_rows, settle_date, receipt_date=''):
     그 주문은 공짜로 나가고 손실이 조용히 묻힌다. 부족분으로 남겨 사람이 본다.
     """
     out, dropped = [], []
+    _self_cache = {}
+
+    def _is_self(u):
+        if u not in _self_cache:
+            try:
+                import receipt_settle as _rs
+                _self_cache[u] = _rs.is_self_purchase(u)
+            except Exception:
+                _self_cache[u] = False
+        return _self_cache[u]
+
     for r in (alloc_rows or []):
         amt = _i(r.get('amount'))
         row = {
@@ -138,6 +152,10 @@ def to_ledger_rows(alloc_rows, settle_date, receipt_date=''):
         }
         if not row['username']:
             continue
+        # 대리구매 — 직접구매 계정인데 자기 영수증(source='self')이 아닌 행은
+        # 관리자 영수증·재고에서 나간 것이다. 관리자 돈이 나갔으니 청구 대상이다
+        # (db_settle.recompute_invoice가 직접구매 계정은 이 행만 청구한다).
+        row['proxy'] = 1 if (row['source'] != 'self' and _is_self(row['username'])) else 0
         (out if amt > 0 else dropped).append(row)
     return out, dropped
 

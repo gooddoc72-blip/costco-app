@@ -222,9 +222,12 @@ def _settled_split_map(conn, date_upto, start=''):
         q = ("SELECT s.product_no, MAX(COALESCE(NULLIF(s.split_qty,0),1)) "
              "FROM settle_item s JOIN ("
              "  SELECT product_no, MAX(settle_date) d FROM settle_item "
-             "  WHERE settle_date <= ?" + (" AND settle_date >= ?" if start else "") +
+             "  WHERE settle_date <= ? AND COALESCE(source,'') <> 'self'"
+             + (" AND settle_date >= ?" if start else "") +
              "  GROUP BY product_no) t "
              "ON s.product_no = t.product_no AND s.settle_date = t.d "
+             # 직접구매자 자기 영수증 정산(source='self')은 공용 재고와 무관하다
+             "WHERE COALESCE(s.source,'') <> 'self' "
              "GROUP BY s.product_no")
         args = (str(date_upto), str(start)) if start else (str(date_upto),)
         for pn, sq in conn.execute(q, args):
@@ -308,8 +311,11 @@ def build_stock_pool(date_upto, exclude_dates=None):
         # 세면 있지도 않은 소비가 잡혀 '사용량이 입고량을 넘었다'가 된다.
         # (compute_leftovers는 진작 via='online'을 빼고 있었는데, 여기와
         #  get_stock_status만 settle_item을 통째로 세고 있었다.)
+        # 직접구매자 자기 영수증 정산(source='self')도 뺀다 — 그 사람 돈으로 산
+        # 물건이라 공용 영수증(receipt_items) 입고에 애초에 없다. 빼지 않으면
+        # 관리자 재고가 그만큼 줄어든다.
         _q = ("SELECT product_no, SUM(qty * COALESCE(NULLIF(pack,0),1)) FROM settle_item "
-              "WHERE COALESCE(source,'') <> 'online' AND settle_date <= ?"
+              "WHERE COALESCE(source,'') NOT IN ('online','self') AND settle_date <= ?"
               + (" AND settle_date >= ?" if _st else "") +
               " GROUP BY product_no")
         _args = (str(date_upto), _st) if _st else (str(date_upto),)
@@ -417,8 +423,10 @@ def unapplied_receipt_dates(date_upto=None, days=45):
         from datetime import timedelta as _td2
         c = _dsx._conn(); _dsx.ensure(c)
         for (d,) in c.execute(
+                # 직접구매자가 자기 영수증으로 정산한 날을 '관리자 영수증 적용됨'으로
+                # 보면, 관리자가 정산을 빼먹은 날이 경고에서 사라진다.
                 "SELECT DISTINCT settle_date FROM settle_item "
-                "WHERE settle_date BETWEEN ? AND ?",
+                "WHERE settle_date BETWEEN ? AND ? AND COALESCE(source,'') <> 'self'",
                 ((_dt.strptime(_from, "%Y-%m-%d") - _td2(days=2)).strftime("%Y-%m-%d"),
                  (_dt.strptime(_upto, "%Y-%m-%d") + _td2(days=2)).strftime("%Y-%m-%d"))):
             _s = _norm(d)
@@ -501,7 +509,7 @@ def get_stock_status(date_upto=None):
         # 온라인몰 직배송은 내 영수증에서 나간 물건이 아니다 — build_stock_pool과
         # 같은 규칙을 쓴다. 안 그러면 두 화면의 잔량이 서로 다르게 나온다.
         q = ("SELECT product_no, SUM(qty * COALESCE(NULLIF(pack,0),1)) FROM settle_item "
-             "WHERE COALESCE(source,'') <> 'online' AND settle_date <= ?"
+             "WHERE COALESCE(source,'') NOT IN ('online','self') AND settle_date <= ?"
              + (" AND settle_date >= ?" if start else "") + " GROUP BY product_no")
         for pn, used in c.execute(q, (d, start) if start else (d,)):
             pn = _norm(pn)
@@ -1163,6 +1171,17 @@ def dispatch_consumption(dispatch_date, receipt_nos, matched_keys=None, users=No
     from db import get_dispatched_orders_with_details
     _nos = {str(x) for x in (receipt_nos or [])}
     _mk = set(matched_keys or ())
+    # 직접구매자가 자기 영수증으로 정산한 주문은 그 사람 물건이 나간 것이다.
+    # 관리자 영수증 잔량에서 빼면 관리자 창고 재고가 장부에서만 사라진다.
+    try:
+        import db_settle as _dsx
+        _c = _dsx._conn(); _dsx.ensure(_c)
+        _mk |= {(_norm(r[0]), _norm(r[1])) for r in _c.execute(
+            "SELECT username, order_no FROM settle_item "
+            "WHERE source='self' AND order_no<>''")}
+        _c.close()
+    except Exception:
+        pass
     try:
         import db_online_purchase as _op
         _online = _op.keys_all() or set()
