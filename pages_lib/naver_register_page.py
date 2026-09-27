@@ -597,6 +597,17 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 if _up_top:
                     _u = _ph_upload_cdn(_up_top)
                     if _u:
+                        # 옛 상단 주소 기록 — 카페24 화면의 기존 상품 일괄 교체가 이걸로 찾는다
+                        if _top_img:
+                            import json as _json_th
+                            try:
+                                _th = _json_th.loads(_gs('naver_detail_top_img_history') or '[]')
+                            except Exception:
+                                _th = []
+                            if _top_img not in _th:
+                                _th.append(_top_img)
+                            set_setting(USERNAME, 'naver_detail_top_img_history',
+                                        _json_th.dumps(_th[-20:]))
                         set_setting(USERNAME, 'naver_detail_top_img', _u); _msgs.append('상단')
                 if _up_bot:
                     _u = _ph_upload_cdn(_up_bot)

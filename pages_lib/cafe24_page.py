@@ -175,11 +175,179 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                            or str(settings.get('naver_detail_top_img') or '').strip())
                 _ag_bot = (str(_ag_ts.get('naver_detail_bottom_img') or '').strip()
                            or str(settings.get('naver_detail_bottom_img') or '').strip())
-                st.caption(
-                    f"상단 고정이미지 {'✅' if _ag_top else '— 없음'} · "
-                    f"하단 고정이미지 {'✅' if _ag_bot else '— 없음'}"
-                    + ("" if (_ag_top or _ag_bot) else
-                       "  (‘네이버 등록’ 탭 › 공통 이미지에서 등록하면 여기에도 적용됩니다)"))
+                # 어느 쪽 이미지가 쓰이는지 보여 준다 — 대상 사용자 것이 없으면
+                # 관리자 스토어 브랜딩이 남의 스토어에 들어가므로 눈에 띄어야 한다.
+                _ag_top_own = bool(str(_ag_ts.get('naver_detail_top_img') or '').strip())
+                _ag_bot_own = bool(str(_ag_ts.get('naver_detail_bottom_img') or '').strip())
+
+                def _ag_src(_url, _own):
+                    if not _url:
+                        return '— 없음'
+                    return '✅ 대상 사용자' if _own else '⚠️ 관리자 이미지로 대체 중'
+
+                with st.expander(f"🖼 상단/하단 고정이미지 — 상단 {_ag_src(_ag_top, _ag_top_own)} · "
+                                 f"하단 {_ag_src(_ag_bot, _ag_bot_own)}",
+                                 expanded=bool(_ag_top and not _ag_top_own)):
+                    st.caption(f"여기서 올린 이미지는 '{_ag_tuser}' 설정에 저장되어, 이 사용자의 "
+                               "대행등록(즉시·대기열)과 네이버 등록 모두에 적용됩니다. "
+                               "이미 등록된 상품은 바뀌지 않습니다.")
+                    _ag_i1, _ag_i2 = st.columns(2)
+                    if _ag_top:
+                        _ag_i1.image(_ag_top, caption=f"현재 상단 ({_ag_src(_ag_top, _ag_top_own)})",
+                                     width=200)
+                    if _ag_bot:
+                        _ag_i2.image(_ag_bot, caption=f"현재 하단 ({_ag_src(_ag_bot, _ag_bot_own)})",
+                                     width=200)
+                    _ag_up_top = _ag_i1.file_uploader("상단 이미지 교체", type=['jpg', 'jpeg', 'png', 'webp'],
+                                                      key=f"ag_top_up_{_ag_tuser}")
+                    _ag_up_bot = _ag_i2.file_uploader("하단 이미지 교체", type=['jpg', 'jpeg', 'png', 'webp'],
+                                                      key=f"ag_bot_up_{_ag_tuser}")
+
+                    def _ag_upload(_f):
+                        """업로드 파일 → 대상 스토어 키로 네이버 CDN 업로드. 배너라 크롭 금지."""
+                        import tempfile, os as _os_up
+                        _ext = _os_up.path.splitext(_f.name)[1].lower() or '.jpg'
+                        _fd, _tp = tempfile.mkstemp(suffix=_ext); _os_up.close(_fd)
+                        try:
+                            with open(_tp, 'wb') as _w:
+                                _w.write(_f.getvalue())
+                            return naver_api.upload_product_image(_ag_tid, _ag_tsecret, _tp, square=False)
+                        finally:
+                            try: _os_up.remove(_tp)
+                            except Exception: pass
+
+                    _ag_b1, _ag_b2 = st.columns(2)
+                    if _ag_b1.button("💾 이미지 저장", key="ag_img_save", type="primary",
+                                     use_container_width=True):
+                        _ag_msgs, _ag_errs = [], []
+                        with st.spinner("네이버 CDN 업로드 중..."):
+                            for _f, _key, _lbl in ((_ag_up_top, 'naver_detail_top_img', '상단'),
+                                                   (_ag_up_bot, 'naver_detail_bottom_img', '하단')):
+                                if not _f:
+                                    continue
+                                _u, _ue = _ag_upload(_f)
+                                if _u:
+                                    # 옛 상단 주소를 남겨 둔다 — 이미 등록된 상품의
+                                    # 일괄 교체가 이 주소로 옛 이미지를 찾는다.
+                                    _prev = str(_ag_ts.get(_key) or '').strip()
+                                    if _key == 'naver_detail_top_img' and _prev:
+                                        import json as _json_im
+                                        try:
+                                            _hist = _json_im.loads(_ag_ts.get('naver_detail_top_img_history') or '[]')
+                                        except Exception:
+                                            _hist = []
+                                        if _prev not in _hist:
+                                            _hist.append(_prev)
+                                        set_setting(_ag_tuser, 'naver_detail_top_img_history',
+                                                    _json_im.dumps(_hist[-20:]))
+                                    set_setting(_ag_tuser, _key, _u); _ag_msgs.append(_lbl)
+                                else:
+                                    _ag_errs.append(f"{_lbl}: {str(_ue or '')[:100]}")
+                        for _e in _ag_errs:
+                            st.error(f"업로드 실패 — {_e}")
+                        if _ag_msgs:
+                            st.success(f"✅ '{_ag_tuser}' {'·'.join(_ag_msgs)} 이미지 저장 — 다음 등록부터 적용")
+                            st.rerun()
+                        elif not _ag_errs:
+                            st.warning("교체할 이미지를 선택하세요.")
+                    if _ag_b2.button("🗑 이 사용자 이미지 해제", key="ag_img_clear",
+                                     use_container_width=True,
+                                     disabled=not (_ag_top_own or _ag_bot_own)):
+                        set_setting(_ag_tuser, 'naver_detail_top_img', '')
+                        set_setting(_ag_tuser, 'naver_detail_bottom_img', '')
+                        st.success("해제했습니다 — 관리자 이미지가 있으면 그것으로 대체됩니다.")
+                        st.rerun()
+
+                    # ── 이미 등록된 상품의 상단이미지 일괄 교체 ──
+                    st.markdown("---")
+                    st.markdown(f"**🔁 '{_ag_tuser}' 스토어의 기존 상품 상단이미지 일괄 교체**")
+                    import detail_image_replace as _dir
+                    import json as _json_rp
+                    try:
+                        _rp_hist = _json_rp.loads(_ag_ts.get('naver_detail_top_img_history') or '[]')
+                    except Exception:
+                        _rp_hist = []
+                    # 옛 이미지 후보: 관리자 상단(대체로 들어간 것) + 이 사용자의 이전 상단들
+                    _rp_admin_top = str(settings.get('naver_detail_top_img') or '').strip()
+                    _rp_olds = [u for u in dict.fromkeys([_rp_admin_top] + list(_rp_hist)) if u]
+                    _rp_new = str(_ag_ts.get('naver_detail_top_img') or '').strip()
+                    _rp_olds = [u for u in _rp_olds if u != _rp_new]
+                    if not _rp_new:
+                        st.info("먼저 위에서 이 사용자의 새 상단 이미지를 저장하세요. "
+                                "그 이미지로 기존 상품의 옛 상단이미지를 바꿉니다.")
+                    else:
+                        st.caption("상세페이지 안에서 **아래 옛 이미지와 주소가 똑같은 이미지만** 새 "
+                                   "상단 이미지로 바꿉니다. 상품명·가격·본문·태그는 그대로입니다. "
+                                   "바꾸기 전 상세는 서버에 백업되어 되돌릴 수 있습니다.")
+                        _rp_c1, _rp_c2 = st.columns([1, 3])
+                        _rp_c1.image(_rp_new, caption="새 상단", width=160)
+                        with _rp_c2:
+                            if _rp_olds:
+                                st.caption(f"찾을 옛 이미지 {len(_rp_olds)}개")
+                                st.image(_rp_olds[:6], width=120)
+                            _rp_extra = st.text_area(
+                                "추가로 찾을 옛 이미지 주소 (한 줄에 하나, 선택)",
+                                key=f"rp_extra_{_ag_tuser}", height=68,
+                                help="네이버 상품 상세에서 옛 상단 이미지를 우클릭 → 이미지 주소 복사")
+                        _rp_olds_all = list(dict.fromkeys(
+                            _rp_olds + [l.strip() for l in (_rp_extra or '').splitlines()
+                                        if l.strip().startswith('http')]))
+                        _rp_ins = st.checkbox("옛 상단이미지가 없는 상품은 맨 위에 새로 넣기",
+                                              key=f"rp_ins_{_ag_tuser}", value=False)
+                        _rp_job = _dir.JOBS.get(_ag_tuser)
+                        _rp_busy = _dir.is_running(_ag_tuser)
+                        _rp_b1, _rp_b2 = st.columns(2)
+                        if _rp_b1.button("🧪 5개만 먼저 교체", key="rp_test", use_container_width=True,
+                                         disabled=_rp_busy or not (_rp_olds_all or _rp_ins)):
+                            _dir.start_replace(_ag_tuser, _ag_tid, _ag_tsecret, _rp_olds_all,
+                                               _rp_new, _rp_ins, limit=5)
+                            st.rerun()
+                        if _rp_b2.button("🔁 전체 상품 교체 시작", key="rp_all", type="primary",
+                                         use_container_width=True,
+                                         disabled=_rp_busy or not (_rp_olds_all or _rp_ins)):
+                            _dir.start_replace(_ag_tuser, _ag_tid, _ag_tsecret, _rp_olds_all,
+                                               _rp_new, _rp_ins, limit=0)
+                            st.rerun()
+
+                        if _rp_job:
+                            _mode = '되돌리기' if _rp_job['mode'] == 'restore' else '교체'
+                            _st = {'running': '⏳ 진행 중', 'done': '✅ 완료',
+                                   'error': '❌ 중단'}.get(_rp_job['state'], _rp_job['state'])
+                            _tot = _rp_job['total'] or 0
+                            st.markdown(f"{_st} ({_mode}) — {_rp_job['done']}/{_tot or '?'}건 · "
+                                        f"시작 {_rp_job['started']}"
+                                        + (f" · 종료 {_rp_job['finished']}" if _rp_job['finished'] else ""))
+                            if _tot:
+                                st.progress(min(1.0, _rp_job['done'] / _tot))
+                            if _rp_job['mode'] == 'restore':
+                                st.caption(f"되돌림 {_rp_job['replaced']} · 실패 {_rp_job['fail']}")
+                            else:
+                                st.caption(f"교체 {_rp_job['replaced']} · 새로 넣음 {_rp_job['inserted']} · "
+                                           f"이미 새 이미지 {_rp_job['already']} · "
+                                           f"옛 이미지 없음(건너뜀) {_rp_job['none']} · 실패 {_rp_job['fail']}")
+                            if _rp_job['message']:
+                                st.warning(_rp_job['message'])
+                            if _rp_job['errors']:
+                                with st.expander(f"실패 {len(_rp_job['errors'])}건 보기"):
+                                    st.text("\n".join(_rp_job['errors']))
+                            _rq1, _rq2 = st.columns(2)
+                            if _rp_busy:
+                                _rq1.button("🔄 진행 새로고침", key="rp_refresh", use_container_width=True)
+                                if _rq2.button("⏹ 중지", key="rp_stop", use_container_width=True):
+                                    _dir.stop(_ag_tuser); st.rerun()
+                                st.caption("백그라운드에서 돕니다 — 다른 화면으로 가도 계속 진행됩니다. "
+                                           "서버 재시작으로 끊기면 다시 누르세요(이미 바뀐 상품은 건너뜁니다).")
+
+                        _rp_bk = _dir.list_backups(_ag_tuser)
+                        if _rp_bk:
+                            with st.expander("↩ 교체 되돌리기 (백업에서 원래 상세로 복원)"):
+                                _rp_pick = st.selectbox(
+                                    "백업", _rp_bk, format_func=lambda b: f"{b[1]} — {b[2]}건",
+                                    key=f"rp_bk_{_ag_tuser}")
+                                if st.button("↩ 이 백업으로 되돌리기", key="rp_restore",
+                                             disabled=_rp_busy):
+                                    _dir.start_restore(_ag_tuser, _ag_tid, _ag_tsecret, _rp_pick[0])
+                                    st.rerun()
                 # 구매/리뷰 혜택 — 대상 사용자 프리셋 우선, 없으면 관리자 것.
                 # 등록 시점에 같이 걸어야 나중에 일괄 적용을 다시 안 돌린다.
                 import json as _json_bn
