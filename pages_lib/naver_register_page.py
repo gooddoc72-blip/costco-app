@@ -253,9 +253,10 @@ def _render_margin_calc(kp, cost_default, ship_default, box_default, margin_defa
 
     마진금액 = 판매가 + 고객배송비 − 판매수수료 − 배송비수수료 − 택배비 − 포장비 − 매입가.
     · 매입가는 호출자가 가격 DB에서 찾아 넘긴다(이 건만 고칠 수 있다).
-    · 마진율(판매가 대비 %)·매입가·고객배송비·택배비·포장비를 바꾸면 판매가를
-      역산해 칸에 **다시 채운다**(on_change). 판매가를 직접 고치면 그 값이 유지되고
-      마진금액만 다시 계산된다 — 자동값과 수동값이 서로 덮어쓰지 않게 하려는 것.
+    · 판매가를 역산해 칸에 다시 채우는 건 **마진율을 바꿀 때뿐**이다(on_change).
+      매입가·택배비·포장비·고객배송비를 고치면 판매가는 그대로 두고 마진금액·
+      마진율만 다시 계산된다. 예전엔 이 칸들도 판매가를 덮어써서, 택배비만 고쳐도
+      사람이 정한 판매가가 바뀌었다.
     · sale_init: 첫 표시 판매가. None이면 마진율로 계산(신규 등록). 기존 상품
       수정처럼 현재가로 시작해야 할 때만 넘긴다.
     kp에 상품 식별자를 넣어야 한다 — 고정 key면 다른 상품을 골라도 앞 상품 값이 남는다.
@@ -287,10 +288,10 @@ def _render_margin_calc(kp, cost_default, ship_default, box_default, margin_defa
         # -- 1행: 나가는 돈(원가) --
         _m1, _m2, _m3 = st.columns(3)
         _m1.number_input("매입가", min_value=0, step=100, key=_k['cost'],
-                         on_change=_recalc, help=cost_help or None)
+                         help=cost_help or None)
         _m2.number_input("택배비", min_value=0, step=100, key=_k['ship'],
-                         on_change=_recalc, help="택배사에 내는 실제 원가입니다.")
-        _m3.number_input("포장비", min_value=0, step=50, key=_k['box'], on_change=_recalc)
+                         help="택배사에 내는 실제 원가입니다. 바꿔도 판매가는 그대로입니다.")
+        _m3.number_input("포장비", min_value=0, step=50, key=_k['box'])
 
         _b = pricing.margin_breakdown(_ss[_k['sale']], _ss[_k['cost']], _ss[_k['ship']],
                                       _ss[_k['box']], customer_ship=_ss[_k['cship']])
@@ -312,17 +313,17 @@ def _render_margin_calc(kp, cost_default, ship_default, box_default, margin_defa
         # -- 2행: 들어오는 돈 --
         _n1, _n2 = st.columns(2)
         _n1.number_input("네이버 판매가", min_value=0, step=100, key=_k['sale'],
-                         help="아래 마진율로 자동 계산됩니다. 직접 고쳐도 됩니다.")
+                         help="직접 정하세요. 아래 마진율을 바꿀 때만 자동으로 다시 채워집니다.")
         _n2.number_input("고객 배송비", min_value=0, step=500, key=_k['cship'],
-                         on_change=_recalc,
                          help="구매자가 내는 배송비입니다. 무료배송이면 0. "
                               "네이버는 이 금액에도 정산 수수료를 뗍니다.")
 
         # -- 3행: 목표 마진율(입력) -> 마진금액(결과) --
         _r1, _r2 = st.columns([1, 2])
-        _r1.number_input("마진율 % (판매가 대비)", min_value=0.0, max_value=80.0, step=1.0,
+        _r1.number_input("목표 마진율 % (판매가 대비)", min_value=0.0, max_value=80.0, step=1.0,
                          key=_k['rate'], on_change=_recalc,
-                         help="바꾸면 위 판매가가 자동으로 다시 계산됩니다.")
+                         help="바꾸면 이 마진율에 맞춰 위 판매가를 다시 채웁니다. "
+                              "오른쪽 마진금액·%는 지금 판매가로 계산한 실제 값입니다.")
         _col = "#d32f2f" if _b['margin'] < 0 else "#2e7d32"
         _r2.markdown(
             "<div style='padding-top:1.9em'>마진금액 "
