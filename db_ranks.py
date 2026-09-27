@@ -265,6 +265,7 @@ def get_daily_ranks_in_month(username, tracking_id, year, month):
             rh.rank_price_compare as wonbu,
             rh.rank_compare as compare,
             rh.rank_total as solo,
+            rh.page as page,
             rh.checked_at as last_check
         FROM rank_history rh
         WHERE rh.tracking_id = ?
@@ -290,6 +291,16 @@ def get_daily_ranks_in_month(username, tracking_id, year, month):
             result[day] = {
                 "best": valid[best_type],
                 "best_type": best_type,
+                **ranks,
+            }
+        else:
+            # 측정은 했는데 못 찾은 날. 빈칸(미측정)과 구분해야 한다.
+            # 순위가 없는 행의 page 는 '몇 페이지까지 봤는가'다(확장프로그램이 채운다).
+            # 1페이지 = 40개라 page*40 위 밖. page 가 없으면(예전 기록) 깊이를 모른다.
+            result[day] = {
+                "best": None,
+                "best_type": None,
+                "out_of": (r['page'] * 40) if r['page'] else None,
                 **ranks,
             }
     return result
@@ -402,7 +413,7 @@ def get_latest_ranks(username):
                kt.platform, kt.coupang_product_id,
                rh.rank_price_compare, rh.rank_total, rh.rank_compare, rh.checked_at,
                rh.rank_exposure, rh.rank_in_catalog, rh.mall_count,
-               rh.is_item_winner, rh.is_ad, rh.source
+               rh.is_item_winner, rh.is_ad, rh.source, rh.page
         FROM keyword_tracking kt
         LEFT JOIN rank_history rh ON rh.id = (
             SELECT id FROM rank_history

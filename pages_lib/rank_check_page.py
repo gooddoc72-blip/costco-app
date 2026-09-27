@@ -494,6 +494,23 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         f'border-radius:5px;margin:2px 2px">{_d}</span>'
                     )
                     # 미체크 일자에는 prev_rank 갱신하지 않음
+                elif _info['best'] is None:
+                    # 측정했지만 확인한 범위 안에 없었다. 전날 순위가 있었으면 이탈이라 적색.
+                    _out = _info.get('out_of')
+                    _dropped = _prev_rank is not None and _prev_rank < 10 ** 6
+                    _bg, _color, _border = (("#e74c3c", "#fff", "#c0392b") if _dropped
+                                            else ("#f1f1f1", "#888", "#ccc"))
+                    _label = f"{_out}+" if _out else "밖"
+                    _tip = f"{_out}위 밖" if _out else "미노출"
+                    _cells.append(
+                        f'<span title="{_d}일: {_tip}" '
+                        f'style="display:inline-flex;align-items:center;justify-content:center;'
+                        f'width:30px;height:30px;color:{_color};font-size:10px;font-weight:700;'
+                        f'background:{_bg};border:1px solid {_border};'
+                        f'border-radius:5px;margin:2px 2px">{_label}</span>'
+                    )
+                    # 다음 날 다시 잡히면 '하락'이 아니라 '재진입'이므로 아주 큰 값으로 둔다.
+                    _prev_rank = 10 ** 6
                 else:
                     _r = _info['best']
                     # 전일(데이터 있는 직전) 대비 순위 하락 (숫자 증가) 판정
@@ -538,6 +555,13 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     f"<b>{_lr_best}위</b><br><small>({_lr_type})</small>",
                     unsafe_allow_html=True
                 )
+            elif _t.get('checked_at'):
+                # 측정은 했는데 확인한 범위 안에 없었다.
+                _pg = _t.get('page')
+                _row[4].markdown(
+                    f"<b style='color:#c0392b'>{_pg * 40}위 밖</b>" if _pg
+                    else "<b style='color:#c0392b'>미노출</b>",
+                    unsafe_allow_html=True)
             else:
                 _row[4].markdown("<small>-</small>", unsafe_allow_html=True)
 
