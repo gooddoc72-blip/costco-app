@@ -22,6 +22,14 @@ def get_new_orders(client_id, client_secret, hours_back=48, status_type="ALL"):
     _url = "https://api.commerce.naver.com/external/v1/pay-order/seller/product-orders/last-changed-statuses"
 
     # API 요청당 최대 24h 제약 → 23h59m 윈도우 + 인접 구간이 1초만 겹치도록 정렬해 갭 제거
+    #
+    # ⚠️ 호출 한도(429 GW.RATE_LIMIT): 예전엔 구간 14개를 한꺼번에 쏘고, 실패한
+    #   구간을 **빈 결과로 삼켰다.** 실측(oxo, 9/22~9/28 = 8구간): 동시 요청 때마다
+    #   3~4구간이 429로 거절돼 그 날짜 주문이 통째로 빠졌고, 거절되는 구간이 매번
+    #   달라 수집할 때마다 건수가 바뀌었다. 동시 요청을 줄이고 429는 기다렸다
+    #   다시 묻는다. 끝내 실패한 구간은 get_last_fetch_warning()으로 알린다.
+    _failed = []
+
     def _fetch_window(i):
         to_dt   = end_dt - timedelta(seconds=int(86399 * i))   # 23h59m59s 간격
         from_dt = to_dt  - timedelta(hours=23, minutes=59, seconds=59)
@@ -29,23 +37,34 @@ def get_new_orders(client_id, client_secret, hours_back=48, status_type="ALL"):
             "lastChangedFrom": from_dt.strftime("%Y-%m-%dT%H:%M:%S.000+09:00"),
             "lastChangedTo":   to_dt.strftime("%Y-%m-%dT%H:%M:%S.000+09:00"),
         }
-        try:
-            resp = requests.get(_url, headers=headers, params=params, timeout=15)
-            if resp.status_code == 200:
-                data = resp.json().get("data", {}).get("lastChangeStatuses", [])
-                return {item["productOrderId"] for item in data
-                        if isinstance(item, dict) and "productOrderId" in item}
-            return set()
-        except Exception as e:
-            # 병렬 윈도우 실패 시 조용히 누락되지 않도록 stderr에 기록
-            import sys
-            print(f"[naver_api] _fetch_window({i}) 실패: {e}", file=sys.stderr)
-            return set()
+        _last = ''
+        for _try in range(6):
+            try:
+                resp = requests.get(_url, headers=headers, params=params, timeout=15)
+                if resp.status_code == 200:
+                    data = resp.json().get("data", {}).get("lastChangeStatuses", [])
+                    return {item["productOrderId"] for item in data
+                            if isinstance(item, dict) and "productOrderId" in item}
+                _last = f"HTTP {resp.status_code}"
+                if resp.status_code != 429 and resp.status_code < 500:
+                    break                     # 한도·서버오류가 아니면 다시 물어도 같다
+            except Exception as e:
+                _last = str(e)[:80]
+            time.sleep(0.8 * (_try + 1))
+        _failed.append(f"{from_dt.strftime('%m-%d %H:%M')}~{to_dt.strftime('%m-%d %H:%M')} ({_last})")
+        return set()
 
     all_ids = set()
-    with _cf.ThreadPoolExecutor(max_workers=14) as ex:
+    with _cf.ThreadPoolExecutor(max_workers=2) as ex:
         for ids in ex.map(_fetch_window, range(loops)):
             all_ids.update(ids)
+
+    global _last_fetch_warning
+    _last_fetch_warning = ''
+    if _failed:
+        _last_fetch_warning = ("네이버 호출 한도로 %d개 구간(하루 단위)을 못 읽었습니다 — 그 기간 주문이 "
+                               "빠졌을 수 있으니 잠시 뒤 다시 수집하세요: %s"
+                               % (len(_failed), ", ".join(sorted(_failed))))
 
     if not all_ids: return [], None
 
@@ -58,7 +77,17 @@ def get_new_orders(client_id, client_secret, hours_back=48, status_type="ALL"):
     for i in range(0, len(unique_ids), 300):
         chunk = unique_ids[i:i+300]
         query_url = "https://api.commerce.naver.com/external/v1/pay-order/seller/product-orders/query"
-        d_resp = requests.post(query_url, headers=headers, json={"productOrderIds": chunk}, timeout=30)
+        # 상세 조회도 429를 맞는다 — 실패하면 최대 300건이 통째로 빠지므로 다시 묻는다
+        for _try in range(5):
+            d_resp = requests.post(query_url, headers=headers,
+                                   json={"productOrderIds": chunk}, timeout=30)
+            if d_resp.status_code != 429 and d_resp.status_code < 500:
+                break
+            time.sleep(0.8 * (_try + 1))
+        if d_resp.status_code != 200:
+            _last_fetch_warning = ((_last_fetch_warning + " / ") if _last_fetch_warning else "") + (
+                "주문 상세 %d건을 못 읽었습니다(HTTP %s) — 다시 수집하세요"
+                % (len(chunk), d_resp.status_code))
 
         if d_resp.status_code == 200:
             items = d_resp.json().get("data", [])
@@ -188,6 +217,14 @@ def get_new_orders(client_id, client_secret, hours_back=48, status_type="ALL"):
 
 
 _last_status_dist = {}
+
+#: 마지막 get_new_orders에서 일부 구간·상세를 못 읽었을 때의 경고('' = 전부 읽음).
+#  반환값의 err는 '전체 실패'로 쓰이고 있어(크론이 err면 중단) 부분 실패는 여기로 낸다.
+_last_fetch_warning = ''
+
+
+def get_last_fetch_warning():
+    return _last_fetch_warning
 
 
 def get_last_status_dist():

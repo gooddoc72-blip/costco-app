@@ -437,6 +437,10 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             with st.spinner(f"네이버 커머스 API 조회 중... ({hours}시간 범위)"):
                 for st_type in types_to_query:
                     orders, err = naver_api.get_new_orders(api_id, api_secret, hours_back=hours, status_type=st_type)
+                    # 일부 구간을 호출 한도로 못 읽었으면 건수가 모자란다 — 조용히 넘기지 않는다
+                    _fw = naver_api.get_last_fetch_warning()
+                    if _fw:
+                        st.warning(f"⚠️ {_fw}")
                     if orders:
                         all_orders.extend(orders)
                     elif err:

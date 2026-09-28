@@ -7,6 +7,7 @@ from .core import (
 from .orders import (
     get_new_orders,
     get_last_status_dist,
+    get_last_fetch_warning,
     ship_orders,
     resolve_product_order_ids,
     get_settlement_history,

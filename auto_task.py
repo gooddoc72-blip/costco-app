@@ -878,6 +878,8 @@ def run_fetch_orders_task(username="admin"):
         try:
             orders, err = naver_api.get_new_orders(api_id, api_secret,
                                                     hours_back=_hours, status_type="ALL")
+            if naver_api.get_last_fetch_warning():
+                log(f"  ⚠️ {naver_api.get_last_fetch_warning()}")
             if err:
                 log(f"  ⚠️ 네이버 오류: {err}")
                 errors.append(f"네이버: {err}")
