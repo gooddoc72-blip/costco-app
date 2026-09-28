@@ -138,7 +138,7 @@ def save_daily_orders(username, orders, settings):
 
     df = _pd.DataFrame(orders)
     from services import process_and_save_orders
-    process_and_save_orders(
+    return process_and_save_orders(
         username, df, today, shipping_cost, box_cost, save_history=True,
     )
 
@@ -1027,8 +1027,10 @@ def run_fetch_orders_task(username="admin"):
         _ACTIONABLE = {'발주확인', '결제완료', '발송대기'}
         _daily = [o for o in all_orders
                   if o.get('플랫폼') == '쿠팡' or o.get('주문상태', '') in _ACTIONABLE]
-        save_daily_orders(username, _daily, settings)
-        log(f"💾 daily_orders 자동 저장: {len(_daily)}건 (처리대상)")
+        _sr = save_daily_orders(username, _daily, settings) or {}
+        _carried = int(_sr.get('carried') or 0)
+        log(f"💾 daily_orders 자동 저장: {len(_daily) - _carried}건 (처리대상)"
+            + (f" · 이월 {_carried}건은 이전 날짜에 있어 건너뜀" if _carried else ""))
         # 수익계산 자동 저장 (profit_settlements) → 홈달력/통계 수익 반영
         try:
             _pn = auto_save_profit(username, datetime.now().strftime("%Y-%m-%d"))

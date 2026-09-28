@@ -352,9 +352,13 @@ def process_and_save_orders(username, df, order_date, shipping_cost, box_cost,
     # 2) daily_orders 저장 (save_daily=True일 때만 — 사용자 명시적 저장 시점)
     if save_daily:
         try:
+            # 주문 수집 경로 — 이미 다른 날짜에 수집된 이월 주문은 다시 쌓지 않는다
             _db_save_daily_orders(username, order_date, df_with_costs,
-                                  int(shipping_cost), int(box_cost))
-            result['orders'] = len(df_with_costs)
+                                  int(shipping_cost), int(box_cost),
+                                  skip_other_dates=True)
+            import db_orders as _dbo
+            result['carried'] = len(_dbo.LAST_CARRIED)
+            result['orders'] = len(df_with_costs) - result['carried']
         except Exception as e:
             result['error_orders'] = str(e)
     else:

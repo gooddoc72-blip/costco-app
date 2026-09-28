@@ -37,12 +37,27 @@ def _ship_settle_factor(conn):
 
 # ── 일별 주문 (수익 계산용) ──────────────────────────────
 
-def save_daily_orders(username, order_date, orders_df, shipping_cost, box_cost):
+#: 마지막 save_daily_orders(skip_other_dates=True)에서 '이미 다른 날짜에 저장돼
+#  건너뛴' 주문번호 — 수집 화면이 '이월 주문 N건'으로 알려 준다.
+LAST_CARRIED = []
+
+
+def save_daily_orders(username, order_date, orders_df, shipping_cost, box_cost,
+                      skip_other_dates=False):
     """주문 데이터를 daily_orders에 저장 — 모든 행을 인자 order_date에 저장.
 
     "업로드/수집 시점의 날짜에 모든 주문건을 저장" 요구사항에 따라
     결제일 컬럼은 무시하고 인자로 받은 order_date에 일괄 저장.
+
+    skip_other_dates=True(주문 수집 경로) — **다른 날짜에 이미 저장된 주문은
+    건너뛴다.** 발송이 밀린 주문은 수집할 때마다 다시 잡히는데, 예전엔 그날
+    날짜로 또 저장돼 같은 주문이 여러 날에 걸쳐 쌓였다(oxo 9/24 결제 5건이
+    9/25·9/26 두 날에). 날짜별 주문 수·수익이 부풀고 장보기에 두 번 오른다.
+    처음 수집된 날짜 하나에만 둔다. 수익계산의 '정산 데이터 저장'은 그 날짜를
+    직접 고치는 일이라 기존 동작(False)을 유지한다.
     """
+    global LAST_CARRIED
+    LAST_CARRIED = []
     conn = get_user_db(username)
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     _factor = _ship_settle_factor(conn)  # 실정산배송비 비율(네이버 수수료 차감)
@@ -77,11 +92,19 @@ def save_daily_orders(username, order_date, orders_df, shipping_cost, box_cost):
     _existing_onos = {row[0] for row in conn.execute(
         "SELECT order_no FROM daily_orders WHERE order_date=? AND COALESCE(order_no,'')<>''",
         (order_date,)).fetchall()}
+    _other_onos = set()
+    if skip_other_dates:
+        _other_onos = {str(row[0]) for row in conn.execute(
+            "SELECT DISTINCT order_no FROM daily_orders "
+            "WHERE order_date<>? AND COALESCE(order_no,'')<>''", (order_date,)).fetchall()}
 
     for _, r in orders_df.iterrows():
         _ono = str(r.get('상품주문번호', '') or '').strip()
         if _ono and _ono in _existing_onos:
             continue  # 이미 저장됨(설정시간 수집 등) → 보존, 덮어쓰지 않음
+        if _ono and _ono in _other_onos:
+            LAST_CARRIED.append(_ono)
+            continue  # 다른 날짜에 이미 수집된 이월 주문 — 두 번 쌓지 않는다
         cost = r.get('구입가격', 0) or 0
         ship_fee = int(r['배송비 합계'])
         settlement = int(r['정산예정금액'])

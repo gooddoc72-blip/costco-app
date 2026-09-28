@@ -426,10 +426,33 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 help=f"기본은 오늘 {_cut_h:02d}:00 마감분까지만 수집합니다. "
                      "마감 이후 주문은 내일 수집분에 들어갑니다. 설정 탭에서 마감시각 변경 가능.")
 
-        # 선택 날짜 범위 → hours_back 변환 (안전 마진 +24h)
+        # ── 결제일 기준 기간 ──
+        #   예전엔 종료일을 받기만 하고 안 썼고, '시작일 하루 전~지금'에 **상태가 바뀐**
+        #   주문을 다 가져왔다(네이버 API가 변경시각 기준). 9/27~9/27을 골라도 오늘
+        #   주문까지 섞여 건수가 안 맞았다. 이제 결제일이 기간 안인 것만 수집한다.
+        #   기간 이전에 결제돼 아직 안 보낸 주문은 따로 세어 알려 주고, 체크하면 포함한다.
+        _incl_prev = st.checkbox(
+            "📦 기간 이전에 결제된 미발송 주문도 포함 (최근 7일)", value=False,
+            key="ou_incl_prev",
+            help="시작일보다 앞서 결제됐는데 아직 발송하지 않은 주문입니다. "
+                 "품절 등으로 밀린 주문을 오늘 장보기에 넣으려면 체크하세요.")
         from datetime import datetime as _dt
-        _nav_delta_h = int((_dt.now() - _dt.combine(_nav_date_from, _dt.min.time())).total_seconds() / 3600) + 24
+        # 기간 이전 미발송을 세려면 시작일보다 7일 더 앞까지 조회한다(변경시각 ≥ 결제시각)
+        _nav_delta_h = int((_dt.now() - _dt.combine(_nav_date_from - timedelta(days=7),
+                                                    _dt.min.time())).total_seconds() / 3600)
         hours = max(48, _nav_delta_h)
+        _nf, _nt = str(_nav_date_from), str(_nav_date_to)
+
+        def _pay_day(o):
+            """주문 → 결제일(YYYY-MM-DD). 결제일이 비면 주문일시."""
+            import re as _re_pd
+            _m = _re_pd.search(r"(\d{4})\D(\d{1,2})\D(\d{1,2})",
+                               str(o.get('결제일') or o.get('주문일시') or ''))
+            return ("%s-%02d-%02d" % (_m.group(1), int(_m.group(2)), int(_m.group(3)))
+                    if _m else '')
+        # 지난 수집의 기간 요약 — 수집 직후 rerun으로 success 문구가 사라지므로 여기서 다시 보인다
+        if st.session_state.get('_ou_range_msg'):
+            st.info(st.session_state['_ou_range_msg'])
         if fetch_btn:
             all_orders = []
             types_to_query = ["READY", "PAYED"] if status_type == "ALL" else [status_type]
@@ -449,6 +472,27 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         else:
                             st.warning(f"{st_type} 조회: {err}")
 
+            # ── 0-A. 결제일로 기간 자르기 ──
+            #   DB 이력(order_history)에는 전부 남긴다 — 상태 추적용이라 기간과 무관하다.
+            _all_fetched = list(all_orders)
+            _in, _prev, _after = [], [], []
+            for _o in all_orders:
+                _pd = _pay_day(_o)
+                if not _pd or _nf <= _pd <= _nt:
+                    _in.append(_o)          # 날짜를 모르면 빼지 않는다(누락보다 낫다)
+                elif _pd < _nf:
+                    _prev.append(_o)
+                else:
+                    _after.append(_o)
+            all_orders = _in + (_prev if _incl_prev else [])
+            _msg_rng = f"📅 결제일 {_nf} ~ {_nt}: **{len(_in)}건**"
+            if _prev:
+                _msg_rng += (f" · 기간 이전 결제 미발송 **{len(_prev)}건** "
+                             + ("포함" if _incl_prev else "(위 '기간 이전…' 체크 시 포함)"))
+            if _after:
+                _msg_rng += f" · 종료일 이후 결제 {len(_after)}건 제외"
+            st.session_state['_ou_range_msg'] = _msg_rng
+
             # ── 0. 마감시각 이후 주문 분리 (오늘 장보기 대상이 아님) ──
             if _cut_h is not None and not _cut_include and all_orders:
                 all_orders, _deferred_cut = split_orders_by_cutoff(all_orders, _cut_h)
@@ -463,6 +507,14 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 fetched_df = pd.DataFrame(all_orders).drop_duplicates(subset=['상품주문번호'], keep='last')
                 api_count = len(fetched_df)
                 save_order_history(USERNAME, fetched_df)
+            # 기간 밖으로 거른 주문도 상태 이력에는 남긴다(발송·취소 추적은 기간과 무관)
+            _outside = [o for o in (_prev + _after) if o not in all_orders]
+            if _outside:
+                try:
+                    save_order_history(USERNAME, pd.DataFrame(_outside).drop_duplicates(
+                        subset=['상품주문번호'], keep='last'))
+                except Exception:
+                    pass
 
             # 동기화 시점 기록 → 다음 호출 시 증분 윈도우 계산
             try:
@@ -1035,6 +1087,10 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     st.session_state['orders'] = _r['df']
                     st.session_state['order_date'] = order_date_str
                     st.session_state['orders_unsaved'] = False
+                    if _r.get('carried'):
+                        # rerun 뒤에도 보이게 toast로 — 다른 날짜에 이미 있는 주문은 다시 안 쌓는다
+                        st.toast(f"📦 이월 주문 {_r['carried']}건은 이미 이전 날짜에 저장돼 있어 "
+                                 f"{order_date_str}에 다시 저장하지 않았습니다.", icon="ℹ️")
                     # 💡 캐시 무효화 — 수익계산이 즉시 최신 데이터 보이도록
                     try:
                         if invalidate_data_cache:

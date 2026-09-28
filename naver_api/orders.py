@@ -61,10 +61,18 @@ def get_new_orders(client_id, client_secret, hours_back=48, status_type="ALL"):
 
     global _last_fetch_warning
     _last_fetch_warning = ''
+    # 403(GW.AUTHN)은 한도가 아니라 **권한** 문제다. 토큰은 나오는데 모든 조회가
+    # 거절되는 계정이 있었다(taeyok 9/28) — 예전엔 이걸 '주문 없음'으로 보고했다.
+    _authn = any('HTTP 401' in f or 'HTTP 403' in f for f in _failed)
+    _why = ("API 권한이 없어(403 — 커머스API센터에서 애플리케이션의 주문 API 권한·"
+            "호출 IP 15.164.36.30 등록을 확인하세요)" if _authn else "네이버 호출 한도로")
+    if _failed and len(_failed) >= loops:
+        # 한 구간도 못 읽었으면 '0건'이 아니라 실패다 — 호출측이 err로 알린다
+        return None, "주문 조회 실패: %s 모든 구간(%d개)을 못 읽었습니다." % (_why, loops)
     if _failed:
-        _last_fetch_warning = ("네이버 호출 한도로 %d개 구간(하루 단위)을 못 읽었습니다 — 그 기간 주문이 "
+        _last_fetch_warning = ("%s %d개 구간(하루 단위)을 못 읽었습니다 — 그 기간 주문이 "
                                "빠졌을 수 있으니 잠시 뒤 다시 수집하세요: %s"
-                               % (len(_failed), ", ".join(sorted(_failed))))
+                               % (_why, len(_failed), ", ".join(sorted(_failed))))
 
     if not all_ids: return [], None
 
@@ -175,7 +183,7 @@ def get_new_orders(client_id, client_secret, hours_back=48, status_type="ALL"):
                         "수취인명": sa.get("name", ""),
                         "주문상태": _STATUS_KO.get(p_status, p_status),
                         "주문세부상태": _SUB_STATUS_KO.get(place_status, place_status) if place_status else "",
-                        "결제일": str(po.get("paymentDate", "")).replace("T", " ")[:19],
+                        "결제일": str(po.get("paymentDate") or o.get("paymentDate") or "").replace("T", " ")[:19],
                         "상품번호": po.get("productId", ""),
                         # 원상품번호(originalProductId) — 주문의 productId는 채널상품번호라
                         #   products.naver_origin_pno와 번호 체계가 달라 브리지가 끊긴다.
@@ -751,7 +759,7 @@ def fetch_order_details_by_ids(client_id, client_secret, order_ids):
                     "수취인명": sa.get("name", ""),
                     "주문상태": _STATUS_KO.get(p_status, p_status),
                     "주문세부상태": _SUB_STATUS_KO.get(place_status, place_status) if place_status else "",
-                    "결제일": str(po.get("paymentDate", "")).replace("T", " ")[:19],
+                    "결제일": str(po.get("paymentDate") or o.get("paymentDate") or "").replace("T", " ")[:19],
                     "상품번호": po.get("productId", ""),
                     "원상품번호": po.get("originalProductId", ""),
                     "상품명": po.get("productName", ""),
