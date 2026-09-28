@@ -69,6 +69,15 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
 
 # ── ⑤⑦ 일별 정산리스트 → 청구 → 입금완료 ─────────────────────
 def _tab_day(USERNAME, dmap):
+    # 날짜 한 칸으로 보던 화면에 '사람 기준'을 더한다. 입금은 사람 단위로 여러
+    # 날치를 한 번에 보내는 일이 많은데, 날짜별로만 보면 그 사람의 미입금 날짜를
+    # 하루씩 찾아다니며 체크해야 했다.
+    _mode = st.radio("검색 기준", ["📅 날짜별", "👤 사용자별"], horizontal=True,
+                     key="sb_mode", label_visibility="collapsed")
+    if _mode == "👤 사용자별":
+        _tab_user(USERNAME, dmap)
+        return
+
     # 기본값은 어제 — 구매일 다음날 청구하므로 오늘 볼 것은 어제 정산분이다.
     _def = date.today() - timedelta(days=1)
     c1, c2 = st.columns([1, 3])
@@ -219,6 +228,171 @@ def _tab_day(USERNAME, dmap):
                 if c1.button("취소", key=f"sb_unpay_{ds}_{_u}"):
                     _unpay(ds, _u, _isdep, USERNAME, _ded.get(_u, 0))
                     st.rerun()
+
+
+_PERIODS = ["최근 7일", "최근 30일", "이번 달", "지난달", "최근 90일", "직접 지정"]
+_STATUS_OPTS = {"전체": None, "⚪ 청구 전": 'draft', "🟡 청구됨 (미입금)": 'billed',
+                "🟢 입금완료": 'paid'}
+
+
+def _period_range(label):
+    """기간 이름 → (시작, 끝) date. '직접 지정'은 None."""
+    t = date.today()
+    if label == "최근 7일":
+        return t - timedelta(days=6), t
+    if label == "최근 30일":
+        return t - timedelta(days=29), t
+    if label == "최근 90일":
+        return t - timedelta(days=89), t
+    if label == "이번 달":
+        return t.replace(day=1), t
+    if label == "지난달":
+        _last = t.replace(day=1) - timedelta(days=1)
+        return _last.replace(day=1), _last
+    return None
+
+
+# ── 👤 사용자별 정산·청구 ─────────────────────────────────────
+def _tab_user(USERNAME, dmap):
+    """한 판매자의 청구서를 기간으로 모아 본다 + 미입금 날짜를 한꺼번에 입금완료.
+
+    청구하기·예치금 차감은 날짜별 화면에서만 한다 — 그날 전원을 두고 판단하는
+    일이라 한 사람 화면에서 누르면 같은 날 다른 사람과 기준이 갈린다. 입금은
+    사람이 보내는 돈이라 사람 단위로 체크하는 게 맞다.
+    """
+    _users = sorted((u['username'] for u in get_all_users() if not u.get('is_admin')),
+                    key=lambda u: dmap.get(u, u))
+    if not _users:
+        st.info("판매자가 없습니다.")
+        return
+    c1, c2, c3 = st.columns([2, 1.3, 1.3])
+    _u = c1.selectbox("판매자 (이름을 입력해 찾기)", _users,
+                      format_func=lambda u: f"{dmap.get(u, u)} ({u})"
+                      if dmap.get(u, u) != u else u, key="sbu_user")
+    _pl = c2.selectbox("기간", _PERIODS, index=1, key="sbu_period")
+    _stl = c3.selectbox("상태", list(_STATUS_OPTS), key="sbu_status")
+    _rng = _period_range(_pl)
+    if _rng is None:
+        d1, d2 = st.columns(2)
+        _f = d1.date_input("시작", value=date.today() - timedelta(days=29), key="sbu_from")
+        _t = d2.date_input("끝", value=date.today(), key="sbu_to")
+    else:
+        _f, _t = _rng
+        st.caption(f"기간: **{_f} ~ {_t}**")
+    if _f > _t:
+        st.error("시작일이 끝보다 늦습니다.")
+        return
+
+    invs = _ds.list_invoices(str(_f), str(_t), username=_u, status=_STATUS_OPTS[_stl])
+    _bal = int(_dep.balances().get(_u, 0))
+    _name = dmap.get(_u, _u)
+    if not invs:
+        st.info(f"{_name} — {_f} ~ {_t} 기간에 "
+                + ("" if _stl == "전체" else f"'{_stl}' 상태인 ")
+                + f"청구서가 없습니다. (예치금 잔액 {fmt(_bal)}원)")
+        return
+
+    # 결제수단 — 그날 예치금 차감 기록이 있으면 예치금 결제다
+    _ded = {i['settle_date']: _dep.deducted_map(i['settle_date']).get(_u)
+            for i in invs if i['status'] == 'paid'}
+    _billed = [i for i in invs if i['status'] == 'billed']
+    _tot = sum(int(i['total_amount'] or 0) for i in invs)
+    _paid_amt = sum(int(i['paid_amount'] or 0) for i in invs if i['status'] == 'paid')
+    _unpaid = sum(int(i['total_amount'] or 0) for i in _billed)
+    _draft_amt = sum(int(i['total_amount'] or 0) for i in invs if i['status'] == 'draft')
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("청구액 합계", f"{fmt(_tot)}원", f"{len(invs)}일")
+    m2.metric("입금완료", f"{fmt(_paid_amt)}원")
+    m3.metric("미입금 (청구됨)", f"{fmt(_unpaid)}원", f"{len(_billed)}일",
+              delta_color="inverse" if _unpaid else "off")
+    m4.metric("예치금 잔액", f"{fmt(_bal)}원")
+    if _draft_amt:
+        st.caption(f"⚪ 아직 청구 전 {fmt(_draft_amt)}원 — 청구는 **📅 날짜별**에서 합니다.")
+
+    st.markdown(f"##### 📋 {_name} 청구 내역")
+    _rows = [{
+        '날짜': i['settle_date'],
+        '상태': _ST_ICON.get(i['status'], i['status']),
+        '품목': int(i['item_count'] or 0),
+        '청구액(물건값)': int(i['total_amount'] or 0),
+        '입금액': int(i['paid_amount'] or 0),
+        '결제': ('💳 예치금' if _ded.get(i['settle_date']) else
+                 '🏦 계좌입금' if i['status'] == 'paid' else ''),
+        '청구일시': str(i['billed_at'] or '')[:16],
+        '입금일시': str(i['paid_at'] or '')[:16],
+        '메모': str(i['memo'] or ''),
+    } for i in invs]
+    _ev = st.dataframe(pd.DataFrame(_rows), use_container_width=True, hide_index=True,
+                       on_select="rerun", selection_mode="single-row",
+                       key=f"sbu_tbl_{_u}_{_f}_{_t}_{_stl}",
+                       column_config={k: st.column_config.NumberColumn(k, format='%d')
+                                      for k in ('청구액(물건값)', '입금액')})
+    try:
+        _sel = list(_ev.selection.rows)
+    except Exception:
+        _sel = []
+    if _sel and _sel[0] < len(invs):
+        _inv = invs[_sel[0]]
+        _sd = _inv['settle_date']
+        st.caption(f"👇 **{_sd}** 품목 내역")
+        _render_items_detail(_sd, [_inv], dmap,
+                             ded={_u: _ded[_sd]} if _ded.get(_sd) else {}, by=USERNAME)
+    else:
+        st.caption("👆 날짜 행을 클릭하면 그날 품목 내역이 펼쳐집니다.")
+
+    # 엑셀 — 청구서 + 품목
+    try:
+        import io
+        _items = _ds.get_items_range(str(_f), str(_t), username=_u)
+        _buf = io.BytesIO()
+        with pd.ExcelWriter(_buf, engine='openpyxl') as _xw:
+            pd.DataFrame(_rows).to_excel(_xw, index=False, sheet_name='청구내역')
+            pd.DataFrame([{
+                '날짜': it['settle_date'], '상품명': it['product_name'],
+                '코스트코번호': it['product_no'], '수량': int(it['qty'] or 1),
+                '팩단가': int(it['unit_price'] or 0), '금액': int(it['amount'] or 0),
+                '근거': _ds.SOURCE_LABEL.get(it['source'], it['source']),
+                '주문번호': it['order_no']} for it in _items]).to_excel(
+                    _xw, index=False, sheet_name='품목')
+        st.download_button(f"📥 {_name} {_f}~{_t} 엑셀", data=_buf.getvalue(),
+                           file_name=f"청구_{_u}_{_f}_{_t}.xlsx",
+                           mime=("application/vnd.openxmlformats-officedocument"
+                                 ".spreadsheetml.sheet"), key=f"sbu_xls_{_u}")
+    except Exception as _e:
+        st.caption(f"엑셀 생성 실패: {_e}")
+
+    # ── 💰 입금 확인 — 이 사람의 미입금 날짜를 한꺼번에 ──
+    st.divider()
+    st.subheader("💰 입금 확인")
+    if not _billed:
+        st.caption("이 기간에 입금 대기 중인 청구가 없습니다.")
+        return
+    st.caption("입금된 날짜를 체크하고 저장하세요. 여러 날치를 한 번에 보냈으면 모두 "
+               "체크합니다. 금액이 다르면 실입금액을 고칠 수 있습니다(부분 입금).")
+    _ed = st.data_editor(
+        pd.DataFrame([{'입금완료': False, '날짜': i['settle_date'],
+                       '청구액': int(i['total_amount'] or 0),
+                       '실입금액': int(i['total_amount'] or 0), '메모': ''}
+                      for i in _billed]),
+        use_container_width=True, hide_index=True, key=f"sbu_pay_ed_{_u}_{_f}_{_t}",
+        disabled=['날짜', '청구액'],
+        column_config={
+            '입금완료': st.column_config.CheckboxColumn('입금완료'),
+            '청구액': st.column_config.NumberColumn('청구액', format='%d'),
+            '실입금액': st.column_config.NumberColumn('실입금액', format='%d', min_value=0),
+        })
+    _picked = [r for r in _ed.to_dict('records') if r.get('입금완료')]
+    if _picked:
+        st.markdown(f"선택 **{len(_picked)}일** · 입금액 합계 "
+                    f"**{fmt(sum(int(r.get('실입금액') or 0) for r in _picked))}원**")
+    if st.button(f"💰 입금완료 저장 ({len(_picked)}일)", type="primary",
+                 key=f"sbu_pay_{_u}", disabled=not _picked):
+        for r in _picked:
+            _ds.mark_paid(str(r['날짜']), _u, paid_amount=int(r.get('실입금액') or 0),
+                          memo=str(r.get('메모') or ''))
+        st.toast(f"✅ {_name} {len(_picked)}일 입금완료 처리", icon="💰")
+        st.rerun()
 
 
 def _render_reset_draft(ds, drafts, dmap, USERNAME):
