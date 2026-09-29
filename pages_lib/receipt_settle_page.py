@@ -408,7 +408,7 @@ def _render_online_mark(orders, username, d_day, USERNAME):
         st.rerun()
 
 
-def _render_manual_dispatch(orders, username, d_day, dmap):
+def _render_manual_dispatch(orders, username, d_day, dmap, expanded=False, kp='pd'):
     """네이버에도 발송 기록이 없는데 실제로는 나간 주문을 '발송됨'으로 지정한다.
 
     퀵·직접 전달·다른 스토어 송장처럼 네이버를 거치지 않고 보낸 건이다. 물건은
@@ -419,11 +419,11 @@ def _render_manual_dispatch(orders, username, d_day, dmap):
     if not orders:
         return
     with st.expander(f"✅ 발송됨으로 처리 — 네이버에도 기록이 없는 건 "
-                     f"({dmap.get(username, username)})", expanded=False):
+                     f"({dmap.get(username, username)})", expanded=expanded):
         st.caption("실제로 보낸 건만 체크하세요. 체크한 건은 발송 기록에 들어가 "
                    "**영수증 매칭 대상**이 됩니다. 송장번호는 알면 적고, 없으면 비워 둡니다.")
         _c1, _c2 = st.columns([1, 3])
-        _dd = _c1.date_input("발송일", value=d_day, key=f"rs_mdsp_d_{d_day}_{username}")
+        _dd = _c1.date_input("발송일", value=d_day, key=f"rs_mdsp_d_{kp}_{d_day}_{username}")
         _ed = st.data_editor(
             pd.DataFrame([{'발송됨': False,
                            '주문번호': str(o.get('order_no') or ''),
@@ -431,12 +431,12 @@ def _render_manual_dispatch(orders, username, d_day, dmap):
                            '상품명': str(o.get('product_name') or '')[:40],
                            '송장번호': ''} for o in orders]),
             use_container_width=True, hide_index=True,
-            key=f"rs_mdsp_ed_{d_day}_{username}",
+            key=f"rs_mdsp_ed_{kp}_{d_day}_{username}",
             disabled=['주문번호', '수취인', '상품명'],
             column_config={'발송됨': st.column_config.CheckboxColumn('발송됨')})
         _pick = [r for r in _ed.to_dict('records') if r.get('발송됨')]
         if st.button(f"💾 {len(_pick)}건 발송됨으로 저장 ({_dd})",
-                     key=f"rs_mdsp_save_{d_day}_{username}", disabled=not _pick):
+                     key=f"rs_mdsp_save_{kp}_{d_day}_{username}", disabled=not _pick):
             import dispatch_sync as _dsync
             _n2 = _dsync.mark_dispatched(username, [{
                 'order_no': r['주문번호'], 'recipient': r['수취인'],
@@ -542,12 +542,59 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         _c_tot_d = sum(c['dispatched'] for c in _cov)
         st.markdown(f"**🚚 {d_day} 발송 기록** — 주문 {_c_tot_o}건 중 "
                     f"발송 **{_c_tot_d}건**")
-        st.dataframe(pd.DataFrame([{
+        # 발송 칸은 숫자를 고치는 곳이 아니다 — 발송 기록을 센 값이라, 고치려면
+        # '어느 주문이 나갔는지'를 넣어야 한다. 행을 누르면 그 사람의 미발송 주문이
+        # 바로 아래 펼쳐져 거기서 발송됨으로 처리한다. (예전엔 이 표가 보기 전용이라
+        # 발송 칸을 눌러 1로 고쳐도 아무 일도 없었다.)
+        _cov_ev = st.dataframe(pd.DataFrame([{
             '사용자': dmap.get(c['username'], c['username']),
             '주문': c['orders'], '발송': c['dispatched'],
             '미발송': max(0, c['orders'] - c['dispatched']),
             '상태': '✅' if c['dispatched'] else ('⚠️ 발송 기록 없음' if c['orders'] else '-'),
-        } for c in _cov]), use_container_width=True, hide_index=True)
+        } for c in _cov]), use_container_width=True, hide_index=True,
+            on_select="rerun", selection_mode="single-row", key=f"rs_cov_tbl_{d_day}")
+        st.caption("👆 사용자 행을 누르면 그 사람의 미발송 주문이 아래에 펼쳐집니다 — "
+                   "앱 밖에서 보낸 건은 거기서 **발송됨으로 처리**하세요.")
+        try:
+            _cov_sel = list(_cov_ev.selection.rows)
+        except Exception:
+            _cov_sel = []
+        if _cov_sel and _cov_sel[0] < len(_cov):
+            _cu = _cov[_cov_sel[0]]['username']
+            try:
+                _cul = _rs.undispatched_orders(_cu, str(d_day)) or []
+            except Exception:
+                _cul = []
+            _cul, _ = _drop_online_marked(_cul, _cu)
+            with st.container(border=True):
+                st.markdown(f"**{dmap.get(_cu, _cu)}** · {d_day} 미발송 **{len(_cul)}건**")
+                if not _cul:
+                    st.caption("미발송 주문이 없습니다.")
+                else:
+                    if st.button("🔄 네이버에서 발송정보 가져오기", key=f"rs_cov_pull_{d_day}_{_cu}",
+                                 help="스마트스토어센터에서 직접 발송한 건은 네이버 송장·발송일로 "
+                                      "기록합니다."):
+                        import dispatch_sync as _dsync
+                        with st.spinner("네이버 발송정보 조회 중..."):
+                            _pr = _dsync.pull_naver_dispatch(
+                                _cu, [o.get('order_no') for o in _cul])
+                        if _pr.get('error'):
+                            st.error(f"⚠️ {_pr['error']}")
+                        else:
+                            _sv = _pr.get('saved') or {}
+                            st.session_state[f'_rs_pull_msg_{d_day}'] = (
+                                f"🔄 {dmap.get(_cu, _cu)} — "
+                                + (", ".join(f"{_dd} 발송 {_nn}건" for _dd, _nn in sorted(_sv.items()))
+                                   or "네이버에도 발송된 건 없음")
+                                + f" · 미발송 {len(_pr.get('not_shipped') or [])}건"
+                                + (" — 네이버에 없으면 아래 **발송됨으로 처리**에서 체크하세요."
+                                   if _pr.get('not_shipped') else ""))
+                            st.session_state.pop('rs_alloc', None)
+                            st.rerun()
+                    _pm = st.session_state.get(f'_rs_pull_msg_{d_day}')
+                    if _pm and dmap.get(_cu, _cu) in _pm:
+                        st.info(_pm)
+                    _render_manual_dispatch(_cul, _cu, d_day, dmap, expanded=True, kp='cov')
         # 발송된 건을 바로 볼 수 있어야 한다. 표의 '발송 N건'만으로는 무엇이
         # 나갔는지 알 수 없어, 확인하려면 매번 DB를 뒤져야 했다.
         _has = [c for c in _cov if c['dispatched']]
