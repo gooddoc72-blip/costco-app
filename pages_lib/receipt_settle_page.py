@@ -408,6 +408,46 @@ def _render_online_mark(orders, username, d_day, USERNAME):
         st.rerun()
 
 
+def _render_manual_dispatch(orders, username, d_day, dmap):
+    """네이버에도 발송 기록이 없는데 실제로는 나간 주문을 '발송됨'으로 지정한다.
+
+    퀵·직접 전달·다른 스토어 송장처럼 네이버를 거치지 않고 보낸 건이다. 물건은
+    나갔으니 정산에 잡혀야 하는데, 발송 기록이 없으면 이 목록에 계속 남아 청구에서
+    빠진다. 먼저 위 '🔄 네이버에서 발송정보 가져오기'를 해 보고, 그래도 남는
+    건만 여기서 지정한다.
+    """
+    if not orders:
+        return
+    with st.expander(f"✅ 발송됨으로 처리 — 네이버에도 기록이 없는 건 "
+                     f"({dmap.get(username, username)})", expanded=False):
+        st.caption("실제로 보낸 건만 체크하세요. 체크한 건은 발송 기록에 들어가 "
+                   "**영수증 매칭 대상**이 됩니다. 송장번호는 알면 적고, 없으면 비워 둡니다.")
+        _c1, _c2 = st.columns([1, 3])
+        _dd = _c1.date_input("발송일", value=d_day, key=f"rs_mdsp_d_{d_day}_{username}")
+        _ed = st.data_editor(
+            pd.DataFrame([{'발송됨': False,
+                           '주문번호': str(o.get('order_no') or ''),
+                           '수취인': str(o.get('recipient') or ''),
+                           '상품명': str(o.get('product_name') or '')[:40],
+                           '송장번호': ''} for o in orders]),
+            use_container_width=True, hide_index=True,
+            key=f"rs_mdsp_ed_{d_day}_{username}",
+            disabled=['주문번호', '수취인', '상품명'],
+            column_config={'발송됨': st.column_config.CheckboxColumn('발송됨')})
+        _pick = [r for r in _ed.to_dict('records') if r.get('발송됨')]
+        if st.button(f"💾 {len(_pick)}건 발송됨으로 저장 ({_dd})",
+                     key=f"rs_mdsp_save_{d_day}_{username}", disabled=not _pick):
+            import dispatch_sync as _dsync
+            _n2 = _dsync.mark_dispatched(username, [{
+                'order_no': r['주문번호'], 'recipient': r['수취인'],
+                'product_name': r['상품명'], 'tracking_no': str(r.get('송장번호') or '')}
+                for r in _pick], str(_dd))
+            st.toast(f"✅ {_n2}건을 {_dd} 발송으로 기록했습니다 — 미리보기를 다시 누르세요.",
+                     icon="📦")
+            st.session_state.pop('rs_alloc', None)
+            st.rerun()
+
+
 def _disp_map():
     return {u['username']: (u.get('display_name') or u['username']) for u in get_all_users()}
 
@@ -580,6 +620,40 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                            "여기서는 아직 안 된 주문이 무엇인지 확인해 해당 사용자에게 "
                            "알려주세요. 등록이 끝나면 자동으로 발송으로 잡혀 "
                            "영수증과 매칭됩니다.")
+                # ── 앱 밖(스마트스토어센터)에서 발송한 건 — 네이버에서 가져온다 ──
+                #   일괄발송이 실패해 건별로 처리한 날, 이 목록에 남은 건 대부분
+                #   실제로는 나간 주문이다(oxo 9/29). 네이버 발송정보로 기록을 채운다.
+                _pull_msg = st.session_state.get(f'_rs_pull_msg_{d_day}')
+                if _pull_msg:
+                    st.info(_pull_msg)
+                if st.button(f"🔄 네이버에서 발송정보 가져오기 ({_pend_n}건 · "
+                             f"{len(_plist)}명)", key=f"rs_pull_{d_day}",
+                             help="이 목록의 주문을 네이버에 조회해, 스마트스토어센터에서 "
+                                  "직접 발송한 건은 송장번호·발송일로 발송 기록에 넣습니다. "
+                                  "네이버에서도 미발송인 건은 그대로 둡니다."):
+                    import dispatch_sync as _dsync
+                    _parts, _left_n = [], 0
+                    with st.spinner("네이버 발송정보 조회 중..."):
+                        for _pu2, _lst2 in _plist.items():
+                            _res2 = _dsync.pull_naver_dispatch(
+                                _pu2, [o.get('order_no') for o in _lst2])
+                            if _res2.get('error'):
+                                _parts.append(f"{dmap.get(_pu2, _pu2)}: ⚠️ {_res2['error']}")
+                                continue
+                            _sv = _res2.get('saved') or {}
+                            _left_n += len(_res2.get('not_shipped') or [])
+                            if _sv:
+                                _parts.append(f"{dmap.get(_pu2, _pu2)} " + ", ".join(
+                                    f"{_dd} 발송 {_nn}건" for _dd, _nn in sorted(_sv.items())))
+                    st.session_state[f'_rs_pull_msg_{d_day}'] = (
+                        "🔄 네이버 발송정보 반영 — "
+                        + (" · ".join(_parts) if _parts else "발송된 건 없음")
+                        + f"  ·  네이버에서도 미발송 {_left_n}건"
+                        + "\n\n발송일이 이 정산일과 다르면 그 날짜 정산에 잡힙니다 "
+                          "(위 '📅 발송 기록 날짜 옮기기'로 옮길 수 있습니다). "
+                          "**미리보기를 다시 누르면** 매칭에 반영됩니다.")
+                    st.session_state.pop('rs_alloc', None)
+                    st.rerun()
                 _plabels = [f"{dmap.get(c['username'], c['username'])} "
                             f"— 미등록 {len(_plist[c['username']])}건" for c in _pend]
                 _pk = st.selectbox("사용자", _plabels, key=f"rs_md_u_{d_day}")
@@ -602,6 +676,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                + (f" · 이미 온라인몰로 지정된 {_dropped}건은 뺐습니다"
                                   if _dropped else ""))
                     _render_online_mark(_ulist, _pu, d_day, USERNAME)
+                    _render_manual_dispatch(_ulist, _pu, d_day, dmap)
                     try:
                         _csv = pd.DataFrame(_ulist).to_csv(index=False).encode('utf-8-sig')
                         st.download_button("📥 미등록 목록 CSV", data=_csv,
@@ -1146,6 +1221,16 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         except Exception:
             pass
         if _sticky:
+            # 사람이 고친 행(_edited)은 자동매칭 결과를 **덮어쓴다.** 예전엔 같은 주문이
+            # 자동으로 다시 붙으면 고친 값이 버려져, 금액·코스트코번호를 고쳐도
+            # 미리보기를 다시 누르는 순간 원래대로 돌아갔다.
+            _edited = {(r.get('username'), r.get('order_no')): r
+                       for r in _sticky if r.get('_edited')}
+            if _edited:
+                for _ar in alloc['rows']:
+                    _ek = (_ar.get('username'), _ar.get('order_no'))
+                    if _ek in _edited:
+                        _ar.update(_edited[_ek])
             _have = {(r.get('username'), r.get('order_no')) for r in alloc['rows']}
             _re = [r for r in _sticky if (r.get('username'), r.get('order_no')) not in _have]
             if _re:
@@ -1563,8 +1648,14 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     # 그날 이미 지정해 둔 온라인몰 건 확인·취소
     _render_online_panel(alloc, dmap, d_day, USERNAME)
 
-    # ── 3.4) 잘못 붙은 매칭 끊기 ── (끊은 건은 위 📋 패널에서 다시 청구)
+    # ── 3.4) 잘못 붙은 매칭 고치기·끊기 ── (끊은 건은 아래 🔗·📋 패널에서 다시 청구)
     _render_unmatch_panel(alloc, dmap, receipt_items)
+    # ── 3.45) 🔗 수동 매칭 — 못 붙은 주문에 영수증 품목을 사람이 잇는다 ──
+    _render_manual_match_panel(alloc, dmap, d_day, receipt_items)
+    # 자동매칭이 한 건도 없으면 아래 '저장·정산 요청' 블록(그 안의 📋 패널 포함)이
+    # 통째로 안 뜬다 — 손으로 처리할 길이 없었다. 여기서 먼저 보여 준다.
+    if not rows and alloc.get('unmatched_orders'):
+        _render_unmatched_panel(alloc, dmap, d_day, USERNAME, receipt_items)
 
     # ── 4) 저장 / 정산 요청 ──
     #   둘은 다른 결정이다. 저장은 '여기까지 했다', 정산은 '이 금액으로 청구한다'.
@@ -1682,6 +1773,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                             _tgt['amount'] = int(_r4.get('청구액') or 0)
                             _tgt['unit_price'] = _tgt['amount']
                             _tgt['memo'] = str(_r4.get('메모') or '')
+                            _tgt['_edited'] = True   # 미리보기 재계산이 덮지 않게
                         # 손으로 고친 값은 미리보기를 다시 눌러도 살아남아야 한다
                         _stk = st.session_state.get('rs_sticky') or {}
                         _dk2 = str(d_day)
@@ -2635,13 +2727,14 @@ def _render_unmatch_panel(alloc, dmap, receipt_items):
     # 기계가 추측한 것부터 보여준다 — 사람이 고른 건 확인할 이유가 적다
     _risky = {'ai', 'name', 'shopping-name', 'stock'}
     _n_risky = sum(1 for r in _rows if str(r.get('via') or '') in _risky)
-    with st.expander(f"✏️ 매칭 수정 — 잘못 붙은 건 끊기 "
+    with st.expander(f"✏️ 매칭 수정 — 고치기·끊기 "
                      f"(배치 {len(_rows)}건 · 추측으로 붙은 것 {_n_risky}건)",
                      expanded=False):
-        st.caption("AI·상품명 유사도로 붙인 것은 틀릴 수 있습니다. 끊으면 그 주문은 "
-                   "미매칭으로 돌아가고, 아래 **📋 영수증에 없는 발송건**에서 재고 출고나 "
-                   "금액 지정으로 다시 청구에 넣을 수 있습니다. "
-                   "틀린 채로 전송하면 그 단가로 청구되고 매핑까지 굳어집니다.")
+        st.caption("**수량·코스트코번호·실단가·청구액을 고칠 수 있습니다.** 코스트코번호를 "
+                   "영수증 품목으로 바꾸면 그 품목의 실단가가 들어가고, 청구액은 "
+                   "소분·묶음을 반영해 다시 계산됩니다(청구액을 직접 적으면 그 값이 우선). "
+                   "주문 자체가 틀렸으면 **끊기** — 미매칭으로 돌아가 아래 "
+                   "**🔗 수동 매칭**이나 **📋 영수증에 없는 발송건**에서 다시 넣습니다.")
         # 기본은 **전부 보기**다. 추측으로 붙은 것만 보여 주면, 번호로 붙었지만
         # 수량·금액이 틀린 건(영수증 1개짜리에 주문 7개가 붙는 식)이 기본 화면에서
         # 통째로 가려진다. 정작 고쳐야 할 건이 안 보이면 이 화면은 쓸모가 없다.
@@ -2664,17 +2757,92 @@ def _render_unmatch_panel(alloc, dmap, receipt_items):
                  '_u': r.get('username'), '_o': r.get('order_no'),
                  '_via': str(r.get('via') or '')} for r in _view]
         _sig = hashlib.md5(
-            "|".join(f"{t['_u']}:{t['_o']}" for t in _tbl).encode()).hexdigest()[:8]
+            "|".join(f"{t['_u']}:{t['_o']}:{t['청구액']}" for t in _tbl).encode()).hexdigest()[:8]
+        # 코스트코번호는 그날 영수증 품목 중에서 고른다 — 아무 번호나 치면 영수증과
+        # 대조(남은 수량·넘친 수량)가 깨진다. 지금 붙은 번호도 선택지에 남긴다.
+        _rc_price, _rc_opts = {}, ['']
+        for _it in (receipt_items or []):
+            _c = _n(_it.get('상품번호'))
+            if _c and _c not in _rc_price:
+                _rc_price[_c] = int(float(_it.get('단가') or 0))
+                _rc_opts.append(_c)
+        for t in _tbl:
+            if t['코스트코번호'] and t['코스트코번호'] not in _rc_opts:
+                _rc_opts.append(t['코스트코번호'])
+        _rc_name = {_n(_it.get('상품번호')): _n(_it.get('상품명')) for _it in (receipt_items or [])}
         _ed = st.data_editor(
             pd.DataFrame(_tbl).drop(columns=['_u', '_o', '_via']),
             use_container_width=True, hide_index=True, key=f"rs_um_ed_{_sig}",
-            disabled=['사용자', '상품명', '수량', '코스트코번호', '실단가', '청구액', '근거'],
+            disabled=['사용자', '상품명', '근거'],
             column_config={
                 '끊기': st.column_config.CheckboxColumn('끊기', help='체크한 행의 매칭을 해제합니다'),
-                '실단가': st.column_config.NumberColumn('실단가', format='%d'),
-                '청구액': st.column_config.NumberColumn('청구액', format='%d'),
+                '수량': st.column_config.NumberColumn('수량', format='%d', min_value=1, step=1),
+                '코스트코번호': st.column_config.SelectboxColumn(
+                    '코스트코번호', options=_rc_opts,
+                    help='그날 영수증 품목 중에서 고릅니다. 바꾸면 그 품목 실단가로 다시 계산'),
+                '실단가': st.column_config.NumberColumn('실단가', format='%d', min_value=0,
+                                                     step=100, help='팩(영수증 1줄) 단가'),
+                '청구액': st.column_config.NumberColumn(
+                    '청구액', format='%d', min_value=0, step=100,
+                    help='직접 적으면 이 값으로 청구합니다. 비워 두면 단가로 다시 계산'),
             })
-        _picked = [_tbl[i] for i, rr in enumerate(_ed.to_dict('records')) if rr.get('끊기')]
+        _recs_e = _ed.to_dict('records')
+        _picked = [_tbl[i] for i, rr in enumerate(_recs_e) if rr.get('끊기')]
+
+        # ── 고친 행 반영 ──
+        def _iv(v, d=0):
+            """표 칸 → 정수. 비운 칸은 NaN으로 온다(int(NaN)은 예외)."""
+            try:
+                return d if (v is None or v != v) else int(v)
+            except (TypeError, ValueError):
+                return d
+
+        _chg = []
+        for i, rr in enumerate(_recs_e):
+            t = _tbl[i]
+            _q = max(1, _iv(rr.get('수량'), 1))
+            _c = str(rr.get('코스트코번호') or '')
+            _u = _iv(rr.get('실단가'))
+            # 비운 칸(None·NaN)은 '다시 계산'이다 — 0으로 읽으면 0원 청구가 된다
+            _a_raw = rr.get('청구액')
+            _a = None if (_a_raw is None or _a_raw != _a_raw) else int(_a_raw)
+            if (_q, _c, _u, _a) != (t['수량'], t['코스트코번호'], t['실단가'], t['청구액']):
+                _chg.append((t, _q, _c, _u, _a))
+        if _chg:
+            st.caption("고칠 행 — " + " · ".join(
+                f"{t['사용자']} {t['상품명'][:14]}" for t, *_x in _chg[:6]))
+        if st.button(f"💾 {len(_chg)}건 수정 반영", key="rs_um_edit", disabled=not _chg,
+                     type="primary" if _chg else "secondary"):
+            _by = {(r.get('username'), r.get('order_no')): r for r in _rows}
+            for t, _q, _c, _u, _a in _chg:
+                r = _by.get((t['_u'], t['_o']))
+                if r is None:
+                    continue
+                # 번호만 바꿨으면 그 영수증 품목의 단가를 쓴다
+                if _c != t['코스트코번호'] and _u == t['실단가'] and _c in _rc_price:
+                    _u = _rc_price[_c]
+                _split = max(1, int(r.get('split_qty') or 1))
+                _pack = max(1, int(r.get('pack') or 1))
+                _auto = (_u // _split) * _q * _pack
+                # 청구액을 사람이 따로 고쳤으면 그 값, 아니면 다시 계산한 값
+                _amt = _auto if (_a is None or _a == t['청구액']) else _a
+                r.update({'qty': _q, 'costco_no': _c, 'unit_price': _u, 'amount': _amt,
+                          '_edited': True,
+                          'memo': (str(r.get('memo') or '') or '관리자 수정')})
+                if _c and _c != t['코스트코번호'] and _rc_name.get(_c):
+                    r['memo'] = f"관리자 수정 → {_rc_name[_c][:20]}"
+            # 붙들어 둔다 — 미리보기를 다시 눌러도 고친 값이 이긴다
+            _stk = st.session_state.get('rs_sticky') or {}
+            _dk = str(st.session_state.get('rs_sticky_date') or '')
+            _ks = {(t['_u'], t['_o']) for t, *_x in _chg}
+            _stk[_dk] = [x for x in (_stk.get(_dk) or [])
+                         if (x.get('username'), x.get('order_no')) not in _ks]
+            _stk[_dk] += [dict(_by[k]) for k in _ks if k in _by]
+            st.session_state['rs_sticky'] = _stk
+            alloc['user_summary'] = _summarize(alloc['rows'])
+            st.session_state['rs_alloc'] = alloc
+            st.toast(f"✏️ {len(_chg)}건 수정 — '정산 요청'을 눌러 저장하세요.", icon="✅")
+            st.rerun()
         if _picked:
             st.caption("끊을 행 — " + " · ".join(
                 f"{t['사용자']} {t['상품명'][:16]} {fmt(t['청구액'])}원" for t in _picked[:6]))
@@ -2693,6 +2861,99 @@ def _render_unmatch_panel(alloc, dmap, receipt_items):
             st.rerun()
 
 
+
+
+def _render_manual_match_panel(alloc, dmap, d_day, receipt_items):
+    """🔗 수동 매칭 — 매칭 안 된 주문에 그날 영수증 품목을 사람이 직접 잇는다.
+
+    자동매칭은 코스트코 번호·상품명 유사도·AI로만 잇는다. 번호가 없고 이름도 다르면
+    (옵션 상품, 묶음 구성, 다른 표기) 끝내 못 붙어 '영수증에 없는 발송건'으로 떨어지고,
+    거기서는 금액을 손으로 적는 수밖에 없었다 — 영수증 품목과 연결되지 않아 영수증
+    잔량·재고 계산에서도 빠졌다. 여기서는 영수증 줄을 골라 **그 실단가로** 잇는다.
+    """
+    _un = list(alloc.get('unmatched_orders') or [])
+    _items = [it for it in (receipt_items or []) if _n(it.get('상품번호'))]
+    if not (_un and _items):
+        return
+    # 영수증 품목 선택지 — 이미 몇 건이 붙었는지 함께 보여 이중 사용을 알아보게 한다
+    _used = {}
+    for r in alloc.get('rows') or []:
+        _c = _n(r.get('costco_no'))
+        if _c and str(r.get('via') or '') != 'online':
+            _used[_c] = _used.get(_c, 0) + 1
+    _opt, _meta, _seen = ['— 선택 —'], {}, set()
+    for it in _items:
+        _c = _n(it.get('상품번호'))
+        if _c in _seen:
+            continue
+        _seen.add(_c)
+        _lbl = (f"{_c} · {_n(it.get('상품명'))[:22]} · {fmt(int(float(it.get('단가') or 0)))}원"
+                f" · 영수증 {int(it.get('수량') or 1)}개 · 배치 {_used.get(_c, 0)}건")
+        _opt.append(_lbl)
+        _meta[_lbl] = (_c, int(float(it.get('단가') or 0)), _n(it.get('상품명')))
+
+    with st.expander(f"🔗 수동 매칭 — 매칭 안 된 주문 {len(_un)}건에 영수증 품목 잇기",
+                     expanded=False):
+        st.caption("주문마다 그날 **영수증 품목을 골라** 잇습니다. 청구액은 그 품목 실단가에 "
+                   "소분·묶음을 반영해 자동 계산되고, 직접 적으면 그 값이 우선입니다. "
+                   "'배치 N건'은 그 품목에 이미 붙은 주문 수입니다 — 영수증 수량보다 많이 "
+                   "붙이면 아래 '구입 수량이 모자란 품목'에 경고가 뜹니다.")
+        _ed = st.data_editor(
+            pd.DataFrame([{'영수증 품목': '— 선택 —',
+                           '판매자': dmap.get(str(o.get('username') or ''),
+                                           str(o.get('username') or '')),
+                           '주문번호': str(o.get('order_no') or ''),
+                           '상품명': str(o.get('product_name') or '')[:36],
+                           '수량': int(o.get('qty') or 1),
+                           '청구액(직접)': None} for o in _un]),
+            use_container_width=True, hide_index=True, key=f"rs_mm_ed_{d_day}_{len(_un)}",
+            disabled=['판매자', '주문번호', '상품명'],
+            column_config={
+                '영수증 품목': st.column_config.SelectboxColumn('영수증 품목', options=_opt,
+                                                           required=True, width='large'),
+                '수량': st.column_config.NumberColumn('수량', format='%d', min_value=1, step=1),
+                '청구액(직접)': st.column_config.NumberColumn(
+                    '청구액(직접)', format='%d', min_value=0, step=100,
+                    help='비워 두면 영수증 실단가로 자동 계산합니다'),
+            })
+        _pmap_cache = {}
+        _new, _idx = [], []
+        for i, rr in enumerate(_ed.to_dict('records')):
+            _m = _meta.get(str(rr.get('영수증 품목') or ''))
+            if not _m:
+                continue
+            o = _un[i]
+            _uname = str(o.get('username') or '')
+            if _uname not in _pmap_cache:
+                try:
+                    _pmap_cache[_uname] = _rs._naver_to_product_map(_uname)
+                except Exception:
+                    _pmap_cache[_uname] = {}
+            _p = (_pmap_cache[_uname].get(_n(o.get('naver_no')))
+                  or _pmap_cache[_uname].get(_m[0]))
+            _split, _pack = _rs._split_pack(_p) if _p else (
+                max(1, int(o.get('split_qty') or 1)), 1)
+            _q = max(1, int(rr.get('수량') or 1) if rr.get('수량') == rr.get('수량') else 1)
+            _raw = rr.get('청구액(직접)')
+            _amt = (int(_raw) if (_raw is not None and _raw == _raw and int(_raw) > 0)
+                    else (_m[1] // max(1, _split)) * _q * max(1, _pack))
+            _new.append({
+                'username': _uname, 'order_no': o.get('order_no', ''),
+                'order_date': o.get('order_date', '') or str(d_day),
+                'costco_no': _m[0], 'naver_no': o.get('naver_no', ''),
+                'product_name': o.get('product_name', ''), 'recipient': o.get('recipient', ''),
+                'qty': _q, 'unit_price': _m[1], 'amount': _amt,
+                'prev_cost': int(o.get('prev_cost') or 0), 'via': 'manual',
+                'split_qty': max(1, _split), 'pack': max(1, _pack),
+                'memo': f"수동 매칭 → {_m[2][:20]}", '_edited': True})
+            _idx.append(i)
+        if _new:
+            st.markdown(f"**{len(_new)}건 · 청구액 {fmt(sum(r['amount'] for r in _new))}원**")
+        if st.button(f"🔗 {len(_new)}건 매칭해서 청구에 넣기", key=f"rs_mm_apply_{d_day}",
+                     type="primary", disabled=not _new, use_container_width=True):
+            _merge_matches(alloc, _new, _idx)
+            st.toast(f"🔗 {len(_new)}건을 이었습니다 — '정산 요청'을 눌러 저장하세요.", icon="✅")
+            st.rerun()
 
 
 def _render_reconcile(receipt_items, alloc, goods_total, d_day):
