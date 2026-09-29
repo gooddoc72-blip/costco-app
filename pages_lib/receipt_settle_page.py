@@ -1470,6 +1470,10 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                        "**재고로 입고**(안 팔려서 남은 것)할지 고르세요. "
                        "**잘못 산 물건은 ↩️ 반품요청**으로 빼세요 — 청구도 재고도 "
                        "아닌 물건이라 사용자를 고르지 않아도 됩니다.")
+            st.info("💡 **'팔고남음'인데 사실은 한 주문에 여러 팩이 나간 경우**(예: 10개입 김 2팩을 "
+                    "한 건으로 발송)는 여기서 고치지 마세요. 아래 **✏️ 매칭 수정**에서 그 주문의 "
+                    "**묶음**을 2로 바꾸면 청구액이 2팩으로 계산되고 이 목록에서도 빠집니다. "
+                    "'상품에 저장'을 체크하면 다음 주문부터 자동으로 맞춰집니다.")
             # 사용자는 표 안에서 고르지 않는다. 표 안 SelectboxColumn은
             #   · 기본값을 바꾸면 표 전체가 다시 그려져 체크와 행별 입력이 날아가고
             #   · 옵션에 없는 값(빈 문자열)은 None으로 렌더돼 아예 못 고른다.
@@ -2777,7 +2781,12 @@ def _render_unmatch_panel(alloc, dmap, receipt_items):
     with st.expander(f"✏️ 매칭 수정 — 고치기·끊기 "
                      f"(배치 {len(_rows)}건 · 추측으로 붙은 것 {_n_risky}건)",
                      expanded=False):
-        st.caption("**수량·코스트코번호·실단가·청구액을 고칠 수 있습니다.** 코스트코번호를 "
+        _pm_msg = st.session_state.pop('_rs_pm_msg', None)
+        if _pm_msg:
+            st.success(_pm_msg)
+        st.caption("**수량·묶음·코스트코번호·실단가·청구액을 고칠 수 있습니다.** "
+                   "묶음 = 주문 1건이 쓴 영수증 팩 수(10개입 2팩을 한 건으로 보냈으면 2).")
+        st.caption("코스트코번호를 "
                    "영수증 품목으로 바꾸면 그 품목의 실단가가 들어가고, 청구액은 "
                    "소분·묶음을 반영해 다시 계산됩니다(청구액을 직접 적으면 그 값이 우선). "
                    "주문 자체가 틀렸으면 **끊기** — 미매칭으로 돌아가 아래 "
@@ -2797,9 +2806,11 @@ def _render_unmatch_panel(alloc, dmap, receipt_items):
                  '사용자': dmap.get(r.get('username'), r.get('username')),
                  '상품명': str(r.get('product_name') or '')[:38],
                  '수량': int(r.get('qty') or 1),
+                 '묶음': max(1, int(r.get('pack') or 1)),
                  '코스트코번호': str(r.get('costco_no') or ''),
                  '실단가': int(r.get('unit_price') or 0),
                  '청구액': int(r.get('amount') or 0),
+                 '상품에 저장': False,
                  '근거': _via_lbl.get(str(r.get('via') or ''), r.get('via') or ''),
                  '_u': r.get('username'), '_o': r.get('order_no'),
                  '_via': str(r.get('via') or '')} for r in _view]
@@ -2824,6 +2835,13 @@ def _render_unmatch_panel(alloc, dmap, receipt_items):
             column_config={
                 '끊기': st.column_config.CheckboxColumn('끊기', help='체크한 행의 매칭을 해제합니다'),
                 '수량': st.column_config.NumberColumn('수량', format='%d', min_value=1, step=1),
+                '묶음': st.column_config.NumberColumn(
+                    '묶음', format='%d', min_value=1, max_value=50, step=1,
+                    help='주문 1건이 영수증 팩 몇 개를 썼나. 예: 10개입 김을 2팩 묶어 한 건으로 '
+                         '보냈으면 2 — 청구액이 2팩으로 계산되고 영수증 남은 수량도 줄어듭니다'),
+                '상품에 저장': st.column_config.CheckboxColumn(
+                    '상품에 저장', help='체크하면 이 묶음 값을 그 사용자 상품DB에 저장해 '
+                                     '다음 주문부터 자동으로 적용합니다'),
                 '코스트코번호': st.column_config.SelectboxColumn(
                     '코스트코번호', options=_rc_opts,
                     help='그날 영수증 품목 중에서 고릅니다. 바꾸면 그 품목 실단가로 다시 계산'),
@@ -2848,20 +2866,24 @@ def _render_unmatch_panel(alloc, dmap, receipt_items):
         for i, rr in enumerate(_recs_e):
             t = _tbl[i]
             _q = max(1, _iv(rr.get('수량'), 1))
+            _pk = max(1, min(50, _iv(rr.get('묶음'), 1)))
+            _save_pm = bool(rr.get('상품에 저장'))
             _c = str(rr.get('코스트코번호') or '')
             _u = _iv(rr.get('실단가'))
             # 비운 칸(None·NaN)은 '다시 계산'이다 — 0으로 읽으면 0원 청구가 된다
             _a_raw = rr.get('청구액')
             _a = None if (_a_raw is None or _a_raw != _a_raw) else int(_a_raw)
-            if (_q, _c, _u, _a) != (t['수량'], t['코스트코번호'], t['실단가'], t['청구액']):
-                _chg.append((t, _q, _c, _u, _a))
+            if ((_q, _pk, _c, _u, _a) != (t['수량'], t['묶음'], t['코스트코번호'],
+                                           t['실단가'], t['청구액']) or _save_pm):
+                _chg.append((t, _q, _c, _u, _a, _pk, _save_pm))
         if _chg:
             st.caption("고칠 행 — " + " · ".join(
                 f"{t['사용자']} {t['상품명'][:14]}" for t, *_x in _chg[:6]))
         if st.button(f"💾 {len(_chg)}건 수정 반영", key="rs_um_edit", disabled=not _chg,
                      type="primary" if _chg else "secondary"):
             _by = {(r.get('username'), r.get('order_no')): r for r in _rows}
-            for t, _q, _c, _u, _a in _chg:
+            _pm_saved = []
+            for t, _q, _c, _u, _a, _pk, _save_pm in _chg:
                 r = _by.get((t['_u'], t['_o']))
                 if r is None:
                     continue
@@ -2869,19 +2891,35 @@ def _render_unmatch_panel(alloc, dmap, receipt_items):
                 if _c != t['코스트코번호'] and _u == t['실단가'] and _c in _rc_price:
                     _u = _rc_price[_c]
                 _split = max(1, int(r.get('split_qty') or 1))
-                _pack = max(1, int(r.get('pack') or 1))
+                _pack = _pk
                 _auto = (_u // _split) * _q * _pack
                 # 청구액을 사람이 따로 고쳤으면 그 값, 아니면 다시 계산한 값
                 _amt = _auto if (_a is None or _a == t['청구액']) else _a
                 r.update({'qty': _q, 'costco_no': _c, 'unit_price': _u, 'amount': _amt,
-                          '_edited': True,
+                          'pack': _pack, '_edited': True,
                           'memo': (str(r.get('memo') or '') or '관리자 수정')})
                 if _c and _c != t['코스트코번호'] and _rc_name.get(_c):
                     r['memo'] = f"관리자 수정 → {_rc_name[_c][:20]}"
+                if _pack != t['묶음']:
+                    r['memo'] = f"묶음 {_pack}팩/주문 (관리자 수정)"
+                # 다음 주문부터 자동으로 — 그 사용자 상품DB의 묶음 배수(pack_multiplier)
+                if _save_pm:
+                    try:
+                        from db import set_pack_multiplier
+                        _pmap = _rs._naver_to_product_map(str(r.get('username') or ''))
+                        _prod = (_pmap.get(_n(r.get('naver_no'))) or _pmap.get(_n(_c)))
+                        if _prod and _prod.get('id'):
+                            set_pack_multiplier(str(r.get('username') or ''), _prod['id'], _pack)
+                            _pm_saved.append(f"{t['상품명'][:14]}={_pack}")
+                    except Exception:
+                        pass
             # 붙들어 둔다 — 미리보기를 다시 눌러도 고친 값이 이긴다
             _stk = st.session_state.get('rs_sticky') or {}
             _dk = str(st.session_state.get('rs_sticky_date') or '')
             _ks = {(t['_u'], t['_o']) for t, *_x in _chg}
+            if _pm_saved:
+                st.session_state['_rs_pm_msg'] = ("📦 상품DB 묶음 배수 저장 — " + ", ".join(_pm_saved)
+                                                 + " (다음 주문부터 자동 적용)")
             _stk[_dk] = [x for x in (_stk.get(_dk) or [])
                          if (x.get('username'), x.get('order_no')) not in _ks]
             _stk[_dk] += [dict(_by[k]) for k in _ks if k in _by]
