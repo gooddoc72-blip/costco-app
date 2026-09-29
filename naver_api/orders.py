@@ -240,6 +240,23 @@ def get_last_status_dist():
     return dict(_last_status_dist)
 
 
+def _call_retry(method, url, tries=5, **kw):
+    """429(호출 한도)·5xx면 기다렸다 다시 묻는다. 마지막 응답(또는 예외)을 돌려준다.
+
+    발송 경로는 한 번 거절되면 주문이 통째로 빠진다 — oxo 9/29 오전 일괄발송이
+    8건 중 1건만 나가고 7건을 스마트스토어에서 손으로 처리했다. 확인 단계가
+    429를 '이 스토어 주문 아님'으로 읽어 전송에서 뺀 것으로 본다.
+    """
+    import requests
+    resp = None
+    for _t in range(tries):
+        resp = requests.request(method, url, timeout=30, **kw)
+        if resp.status_code != 429 and resp.status_code < 500:
+            return resp
+        time.sleep(1.0 * (_t + 1))
+    return resp
+
+
 def resolve_product_order_ids(client_id, client_secret, ids):
     """업로드된 번호가 '주문번호'면 '상품주문번호'로 변환.
 
@@ -263,25 +280,30 @@ def resolve_product_order_ids(client_id, client_secret, ids):
         return {}, ids, f"토큰 오류: {err}"
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
+    _q_url = "https://api.commerce.naver.com/external/v1/pay-order/seller/product-orders/query"
     # 1) 먼저 통째로 상품주문번호로 조회 — 정상 케이스는 여기서 끝(추가 호출 0회)
+    #    429로 한 번 막혔다고 건별 판정으로 넘어가면 호출이 2배로 늘어 더 막힌다.
     try:
-        r = requests.post(
-            "https://api.commerce.naver.com/external/v1/pay-order/seller/product-orders/query",
-            headers=headers, json={"productOrderIds": ids}, timeout=30)
+        r = _call_retry("POST", _q_url, headers=headers, json={"productOrderIds": ids})
         if r.status_code == 200:
             return {i: [i] for i in ids}, [], None
     except requests.exceptions.RequestException as e:
         return {}, ids, f"네트워크 오류: {e}"
 
     # 2) 한 건이라도 섞여 있으면 개별 판정 — 주문번호면 상품주문번호로 치환
+    #    ⚠️ 한도(429)로 판정을 못 한 번호는 **빼지 않고 그대로 보낸다.** 빼면
+    #    '이 스토어 주문 아님'으로 전송에서 조용히 사라진다. 그대로 보내면 발송
+    #    API가 받거나, 아니면 그 번호를 지목해 거절해 준다(사유가 남는다).
     mapping, unresolved = {}, []
+    _limited = 0
     for i in ids:
         try:
-            rr = requests.get(
+            rr = _call_retry(
+                "GET",
                 f"https://api.commerce.naver.com/external/v1/pay-order/seller/orders/{i}/product-order-ids",
-                headers=headers, timeout=30)
+                headers=headers)
         except requests.exceptions.RequestException:
-            unresolved.append(i)
+            mapping[i] = [i]
             continue
         if rr.status_code == 200:
             poids = [str(x) for x in (rr.json().get("data") or []) if str(x).strip()]
@@ -290,17 +312,19 @@ def resolve_product_order_ids(client_id, client_secret, ids):
                 continue
         # 주문번호가 아니면 상품주문번호로 단건 검증
         try:
-            r1 = requests.post(
-                "https://api.commerce.naver.com/external/v1/pay-order/seller/product-orders/query",
-                headers=headers, json={"productOrderIds": [i]}, timeout=30)
+            r1 = _call_retry("POST", _q_url, headers=headers, json={"productOrderIds": [i]})
         except requests.exceptions.RequestException:
-            unresolved.append(i)
+            mapping[i] = [i]
             continue
         if r1.status_code == 200:
             mapping[i] = [i]
+        elif r1.status_code == 429 or r1.status_code >= 500 or rr.status_code == 429:
+            mapping[i] = [i]                # 판정 불가 — 빼지 않는다
+            _limited += 1
         else:
             unresolved.append(i)
-    return mapping, unresolved, None
+    return mapping, unresolved, (
+        f"네이버 호출 한도로 {_limited}건은 번호 확인 없이 그대로 전송합니다" if _limited else None)
 
 
 def ship_orders(client_id, client_secret, ship_data):
@@ -367,8 +391,13 @@ def ship_orders(client_id, client_secret, ship_data):
                 if not remaining:
                     break
                 payload = {"dispatchProductOrders": remaining}
-                resp = requests.post(url, headers=headers, json=payload, timeout=30)
-                res_json = resp.json()
+                # 한도(429)·서버오류는 청크 전체를 '실패'로 적기 전에 기다렸다 다시 보낸다.
+                #   예전엔 429 응답을 400처럼 읽어 청크 전량을 실패 처리했다.
+                resp = _call_retry("POST", url, headers=headers, json=payload)
+                try:
+                    res_json = resp.json()
+                except ValueError:
+                    res_json = {"message": f"HTTP {resp.status_code}: {resp.text[:120]}"}
 
                 if resp.status_code == 200:
                     data = res_json.get("data", {})
@@ -408,7 +437,7 @@ def ship_orders(client_id, client_secret, ship_data):
                 _bad_ids = [str(x.get('productOrderId', '')) for x in remaining]
                 _bad_show = ", ".join(_bad_ids[:5]) + (" …" if len(_bad_ids) > 5 else "")
                 all_fail_details.append(
-                    f"[오류 400] {err_msg} ({len(remaining)}건 전체 실패)"
+                    f"[오류 {resp.status_code}] {err_msg} ({len(remaining)}건 전체 실패)"
                 )
                 all_fail_details.append(f"    └ 전송한 상품주문번호: {_bad_show}")
                 for _bx in remaining:

@@ -125,6 +125,32 @@ def _build_fail_table(username, result, result_df):
     return df[order]
 
 
+def _log_dispatch_attempt(username, platform, total, result, err, excluded=None, note=''):
+    """발송 시도 결과를 data/dispatch_attempts.jsonl에 한 줄로 남긴다.
+
+    화면에 뜬 실패 사유는 새로고침하면 사라진다. oxo 9/29 오전 일괄발송이 8건 중
+    7건 실패했을 때 원인을 되짚을 기록이 어디에도 없어 추정밖에 할 수 없었다.
+    기록 실패가 발송 흐름을 끊지는 않는다.
+    """
+    try:
+        import json as _json, os as _os
+        from db_core import DATA_DIR
+        _r = result or {}
+        _rec = {
+            'at': datetime.now().strftime("%Y-%m-%d %H:%M:%S"), 'user': username,
+            'platform': platform, 'sent': int(total or 0),
+            'success': int(_r.get('success') or 0), 'fail': int(_r.get('fail') or 0),
+            'success_ids': list(_r.get('success_order_ids') or []),
+            'fail_items': list(_r.get('fail_items') or []),
+            'fail_details': list(_r.get('fail_details') or [])[:50],
+            'excluded': list(excluded or []), 'note': str(note or ''), 'error': str(err or ''),
+        }
+        with open(_os.path.join(DATA_DIR, 'dispatch_attempts.jsonl'), 'a', encoding='utf-8') as _f:
+            _f.write(_json.dumps(_rec, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+
 def _show_dispatch_result(container, result, err, total, username=None, result_df=None):
     """발송처리 API 결과를 container(st.columns 셀 등)에 표시."""
     if err:
@@ -570,9 +596,12 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     with st.spinner("상품주문번호 확인 중..."):
                         _map, _unres, _rerr = naver_api.resolve_product_order_ids(
                             api_id, api_secret, [o for o, _ in _raw])
-                    if _rerr:
+                    if _rerr and not _map:
                         _dc3.warning(f"번호 확인 실패 — 원본 그대로 전송합니다: {_rerr}")
                         _map, _unres = {o: [o] for o, _ in _raw}, []
+                    elif _rerr:
+                        # 일부만 한도로 확인 못 한 경우 — 변환 결과는 살리고 알리기만 한다
+                        _dc3.caption(f"ℹ️ {_rerr}")
                     _conv = sum(1 for o, v in _map.items() if v != [o])
                     if _conv:
                         _dc3.info(f"🔄 주문번호 {_conv}건을 상품주문번호로 자동 변환했습니다.")
@@ -593,6 +622,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     _nv_df = _nv_df.explode('상품주문번호').reset_index(drop=True)
                     with st.spinner(f"네이버에 {len(_items)}건 발송처리 중..."):
                         _res, _err = naver_api.ship_orders(api_id, api_secret, _items)
+                    _log_dispatch_attempt(USERNAME, 'naver', len(_items), _res, _err,
+                                          excluded=_unres, note=_rerr or '')
                     _show_dispatch_result(_dc3, _res, _err, len(_items),
                                           username=USERNAME, result_df=_nv_df)
                     if _res and _res.get('success_order_ids'):
@@ -637,6 +668,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     _cp_df['상품주문번호'] = _cp_df['상품주문번호'].apply(_resolve_cp)
                     with st.spinner(f"쿠팡 Wing에 {len(_items)}건 발송처리 중..."):
                         _res, _err = coupang_api.dispatch_orders(cq_access, cq_secret, cq_vendor, _items)
+                    _log_dispatch_attempt(USERNAME, 'coupang', len(_items), _res, _err)
                     _show_dispatch_result(_dc3, _res, _err, len(_items),
                                           username=USERNAME, result_df=_cp_df)
                     if _res and _res.get('success_order_ids'):
