@@ -1839,6 +1839,64 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                    "'정산 요청'을 눌러 저장하세요.")
                         st.rerun()
 
+                # ── ➕ 관리자 항목 추가 — 주문·매칭과 무관하게 이 사용자에게 청구할 것 ──
+                #   교환·누락분 재발송, 대신 산 물건, 추가 비용처럼 주문 목록에 없는 건은
+                #   청구할 길이 '팔고 남은 영수증 품목 배정'뿐이었다(영수증에 있어야만 됨).
+                #   영수증 품목을 고르면 그 품목 남은 수량에서 빠지고(같은 memo 행 규칙),
+                #   고르지 않으면 금액만 청구한다. 잘못 넣었으면 ✏️ 매칭 수정에서 끊는다.
+                _add_msg = st.session_state.pop(f'_rs_add_msg_{d_day}', None)
+                if _add_msg:
+                    st.success(_add_msg)
+                _rc_add = {}
+                for _it in (receipt_items or []):
+                    _c = _n(_it.get('상품번호'))
+                    if _c and _c not in _rc_add:
+                        _rc_add[_c] = (_n(_it.get('상품명')), int(float(_it.get('단가') or 0)))
+                _add_opts = ['(영수증 품목 아님)'] + [
+                    f"{_c} · {_v[0][:24]} · {fmt(_v[1])}원" for _c, _v in _rc_add.items()]
+                with st.form(f"rs_add_{d_day}_{_pu}", clear_on_submit=True):
+                    st.markdown(f"**➕ {dmap.get(_pu, _pu)}에게 항목 추가**")
+                    _a1, _a2 = st.columns([2, 3])
+                    _asel = _a1.selectbox("영수증 품목", _add_opts,
+                                          help="고르면 상품명·단가가 채워지고 그 품목 남은 수량에서 빠집니다")
+                    _aname = _a2.text_input("상품명·항목", placeholder="예: 교환 재발송, 누락분")
+                    _a3, _a4, _a5 = st.columns([1, 1, 3])
+                    _aqty = _a3.number_input("수량(팩)", min_value=1, step=1, value=1)
+                    _aamt = _a4.number_input("청구액", min_value=0, step=100, value=0,
+                                             help="0이면 영수증 품목 단가 × 수량")
+                    _amemo = _a5.text_input("메모", placeholder="왜 청구하는지")
+                    _asub = st.form_submit_button("➕ 추가", type="primary")
+                if _asub:
+                    _acno = _asel.split(' · ')[0] if _asel != _add_opts[0] else ''
+                    _aname2 = _aname.strip() or (_rc_add.get(_acno, ('',))[0])
+                    _aamt2 = int(_aamt) or (_rc_add.get(_acno, ('', 0))[1] * int(_aqty))
+                    if not _aname2 or _aamt2 <= 0:
+                        st.error("상품명(또는 영수증 품목)과 0보다 큰 청구액이 필요합니다.")
+                    else:
+                        if _acno:
+                            # 영수증 품목 — 팩 단위로 남은 수량에서 빠지게 memo 행 규칙을 따른다
+                            _arow = build_memo_rows([{
+                                'username': _pu, 'costco_no': _acno, 'product_name': _aname2,
+                                'unit_price': _aamt2 // max(1, int(_aqty)), 'qty': int(_aqty),
+                                'memo': _amemo or '관리자 추가'}], str(d_day))
+                            for _r5 in _arow:
+                                _r5['amount'] = _aamt2
+                                _r5['order_no'] += '-%s' % datetime.now().strftime('%H%M%S')
+                        else:
+                            _arow = [{
+                                'username': _pu,
+                                'order_no': 'ADD-%s-%s' % (d_day, datetime.now().strftime('%H%M%S%f')[:10]),
+                                'order_date': str(d_day), 'costco_no': '', 'naver_no': '',
+                                'product_name': _aname2, 'qty': int(_aqty),
+                                'unit_price': _aamt2, 'amount': _aamt2, 'prev_cost': 0,
+                                'via': 'memo', 'memo': _amemo or '관리자 추가',
+                                'split_qty': 1, 'pack': 1}]
+                        _merge_matches(alloc, _arow, [])
+                        st.session_state[f'_rs_add_msg_{d_day}'] = (
+                            f"➕ {dmap.get(_pu, _pu)}에게 '{_aname2}' {fmt(_aamt2)}원 추가 — "
+                            "'정산 요청'을 눌러 저장하세요.")
+                        st.rerun()
+
         _need_ck, _ck_why = _render_reconcile(receipt_items, alloc, _total, d_day)
 
         st.warning("⚠️ 정산하면 각 주문의 구입가가 영수증 실단가로 **덮어써지고** "
