@@ -547,115 +547,8 @@ def run_shopping_task(username="admin"):
         log(f"⚠️ 주문 DB 저장 실패 (계속 진행): {e}")
 
     try:
-        # ── 장보기 대상: 발주확인(오늘 처리해야 할 주문)만 집계 ──
-        # 배송중·배송완료·취소 등 이미 처리된 건은 제외
-        SHOPPING_STATUSES = {'발주확인', '결제완료', '발송대기'}
-        shopping_orders = [o for o in orders
-                           if o.get('주문상태', '') in SHOPPING_STATUSES]
-        if not shopping_orders:
-            # 대상 건 없으면 전체 orders로 폴백 (상태 매핑 이슈 대비)
-            shopping_orders = orders
-
-        from collections import defaultdict
-        shopping = defaultdict(lambda: {"주문수량": 0, "정산금액": 0, "배송비합": 0, "상품명": "",
-                                        "옵션": "", "상품번호": "", "원상품번호": ""})
-        for o in shopping_orders:
-            pno = str(o.get("상품번호", ""))
-            name = o.get("상품명", "")
-            opt = o.get("옵션정보", "") or ""
-            key = (pno, name, opt)
-            shopping[key]["주문수량"] += int(o.get("수량", 1))
-            shopping[key]["주문건수"] = shopping[key].get("주문건수", 0) + 1
-            shopping[key]["정산금액"] += int(o.get("정산예정금액") or 0)
-            shopping[key]["배송비합"] += int(o.get("배송비 합계") or 0)
-            shopping[key]["상품명"] = name
-            shopping[key]["옵션"] = opt
-            shopping[key]["상품번호"] = pno
-            if not shopping[key]["원상품번호"]:
-                shopping[key]["원상품번호"] = str(o.get("원상품번호", "") or "")
-
-        products = get_all_products(username)
-        total_cost = 0
-        total_settlement = 0
-        total_costco_qty = 0
-
-        # 항목 조립
-        sorted_items = sorted(shopping.items(), key=lambda x: x[1]["상품명"])
-        item_lines = []
-        _admin_items = []  # 관리자 제출용 구조화 항목
-        for idx, (_, item) in enumerate(sorted_items, 1):
-            name       = item["상품명"]
-            order_qty  = item["주문수량"]
-            opt        = item["옵션"]
-            pno        = item["상품번호"]
-            settlement = item["정산금액"]
-
-            pack       = extract_pack_qty(opt, name)
-            costco_qty = order_qty * pack
-
-            matched_p = match_product_to_db(username, name,
-                                              product_no=pno or None,
-                                              origin_no=item.get("원상품번호") or None,
-                                              _user_prods=products)
-            _pack_price = int(matched_p.get('unit_price') or 0) if matched_p else 0
-            _est_cost = calc_cost(matched_p, costco_qty) if matched_p else 0
-            # 매장금액 = 코스트코 계산대에서 실제로 결제할 금액.
-            #   소분 상품(split_qty>1)은 낱개로 못 사고 팩 단위로 사야 하므로 팩 수를 올림한다.
-            #   (calc_cost는 소분 안분가라 '오늘 얼마 들고 가야 하나'와는 다르다)
-            _split_q = max(1, int(matched_p.get('split_qty', 1) or 1)) if matched_p else 1
-            _packs = -(-int(costco_qty) // _split_q)          # 올림 나눗셈
-            _store_amt = _pack_price * _packs
-            if matched_p:
-                total_cost += _store_amt
-            total_settlement += settlement
-            total_costco_qty += costco_qty
-
-            # 카드 형식: 상품명 줄(• 제품명 × 총수량) + 상세 줄(옵션 · 정산 · 택배)
-            order_cnt  = item.get("주문건수", order_qty)
-            ship_total = item.get("배송비합", 0)
-            ship_each  = round(ship_total / order_cnt) if order_cnt else ship_total
-            name_line = f"• {name} × {costco_qty}개 ({order_cnt}건)"
-            detail_parts = []
-            if opt:
-                detail_parts.append(f"옵션 {opt}")
-            if settlement:
-                detail_parts.append(f"정산 {fmt(settlement)}원")
-            detail_parts.append(f"택배 {fmt(ship_each)}원")
-            item_lines.append(name_line)
-            item_lines.append("  " + " · ".join(detail_parts))
-
-            # 코스트코 상품번호는 매칭된 제품(공유DB)에서 꺼낸다.
-            #   pno는 네이버 채널상품번호(10~11자리)라 영수증(6자리)과 절대 안 맞는다.
-            #   검증 실패 시 빈칸 — 관리자 화면에서 '번호 미확보'로 모아 지정한다.
-            _costco_pno = costco_pno_of(matched_p)
-            _admin_items.append({
-                "코스트코상품번호": _costco_pno,
-                "네이버상품번호": str(pno or ''),
-                "상품명": name,
-                "옵션정보": opt or '',
-                "주문건수": int(order_cnt),
-                "주문수량": int(order_qty),
-                "코스트코구매수량": int(costco_qty),
-                "매장금액": int(_store_amt),
-                "정산금액": int(settlement),
-                "배송비": int(ship_each),
-            })
-
-        divider = "─" * 24
-        lines = [
-            "🛒 코스트코 장보기 목록",
-            f"📅 {now.strftime('%Y-%m-%d %H:%M')}  │  주문 {len(shopping_orders)}건 / {len(sorted_items)}종",
-            divider,
-        ]
-        lines += item_lines
-        lines.append(divider)
-        if total_cost > 0:
-            lines.append(f"💰 예상 구매액: {fmt(total_cost)}원")
-        if total_settlement > 0:
-            lines.append(f"💳 총 정산예정: {fmt(total_settlement)}원")
-        lines.append(f"🛒 코스트코 총 {total_costco_qty}개 구매 필요")
-
-        msg = "\n".join(lines)
+        _shop = _build_shopping_list(username, orders, now, fallback_all=True)
+        msg, _admin_items, total_cost = _shop['msg'], _shop['items'], _shop['total_cost']
         log(msg)
 
         if send_notification(settings, msg, username):
@@ -668,6 +561,7 @@ def run_shopping_task(username="admin"):
         try:
             _order_date = now.strftime("%Y-%m-%d")
             # 하루 1회만 관리자 제출 (예약 최초 1회). 이미 오늘 발송됐으면 생략.
+            #   (12시 Task 5가 최신 수집으로 다시 덮어쓴다 — _submit_admin_shopping)
             if get_setting(username, 'admin_shop_sent_date') == _order_date:
                 log("📋 관리자 제출 생략 (오늘 이미 발송됨)")
             else:
@@ -690,6 +584,182 @@ def run_shopping_task(username="admin"):
 
     log(f"[Task 1] 완료")
     return True
+
+
+#: 장보기 대상 주문상태 — 아직 사야 하는 주문. 배송중·완료·취소는 뺀다.
+SHOPPING_STATUSES = {'발주확인', '결제완료', '발송대기'}
+
+
+def _build_shopping_list(username, orders, now, fallback_all=False):
+    """주문 → 장보기 목록(카톡 문구 + 관리자 제출 항목). Task 1·Task 5 공용.
+
+    두 작업이 목록을 따로 만들면 같은 날 같은 주문으로도 관리자 화면이 달라진다.
+    fallback_all=True면 대상 상태가 하나도 없을 때 전체 주문으로 폴백(Task 1 기존 동작).
+    반환: {'msg', 'items', 'total_cost', 'n_orders'}
+    """
+    # ── 장보기 대상: 발주확인(오늘 처리해야 할 주문)만 집계 ──
+    # 배송중·배송완료·취소 등 이미 처리된 건은 제외
+    shopping_orders = [o for o in orders
+                       if o.get('주문상태', '') in SHOPPING_STATUSES]
+    if not shopping_orders and fallback_all:
+        # 대상 건 없으면 전체 orders로 폴백 (상태 매핑 이슈 대비)
+        shopping_orders = orders
+
+    from collections import defaultdict
+    shopping = defaultdict(lambda: {"주문수량": 0, "정산금액": 0, "배송비합": 0, "상품명": "",
+                                    "옵션": "", "상품번호": "", "원상품번호": ""})
+    for o in shopping_orders:
+        pno = str(o.get("상품번호", ""))
+        name = o.get("상품명", "")
+        opt = o.get("옵션정보", "") or ""
+        key = (pno, name, opt)
+        shopping[key]["주문수량"] += int(o.get("수량", 1))
+        shopping[key]["주문건수"] = shopping[key].get("주문건수", 0) + 1
+        shopping[key]["정산금액"] += int(o.get("정산예정금액") or 0)
+        shopping[key]["배송비합"] += int(o.get("배송비 합계") or 0)
+        shopping[key]["상품명"] = name
+        shopping[key]["옵션"] = opt
+        shopping[key]["상품번호"] = pno
+        if not shopping[key]["원상품번호"]:
+            shopping[key]["원상품번호"] = str(o.get("원상품번호", "") or "")
+
+    products = get_all_products(username)
+    total_cost = 0
+    total_settlement = 0
+    total_costco_qty = 0
+
+    # 항목 조립
+    sorted_items = sorted(shopping.items(), key=lambda x: x[1]["상품명"])
+    item_lines = []
+    _admin_items = []  # 관리자 제출용 구조화 항목
+    for idx, (_, item) in enumerate(sorted_items, 1):
+        name       = item["상품명"]
+        order_qty  = item["주문수량"]
+        opt        = item["옵션"]
+        pno        = item["상품번호"]
+        settlement = item["정산금액"]
+
+        pack       = extract_pack_qty(opt, name)
+        costco_qty = order_qty * pack
+
+        matched_p = match_product_to_db(username, name,
+                                          product_no=pno or None,
+                                          origin_no=item.get("원상품번호") or None,
+                                          _user_prods=products)
+        _pack_price = int(matched_p.get('unit_price') or 0) if matched_p else 0
+        _est_cost = calc_cost(matched_p, costco_qty) if matched_p else 0
+        # 매장금액 = 코스트코 계산대에서 실제로 결제할 금액.
+        #   소분 상품(split_qty>1)은 낱개로 못 사고 팩 단위로 사야 하므로 팩 수를 올림한다.
+        #   (calc_cost는 소분 안분가라 '오늘 얼마 들고 가야 하나'와는 다르다)
+        _split_q = max(1, int(matched_p.get('split_qty', 1) or 1)) if matched_p else 1
+        _packs = -(-int(costco_qty) // _split_q)          # 올림 나눗셈
+        _store_amt = _pack_price * _packs
+        if matched_p:
+            total_cost += _store_amt
+        total_settlement += settlement
+        total_costco_qty += costco_qty
+
+        # 카드 형식: 상품명 줄(• 제품명 × 총수량) + 상세 줄(옵션 · 정산 · 택배)
+        order_cnt  = item.get("주문건수", order_qty)
+        ship_total = item.get("배송비합", 0)
+        ship_each  = round(ship_total / order_cnt) if order_cnt else ship_total
+        name_line = f"• {name} × {costco_qty}개 ({order_cnt}건)"
+        detail_parts = []
+        if opt:
+            detail_parts.append(f"옵션 {opt}")
+        if settlement:
+            detail_parts.append(f"정산 {fmt(settlement)}원")
+        detail_parts.append(f"택배 {fmt(ship_each)}원")
+        item_lines.append(name_line)
+        item_lines.append("  " + " · ".join(detail_parts))
+
+        # 코스트코 상품번호는 매칭된 제품(공유DB)에서 꺼낸다.
+        #   pno는 네이버 채널상품번호(10~11자리)라 영수증(6자리)과 절대 안 맞는다.
+        #   검증 실패 시 빈칸 — 관리자 화면에서 '번호 미확보'로 모아 지정한다.
+        _costco_pno = costco_pno_of(matched_p)
+        _admin_items.append({
+            "코스트코상품번호": _costco_pno,
+            "네이버상품번호": str(pno or ''),
+            "상품명": name,
+            "옵션정보": opt or '',
+            "주문건수": int(order_cnt),
+            "주문수량": int(order_qty),
+            "코스트코구매수량": int(costco_qty),
+            "매장금액": int(_store_amt),
+            "정산금액": int(settlement),
+            "배송비": int(ship_each),
+        })
+
+    divider = "─" * 24
+    lines = [
+        "🛒 코스트코 장보기 목록",
+        f"📅 {now.strftime('%Y-%m-%d %H:%M')}  │  주문 {len(shopping_orders)}건 / {len(sorted_items)}종",
+        divider,
+    ]
+    lines += item_lines
+    lines.append(divider)
+    if total_cost > 0:
+        lines.append(f"💰 예상 구매액: {fmt(total_cost)}원")
+    if total_settlement > 0:
+        lines.append(f"💳 총 정산예정: {fmt(total_settlement)}원")
+    lines.append(f"🛒 코스트코 총 {total_costco_qty}개 구매 필요")
+
+    msg = "\n".join(lines)
+    return {'msg': msg, 'items': _admin_items, 'total_cost': int(total_cost),
+            'n_orders': len(shopping_orders)}
+
+
+def _submit_admin_shopping(username, orders, now=None):
+    """Task 5(12시 자동수집) 결과로 관리자 장보기 목록을 제출 — 이미 있으면 **덮어쓴다.**
+
+    예전엔 관리자 제출이 Task 1(장보기 발송)에만 있어, Task 5만 등록된 사용자는
+    12시에 수집이 돼도 관리자에게 목록이 가지 않았다(9/29 김재호·고주현·김미진).
+    또 Task 1은 하루 1회만 제출해서, 9시에 보낸 목록에 9~12시 사이 취소된 주문이
+    그대로 남았다(9/28·9/29 이승일 — 수집 20~30분 뒤 고객 취소).
+    12시 수집 결과가 그날의 정본이 되도록 덮어쓰고, 빠진 주문을 로그에 남긴다.
+
+    orders: Task 5가 가져온 주문(네이버 한글 상태 + 쿠팡 영문 상태 혼재).
+    """
+    from db_shopping import get_shopping_submissions_detail
+    now = now or datetime.now()
+    _date = now.strftime("%Y-%m-%d")
+    # 쿠팡은 Task 1과 같은 규칙 — 결제완료·발주확인만 장보기 대상
+    _CPG_KR = {"ACCEPT": "결제완료", "INSTRUCT": "발주확인"}
+    _shop = []
+    for o in (orders or []):
+        _st = str(o.get('주문상태', '') or '')
+        if _st.upper() in _CPG_KR:                 # 쿠팡 영문 상태
+            _shop.append({**o, '주문상태': _CPG_KR[_st.upper()]})
+        elif _st in SHOPPING_STATUSES:
+            _shop.append(o)
+
+    try:
+        _prev = get_shopping_submissions_detail(_date, _date, username=username) or []
+    except Exception:
+        _prev = []
+    _prev_n = 0
+    if _prev:
+        try:
+            _prev_n = len(json.loads(_prev[0].get('items_json') or '[]'))
+        except Exception:
+            _prev_n = int(_prev[0].get('total_items') or 0)
+
+    if not _shop:
+        if not _prev:
+            log("📋 관리자 제출 생략 — 장볼 주문 없음")
+            return
+        # 앞서 보낸 목록이 전부 취소·발송됐다 — 빈 목록으로 덮어써야 관리자가 안 산다
+        submit_shopping_list(username, _date, [], total_items=0, total_amount=0)
+        set_setting(username, 'admin_shop_sent_date', _date)
+        log(f"📋 관리자 목록 갱신 — 장볼 주문 없음 (앞서 제출된 {_prev_n}종 모두 제외: 취소·발송)")
+        return
+
+    _r = _build_shopping_list(username, _shop, now)
+    submit_shopping_list(username, _date, _r['items'],
+                         total_items=len(_r['items']), total_amount=_r['total_cost'])
+    set_setting(username, 'admin_shop_sent_date', _date)
+    log(f"📋 관리자 제출 완료 ({len(_r['items'])}종 / {fmt(_r['total_cost'])}원)"
+        + (f" — 앞서 제출된 {_prev_n}종 목록을 12시 수집 기준으로 갱신" if _prev else ""))
 
 
 # ── Task 2: CJ 접수 + 네이버 일괄 발송처리 ─────────
@@ -859,6 +929,7 @@ def run_fetch_orders_task(username="admin"):
 
     all_orders = []
     errors = []
+    _partial = False
 
     # ── 네이버 주문 조회 (증분 동기화) ──
     api_id     = settings.get("api_client_id", "")
@@ -880,6 +951,7 @@ def run_fetch_orders_task(username="admin"):
                                                     hours_back=_hours, status_type="ALL")
             if naver_api.get_last_fetch_warning():
                 log(f"  ⚠️ {naver_api.get_last_fetch_warning()}")
+                _partial = True   # 일부 구간 누락 — 관리자 목록을 덮어쓰지 않는다
             if err:
                 log(f"  ⚠️ 네이버 오류: {err}")
                 errors.append(f"네이버: {err}")
@@ -987,6 +1059,12 @@ def run_fetch_orders_task(username="admin"):
         log("ℹ️ 수집된 주문 없음 → 종료")
         if errors:
             send_notification(settings, "❌ 주문 자동 수집 오류\n" + "\n".join(errors), username)
+        elif not _partial:
+            # 조회는 정상인데 0건 — 오전에 보낸 목록이 있으면 비워야 관리자가 안 산다
+            try:
+                _submit_admin_shopping(username, [])
+            except Exception as _ae5:
+                log(f"❌ 관리자 제출 실패: {_ae5}")
         return True
 
     # ── DB 저장 (order_history UPSERT — 매일 누적되어 미발송 주문 추적) ──
@@ -1041,6 +1119,16 @@ def run_fetch_orders_task(username="admin"):
     except Exception as e:
         log(f"❌ DB 저장 실패: {e}")
         return False
+
+    # ── 관리자에게 장보기 목록 제출 (12시 수집 결과가 그날의 정본 — 덮어쓴다) ──
+    #   조회 오류가 있으면 일부만 읽었을 수 있어 덮어쓰지 않는다(멀쩡한 목록을 줄이지 않게).
+    if errors or _partial:
+        log("📋 관리자 제출 보류 — 조회 오류·누락이 있어 목록이 불완전할 수 있음")
+    else:
+        try:
+            _submit_admin_shopping(username, all_orders)
+        except Exception as _ae5:
+            log(f"❌ 관리자 제출 실패 (관리자 페이지에 목록 누락): {_ae5}")
 
     today = datetime.now().strftime("%m/%d")
     msg = f"📥 주문 자동 수집 완료 ({today})\n총 {len(all_orders)}건"
