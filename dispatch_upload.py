@@ -264,6 +264,16 @@ def _move_wrong_date(username, rows, target_date):
     return moved
 
 
+def _cell_int(v, default=0):
+    """표(data_editor) 칸 값 → int. 칸을 비우면 None이 아니라 NaN이 들어와
+    `int(v or 0)`이 'cannot convert float NaN to integer'로 화면 전체를 죽인다."""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return default
+    return default if f != f else int(f)
+
+
 def save_dispatch(by_user, dispatched_at, platform='upload', skip_existing=True,
                   use_row_date=False, move_wrong_date=False):
     """분류 결과를 dispatch_log에 기록. 반환: {username: 저장건수}, 건너뛴 수.
@@ -383,7 +393,7 @@ def render_panel(dmap, USERNAME):
                     _mpick.setdefault(_u2, []).append({
                         'order_no': _ono or ('NO-%s-%s' % (_mdate, _trk)),
                         'recipient': _rc, 'product_name': _nm,
-                        'qty': max(1, int(_r.get('수량') or 1)),
+                        'qty': max(1, _cell_int(_r.get('수량'), 1)),
                         'tracking_no': _trk,
                         'courier': str(_r.get('택배사') or '').strip(),
                     })
@@ -615,7 +625,7 @@ def render_panel(dmap, USERNAME):
                     if not _un2:
                         continue
                     _src = dict(_unknown[_i])
-                    _src['qty'] = max(1, int(_r.get('수량') or 1))
+                    _src['qty'] = max(1, _cell_int(_r.get('수량'), 1))
                     if not str(_src.get('order_no') or '').strip():
                         # 주문번호가 없으면 dispatch_log의 키가 안 잡힌다.
                         # 송장번호로 대체 키를 만들어 최소한 발송건수에는 잡히게 한다.

@@ -360,7 +360,7 @@ def _render_online_mark(orders, username, d_day, USERNAME):
     for _i, _r in enumerate(_ed.to_dict('records')):
         if not _r.get('온라인몰'):
             continue
-        _up = int(_r.get('단가(온라인)') or 0)
+        _up = _cell_int(_r.get('단가(온라인)'), 0)
         if _up <= 0:
             _zero += 1
             continue
@@ -372,7 +372,7 @@ def _render_online_mark(orders, username, d_day, USERNAME):
             'naver_no': str(_o.get('product_no') or ''),
             'product_name': str(_o.get('product_name') or ''),
             'recipient': str(_o.get('recipient') or ''),
-            'qty': max(1, int(_r.get('수량') or 1)),
+            'qty': max(1, _cell_int(_r.get('수량'), 1)),
             'unit_price': _up, 'prev_cost': 0,
             'memo': str(_r.get('메모') or '').strip(),
         })
@@ -446,6 +446,16 @@ def _render_manual_dispatch(orders, username, d_day, dmap, expanded=False, kp='p
                      icon="📦")
             st.session_state.pop('rs_alloc', None)
             st.rerun()
+
+
+def _cell_int(v, default=0):
+    """표(data_editor) 칸 값 → int. 칸을 비우면 None이 아니라 NaN이 들어와
+    `int(v or 0)`이 'cannot convert float NaN to integer'로 화면 전체를 죽인다."""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return default
+    return default if f != f else int(f)
 
 
 def _disp_map():
@@ -1806,11 +1816,11 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         })
                     _mnew = _med.to_dict('records')
                     _chg = [(i, _r) for i, _r in enumerate(_mnew)
-                            if int(_r.get('청구액') or 0) != _mrows[i]['청구액']
-                            or int(_r.get('수량') or 1) != _mrows[i]['수량']
+                            if _cell_int(_r.get('청구액'), 0) != _mrows[i]['청구액']
+                            or _cell_int(_r.get('수량'), 1) != _mrows[i]['수량']
                             or str(_r.get('메모') or '') != _mrows[i]['메모']]
                     st.caption(f"{dmap.get(_pu, _pu)} · {len(_mine)}건 · "
-                               f"합계 {fmt(sum(int(_r.get('청구액') or 0) for _r in _mnew))}원"
+                               f"합계 {fmt(sum(_cell_int(_r.get('청구액'), 0) for _r in _mnew))}원"
                                + (f"  ·  ✏️ 고친 행 {len(_chg)}건" if _chg else ""))
                     if st.button(f"💾 {len(_chg)}건 금액 수정 반영",
                                  key=f"rs_prev_save_{d_day}_{_pu}",
@@ -2119,8 +2129,8 @@ def _merge_matches(alloc, new_rows, matched_order_indices, sticky=True):
             _k = (_r.get('username'), _r.get('order_no'))
             _ex = _idx.get(_k)
             if _ex is not None:
-                _ex['qty'] = int(_ex.get('qty') or 0) + int(_r.get('qty') or 0)
-                _ex['amount'] = int(_ex.get('amount') or 0) + int(_r.get('amount') or 0)
+                _ex['qty'] = int(_ex.get('qty') or 0) + _cell_int(_r.get('qty'), 0)
+                _ex['amount'] = int(_ex.get('amount') or 0) + _cell_int(_r.get('amount'), 0)
             else:
                 _fresh.append(_r)
                 _idx[_k] = _r
@@ -2457,7 +2467,7 @@ def _render_online_pick_panel(alloc, dmap, d_day, USERNAME):
         for _i, _r in enumerate(_recs):
             if not _r.get('지정'):
                 continue
-            _up = int(_r.get('단가(온라인)') or 0)
+            _up = _cell_int(_r.get('단가(온라인)'), 0)
             if _up <= 0:
                 _zero += 1
                 continue
@@ -2470,7 +2480,7 @@ def _render_online_pick_panel(alloc, dmap, d_day, USERNAME):
                 'naver_no': str(_c.get('product_no') or ''),
                 'product_name': str(_c.get('product_name') or ''),
                 'recipient': str(_c.get('recipient') or ''),
-                'qty': max(1, int(_r.get('수량') or 1)),
+                'qty': max(1, _cell_int(_r.get('수량'), 1)),
                 'unit_price': _up, 'prev_cost': 0,
                 'memo': str(_r.get('메모') or '').strip(),
             })
@@ -2635,10 +2645,10 @@ def _render_unmatched_panel(alloc, dmap, d_day, USERNAME, receipt_items):
             if _how == _NONE:
                 continue
             _o = dict(_un[_i])
-            _qty = max(1, int(_r.get('수량') or 1))
+            _qty = max(1, _cell_int(_r.get('수량'), 1))
             _o['qty'] = _qty
             _cno = _pn_of[_i] if _i < len(_pn_of) else _n(_o.get('costco_no'))
-            _amt = int(_r.get('금액') or 0)
+            _amt = _cell_int(_r.get('금액'), 0)
             _memo = str(_r.get('메모') or '').strip()
             _me = str(_o.get('username') or '')
 
@@ -3665,7 +3675,7 @@ def _render_wait_assign(left_rows):
             continue
         _cno = str(_r['코스트코번호'])
         _src = _by_cno.get(_cno) or {}
-        _q = int(_r.get('배정수량') or 0)
+        _q = _cell_int(_r.get('배정수량'), 0)
         if _q <= 0:
             continue
         if _q > int(_src.get('units_left') or 0):
