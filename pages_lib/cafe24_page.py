@@ -1015,6 +1015,51 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                "**오른쪽 칸에서 건별로 고칠 수 있습니다** — 고친 값 그대로 "
                                "등록됩니다. (마진·배송비 설정을 바꾸면 자동가로 되돌아갑니다)")
 
+                    # 코스트코 번호·매장가 미리보기 — 카페24 자체상품코드(=코스트코 번호)로
+                    # 가격DB(shared_products)를 찾아 매장가를 옆에 보여 준다. 등록 때
+                    # 판매자상품코드에 들어갈 번호도 이것이다(없으면 register_one이
+                    # 상품명 매칭을 시도한다). 여기서는 무거운 상품명 매칭은 하지 않는다.
+                    _ag_px_db = {}
+                    try:
+                        for _s in (get_shared_products() or []):
+                            _sno = str(_s.get('product_no') or '').strip()
+                            if _sno and int(_s.get('store_price') or 0) > 0:
+                                _ag_px_db[_sno] = _s
+                    except Exception:
+                        _ag_px_db = {}
+
+                    def _ag_store(_p):
+                        """(코스트코번호, 매장가 행 or None)"""
+                        _cc = str(_p.get('custom_product_code') or '').strip()
+                        return _cc, _ag_px_db.get(_cc) if _cc else None
+
+                    # 매장가 기준으로 이 페이지 판매가 채우기 — 위젯을 그리기 전에 값을 넣는다.
+                    #   가격DB에는 카톤/묶음 전체가가 단품가처럼 들어간 행이 있다(수십~수백배).
+                    #   카페24 기준 자동가의 2배를 넘으면 그런 행으로 보고 건드리지 않는다.
+                    _ag_st_rows = [(_p, _ag_store(_p)[1]) for _p in _ag_show]
+                    _ag_st_n = sum(1 for _p, _s in _ag_st_rows if _s)
+                    if _ag_st_n and st.button(
+                            f"🏬 이 페이지 매장가 있는 {_ag_st_n}개 → 매장가 기준으로 판매가 채우기",
+                            key="ag_px_from_store",
+                            help="(매장가 + 택배비) × (1+마진%) ÷ 0.945 로 계산해 오른쪽 칸에 "
+                                 "넣습니다. 카페24 기준 자동가의 2배를 넘는 건은 카톤가 "
+                                 "의심으로 건너뜁니다. 넣은 뒤에도 칸에서 고칠 수 있습니다."):
+                        _set, _skip = 0, 0
+                        for _p, _s in _ag_st_rows:
+                            if not _s:
+                                continue
+                            _base = c24reg.calc_sale_price(int(_p.get('price') or 0), _ag_margin,
+                                                           _ag_ship_in_price, mode=_ag_price_mode)
+                            _sv = c24reg.calc_sale_price(int(_s['store_price']), _ag_margin,
+                                                         _ag_ship_in_price, mode='calc')
+                            if _sv <= 0 or (_base > 0 and _sv > _base * 2):
+                                _skip += 1
+                                continue
+                            st.session_state[f"ag_px_{_p['product_no']}"] = int(_sv)
+                            _set += 1
+                        st.success(f"매장가 기준으로 {_set}개 채움"
+                                   + (f" · {_skip}개는 카톤가 의심으로 건너뜀" if _skip else ""))
+
                     # 현재 페이지만 체크박스를 그린다
                     for _p in _ag_show:
                         _pno = _p['product_no']; _pr = int(_p.get('price') or 0)
@@ -1026,10 +1071,28 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         _cc1.checkbox(
                             f"{str(_p.get('product_name', ''))[:42]} · 카페24 {fmt(_pr)}원 → 네이버",
                             key=f"ag_ck_{_pno}")
+                        _ccode, _srow = _ag_store(_p)
+                        _help = f"자동 계산가 {fmt(_npr)}원 — 고치면 이 값으로 등록됩니다."
+                        if _srow:
+                            _sp = int(_srow['store_price'])
+                            _spx = c24reg.calc_sale_price(_sp, _ag_margin, _ag_ship_in_price,
+                                                          mode='calc')
+                            _sq = int(_srow.get('split_qty') or 1)
+                            _cc1.caption(
+                                f"　🏷 코스트코 {_ccode} · 🏬 매장가 **{fmt(_sp)}원**"
+                                + (f" ({_sq}개 묶음)" if _sq > 1 else "")
+                                + f" → 매장가 기준 {fmt(_spx)}원"
+                                + (f" · 가격DB {str(_srow.get('store_updated_at') or '')[:10]}"
+                                   if _srow.get('store_updated_at') else ""))
+                            _help += f" 매장가 기준 계산가 {fmt(_spx)}원."
+                        elif _ccode:
+                            _cc1.caption(f"　🏷 코스트코 {_ccode} · 가격DB에 매장가 없음")
+                        else:
+                            _cc1.caption("　⚠️ 코스트코 번호 없음 — 등록 때 상품명 매칭을 "
+                                         "시도하고, 못 찾으면 판매자상품코드는 비워 둡니다")
                         _cc2.number_input(
                             "네이버 판매가", min_value=0, step=10, key=_pxk,
-                            label_visibility="collapsed",
-                            help=f"자동 계산가 {fmt(_npr)}원 — 고치면 이 값으로 등록됩니다.")
+                            label_visibility="collapsed", help=_help)
 
                     # 선택분은 '전체 목록'에서 모은다 — 다른 페이지 선택이 빠지면 안 된다
                     #   아직 안 그린 페이지는 수정값이 없으므로 자동 계산가를 쓴다.

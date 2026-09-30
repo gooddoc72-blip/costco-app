@@ -489,6 +489,7 @@ def get_main_display_products(creds, display_group, save_tokens=None, max_total=
             "product_name": _p.get("product_name", ""),
             "price": _pr,
             "selling": _p.get("selling", ""),
+            "custom_product_code": _p.get("custom_product_code", "") or "",
         })
     return out, None
 
@@ -540,7 +541,7 @@ def search_products(creds, keyword="", limit=50, save_tokens=None,
                     category_no=None, offset=0):
     """상품 검색. 반환: (products, err).
     keyword: 상품명 부분일치 / category_no: 카페24 분류번호 / offset: 페이징
-    각 항목: {product_no, product_name, price, selling(판매여부)}
+    각 항목: {product_no, product_name, price, selling(판매여부), custom_product_code}
     """
     params = {"limit": min(100, limit), "offset": max(0, int(offset or 0))}
     kw = str(keyword or "").strip()
@@ -563,5 +564,8 @@ def search_products(creds, keyword="", limit=50, save_tokens=None,
             "product_name": p.get("product_name", ""),
             "price": _pr,
             "selling": p.get("selling", ""),
+            # 자체상품코드 = 코스트코 번호(매칭·동기화가 기록). 등록 화면에서
+            # 번호와 매장가를 미리 보여 주는 데 쓴다.
+            "custom_product_code": p.get("custom_product_code", "") or "",
         })
     return out, None
