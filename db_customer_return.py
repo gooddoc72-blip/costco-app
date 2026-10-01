@@ -93,6 +93,18 @@ def ensure(conn=None):
             done_at       TEXT DEFAULT ''
         )
     """)
+    # 사용자 매장 반품 요청 — 상태가 아니라 표시다. 물건은 여전히 창고(received)에
+    # 있고, 실제 매장 반품은 관리자가 store_return으로 끝낸다. 상태로 만들면
+    # '창고에 있는 건'을 고르는 모든 조회(OPEN)를 둘로 나눠 고쳐야 한다.
+    try:
+        _cols = {r[1] for r in conn.execute("PRAGMA table_info(customer_return)")}
+        for _c, _t in (('store_req', 'INTEGER DEFAULT 0'),
+                       ('store_req_at', "TEXT DEFAULT ''"),
+                       ('store_req_by', "TEXT DEFAULT ''")):
+            if _c not in _cols:
+                conn.execute(f"ALTER TABLE customer_return ADD COLUMN {_c} {_t}")
+    except sqlite3.Error:
+        pass
     conn.execute("CREATE INDEX IF NOT EXISTS idx_cr_status ON customer_return(status)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_cr_user ON customer_return(username, returned_at)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_cr_order ON customer_return(order_no)")
@@ -258,6 +270,36 @@ def store_return(ids, refund_amount=0, by='', memo=''):
             _amt = 0                      # 환불금액은 한 번만
         else:
             out['skipped'] += 1
+    return out
+
+
+def set_store_request(ids, username, on=True, by=''):
+    """사용자가 자기 반품 건에 '매장 반품 요청'을 걸거나 푼다.
+
+    **정리 전(received)이고 그 사용자 건**만 바꾼다. 이미 재고로 되돌렸거나
+    매장에 간 건, 남의 건은 건드리지 않는다(화면 밖에서 번호만 바꿔 보내도).
+    반환: {'ok': n, 'skipped': n}
+    """
+    ids = [_i(i) for i in (ids or []) if _i(i) > 0]
+    out = {'ok': 0, 'skipped': 0}
+    if not ids or not _s(username):
+        return out
+    conn = _conn()
+    ensure(conn)
+    try:
+        for _id in ids:
+            cur = conn.execute(
+                "UPDATE customer_return SET store_req=?, store_req_at=?, store_req_by=? "
+                "WHERE id=? AND username=? AND status=?",
+                (1 if on else 0, _now() if on else '', _s(by) if on else '',
+                 _id, _s(username), OPEN))
+            if cur.rowcount:
+                out['ok'] += 1
+            else:
+                out['skipped'] += 1
+        conn.commit()
+    finally:
+        conn.close()
     return out
 
 

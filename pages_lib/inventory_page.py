@@ -58,7 +58,8 @@ def render(USERNAME, IS_ADMIN, settings):
         with tabs[7]:
             _guide(sur, IS_ADMIN=True)
     else:
-        tabs = st.tabs(["📢 대량구매 공지", "📥 내 요청", "📦 내 재고", "📖 구매 가이드"])
+        tabs = st.tabs(["📢 대량구매 공지", "📥 내 요청", "📦 내 재고", "↩️ 내 반품",
+                        "📖 구매 가이드"])
         with tabs[0]:
             _user_notices(USERNAME)
         with tabs[1]:
@@ -66,6 +67,8 @@ def render(USERNAME, IS_ADMIN, settings):
         with tabs[2]:
             _user_stock(USERNAME, sur)
         with tabs[3]:
+            _user_returns(USERNAME)
+        with tabs[4]:
             _guide(sur, IS_ADMIN=False)
 
 
@@ -869,8 +872,11 @@ def _customer_returns(USERNAME):
 
     # ── ② 정리 대기 ───────────────────────────────────────
     st.divider()
-    _rows = _cr.open_returns()
-    st.markdown(f"##### 🧺 정리 대기 {len(_rows)}건")
+    # 사용자가 매장 반품을 요청한 건을 맨 위로 — 관리자가 매장에 들고 갈 목록이다
+    _rows = sorted(_cr.open_returns(), key=lambda r: -int(r.get('store_req') or 0))
+    _nreq = sum(1 for r in _rows if int(r.get('store_req') or 0))
+    st.markdown(f"##### 🧺 정리 대기 {len(_rows)}건"
+                + (f" · 🙋 매장 반품 요청 {_nreq}건" if _nreq else ""))
     if not _rows:
         st.success("정리할 반품이 없습니다.")
     else:
@@ -887,6 +893,7 @@ def _customer_returns(USERNAME):
                 _age = 0
             _tbl.append({
                 "선택": False, "번호": _r['id'],
+                "요청": "🙋 매장반품" if int(_r.get('store_req') or 0) else "",
                 "반품입고일": _r['returned_at'], "보관": _age_badge(_age),
                 "판매자": _dmap.get(_r['username'], _r['username']),
                 "수취인": _r['recipient'], "상품명": str(_r['product_name'])[:30],
@@ -919,6 +926,11 @@ def _customer_returns(USERNAME):
                 _owner = st.selectbox("되돌릴 대상", _users, key="cr_owner",
                                       format_func=lambda v: _dmap.get(v, v))
             _no_cno = [r for r in _sel_rows if not str(r.get('costco_no') or '').strip()]
+            _req_sel = [r for r in _sel_rows if int(r.get('store_req') or 0)]
+            if _req_sel:
+                st.caption("⚠️ 사용자가 **매장 반품을 요청한 건** "
+                           + " · ".join(f"#{r['id']}" for r in _req_sel[:5])
+                           + "이 섞여 있습니다 — 재고로 되돌리면 요청과 다르게 처리됩니다.")
             if st.button(f"📦 {len(_sel)}건 **재고로 되돌림**", key="cr_restock",
                          disabled=not _sel or bool(_no_cno), use_container_width=True,
                          help="상태가 멀쩡해 다시 팔 수 있는 건입니다. 그 사용자 "
@@ -985,6 +997,90 @@ def _customer_returns(USERNAME):
             } for _r in _done]), use_container_width=True, hide_index=True)
             _ref = sum(int(_r['refund_amount'] or 0) for _r in _done)
             st.caption(f"매장 환불 누계 **{fmt(_ref)}원** · 총 {len(_done)}건")
+
+
+def _user_returns(USERNAME):
+    """↩️ 내 반품 — 관리자가 받아 둔 내 주문의 고객 반품과 그 행방.
+
+    반품 물건은 관리자 창고로 돌아온다. 사용자는 그 사실도, 그 뒤 재고로
+    돌아왔는지 매장에 갔는지도 볼 수 없었다. 여기서 보고, 아직 창고에 있는
+    건은 **매장 반품을 요청**한다 — 실제 반품은 관리자가 매장에서 한다.
+
+    환불금액은 보여 주지 않는다. 관리자가 여러 건을 한 번에 매장 반품하면
+    합계가 첫 건에만 적혀 건별 금액이 아니기 때문이다.
+    """
+    import pandas as pd
+    st.subheader("↩️ 내 반품")
+    st.caption("고객이 반품해 **관리자에게 돌아온 내 주문**입니다. 관리자가 입고를 "
+               "확인하면 여기에 나타납니다. 아직 창고에 있는 건은 **매장 반품을 "
+               "요청**할 수 있고, 관리자가 코스트코 매장에 반품합니다.")
+    _all = _cr.list_returns(username=USERNAME, limit=500)
+    if not _all:
+        st.info("등록된 반품이 없습니다.")
+        return
+    _open = [r for r in _all if r['status'] == _cr.OPEN]
+    _done = [r for r in _all if r['status'] != _cr.OPEN]
+    _m1, _m2, _m3 = st.columns(3)
+    _m1.metric("창고 보관 중", f"{len(_open)}건")
+    _m2.metric("내 재고로 되돌림", f"{sum(1 for r in _done if r['status'] == 'restocked')}건")
+    _m3.metric("매장 반품 완료",
+               f"{sum(1 for r in _done if r['status'] == 'store_returned')}건")
+
+    st.markdown(f"##### 📦 창고 보관 중 {len(_open)}건")
+    if not _open:
+        st.caption("창고에 남은 반품이 없습니다.")
+    else:
+        st.caption(f"매장 반품 기한({RETURN_DAYS}일)은 **원래 구매일**부터 흐릅니다 — "
+                   "반품할 거라면 빨리 요청하세요. 요청하지 않은 건은 관리자가 "
+                   "상태를 보고 내 재고로 되돌리거나 매장에 반품합니다.")
+        _tbl = [{
+            "선택": False, "번호": r['id'],
+            "상태": ("🙋 매장 반품 요청함" if int(r.get('store_req') or 0)
+                   else "📥 입고 확인됨"),
+            "반품입고일": r['returned_at'], "주문일": r.get('order_date') or '',
+            "수취인": r['recipient'], "상품명": str(r['product_name'])[:34],
+            "수량": int(r['qty'] or 0), "사유": r['reason'],
+            "주문번호": r['order_no'],
+        } for r in _open]
+        _ed = st.data_editor(
+            pd.DataFrame(_tbl), use_container_width=True, hide_index=True,
+            key="ucr_open_ed", disabled=[c for c in _tbl[0] if c != "선택"],
+            column_config={"선택": st.column_config.CheckboxColumn("선택"),
+                           "번호": st.column_config.NumberColumn("번호", format='%d'),
+                           "수량": st.column_config.NumberColumn("수량", format='%d')})
+        _sel = [_tbl[i]['번호'] for i, x in enumerate(_ed.to_dict('records'))
+                if x.get('선택')]
+        _req_ids = {r['id'] for r in _open if int(r.get('store_req') or 0)}
+        _to_req = [i for i in _sel if i not in _req_ids]
+        _to_cancel = [i for i in _sel if i in _req_ids]
+        _b1, _b2 = st.columns(2)
+        if _b1.button(f"🙋 {len(_to_req)}건 매장 반품 요청", key="ucr_req", type="primary",
+                      disabled=not _to_req, use_container_width=True):
+            _res = _cr.set_store_request(_to_req, USERNAME, on=True, by=USERNAME)
+            st.success(f"🙋 {_res['ok']}건 매장 반품을 요청했습니다 — 관리자가 처리합니다.")
+            st.rerun()
+        if _b2.button(f"↩ {len(_to_cancel)}건 요청 취소", key="ucr_cancel",
+                      disabled=not _to_cancel, use_container_width=True):
+            _res = _cr.set_store_request(_to_cancel, USERNAME, on=False)
+            st.success(f"{_res['ok']}건 요청을 취소했습니다.")
+            st.rerun()
+
+    with st.expander(f"📋 처리 완료 {len(_done)}건", expanded=False):
+        if not _done:
+            st.caption("아직 처리된 반품이 없습니다.")
+        else:
+            _nm = _name_map()
+            st.dataframe(pd.DataFrame([{
+                "처리": _cr.STATUS_LABEL.get(r['status'], r['status']),
+                "처리일": str(r.get('done_at') or '')[:10],
+                "재고 대상": (_nm.get(r['restock_owner'], r['restock_owner'])
+                          if r['status'] == 'restocked' else '—'),
+                "반품입고일": r['returned_at'], "수취인": r['recipient'],
+                "상품명": str(r['product_name'])[:34], "수량": int(r['qty'] or 0),
+                "사유": r['reason'], "주문번호": r['order_no'],
+            } for r in _done]), use_container_width=True, hide_index=True)
+            st.caption("'재고로 되돌림'은 **📦 내 재고**에 수량이 다시 잡힌 건입니다. "
+                       "반품분 정산은 관리자가 정산·청구에서 따로 처리합니다.")
 
 
 # ── 반품 대상 ─────────────────────────────────────────────
