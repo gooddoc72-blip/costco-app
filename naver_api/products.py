@@ -588,7 +588,11 @@ def register_product(client_id, client_secret, product_info):
     fee_type = "FREE" if shipping_fee <= 0 else "PAID"
     # 상품명 하드가드: 같은 키워드 2회 이상 반복 제거 (모든 등록 경로가 지나는 최종 지점)
     from .keywords import dedup_product_name
-    name = dedup_product_name(product_info.get("name") or "")[:100]
+    # keep_name: 카페24 대행등록 — 원본 상품명을 손대지 않는다(네이버 한도 100자만)
+    if product_info.get("keep_name"):
+        name = str(product_info.get("name") or "").strip()[:100]
+    else:
+        name = dedup_product_name(product_info.get("name") or "")[:100]
     # detail_html (코스트코 상세) 우선, 없으면 detail_content, 없으면 기본값
     detail = _sanitize_detail_html(
         product_info.get("detail_html")

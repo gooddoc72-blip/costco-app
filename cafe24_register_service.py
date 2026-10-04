@@ -447,20 +447,12 @@ def register_one(creds, save_tokens, product, margin, target, opts,
         if _cr2:
             _cid, _cfull = _cr2[0].get('id'), _cr2[0].get('full_name')
     if not _cid:
-        _name = _base_name
         return _r('fail', '카테고리 판단실패', reason='NO_CATEGORY',
                   code=_seller_code, code_src=_code_src)
 
-    # ③ 최종 상품명: 연관키워드(저경쟁 100~300+대표어) 최적화 — 분석 상품명을 seed로
-    _final_name = _base_name
-    if ad_creds and opts.get('opt_name', True):
-        _kn, _ki = naver_api.keyword_optimized_name(
-            ad_creds[0], ad_creds[1], ad_creds[2], _base_name,
-            ai_key=ai_key, category=_cfull, gemini_key=gem_key)
-        if _kn and len(_kn) >= 4:
-            _final_name = _kn
-    if not str(_final_name or '').strip():   # 안전장치: 상품명 절대 비우지 않음
-        _final_name = _cf_name or _base_name
+    # ③ 최종 상품명: 카페24 원본 그대로. 대행등록은 남의 상품이라 이름을 바꾸면
+    #    안 된다 — AI 사진분석·연관키워드는 카테고리 판단에만 쓰고 이름엔 안 쓴다.
+    _final_name = _cf_name or _base_name
     _name = _final_name
 
     # ④ 태그ID(검색 반영되는 사전등록 태그만)
@@ -489,7 +481,7 @@ def register_one(creds, save_tokens, product, margin, target, opts,
     _res, _e2 = naver_api.register_product(tid, tsecret, {
         # 등록 집계용 — 토큰 주인(_tu) 몫으로 세되 누가 대행했는지 남긴다
         "reg_source": "cafe24", "reg_actor": str(opts.get('actor') or ''),
-        "name": _final_name, "sale_price": sale,
+        "name": _final_name, "keep_name": True, "sale_price": sale,
         "image_url": _cdn, "category_id": _cid,
         "detail_html": _detail_html,
         "shipping_fee": 0, "origin_code": "03",

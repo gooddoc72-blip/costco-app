@@ -158,9 +158,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             else:
                 if not (_ag_oc and _ag_os):
                     st.info("💡 카테고리 자동판단에 관리자 네이버 Open API 키가 필요합니다(설정 탭).")
-                _kwmark = "✅ 연관키워드 상품명(저경쟁 100~300+대표어)" if _ad_creds else \
-                    "⚠️ 연관키워드 상품명 OFF — 검색광고 API 키 미설정(설정 탭). 카페24 원본명으로 등록"
-                st.caption(f"등록 시 자동 적용: {_kwmark} · ✅ 태그ID 자동 · ✅ 카페24 속성(제조사/모델/원산지)")
+                st.caption("등록 시 자동 적용: ✅ 상품명은 카페24 원본 그대로 · ✅ 태그ID 자동 · "
+                           "✅ 카페24 속성(제조사/모델/원산지)")
                 # 상세페이지 방식 — 기본은 '카페24 원본 그대로'.
                 # 이미지 스택은 원본 레이아웃(텍스트·표·순서)을 잃는다.
                 _ag_dmode = st.radio(
@@ -506,11 +505,11 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     st.caption("🎁 구매/리뷰 혜택 — 설정 없음 (위 🎁 칸에서 값을 넣고 "
                                "저장하면 등록 시 자동으로 함께 걸립니다)")
                 _ag_photo_ai = st.checkbox(
-                    "📷 AI 제품사진 분석으로 상품명·속성 생성 (제품사진 등록 방식)",
+                    "📷 AI 제품사진 분석으로 카테고리·속성 판단 (상품명은 바꾸지 않음)",
                     value=bool(_ag_ai or _ag_gai), key="ag_photoai",
                     disabled=not (_ag_ai or _ag_gai),
-                    help="대표 제품이미지를 AI 비전(Gemini 우선·Claude 폴백)으로 분석해 상품명·원산지·브랜드를 뽑고, "
-                         "그 상품명으로 카테고리 판단·연관키워드 최적화까지 진행합니다.")
+                    help="대표 제품이미지를 AI 비전(Gemini 우선·Claude 폴백)으로 분석해 원산지·브랜드를 뽑고 "
+                         "카테고리 판단에 참고합니다. 등록 상품명은 카페24 원본 그대로입니다.")
                 # 인증대상 아님 — 화면과 크론(대기열)이 같은 전역 설정을 쓴다
                 _ag_cert_cur = (get_global_setting('naver_cert_exclude') or '1') == '1'
                 _ag_cert_ex = st.checkbox(
