@@ -323,23 +323,25 @@ def _tab_user(USERNAME, dmap):
         '입금일시': str(i['paid_at'] or '')[:16],
         '메모': str(i['memo'] or ''),
     } for i in invs]
-    _ev = st.dataframe(pd.DataFrame(_rows), use_container_width=True, hide_index=True,
-                       on_select="rerun", selection_mode="single-row",
-                       key=f"sbu_tbl_{_u}_{_f}_{_t}_{_stl}",
-                       column_config={k: st.column_config.NumberColumn(k, format='%d')
-                                      for k in ('청구액(물건값)', '입금액')})
-    try:
-        _sel = list(_ev.selection.rows)
-    except Exception:
-        _sel = []
-    if _sel and _sel[0] < len(invs):
-        _inv = invs[_sel[0]]
-        _sd = _inv['settle_date']
-        st.caption(f"👇 **{_sd}** 품목 내역")
-        _render_items_detail(_sd, [_inv], dmap,
-                             ded={_u: _ded[_sd]} if _ded.get(_sd) else {}, by=USERNAME)
-    else:
-        st.caption("👆 날짜 행을 클릭하면 그날 품목 내역이 펼쳐집니다.")
+    # 날짜마다 펼침 한 줄 — 누르면 그날 품목 내역이 바로 아래로 열린다.
+    # (전엔 표 행 선택 → 접힌 박스를 또 펼쳐야 해서 내역이 없는 줄 알았다)
+    st.caption("👇 날짜를 누르면 그날 품목 내역이 펼쳐집니다.")
+    for i, r in zip(invs, _rows):
+        _sd = i['settle_date']
+        _lbl = (f"📅 **{_sd}** · {r['상태']} · 품목 {r['품목']}개 · "
+                f"**{fmt(r['청구액(물건값)'])}원**"
+                + (f" · 입금 {fmt(r['입금액'])}원" if r['입금액'] else "")
+                + (f" · {r['결제']}" if r['결제'] else ""))
+        _box = st.expander(_lbl, expanded=False)
+        _meta = " · ".join(x for x in (
+            f"청구 {r['청구일시']}" if r['청구일시'] else "",
+            f"입금 {r['입금일시']}" if r['입금일시'] else "",
+            f"메모: {r['메모']}" if r['메모'] else "") if x)
+        if _meta:
+            _box.caption(_meta)
+        _render_items_detail(_sd, [i], dmap,
+                             ded={_u: _ded[_sd]} if _ded.get(_sd) else {},
+                             by=USERNAME, box=_box)
 
     # 엑셀 — 청구서 + 품목
     try:
@@ -460,16 +462,23 @@ def _amt_of(invs, username):
     return 0
 
 
-def _render_items_detail(ds, invs, dmap, ded=None, by=''):
+def _render_items_detail(ds, invs, dmap, ded=None, by='', box=None):
     """청구 근거 — 어느 주문의 어느 품목이 얼마인지. 청구액만으로는 설명이 안 된다.
 
     오매칭 품목을 여기서 뺄 수 있다. 지운 주문은 '이미 정산된 주문' 목록에서
     빠지므로 영수증 정산에서 **자동으로 다시 매칭 후보가 된다** — 잘못 붙은 건을
     고치려고 그날 정산을 통째로 취소할 필요가 없다.
+
+    box: 호출측이 이미 연 컨테이너(사용자별 화면의 날짜 펼침). 주면 그 안에 그리고
+         판매자 고르기를 건너뛴다 — expander 안에 expander는 못 연다.
     """
-    with st.expander("🔍 청구 근거 — 품목별 내역 · 오매칭 삭제", expanded=False):
-        _u = st.selectbox("판매자", [i['username'] for i in invs],
-                          format_func=lambda u: dmap.get(u, u), key=f"sb_det_{ds}")
+    with (box if box is not None else
+          st.expander("🔍 청구 근거 — 품목별 내역 · 오매칭 삭제", expanded=False)):
+        if box is not None:
+            _u = invs[0]['username']
+        else:
+            _u = st.selectbox("판매자", [i['username'] for i in invs],
+                              format_func=lambda u: dmap.get(u, u), key=f"sb_det_{ds}")
         items = _ds.get_items(ds, username=_u)
         if not items:
             st.caption("품목 내역이 없습니다 (비용만 청구된 날).")
