@@ -318,6 +318,29 @@ def log_cafe24_registration(username, product_no, origin_no='', product_name='',
         return False
 
 
+def get_cafe24_registered(username):
+    """카페24 경로로 등록된 네이버 상품 — [{product_no, origin_no, product_name}].
+    네이버 번호(origin_no)가 남은 건만, 같은 네이버 번호는 최신 1건만."""
+    conn = get_auth_db()
+    try:
+        _ensure_reg_log(conn)
+        rows = conn.execute(
+            "SELECT product_no, origin_no, product_name FROM cafe24_register_log "
+            " WHERE username=? AND TRIM(COALESCE(origin_no,''))<>'' "
+            " ORDER BY id DESC", (str(username),)).fetchall()
+    finally:
+        conn.close()
+    out, seen = [], set()
+    for r in rows:
+        _o = str(r[1] or '').strip()
+        if _o in seen:
+            continue
+        seen.add(_o)
+        out.append({'product_no': str(r[0] or '').strip(), 'origin_no': _o,
+                    'product_name': str(r[2] or '')})
+    return out
+
+
 def get_cafe24_reg_count(username):
     """누적 등록 수 — 대기열 완료분(done)과 직접등록 로그를 상품번호로 합집합.
 

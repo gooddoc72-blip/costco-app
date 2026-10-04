@@ -1367,3 +1367,83 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 st.success(f"동기화 완료 — {len(_res)}건 처리 (다시 불러오면 최신 반영)")
                 if _res:
                     st.dataframe(pd.DataFrame(_res), use_container_width=True, hide_index=True)
+
+    # ── 🔢 등록된 네이버 상품에 코스트코 번호 입력 (판매자상품코드 소급) ──
+    st.divider()
+    st.subheader("🔢 등록된 네이버 상품에 코스트코 번호 입력")
+    st.caption("카페24로 대행등록한 네이버 상품 중 판매자상품코드가 빈 것에, 카페24 자체상품코드"
+               "(= 위 매칭에서 저장한 코스트코 번호)를 채워 넣습니다. 네이버에 이미 다른 코드가 "
+               "있으면 건드리지 않고 '충돌'로만 보여 줍니다. 먼저 위 매칭 저장을 끝내세요.")
+    _sc_cf = {_k: (get_global_setting('cafe24_' + _k) or '') for _k in
+              ('mall_id', 'client_id', 'client_secret', 'access_token', 'refresh_token', 'token_expires_at')}
+    if not (_sc_cf['mall_id'] and _sc_cf['client_id'] and _sc_cf['access_token']):
+        st.info("공용 카페24 자격증명이 없습니다.")
+        return
+    if not HAS_NAVER_API:
+        return
+    import cafe24_register_service as _c24s
+    _sc_creds = {'mall_id': _sc_cf['mall_id'], 'client_id': _sc_cf['client_id'],
+                 'client_secret': _sc_cf['client_secret'], 'access_token': _sc_cf['access_token'],
+                 'refresh_token': _sc_cf['refresh_token'], 'expires_at': _sc_cf['token_expires_at']}
+
+    def _sc_save(t):
+        for _k, _v in (('cafe24_access_token', t.get('access_token', '')),
+                       ('cafe24_refresh_token', t.get('refresh_token', '')),
+                       ('cafe24_token_expires_at', t.get('expires_at', ''))):
+            set_global_setting(_k, _v)
+
+    _sc_users = {}
+    for u in get_all_users():
+        _un = str(u.get('username') or '').strip()
+        if not _un or u.get('is_admin') or u.get('status', 'active') != 'active':
+            continue
+        _us = get_all_settings(_un) or {}
+        if str(_us.get('api_client_id') or '').strip() and str(_us.get('api_client_secret') or '').strip():
+            _sc_users[f"{_un} · {u.get('display_name', '') or ''}"] = (_un, _us)
+    if not _sc_users:
+        st.info("커머스 API 키가 있는 사용자가 없습니다.")
+        return
+    _scc1, _scc2 = st.columns([2, 1])
+    _sc_pick = _scc1.selectbox("대상 사용자", list(_sc_users), key="sc_user")
+    _sc_lim = _scc2.number_input("이번에 입력할 최대 건수", min_value=1, max_value=500,
+                                 value=100, step=10, key="sc_lim")
+    _sc_un, _sc_us = _sc_users[_sc_pick]
+    _sc_tid, _sc_tsec = _sc_us.get('api_client_id', ''), _sc_us.get('api_client_secret', '')
+
+    if st.button("🔍 대상 확인 (미리보기 — 아직 입력 안 함)", key="sc_preview"):
+        with st.spinner("네이버 상품목록·카페24 자체상품코드 조회 중..."):
+            _rows, _err = _c24s.seller_code_targets(_sc_creds, _sc_save, _sc_un, _sc_tid, _sc_tsec)
+        if _err:
+            st.error(_err)
+            st.session_state.pop('_sc_rows', None)
+        else:
+            st.session_state['_sc_rows'] = (_sc_un, _rows)
+
+    _sc_state = st.session_state.get('_sc_rows')
+    if _sc_state and _sc_state[0] == _sc_un:
+        _rows = _sc_state[1]
+        if not _rows:
+            st.info("이 사용자의 카페24 등록 기록(네이버 번호 포함)이 없습니다.")
+            return
+        _lbl = {'ready': '✅ 입력 대상', 'same': '⏭ 이미 같음', 'conflict': '⚠️ 충돌(네이버에 다른 코드)',
+                'no_code': '❔ 코스트코 번호 없음', 'gone': '🗑 네이버에 없음'}
+        _cnt = {k: sum(1 for r in _rows if r['state'] == k) for k in _lbl}
+        st.markdown(" · ".join(f"{_lbl[k]} **{_cnt[k]}**" for k in _lbl))
+        if _cnt['no_code']:
+            st.caption("❔ 코스트코 번호 없음 = 카페24 자체상품코드가 비었거나 형식이 아님 → "
+                       "위 매칭에서 번호를 저장한 뒤 다시 확인하세요.")
+        st.dataframe(pd.DataFrame([{
+            '상태': _lbl[r['state']], '네이버번호': r['origin_no'], '카페24번호': r['cafe24_no'],
+            '상품명': r['name'], '넣을 코스트코번호': r['costco_no'], '네이버 현재코드': r['remote'],
+        } for r in sorted(_rows, key=lambda r: list(_lbl).index(r['state']))]),
+            use_container_width=True, hide_index=True, height=360)
+        if _cnt['ready'] and st.button(
+                f"💾 입력 실행 ({min(_cnt['ready'], int(_sc_lim))}건)", type="primary", key="sc_run"):
+            _pb = st.progress(0.0)
+            _res = _c24s.push_seller_codes(
+                _sc_tid, _sc_tsec, _rows, limit=int(_sc_lim),
+                progress=lambda i, n: _pb.progress(i / max(1, n)))
+            st.session_state.pop('_sc_rows', None)   # 다시 확인하면 최신 상태
+            st.success(f"완료 — 입력 {_res['ok']}건 · 실패 {_res['failed']}건")
+            for _m in _res['errors'][:20]:
+                st.caption(f"❌ {_m}")

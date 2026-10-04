@@ -518,3 +518,93 @@ def register_one(creds, save_tokens, product, margin, target, opts,
     return _r('ok', ('등록 (⚠️ %s)' % _warn[:120]) if _warn else '등록',
               code=_seller_code, code_src=_code_src,
               category=str(_cfull or ''), tags=len(_tags or []))
+
+
+# ── 이미 등록된 상품에 코스트코 번호(판매자상품코드) 소급 입력 ────────────
+#   등록 당시 카페24 자체상품코드가 비어 판매자상품코드 없이 올라간 상품을,
+#   나중에 매칭으로 채워진 자체상품코드로 메운다.
+#   대상은 cafe24_register_log(네이버 번호가 남은 건)뿐이다 — 사용자 제품DB에는
+#   카페24 경로 상품이 없어 naver_seller_code.push_seller_codes가 못 본다.
+#   네이버 현재 값은 상품목록 1회 조회로 읽는다(상품당 GET을 아낀다).
+#   네이버에 이미 **다른** 코드가 있으면 덮어쓰지 않고 충돌로 보고만 한다.
+
+SELLER_CODE_DELAY = 0.6   # 상품당 GET 2회+PUT 1회 — 너무 빠르면 429
+
+
+def seller_code_targets(creds, save_tokens, username, tid, tsecret):
+    """소급 입력 대상 분류. 반환: (rows, err)
+    rows: [{origin_no, cafe24_no, name, costco_no, remote, state}]
+    state: ready(입력 대상) / same(이미 같음) / conflict(네이버에 다른 코드)
+           / no_code(카페24 자체상품코드 없음·형식 아님) / gone(네이버에 없음)"""
+    from db_cafe24_queue import get_cafe24_registered
+    from services import is_costco_pno
+
+    _reg = get_cafe24_registered(username)
+    if not _reg:
+        return [], None
+    _store, _e = naver_api.get_product_list(tid, tsecret)
+    if _e:
+        return None, '네이버 상품목록 조회 실패: %s' % str(_e)[:150]
+    _remote = {str(s.get('originProductNo') or ''): s for s in (_store or [])}
+    _c24, _e = cafe24_api.get_all_products(creds, save_tokens=save_tokens, max_total=3000)
+    if _e:
+        return None, '카페24 상품 조회 실패: %s' % str(_e)[:150]
+    _cc = {str(p.get('product_no')): str(p.get('custom_product_code') or '').strip()
+           for p in (_c24 or [])}
+
+    rows = []
+    for r in _reg:
+        _s = _remote.get(r['origin_no'])
+        _code = _cc.get(r['product_no'], '')
+        # 카페24 번호가 자체코드 칸에 들어간 오염값은 코스트코 번호로 치지 않는다
+        if _code == r['product_no'] or not is_costco_pno(_code):
+            _code = ''
+        _cur = str((_s or {}).get('sellerManagementCode') or '').strip()
+        if _s is None:
+            _state = 'gone'
+        elif not _code:
+            _state = 'no_code'
+        elif _cur == _code:
+            _state = 'same'
+        elif _cur:
+            _state = 'conflict'
+        else:
+            _state = 'ready'
+        rows.append({'origin_no': r['origin_no'], 'cafe24_no': r['product_no'],
+                     'name': str((_s or {}).get('productName') or r['product_name'])[:40],
+                     'costco_no': _code, 'remote': _cur, 'state': _state})
+    return rows, None
+
+
+def push_seller_codes(tid, tsecret, rows, limit=None, delay=SELLER_CODE_DELAY, progress=None):
+    """seller_code_targets 결과 중 state='ready'만 네이버에 입력.
+    반환: {ok, failed, errors[], done[]}"""
+    import time
+    _todo = [r for r in rows if r['state'] == 'ready']
+    if limit:
+        _todo = _todo[:int(limit)]
+    from naver_seller_code import read_remote_seller_code
+    ok, errors, done = 0, [], []
+    for i, r in enumerate(_todo, 1):
+        # 목록 응답에 코드가 빠졌을 수도 있다 — 덮어쓰기 직전 상품 단건으로 재확인
+        _cur, _rerr = read_remote_seller_code(tid, tsecret, r['origin_no'])
+        if _rerr:
+            _s, _err = False, _rerr
+        elif _cur:
+            _s, _err = False, '네이버에 이미 코드 %s 있음 — 건드리지 않음' % _cur
+        else:
+            try:
+                _s, _err, _ = naver_api.update_product_full(
+                    tid, tsecret, r['origin_no'], {'seller_code': r['costco_no']})
+            except Exception as _ex:
+                _s, _err = False, '예외: %s' % _ex
+        if _s:
+            ok += 1
+            done.append(r)
+        else:
+            errors.append('%s(%s): %s' % (r['origin_no'], r['costco_no'], str(_err)[:120]))
+        if progress:
+            progress(i, len(_todo))
+        if i < len(_todo) and delay:
+            time.sleep(delay)
+    return {'ok': ok, 'failed': len(errors), 'errors': errors, 'done': done}
