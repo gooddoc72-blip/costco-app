@@ -24,8 +24,10 @@
   restocked       재고로 되돌림 — 그 사용자 재고(inventory_lots)로 다시 들어갔다
   store_returned  매장 반품 완료 — 코스트코에 돌려주고 환불까지 확인
 
-  정리된 건(restocked·store_returned)은 되돌릴 수 없다. 재고를 이미 움직였거나
-  물건이 매장으로 갔기 때문이다. 잘못 입력한 것은 **정리 전에** 삭제한다.
+  정리된 건(restocked·store_returned)은 바로 고치지 않고 **처리 취소**(cancel)로
+  정리 대기로 되돌린 뒤 고친다 — 취소가 넣었던 재고를 빼고 적립한 예치금을
+  (−)로 되돌려, 움직인 것을 장부에서 함께 되감는다. 잘못 입력한 것은 **정리
+  전에** 수정(update)하거나 삭제한다.
 """
 import sqlite3
 from datetime import datetime
@@ -350,6 +352,95 @@ def credit_deposit(_id, by=''):
         return {'ok': False, 'msg': f'예치금 적립 실패 {_err}'.strip()}
     return {'ok': True, 'msg': '적립', 'id': _i(_id), 'username': un,
             'amount': amt, 'deposit_id': _did}
+
+
+def update(_id, by='', **fields):
+    """정리 대기(received) 건 수정 — 수량·개당 구입가·코스트코번호·사유·메모.
+    정리된 건은 고치지 않는다(재고·예치금이 이미 움직였다) — 먼저 취소한다.
+    반환: {'ok', 'msg'}"""
+    r = get(_id)
+    if not r:
+        return {'ok': False, 'msg': '없는 반품 건입니다.'}
+    if str(r.get('status')) != OPEN:
+        return {'ok': False, 'msg': '정리된 건은 수정할 수 없습니다 — 먼저 처리 취소하세요.'}
+    _set, _args = [], []
+    if 'qty' in fields:
+        if _i(fields['qty']) <= 0:
+            return {'ok': False, 'msg': '수량은 1 이상이어야 합니다.'}
+        _set.append('qty=?'); _args.append(_i(fields['qty']))
+    if 'unit_cost' in fields:
+        _set.append('unit_cost=?'); _args.append(max(0, _i(fields['unit_cost'])))
+    for _k in ('costco_no', 'reason', 'memo'):
+        if _k in fields:
+            _set.append(f'{_k}=?'); _args.append(_s(fields[_k]))
+    if not _set:
+        return {'ok': False, 'msg': '바꿀 내용이 없습니다.'}
+    conn = _conn()
+    try:
+        conn.execute(f"UPDATE customer_return SET {', '.join(_set)} "
+                     "WHERE id=? AND status=?", (*_args, _i(_id), OPEN))
+        conn.commit()
+    finally:
+        conn.close()
+    return {'ok': True, 'msg': '수정했습니다.'}
+
+
+def cancel(_id, by=''):
+    """처리 취소 — 정리된 건을 정리 대기(received)로 되돌린다.
+
+    restocked      : 그때 넣은 재고를 같은 보유자 재고에서 다시 뺀다. 이미
+                     팔려 남은 재고가 모자라면 취소하지 않는다(장부만 되돌리면
+                     실물 없는 재고가 남는다).
+    store_returned : 예치금에 적립했으면 같은 금액을 (−)로 되돌린다. 행을
+                     지우지 않아 "적립했다가 취소했다"가 예치금 내역에 남는다.
+    반환: {'ok', 'msg'}
+    """
+    r = get(_id)
+    if not r:
+        return {'ok': False, 'msg': '없는 반품 건입니다.'}
+    st_ = str(r.get('status'))
+    _tag = f"#{_i(_id)} {_s(r.get('product_name'))[:30]} {_i(r.get('qty'))}개"
+    if st_ == 'restocked':
+        try:
+            from db_inventory import adjust_stock
+            res = adjust_stock(
+                owner=_s(r.get('restock_owner')) or _s(r.get('username')),
+                product_no=_s(r.get('costco_no')), units=-_i(r.get('qty')),
+                reason=f"고객 반품 재입고 취소 #{_i(_id)}", by=by)
+        except Exception as e:
+            return {'ok': False, 'msg': f'재고 차감 실패 — {e}'}
+        if not res.get('ok'):
+            return {'ok': False, 'msg': f"재고에서 뺄 수 없습니다 — {res.get('msg')}"}
+        _msg = f"{_tag} 재고에서 다시 뺐습니다."
+    elif st_ == 'store_returned':
+        _msg = f"{_tag} 매장 반품을 취소했습니다."
+        _did, _amt = _i(r.get('deposit_id')), _i(r.get('deposit_amount'))
+        if _did < 0:
+            return {'ok': False, 'msg': '예치금 적립이 진행 중입니다. 잠시 뒤 다시 하세요.'}
+        if _did > 0 and _amt > 0:
+            import db_deposit as _dep
+            _cid = _dep.return_credit_cancel(
+                _s(r.get('username')), _amt,
+                f"매장반품 적립 취소 · 반품#{_i(_id)} · {_s(r.get('product_name'))[:40]} "
+                f"{_i(r.get('qty'))}개 · −{_amt:,}원", by=by)
+            if not _cid:
+                return {'ok': False, 'msg': '예치금 되돌림 실패'}
+            _msg += f" 예치금 {_amt:,}원을 되돌렸습니다."
+    else:
+        return {'ok': False, 'msg': '정리 대기 건은 취소할 것이 없습니다.'}
+    conn = _conn()
+    try:
+        conn.execute(
+            "UPDATE customer_return SET status=?, restock_owner='', refund_amount=0, "
+            "deposit_id=0, deposit_amount=0, deposit_at='', done_by='', done_at='', "
+            "memo=CASE WHEN COALESCE(memo,'')='' THEN ? ELSE memo || ' / ' || ? END "
+            "WHERE id=?",
+            (OPEN, f"{_now()} {by} 처리취소({STATUS_LABEL.get(st_, st_)})",
+             f"{_now()} {by} 처리취소({STATUS_LABEL.get(st_, st_)})", _i(_id)))
+        conn.commit()
+    finally:
+        conn.close()
+    return {'ok': True, 'msg': _msg}
 
 
 def uncredited_store_returns():

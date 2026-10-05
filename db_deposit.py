@@ -338,6 +338,23 @@ def adjust(username, amount, memo, by=''):
     return {'ok': True, 'msg': "조정 완료", 'balance': balance(username)}
 
 
+def return_credit_cancel(username, amount, memo, by=''):
+    """매장반품 적립 취소 — 적립 행을 지우지 않고 같은 종류의 (−) 행을 더한다.
+    "적립했다가 취소했다"가 내역에 그대로 보여야 한다. 반환: 새 행 id."""
+    amt = _i(amount)
+    if amt <= 0:
+        return 0
+    conn = _conn()
+    ensure(conn)
+    try:
+        _id = _insert(conn, username, _today(), 'return_credit', -amt,
+                      memo=str(memo or '').strip(), by=by)
+        conn.commit()
+        return _id
+    finally:
+        conn.close()
+
+
 def return_credit(username, amount, memo, by=''):
     """매장반품 환불 적립 — 반품 원장(db_customer_return.credit_deposit)만 부른다.
 

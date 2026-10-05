@@ -739,11 +739,18 @@ def _customer_returns(USERNAME):
     _open = _sm.get(_cr.OPEN) or {'count': 0, 'qty': 0, 'amount': 0}
     _rs = _sm.get('restocked') or {'count': 0, 'qty': 0}
     _sr = _sm.get('store_returned') or {'count': 0, 'qty': 0, 'amount': 0}
-    _m1, _m2, _m3 = st.columns(3)
-    _m1.metric("정리 대기", f"{_open['count']}건",
-               f"{fmt(_open['amount'])}원 묶임", delta_color="off")
-    _m2.metric("재고로 되돌림", f"{_rs['count']}건")
-    _m3.metric("매장 반품 완료", f"{_sr['count']}건")
+    # 숫자 카드를 누르면 아래에 그 목록이 열린다 — 정리 대기가 기본
+    _view = st.session_state.get('cr_view', 'open')
+    _cards = [('open', f"🧺 정리 대기 {_open['count']}건 · {fmt(_open['amount'])}원 묶임"),
+              ('restocked', f"📦 재고로 되돌림 {_rs['count']}건"),
+              ('store_returned', f"↩️ 매장 반품 완료 {_sr['count']}건")]
+    for _col, (_vk, _vl) in zip(st.columns(3), _cards):
+        if _col.button(_vl, key=f"cr_card_{_vk}", use_container_width=True,
+                       type="primary" if _view == _vk else "secondary"):
+            st.session_state['cr_view'] = _vk
+            st.rerun()
+    st.caption("👆 누르면 아래에 그 목록이 열립니다. 정리 대기는 **수정**, "
+               "정리된 건은 **처리 취소**(정리 대기로 되돌림)를 할 수 있습니다.")
 
     # ── ① 반품입고 입력 ───────────────────────────────────
     with st.expander("➕ 반품입고 등록 — 주문을 찾아 넣습니다", expanded=not _open['count']):
@@ -870,196 +877,290 @@ def _customer_returns(USERNAME):
                 else:
                     st.error("등록하지 못했습니다 (판매자·수량 확인).")
 
-    # ── ② 정리 대기 ───────────────────────────────────────
-    st.divider()
-    # 사용자가 매장 반품을 요청한 건을 맨 위로 — 관리자가 매장에 들고 갈 목록이다
-    _rows = sorted(_cr.open_returns(), key=lambda r: -int(r.get('store_req') or 0))
-    _nreq = sum(1 for r in _rows if int(r.get('store_req') or 0))
-    st.markdown(f"##### 🧺 정리 대기 {len(_rows)}건"
-                + (f" · 🙋 매장 반품 요청 {_nreq}건" if _nreq else ""))
-    if not _rows:
-        st.success("정리할 반품이 없습니다.")
-    else:
-        st.caption(f"물건이 창고에 있는 상태입니다. 매장 반품 기한({RETURN_DAYS}일)은 "
-                   "반품입고일부터가 아니라 **원래 구매일**부터 흐르므로, 오래된 주문일수록 "
-                   "먼저 처리하세요.")
-        _today_s = datetime.today().strftime("%Y-%m-%d")
-        _tbl = []
-        for _r in _rows:
-            try:
-                _age = (datetime.strptime(_today_s, "%Y-%m-%d")
-                        - datetime.strptime(str(_r['returned_at']), "%Y-%m-%d")).days
-            except Exception:
-                _age = 0
-            _tbl.append({
-                "선택": False, "번호": _r['id'],
-                "요청": "🙋 매장반품" if int(_r.get('store_req') or 0) else "",
-                "반품입고일": _r['returned_at'], "보관": _age_badge(_age),
-                "판매자": _dmap.get(_r['username'], _r['username']),
-                "수취인": _r['recipient'], "상품명": str(_r['product_name'])[:30],
-                "수량": _r['qty'], "구입가": _r['unit_cost'],
-                "코스트코번호": _r['costco_no'] or '—',
-                "사유": _r['reason'], "주문번호": _r['order_no'],
-            })
-        _ed = st.data_editor(
-            pd.DataFrame(_tbl), use_container_width=True, hide_index=True,
-            key="cr_open_ed",
-            disabled=[c for c in _tbl[0] if c != "선택"],
-            column_config={
-                "선택": st.column_config.CheckboxColumn("선택"),
-                **{_k: st.column_config.NumberColumn(_k, format='%d')
-                   for _k in ("번호", "수량", "구입가")},
-            })
-        _sel = [_tbl[i]['번호'] for i, _x in enumerate(_ed.to_dict('records'))
-                if _x.get('선택')]
-        _sel_rows = [_r for _r in _rows if _r['id'] in _sel]
-
-        st.markdown("**선택한 건을 어떻게 정리할까요**")
-        _a1, _a2 = st.columns(2)
-
-        # 재고로 되돌림 — 보유자를 바꿀 수 있어야 한다. 반품된 물건을 원래
-        # 판매자가 아니라 다른 사람이 가져가는 일이 있다.
-        with _a1:
-            _owner_same = st.checkbox("원래 판매자 재고로", value=True, key="cr_owner_same")
-            _owner = None
-            if not _owner_same:
-                _owner = st.selectbox("되돌릴 대상", _users, key="cr_owner",
-                                      format_func=lambda v: _dmap.get(v, v))
-            _no_cno = [r for r in _sel_rows if not str(r.get('costco_no') or '').strip()]
-            _req_sel = [r for r in _sel_rows if int(r.get('store_req') or 0)]
-            if _req_sel:
-                st.caption("⚠️ 사용자가 **매장 반품을 요청한 건** "
-                           + " · ".join(f"#{r['id']}" for r in _req_sel[:5])
-                           + "이 섞여 있습니다 — 재고로 되돌리면 요청과 다르게 처리됩니다.")
-            if st.button(f"📦 {len(_sel)}건 **재고로 되돌림**", key="cr_restock",
-                         disabled=not _sel or bool(_no_cno), use_container_width=True,
-                         help="상태가 멀쩡해 다시 팔 수 있는 건입니다. 그 사용자 "
-                              "재고로 입고되고, 재고 조정 이력에 반품 번호가 남습니다."):
-                _ok, _fail = 0, []
-                for _r in _sel_rows:
-                    _res = _cr.restock(_r['id'], owner=(_owner or ''), by=USERNAME)
-                    if _res['ok']:
-                        _ok += 1
-                    else:
-                        _fail.append(f"#{_r['id']} {_res['msg']}")
-                if _ok:
-                    st.success(f"📦 {_ok}건을 재고로 되돌렸습니다 — "
-                               "**📊 전체 재고**에서 확인하세요.")
-                if _fail:
-                    st.error(" / ".join(_fail[:4]))
-                st.rerun()
-            if _no_cno:
-                st.caption("⚠️ 코스트코 번호가 없는 건이 섞여 있어 재고로 되돌릴 수 "
-                           "없습니다 — " + " · ".join(f"#{r['id']}" for r in _no_cno[:5]))
-
-        # 매장 반품 — 건별 환불액을 받아 그 주문 판매자 예치금에 바로 적립한다.
-        # 합계 하나만 받으면 여러 판매자가 섞였을 때 누구에게 얼마를 줄지 못 나눈다.
-        with _a2:
-            _refunds = {}
-            if _sel_rows:
-                st.caption("💳 환불액은 **그 주문 판매자의 예치금에 자동 적립**됩니다. "
-                           "건마다 매장에서 실제로 돌려받은 금액으로 고치세요.")
-                _rf_tbl = [{
-                    "번호": r['id'],
-                    "판매자": _dmap.get(r['username'], r['username']),
-                    "상품명": str(r['product_name'])[:24],
-                    "수량": int(r['qty'] or 0),
-                    "구입가(개당)": int(r['unit_cost'] or 0),
-                    "구입가 합계": _cr.purchase_total(r),
-                    "환불액": _cr.purchase_total(r),
-                } for r in _sel_rows]
-                _rf_ed = st.data_editor(
-                    pd.DataFrame(_rf_tbl), use_container_width=True, hide_index=True,
-                    # key에 선택한 건들을 넣어야 선택을 바꿀 때 기본 금액이 다시 잡힌다
-                    key="cr_refund_ed_" + "_".join(str(i) for i in _sel[:12]),
-                    disabled=[c for c in _rf_tbl[0] if c != "환불액"],
-                    column_config={
-                        **{_k: st.column_config.NumberColumn(_k, format='%d')
-                           for _k in ("번호", "수량", "구입가(개당)", "구입가 합계")},
-                        "환불액": st.column_config.NumberColumn(
-                            "환불액", format='%d', min_value=0, step=100,
-                            help="매장에서 돌려받은 금액 = 예치금 적립액"),
-                    })
-                _refunds = {int(x['번호']): int(x.get('환불액') or 0)
-                            for x in _rf_ed.to_dict('records')}
-                st.caption(f"구입가 합계 **{fmt(sum(x['구입가 합계'] for x in _rf_tbl))}원** · "
-                           f"환불·적립 합계 **{fmt(sum(_refunds.values()))}원**")
-            if st.button(f"↩️ {len(_sel)}건 **매장 반품 완료** + 예치금 적립", key="cr_store",
-                         disabled=not _sel, use_container_width=True,
-                         help="코스트코에 돌려주고 환불까지 확인했을 때 누르세요. "
-                              "재고로는 들어가지 않고, 환불액이 판매자 예치금에 적립됩니다."):
-                _res = _cr.store_return(_sel, by=USERNAME, amounts=_refunds)
-                _cred = _res['credited']
-                st.success(f"↩️ {_res['ok']}건 매장 반품 완료 · 예치금 적립 "
-                           f"{len(_cred)}건 {fmt(sum(c['amount'] for c in _cred))}원"
-                           + (" — " + ", ".join(f"{_dmap.get(c['username'], c['username'])} "
-                                                f"{fmt(c['amount'])}원" for c in _cred[:6])
-                              if _cred else ""))
-                if _res['errors']:
-                    st.error("적립 실패: " + " / ".join(_res['errors'][:4]))
-                st.rerun()
-
-        if st.button(f"🗑 선택한 {len(_sel)}건 삭제 (잘못 입력)", key="cr_del",
-                     disabled=not _sel):
-            _res = _cr.delete(_sel)
-            st.success(f"🗑 {_res['deleted']}건 삭제"
-                       + (f" · 이미 정리된 {len(_res['skipped'])}건은 남았습니다"
-                          if _res['skipped'] else ""))
-            st.rerun()
-
-    # ── ③ 처리 이력 ───────────────────────────────────────
-    with st.expander("📋 처리 이력 — 재고로 갔나, 매장으로 갔나", expanded=False):
-        _done = _cr.list_returns(status=['restocked', 'store_returned'], limit=300)
-        if not _done:
-            st.caption("아직 정리한 반품이 없습니다.")
+    if _view == 'open':
+        # ── ② 정리 대기 ───────────────────────────────────────
+        st.divider()
+        # 사용자가 매장 반품을 요청한 건을 맨 위로 — 관리자가 매장에 들고 갈 목록이다
+        _rows = sorted(_cr.open_returns(), key=lambda r: -int(r.get('store_req') or 0))
+        _nreq = sum(1 for r in _rows if int(r.get('store_req') or 0))
+        st.markdown(f"##### 🧺 정리 대기 {len(_rows)}건"
+                    + (f" · 🙋 매장 반품 요청 {_nreq}건" if _nreq else ""))
+        if not _rows:
+            st.success("정리할 반품이 없습니다.")
         else:
-            st.dataframe(pd.DataFrame([{
-                "반품입고일": _r['returned_at'],
-                "판매자": _dmap.get(_r['username'], _r['username']),
-                "수취인": _r['recipient'], "상품명": str(_r['product_name'])[:30],
-                "수량": _r['qty'], "사유": _r['reason'],
-                "처리": _cr.STATUS_LABEL.get(_r['status'], _r['status']),
-                "재고 대상": _dmap.get(_r['restock_owner'], _r['restock_owner']) or '—',
-                "구입가(개당)": int(_r['unit_cost'] or 0),
-                "구입가 합계": _cr.purchase_total(_r),
-                "환불금액": int(_r['refund_amount'] or 0) or '',
-                "예치금 적립": (f"💳 {fmt(int(_r.get('deposit_amount') or 0))}원"
-                           if int(_r.get('deposit_id') or 0) > 0 else
-                           ('미적립' if _r['status'] == 'store_returned'
-                            and int(_r['refund_amount'] or 0) else '—')),
-                "처리일시": _r['done_at'], "처리자": _r['done_by'],
-                "주문번호": _r['order_no'],
-            } for _r in _done]), use_container_width=True, hide_index=True,
-                column_config={_k: st.column_config.NumberColumn(_k, format='%d')
-                               for _k in ("구입가(개당)", "구입가 합계")})
-            _ref = sum(int(_r['refund_amount'] or 0) for _r in _done)
-            _crd = sum(int(_r.get('deposit_amount') or 0) for _r in _done
-                       if int(_r.get('deposit_id') or 0) > 0)
-            st.caption(f"매장 환불 누계 **{fmt(_ref)}원** · 예치금 적립 누계 "
-                       f"**{fmt(_crd)}원** · 총 {len(_done)}건")
+            st.caption(f"물건이 창고에 있는 상태입니다. 매장 반품 기한({RETURN_DAYS}일)은 "
+                       "반품입고일부터가 아니라 **원래 구매일**부터 흐르므로, 오래된 주문일수록 "
+                       "먼저 처리하세요.")
+            _today_s = datetime.today().strftime("%Y-%m-%d")
+            _tbl = []
+            for _r in _rows:
+                try:
+                    _age = (datetime.strptime(_today_s, "%Y-%m-%d")
+                            - datetime.strptime(str(_r['returned_at']), "%Y-%m-%d")).days
+                except Exception:
+                    _age = 0
+                _tbl.append({
+                    "선택": False, "번호": _r['id'],
+                    "요청": "🙋 매장반품" if int(_r.get('store_req') or 0) else "",
+                    "반품입고일": _r['returned_at'], "보관": _age_badge(_age),
+                    "판매자": _dmap.get(_r['username'], _r['username']),
+                    "수취인": _r['recipient'], "상품명": str(_r['product_name'])[:30],
+                    "수량": _r['qty'], "구입가": _r['unit_cost'],
+                    "코스트코번호": _r['costco_no'] or '',
+                    "사유": _r['reason'], "주문번호": _r['order_no'],
+                })
+            # ✏️ 수량·구입가·코스트코번호·사유는 표에서 바로 고친다(정리 대기 건만)
+            _EDIT = ("수량", "구입가", "코스트코번호", "사유")
+            _ed = st.data_editor(
+                pd.DataFrame(_tbl), use_container_width=True, hide_index=True,
+                # 저장 뒤엔 key를 바꿔 표를 DB 값으로 다시 그린다
+                key=f"cr_open_ed_{st.session_state.get('cr_open_v', 0)}",
+                disabled=[c for c in _tbl[0] if c not in ("선택",) + _EDIT],
+                column_config={
+                    "선택": st.column_config.CheckboxColumn("선택"),
+                    "번호": st.column_config.NumberColumn("번호", format='%d'),
+                    "수량": st.column_config.NumberColumn("수량 ✏️", format='%d',
+                                                        min_value=1, step=1),
+                    "구입가": st.column_config.NumberColumn("구입가(개당) ✏️", format='%d',
+                                                         min_value=0, step=100),
+                    "코스트코번호": st.column_config.TextColumn("코스트코번호 ✏️"),
+                    "사유": st.column_config.SelectboxColumn(
+                        "사유 ✏️", options=["단순변심", "파손·불량", "오배송",
+                                           "배송지연", "기타"]),
+                })
+            _recs = _ed.to_dict('records')
+            _sel = [_tbl[i]['번호'] for i, _x in enumerate(_recs) if _x.get('선택')]
+            _sel_rows = [_r for _r in _rows if _r['id'] in _sel]
 
-            # 이 기능 전에 매장 반품한 건 — 확인하고 한 번에 소급 적립
-            _unc = _cr.uncredited_store_returns()
-            if _unc:
-                st.warning(
-                    f"💳 예치금에 아직 적립 안 된 매장 반품 **{len(_unc)}건 · "
-                    f"{fmt(sum(int(r['refund_amount'] or 0) for r in _unc))}원** — "
-                    + " · ".join(f"#{r['id']} {_dmap.get(r['username'], r['username'])} "
-                                 f"{str(r['product_name'])[:14]} {fmt(int(r['refund_amount']))}원"
-                                 for r in _unc[:6])
-                    + "\n\n예전에 여러 건을 묶어 처리한 경우 합계가 **첫 건에만** 적혀 "
-                      "있습니다 — 판매자가 섞였으면 소급 적립 대신 예치금 화면에서 직접 "
-                      "나눠 넣으세요.")
-                if st.button(f"💳 미적립 {len(_unc)}건 예치금에 적립", key="cr_backfill"):
-                    _ok, _err = [], []
-                    for r in _unc:
-                        _c = _cr.credit_deposit(r['id'], by=USERNAME)
-                        (_ok if _c['ok'] else _err).append(_c if _c['ok'] else
-                                                           f"#{r['id']} {_c['msg']}")
-                    st.success(f"💳 {len(_ok)}건 {fmt(sum(c['amount'] for c in _ok))}원 적립")
-                    if _err:
-                        st.error(" / ".join(_err[:4]))
+            # 바뀐 칸만 모아 저장
+            _chg = {}
+            for _o, _x in zip(_tbl, _recs):
+                _d = {}
+                if int(_x.get('수량') or 0) != int(_o['수량'] or 0):
+                    _d['qty'] = int(_x.get('수량') or 0)
+                if int(_x.get('구입가') or 0) != int(_o['구입가'] or 0):
+                    _d['unit_cost'] = int(_x.get('구입가') or 0)
+                if str(_x.get('코스트코번호') or '').strip() != str(_o['코스트코번호'] or ''):
+                    _d['costco_no'] = str(_x.get('코스트코번호') or '').strip()
+                if str(_x.get('사유') or '') != str(_o['사유'] or ''):
+                    _d['reason'] = str(_x.get('사유') or '')
+                if _d:
+                    _chg[int(_o['번호'])] = _d
+            if _chg:
+                st.info(f"✏️ 수정한 건 {len(_chg)}건 — "
+                        + " · ".join(f"#{_k}" for _k in list(_chg)[:8]))
+                _sv1, _sv2 = st.columns(2)
+                if _sv1.button(f"💾 수정 저장 ({len(_chg)}건)", key="cr_edit_save",
+                               type="primary", use_container_width=True):
+                    _bad = []
+                    for _k, _d in _chg.items():
+                        _res = _cr.update(_k, by=USERNAME, **_d)
+                        if not _res['ok']:
+                            _bad.append(f"#{_k} {_res['msg']}")
+                    st.session_state['cr_open_v'] = st.session_state.get('cr_open_v', 0) + 1
+                    if _bad:
+                        st.error(" / ".join(_bad[:4]))
+                    else:
+                        st.toast(f"💾 {len(_chg)}건 수정 저장", icon="✅")
                     st.rerun()
+                if _sv2.button("↩ 수정 취소", key="cr_edit_cancel", use_container_width=True):
+                    st.session_state['cr_open_v'] = st.session_state.get('cr_open_v', 0) + 1
+                    st.rerun()
+
+            st.markdown("**선택한 건을 어떻게 정리할까요**")
+            _a1, _a2 = st.columns(2)
+
+            # 재고로 되돌림 — 보유자를 바꿀 수 있어야 한다. 반품된 물건을 원래
+            # 판매자가 아니라 다른 사람이 가져가는 일이 있다.
+            with _a1:
+                _owner_same = st.checkbox("원래 판매자 재고로", value=True, key="cr_owner_same")
+                _owner = None
+                if not _owner_same:
+                    _owner = st.selectbox("되돌릴 대상", _users, key="cr_owner",
+                                          format_func=lambda v: _dmap.get(v, v))
+                _no_cno = [r for r in _sel_rows if not str(r.get('costco_no') or '').strip()]
+                _req_sel = [r for r in _sel_rows if int(r.get('store_req') or 0)]
+                if _req_sel:
+                    st.caption("⚠️ 사용자가 **매장 반품을 요청한 건** "
+                               + " · ".join(f"#{r['id']}" for r in _req_sel[:5])
+                               + "이 섞여 있습니다 — 재고로 되돌리면 요청과 다르게 처리됩니다.")
+                if st.button(f"📦 {len(_sel)}건 **재고로 되돌림**", key="cr_restock",
+                             disabled=not _sel or bool(_no_cno), use_container_width=True,
+                             help="상태가 멀쩡해 다시 팔 수 있는 건입니다. 그 사용자 "
+                                  "재고로 입고되고, 재고 조정 이력에 반품 번호가 남습니다."):
+                    _ok, _fail = 0, []
+                    for _r in _sel_rows:
+                        _res = _cr.restock(_r['id'], owner=(_owner or ''), by=USERNAME)
+                        if _res['ok']:
+                            _ok += 1
+                        else:
+                            _fail.append(f"#{_r['id']} {_res['msg']}")
+                    if _ok:
+                        st.success(f"📦 {_ok}건을 재고로 되돌렸습니다 — "
+                                   "**📊 전체 재고**에서 확인하세요.")
+                    if _fail:
+                        st.error(" / ".join(_fail[:4]))
+                    st.rerun()
+                if _no_cno:
+                    st.caption("⚠️ 코스트코 번호가 없는 건이 섞여 있어 재고로 되돌릴 수 "
+                               "없습니다 — " + " · ".join(f"#{r['id']}" for r in _no_cno[:5]))
+
+            # 매장 반품 — 건별 환불액을 받아 그 주문 판매자 예치금에 바로 적립한다.
+            # 합계 하나만 받으면 여러 판매자가 섞였을 때 누구에게 얼마를 줄지 못 나눈다.
+            with _a2:
+                _refunds = {}
+                if _sel_rows:
+                    st.caption("💳 환불액은 **그 주문 판매자의 예치금에 자동 적립**됩니다. "
+                               "건마다 매장에서 실제로 돌려받은 금액으로 고치세요.")
+                    _rf_tbl = [{
+                        "번호": r['id'],
+                        "판매자": _dmap.get(r['username'], r['username']),
+                        "상품명": str(r['product_name'])[:24],
+                        "수량": int(r['qty'] or 0),
+                        "구입가(개당)": int(r['unit_cost'] or 0),
+                        "구입가 합계": _cr.purchase_total(r),
+                        "환불액": _cr.purchase_total(r),
+                    } for r in _sel_rows]
+                    _rf_ed = st.data_editor(
+                        pd.DataFrame(_rf_tbl), use_container_width=True, hide_index=True,
+                        # key에 선택한 건들을 넣어야 선택을 바꿀 때 기본 금액이 다시 잡힌다
+                        key="cr_refund_ed_" + "_".join(str(i) for i in _sel[:12]),
+                        disabled=[c for c in _rf_tbl[0] if c != "환불액"],
+                        column_config={
+                            **{_k: st.column_config.NumberColumn(_k, format='%d')
+                               for _k in ("번호", "수량", "구입가(개당)", "구입가 합계")},
+                            "환불액": st.column_config.NumberColumn(
+                                "환불액", format='%d', min_value=0, step=100,
+                                help="매장에서 돌려받은 금액 = 예치금 적립액"),
+                        })
+                    _refunds = {int(x['번호']): int(x.get('환불액') or 0)
+                                for x in _rf_ed.to_dict('records')}
+                    st.caption(f"구입가 합계 **{fmt(sum(x['구입가 합계'] for x in _rf_tbl))}원** · "
+                               f"환불·적립 합계 **{fmt(sum(_refunds.values()))}원**")
+                if st.button(f"↩️ {len(_sel)}건 **매장 반품 완료** + 예치금 적립", key="cr_store",
+                             disabled=not _sel, use_container_width=True,
+                             help="코스트코에 돌려주고 환불까지 확인했을 때 누르세요. "
+                                  "재고로는 들어가지 않고, 환불액이 판매자 예치금에 적립됩니다."):
+                    _res = _cr.store_return(_sel, by=USERNAME, amounts=_refunds)
+                    _cred = _res['credited']
+                    st.success(f"↩️ {_res['ok']}건 매장 반품 완료 · 예치금 적립 "
+                               f"{len(_cred)}건 {fmt(sum(c['amount'] for c in _cred))}원"
+                               + (" — " + ", ".join(f"{_dmap.get(c['username'], c['username'])} "
+                                                    f"{fmt(c['amount'])}원" for c in _cred[:6])
+                                  if _cred else ""))
+                    if _res['errors']:
+                        st.error("적립 실패: " + " / ".join(_res['errors'][:4]))
+                    st.rerun()
+
+            if st.button(f"🗑 선택한 {len(_sel)}건 삭제 (잘못 입력)", key="cr_del",
+                         disabled=not _sel):
+                _res = _cr.delete(_sel)
+                st.success(f"🗑 {_res['deleted']}건 삭제"
+                           + (f" · 이미 정리된 {len(_res['skipped'])}건은 남았습니다"
+                              if _res['skipped'] else ""))
+                st.rerun()
+
+    else:
+        _cr_done_panel(_view, USERNAME, _dmap)
+
+
+def _cr_done_panel(status, USERNAME, _dmap):
+    """📦 재고로 되돌림 / ↩️ 매장 반품 완료 목록 + 처리 취소.
+
+    취소는 정리 대기로 되돌린다 — 재고로 되돌린 건은 그 재고를 다시 빼고,
+    매장 반품 건은 적립한 예치금을 (−)로 되돌린다. 그다음 정리 대기에서
+    고치거나 다시 처리한다.
+    """
+    import pandas as pd
+    _is_store = status == 'store_returned'
+    _rows = _cr.list_returns(status=status, limit=500)
+    st.divider()
+    st.markdown(f"##### {'↩️ 매장 반품 완료' if _is_store else '📦 재고로 되돌림'} "
+                f"{len(_rows)}건")
+    if not _rows:
+        st.caption("해당하는 반품이 없습니다.")
+        return
+    _tbl = []
+    for _r in _rows:
+        _e = {
+            "선택": False, "번호": _r['id'],
+            "반품입고일": _r['returned_at'],
+            "판매자": _dmap.get(_r['username'], _r['username']),
+            "수취인": _r['recipient'], "상품명": str(_r['product_name'])[:30],
+            "수량": int(_r['qty'] or 0), "사유": _r['reason'],
+            "구입가(개당)": int(_r['unit_cost'] or 0),
+            "구입가 합계": _cr.purchase_total(_r),
+        }
+        if _is_store:
+            _e["환불액"] = int(_r['refund_amount'] or 0)
+            _e["예치금 적립"] = (f"💳 {fmt(int(_r.get('deposit_amount') or 0))}원"
+                            if int(_r.get('deposit_id') or 0) > 0 else
+                            ('미적립' if int(_r['refund_amount'] or 0) else '—'))
+        else:
+            _e["재고 대상"] = _dmap.get(_r['restock_owner'], _r['restock_owner']) or '—'
+            _e["코스트코번호"] = _r['costco_no']
+        _e.update({"처리일시": _r['done_at'], "처리자": _r['done_by'],
+                   "주문번호": _r['order_no']})
+        _tbl.append(_e)
+    _ed = st.data_editor(
+        pd.DataFrame(_tbl), use_container_width=True, hide_index=True,
+        key=f"cr_done_ed_{status}", disabled=[c for c in _tbl[0] if c != "선택"],
+        column_config={"선택": st.column_config.CheckboxColumn("선택"),
+                       **{_k: st.column_config.NumberColumn(_k, format='%d')
+                          for _k in ("번호", "수량", "구입가(개당)", "구입가 합계", "환불액")}})
+    _sel = [_tbl[i]['번호'] for i, _x in enumerate(_ed.to_dict('records')) if _x.get('선택')]
+    if _is_store:
+        _ref = sum(int(_r['refund_amount'] or 0) for _r in _rows)
+        _crd = sum(int(_r.get('deposit_amount') or 0) for _r in _rows
+                   if int(_r.get('deposit_id') or 0) > 0)
+        st.caption(f"매장 환불 누계 **{fmt(_ref)}원** · 예치금 적립 누계 **{fmt(_crd)}원**")
+
+    # ── 처리 취소 ──
+    st.caption("↩ **처리 취소** = 정리 대기로 되돌립니다. "
+               + ("적립했던 예치금은 같은 금액을 (−)로 되돌립니다(예치금 내역에 '적립 취소'로 남음)."
+                  if _is_store else
+                  "그때 넣은 재고를 같은 보유자 재고에서 다시 뺍니다 — 이미 팔려 재고가 "
+                  "모자라면 취소되지 않습니다."))
+    _ok_chk = st.checkbox(f"선택한 {len(_sel)}건을 정리 대기로 되돌립니다", key=f"cr_undo_ok_{status}",
+                          disabled=not _sel)
+    if st.button(f"↩ {len(_sel)}건 처리 취소", key=f"cr_undo_{status}",
+                 disabled=not (_sel and _ok_chk)):
+        _ok, _bad = [], []
+        for _id in _sel:
+            _res = _cr.cancel(_id, by=USERNAME)
+            (_ok if _res['ok'] else _bad).append(_res['msg'] if _res['ok'] else
+                                                 f"#{_id} {_res['msg']}")
+        if _ok:
+            st.toast(f"↩ {len(_ok)}건 처리 취소 — 정리 대기로 돌아갔습니다", icon="✅")
+        if _bad:
+            st.error(" / ".join(_bad[:4]))
+        if _ok and not _bad:
+            st.session_state['cr_view'] = 'open'
+        st.rerun()
+
+    # 이 기능 전에 매장 반품한 건 — 확인하고 한 번에 소급 적립
+    if _is_store:
+        _unc = _cr.uncredited_store_returns()
+        if _unc:
+            st.warning(
+                f"💳 예치금에 아직 적립 안 된 매장 반품 **{len(_unc)}건 · "
+                f"{fmt(sum(int(r['refund_amount'] or 0) for r in _unc))}원** — "
+                + " · ".join(f"#{r['id']} {_dmap.get(r['username'], r['username'])} "
+                             f"{str(r['product_name'])[:14]} {fmt(int(r['refund_amount']))}원"
+                             for r in _unc[:6])
+                + "\n\n예전에 여러 건을 묶어 처리한 경우 합계가 **첫 건에만** 적혀 "
+                  "있습니다 — 판매자가 섞였으면 소급 적립 대신 예치금 화면에서 직접 "
+                  "나눠 넣으세요.")
+            if st.button(f"💳 미적립 {len(_unc)}건 예치금에 적립", key="cr_backfill"):
+                _ok, _err = [], []
+                for r in _unc:
+                    _c = _cr.credit_deposit(r['id'], by=USERNAME)
+                    (_ok if _c['ok'] else _err).append(_c if _c['ok'] else
+                                                       f"#{r['id']} {_c['msg']}")
+                st.success(f"💳 {len(_ok)}건 {fmt(sum(c['amount'] for c in _ok))}원 적립")
+                if _err:
+                    st.error(" / ".join(_err[:4]))
+                st.rerun()
 
 
 def _user_returns(USERNAME):
