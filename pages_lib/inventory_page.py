@@ -710,6 +710,26 @@ def _search_orders(usernames, keyword, product_name, date_from, date_to, limit=3
     return out[:200]
 
 
+def _store_price_of(costco_no):
+    """공용 DB의 코스트코 매장가(없으면 단가) — 주문 구입가가 아직 없을 때의 대체값.
+
+    주문 구입가(order_history.cost_price)는 **영수증 정산 뒤에야** 채워진다.
+    정산 전 주문을 반품 등록하면 구입가가 0원으로 들어가 매장 환불액·예치금
+    적립 사유까지 0원이 됐다. 매장가는 실제 결제가(할인 반영)와 다를 수 있어
+    화면에 '매장가 기준'이라고 밝힌다.
+    """
+    _c = str(costco_no or '').strip()
+    if not _c:
+        return 0
+    try:
+        for s in (get_shared_products() or []):
+            if str(s.get('product_no') or '').strip() == _c:
+                return int(s.get('store_price') or 0) or int(s.get('unit_price') or 0)
+    except Exception:
+        pass
+    return 0
+
+
 # ── 고객 반품 ─────────────────────────────────────────────
 def _customer_returns(USERNAME):
     """📥 고객 반품 — 되돌아온 물건을 받아 적고, 재고로 되돌리거나 매장에 반품한다.
@@ -834,8 +854,10 @@ def _customer_returns(USERNAME):
             # (9/17 등록 2건이 이렇게 들어감). 주문 수량으로 나눠 개당 값을 쓴다.
             _oqty = max(1, int(_h.get('qty') or 1))
             _ocost = int(_h.get('cost_price') or 0)
+            # 정산 전 주문은 구입가가 0 — 공용 DB 매장가로 대신 채운다
+            _sp = _store_price_of(_cno) if _ocost <= 0 else 0
             _cost = _f3.number_input("개당 구입가(원)", min_value=0, step=100,
-                                     value=round(_ocost / _oqty),
+                                     value=round(_ocost / _oqty) if _ocost > 0 else _sp,
                                      key=f"cr_cost_{_k}",
                                      help="재고로 되돌릴 때 이 단가로 입고됩니다. "
                                           "주문 구입가 합계 ÷ 주문 수량으로 자동 계산합니다.")
@@ -847,9 +869,13 @@ def _customer_returns(USERNAME):
                                                "배송지연", "기타"], key="cr_reason")
             _memo = _r2.text_input("메모", key="cr_memo",
                                    placeholder="예: 박스만 개봉, 재판매 가능")
-            if _ocost <= 0:
-                st.caption("⚠️ 이 주문엔 구입가가 아직 기록되지 않았습니다(영수증 정산 전). "
-                           "개당 구입가를 직접 넣어 주세요.")
+            if _ocost <= 0 and _sp:
+                st.caption(f"ℹ️ 이 주문은 영수증 정산 전이라 구입가가 없어 **코스트코 매장가 "
+                           f"{fmt(_sp)}원**으로 채웠습니다. 실제 결제가(할인·묶음)와 다르면 "
+                           "고쳐 주세요.")
+            elif _ocost <= 0:
+                st.caption("⚠️ 이 주문엔 구입가가 아직 기록되지 않았고(영수증 정산 전) "
+                           "공용 DB에 매장가도 없습니다. 개당 구입가를 직접 넣어 주세요.")
             elif _oqty > 1:
                 st.caption(f"ℹ️ 구입가 {fmt(_ocost)}원 ÷ 주문 {_oqty}개 = "
                            f"개당 {fmt(round(_ocost / _oqty))}원")
@@ -967,6 +993,8 @@ def _customer_returns(USERNAME):
                     st.session_state['cr_open_v'] = st.session_state.get('cr_open_v', 0) + 1
                     st.rerun()
 
+            _fill_zero_cost(_rows, USERNAME, key="cr_fill_open")
+
             st.markdown("**선택한 건을 어떻게 정리할까요**")
             _a1, _a2 = st.columns(2)
 
@@ -1062,6 +1090,39 @@ def _customer_returns(USERNAME):
 
     else:
         _cr_done_panel(_view, USERNAME, _dmap)
+
+
+def _fill_zero_cost(rows, USERNAME, key):
+    """구입가 0원인 반품 건을 공용 DB 매장가로 채운다 — 정리 대기·적립 전 매장반품만.
+    코스트코번호가 없거나 매장가를 못 찾은 건은 건드리지 않고 알린다."""
+    _zero = [r for r in rows if not int(r.get('unit_cost') or 0)]
+    if not _zero:
+        return
+    _fill = [(r, _store_price_of(r.get('costco_no'))) for r in _zero]
+    _can = [(r, p) for r, p in _fill if p > 0]
+    _no = [r for r, p in _fill if p <= 0]
+    st.warning(f"💲 구입가 0원 {len(_zero)}건 — 영수증 정산 전에 등록돼 구입가가 비었습니다. "
+               + (" · ".join(f"#{r['id']} {str(r['product_name'])[:12]} → 매장가 {fmt(p)}원"
+                             for r, p in _can[:6]) if _can else "")
+               + (f"\n\n코스트코번호가 없거나 매장가를 못 찾은 건: "
+                  + " · ".join(f"#{r['id']}" for r in _no[:8]) + " — ✏️로 직접 입력하세요."
+                  if _no else ""))
+    if _can and st.button(f"💲 {len(_can)}건 매장가로 채우기", key=key):
+        _bad = []
+        for r, p in _can:
+            if r['status'] == 'store_returned':
+                _res = _cr.update_store_returned(r['id'], by=USERNAME, unit_cost=p)
+            else:
+                _res = _cr.update(r['id'], by=USERNAME, unit_cost=p)
+            if not _res['ok']:
+                _bad.append(f"#{r['id']} {_res['msg']}")
+        for _k in ('cr_open_v', 'cr_done_v'):
+            st.session_state[_k] = st.session_state.get(_k, 0) + 1
+        if _bad:
+            st.error(" / ".join(_bad[:4]))
+        else:
+            st.toast(f"💲 {len(_can)}건 구입가를 매장가로 채웠습니다", icon="✅")
+        st.rerun()
 
 
 def _cr_done_panel(status, USERNAME, _dmap):
@@ -1180,6 +1241,10 @@ def _cr_done_panel(status, USERNAME, _dmap):
         if _ok and not _bad:
             st.session_state['cr_view'] = 'open'
         st.rerun()
+
+    if _is_store:
+        _fill_zero_cost([r for r in _rows if not int(r.get('deposit_id') or 0)],
+                        USERNAME, key="cr_fill_store")
 
     # 미적립 매장 반품 — 표에서 **선택한 건만** 예치금에 적립
     if _is_store:
