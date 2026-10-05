@@ -11,9 +11,10 @@
   물건 하나가 돌아와서 나가기까지를 한 줄로 남긴다. 그 줄이 곧 답이다.
 
 이 원장이 다루지 않는 것:
-  · **청구는 건드리지 않는다.** 반품분 차감은 관리자가 정산·청구 화면에서
-    직접 한다. 자동으로 깎으면 이미 입금된 청구서까지 흔들려 무엇을 받은
-    것인지 설명할 수 없게 된다. 여기는 '무엇이 돌아왔고 어디로 갔나'만 답한다.
+  · **청구서는 건드리지 않는다.** 자동으로 깎으면 이미 입금된 청구서까지
+    흔들려 무엇을 받은 것인지 설명할 수 없게 된다. 대신 매장 반품으로 돌려받은
+    돈은 **예치금에 적립**한다(credit_deposit) — 청구서와 별개의 원장이라
+    받은 돈과 청구액이 어긋나지 않는다.
   · **잘못 산 물건**(주문 없이 영수증에만 있는 것)은 db_receipt_return이다.
     거긴 애초에 팔린 적이 없어 주문도 고객도 없다. 둘을 한 표에 넣으면
     '누구 주문인가'가 절반은 비어 있게 된다.
@@ -98,9 +99,13 @@ def ensure(conn=None):
     # '창고에 있는 건'을 고르는 모든 조회(OPEN)를 둘로 나눠 고쳐야 한다.
     try:
         _cols = {r[1] for r in conn.execute("PRAGMA table_info(customer_return)")}
+        # deposit_id: 매장반품 환불을 예치금에 적립한 원장 행(0=미적립)
         for _c, _t in (('store_req', 'INTEGER DEFAULT 0'),
                        ('store_req_at', "TEXT DEFAULT ''"),
-                       ('store_req_by', "TEXT DEFAULT ''")):
+                       ('store_req_by', "TEXT DEFAULT ''"),
+                       ('deposit_id', 'INTEGER DEFAULT 0'),
+                       ('deposit_amount', 'INTEGER DEFAULT 0'),
+                       ('deposit_at', "TEXT DEFAULT ''")):
             if _c not in _cols:
                 conn.execute(f"ALTER TABLE customer_return ADD COLUMN {_c} {_t}")
     except sqlite3.Error:
@@ -253,24 +258,104 @@ def restock(_id, owner='', by='', memo=''):
     return {'ok': True, 'msg': f"{owner} 재고로 {_i(r.get('qty'))}개 되돌렸습니다."}
 
 
-def store_return(ids, refund_amount=0, by='', memo=''):
+def purchase_total(r):
+    """그 반품 건의 구입가 합계 — 개당 구입가 × 수량 (소분이면 나눈다)."""
+    _sq = max(1, _i(r.get('split_qty')) or 1)
+    return int(round(_i(r.get('unit_cost')) / _sq * _i(r.get('qty'))))
+
+
+def store_return(ids, refund_amount=0, by='', memo='', amounts=None, credit=True):
     """매장 반품 완료 — 코스트코에 돌려주고 환불까지 확인했다.
 
-    환불금액은 여러 건을 한 번에 처리하면 **첫 건에만** 적는다. 건마다 쪼개
-    넣으면 실제로 받은 총액과 장부 합계가 어긋난다(영수증은 한 장이다).
+    amounts={id: 환불액} 를 주면 **건별 환불액**으로 적고, credit=True면 그
+    금액을 그 주문 판매자의 예치금에 바로 적립한다(credit_deposit).
+    amounts 없이 refund_amount만 주면 예전 방식 — 합계를 첫 건에만 적고
+    적립하지 않는다(누구 몫인지 나눌 수 없어서).
 
-    반환: {'ok': n, 'skipped': n}
+    반환: {'ok': n, 'skipped': n, 'credited': [{id, username, amount}], 'errors': []}
     """
     ids = [_i(i) for i in (ids or []) if _i(i) > 0]
-    out = {'ok': 0, 'skipped': 0}
+    out = {'ok': 0, 'skipped': 0, 'credited': [], 'errors': []}
     _amt = _i(refund_amount)
     for _id in ids:
-        if _finish(_id, 'store_returned', by=by, refund_amount=_amt, memo=memo):
+        _this = _i((amounts or {}).get(_id)) if amounts is not None else _amt
+        if _finish(_id, 'store_returned', by=by, refund_amount=_this, memo=memo):
             out['ok'] += 1
-            _amt = 0                      # 환불금액은 한 번만
+            if amounts is None:
+                _amt = 0                  # 합계 방식 — 환불금액은 한 번만
+            elif credit and _this > 0:
+                _c = credit_deposit(_id, by=by)
+                if _c['ok']:
+                    out['credited'].append(_c)
+                else:
+                    out['errors'].append(f"#{_id} {_c['msg']}")
         else:
             out['skipped'] += 1
     return out
+
+
+def credit_deposit(_id, by=''):
+    """매장반품 환불액을 그 주문 판매자의 예치금에 적립한다 — 반품 1건당 한 번.
+
+    판매자에게 넣는 이유: 그 물건값은 판매자에게 청구됐다. 매장에서 돌려받은
+    돈은 그 청구분을 되돌려 주는 것이다.
+    적립 사유(예치금 메모)에 반품번호·상품·수량·구입가·환불액·사유·주문번호를
+    남긴다 — 예치금 내역만 보고도 무엇이 반품돼 들어온 돈인지 알 수 있어야 한다.
+
+    반환: {'ok', 'msg', 'id', 'username', 'amount', 'deposit_id'}
+    """
+    import db_deposit as _dep
+    r = get(_id)
+    if not r:
+        return {'ok': False, 'msg': '없는 반품 건입니다.'}
+    if str(r.get('status')) != 'store_returned':
+        return {'ok': False, 'msg': '매장 반품 완료된 건만 적립합니다.'}
+    if _i(r.get('deposit_id')):
+        return {'ok': False, 'msg': '이미 예치금에 적립됐습니다.'}
+    amt = _i(r.get('refund_amount'))
+    if amt <= 0:
+        return {'ok': False, 'msg': '환불금액이 0원입니다.'}
+    un = _s(r.get('username'))
+    _memo = (f"매장반품 환불 적립 · 반품#{_i(_id)} · {_s(r.get('product_name'))[:40]} "
+             f"{_i(r.get('qty'))}개 · 구입가 {purchase_total(r):,}원 · 환불 {amt:,}원"
+             + (f" · 사유 {_s(r.get('reason'))}" if r.get('reason') else '')
+             + (f" · 주문 {_s(r.get('order_no'))}" if r.get('order_no') else ''))
+    # 먼저 반품 건을 '적립 중'으로 잡는다 — 버튼을 두 번 눌러도 두 줄이 안 생기게.
+    conn = _conn()
+    ensure(conn)
+    try:
+        cur = conn.execute("UPDATE customer_return SET deposit_id=-1 "
+                           "WHERE id=? AND COALESCE(deposit_id,0)=0", (_i(_id),))
+        conn.commit()
+        if cur.rowcount != 1:
+            return {'ok': False, 'msg': '이미 예치금에 적립됐습니다.'}
+    finally:
+        conn.close()
+    try:
+        _did = _dep.return_credit(un, amt, _memo, by=by)
+    except Exception as e:
+        _did = 0
+        _err = str(e)
+    else:
+        _err = ''
+    conn = _conn()
+    try:
+        conn.execute("UPDATE customer_return SET deposit_id=?, deposit_amount=?, "
+                     "deposit_at=? WHERE id=?",
+                     (_did, amt if _did else 0, _now() if _did else '', _i(_id)))
+        conn.commit()
+    finally:
+        conn.close()
+    if not _did:
+        return {'ok': False, 'msg': f'예치금 적립 실패 {_err}'.strip()}
+    return {'ok': True, 'msg': '적립', 'id': _i(_id), 'username': un,
+            'amount': amt, 'deposit_id': _did}
+
+
+def uncredited_store_returns():
+    """매장 반품 완료 + 환불액 있음 + 아직 예치금 미적립 — 소급 적립 대상."""
+    return [r for r in list_returns(status='store_returned', limit=5000)
+            if _i(r.get('refund_amount')) > 0 and not _i(r.get('deposit_id'))]
 
 
 def set_store_request(ids, username, on=True, by=''):

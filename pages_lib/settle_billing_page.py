@@ -743,6 +743,7 @@ def _tab_deposit(USERNAME, dmap):
               # 조정 열이 없으면 '입금 − 차감 = 잔액'이 안 맞는 행이 생기고,
               # 표만 보면 장부가 틀린 것으로 읽힌다(실제로 그 질문이 나왔다).
               '관리자 조정': int((_sm.get(u) or {}).get('adjusted') or 0),
+              '매장반품 적립': int((_sm.get(u) or {}).get('returned') or 0),
               '잔액': int(_bal.get(u, 0)),
               '청구 합계': int((_inv.get(u) or {}).get('billed') or 0),
               '예치금 외 결제': (int((_inv.get(u) or {}).get('billed') or 0)
@@ -770,13 +771,16 @@ def _tab_deposit(USERNAME, dmap):
     if _tt['adjusted']:
         _eq += (f" {'+' if _tt['adjusted'] > 0 else '−'} "
                 f"관리자 조정 **{fmt(abs(_tt['adjusted']))}원**")
+    if _tt.get('returned'):
+        _eq += f" + 매장반품 적립 **{fmt(_tt['returned'])}원**"
     _eq += f" = 잔액 **{fmt(_tt['net'])}원**"
     st.caption(_eq + f"  (예치 없는 사람 {len([r for r in _rows if r['잔액'] == 0])}명)")
     if _tt.get('refunded'):
         st.caption(f"↩️ 되돌린 차감 **{fmt(_tt['refunded'])}원**은 원래 차감과 짝을 "
                    "이뤄 서로 상쇄되므로 위 계산에 들어가지 않습니다 "
                    "— 내역에는 '차감 취소됨'과 '차감 되돌림' 두 줄로 남습니다.")
-    _chk = _tt['charged'] - _tt['spent'] + _tt['adjusted'] - _tt['net']
+    _chk = (_tt['charged'] - _tt['spent'] + _tt['adjusted'] + _tt.get('returned', 0)
+            - _tt['net'])
     if _chk:
         # 식이 안 닫히면 예상 못 한 종류의 행이 있다는 뜻이다. 숨기면 안 된다.
         st.warning(f"⚠️ 위 식이 **{fmt(_chk)}원** 어긋납니다 — 원장에 예상하지 못한 "
@@ -790,9 +794,10 @@ def _tab_deposit(USERNAME, dmap):
                  use_container_width=True, hide_index=True,
                  column_config={k: st.column_config.NumberColumn(k, format='%d')
                                 for k in ('누적 입금', '예치금 차감', '관리자 조정',
-                                          '잔액', '청구 합계', '예치금 외 결제')})
+                                          '매장반품 적립', '잔액', '청구 합계',
+                                          '예치금 외 결제')})
     st.info(
-        "**잔액 = 누적 입금 − 예치금 차감** (± 되돌림·조정)입니다. "
+        "**잔액 = 누적 입금 − 예치금 차감** (± 되돌림·조정 + 매장반품 적립)입니다. "
         "**청구 합계에서 빼는 것이 아닙니다.** "
         "청구했더라도 **계좌로 받았거나 아직 못 받은 건**은 예치금에서 빠지지 "
         "않습니다. 그 몫이 **예치금 외 결제** 열입니다 "
@@ -924,8 +929,11 @@ def _recon_user(rows, dmap):
         if _r['관리자 조정']:
             _eq += (f" {'+' if _r['관리자 조정'] > 0 else '−'} "
                     f"{fmt(abs(_r['관리자 조정']))}")
+        if _r['매장반품 적립']:
+            _eq += f" + 반품적립 {fmt(_r['매장반품 적립'])}"
         _eq += f" = {fmt(_r['잔액'])}`"
-        _gap = (_r['누적 입금'] - _r['예치금 차감'] + _r['관리자 조정'] - _r['잔액'])
+        _gap = (_r['누적 입금'] - _r['예치금 차감'] + _r['관리자 조정']
+                + _r['매장반품 적립'] - _r['잔액'])
         st.markdown(_eq + ("  ·  ✅ 잔액과 일치합니다" if not _gap else
                            f"  ·  ⚠️ **{fmt(_gap)}원** 어긋납니다 — 아래 "
                            "**예치금 내역**에서 원인을 확인하세요"))

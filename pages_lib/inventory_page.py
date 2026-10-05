@@ -726,8 +726,8 @@ def _customer_returns(USERNAME):
 
     st.subheader("📥 고객 반품 입고·정리")
     st.caption("고객에게서 되돌아온 물건을 등록하고, **재고로 되돌릴지 매장에 반품할지** "
-               "정합니다. 청구는 자동으로 바뀌지 않습니다 — 차감이 필요하면 "
-               "**정산·청구** 화면에서 직접 하세요.")
+               "정합니다. 청구서는 자동으로 바뀌지 않고, **매장 반품 환불액은 그 주문 "
+               "판매자의 예치금에 자동 적립**됩니다.")
 
     _dmap = _name_map()
     _users = [u['username'] for u in (get_all_users() or []) if not u.get('is_admin')]
@@ -952,22 +952,51 @@ def _customer_returns(USERNAME):
                 st.caption("⚠️ 코스트코 번호가 없는 건이 섞여 있어 재고로 되돌릴 수 "
                            "없습니다 — " + " · ".join(f"#{r['id']}" for r in _no_cno[:5]))
 
-        # 매장 반품 — 환불금액은 영수증 한 장 기준이라 한 번만 적는다
+        # 매장 반품 — 건별 환불액을 받아 그 주문 판매자 예치금에 바로 적립한다.
+        # 합계 하나만 받으면 여러 판매자가 섞였을 때 누구에게 얼마를 줄지 못 나눈다.
         with _a2:
-            # key에 선택한 건들을 넣어야 선택을 바꿀 때 기본 금액이 다시 계산된다
-            _refund = st.number_input("환불받은 금액(원, 합계)", min_value=0, step=100,
-                                      value=sum(int(r['unit_cost'] or 0) * int(r['qty'] or 1)
-                                                for r in _sel_rows),
-                                      key="cr_refund_" + "_".join(str(i) for i in _sel[:12]),
-                                      help="매장에서 실제로 돌려받은 총액입니다. "
-                                           "여러 건을 한 번에 처리하면 첫 건에 적힙니다.")
-            if st.button(f"↩️ {len(_sel)}건 **매장 반품 완료**", key="cr_store",
+            _refunds = {}
+            if _sel_rows:
+                st.caption("💳 환불액은 **그 주문 판매자의 예치금에 자동 적립**됩니다. "
+                           "건마다 매장에서 실제로 돌려받은 금액으로 고치세요.")
+                _rf_tbl = [{
+                    "번호": r['id'],
+                    "판매자": _dmap.get(r['username'], r['username']),
+                    "상품명": str(r['product_name'])[:24],
+                    "수량": int(r['qty'] or 0),
+                    "구입가(개당)": int(r['unit_cost'] or 0),
+                    "구입가 합계": _cr.purchase_total(r),
+                    "환불액": _cr.purchase_total(r),
+                } for r in _sel_rows]
+                _rf_ed = st.data_editor(
+                    pd.DataFrame(_rf_tbl), use_container_width=True, hide_index=True,
+                    # key에 선택한 건들을 넣어야 선택을 바꿀 때 기본 금액이 다시 잡힌다
+                    key="cr_refund_ed_" + "_".join(str(i) for i in _sel[:12]),
+                    disabled=[c for c in _rf_tbl[0] if c != "환불액"],
+                    column_config={
+                        **{_k: st.column_config.NumberColumn(_k, format='%d')
+                           for _k in ("번호", "수량", "구입가(개당)", "구입가 합계")},
+                        "환불액": st.column_config.NumberColumn(
+                            "환불액", format='%d', min_value=0, step=100,
+                            help="매장에서 돌려받은 금액 = 예치금 적립액"),
+                    })
+                _refunds = {int(x['번호']): int(x.get('환불액') or 0)
+                            for x in _rf_ed.to_dict('records')}
+                st.caption(f"구입가 합계 **{fmt(sum(x['구입가 합계'] for x in _rf_tbl))}원** · "
+                           f"환불·적립 합계 **{fmt(sum(_refunds.values()))}원**")
+            if st.button(f"↩️ {len(_sel)}건 **매장 반품 완료** + 예치금 적립", key="cr_store",
                          disabled=not _sel, use_container_width=True,
                          help="코스트코에 돌려주고 환불까지 확인했을 때 누르세요. "
-                              "재고로는 들어가지 않습니다."):
-                _res = _cr.store_return(_sel, refund_amount=int(_refund), by=USERNAME)
-                st.success(f"↩️ {_res['ok']}건 매장 반품 완료 "
-                           f"· 환불 {fmt(int(_refund))}원 기록")
+                              "재고로는 들어가지 않고, 환불액이 판매자 예치금에 적립됩니다."):
+                _res = _cr.store_return(_sel, by=USERNAME, amounts=_refunds)
+                _cred = _res['credited']
+                st.success(f"↩️ {_res['ok']}건 매장 반품 완료 · 예치금 적립 "
+                           f"{len(_cred)}건 {fmt(sum(c['amount'] for c in _cred))}원"
+                           + (" — " + ", ".join(f"{_dmap.get(c['username'], c['username'])} "
+                                                f"{fmt(c['amount'])}원" for c in _cred[:6])
+                              if _cred else ""))
+                if _res['errors']:
+                    st.error("적립 실패: " + " / ".join(_res['errors'][:4]))
                 st.rerun()
 
         if st.button(f"🗑 선택한 {len(_sel)}건 삭제 (잘못 입력)", key="cr_del",
@@ -991,12 +1020,46 @@ def _customer_returns(USERNAME):
                 "수량": _r['qty'], "사유": _r['reason'],
                 "처리": _cr.STATUS_LABEL.get(_r['status'], _r['status']),
                 "재고 대상": _dmap.get(_r['restock_owner'], _r['restock_owner']) or '—',
+                "구입가(개당)": int(_r['unit_cost'] or 0),
+                "구입가 합계": _cr.purchase_total(_r),
                 "환불금액": int(_r['refund_amount'] or 0) or '',
+                "예치금 적립": (f"💳 {fmt(int(_r.get('deposit_amount') or 0))}원"
+                           if int(_r.get('deposit_id') or 0) > 0 else
+                           ('미적립' if _r['status'] == 'store_returned'
+                            and int(_r['refund_amount'] or 0) else '—')),
                 "처리일시": _r['done_at'], "처리자": _r['done_by'],
                 "주문번호": _r['order_no'],
-            } for _r in _done]), use_container_width=True, hide_index=True)
+            } for _r in _done]), use_container_width=True, hide_index=True,
+                column_config={_k: st.column_config.NumberColumn(_k, format='%d')
+                               for _k in ("구입가(개당)", "구입가 합계")})
             _ref = sum(int(_r['refund_amount'] or 0) for _r in _done)
-            st.caption(f"매장 환불 누계 **{fmt(_ref)}원** · 총 {len(_done)}건")
+            _crd = sum(int(_r.get('deposit_amount') or 0) for _r in _done
+                       if int(_r.get('deposit_id') or 0) > 0)
+            st.caption(f"매장 환불 누계 **{fmt(_ref)}원** · 예치금 적립 누계 "
+                       f"**{fmt(_crd)}원** · 총 {len(_done)}건")
+
+            # 이 기능 전에 매장 반품한 건 — 확인하고 한 번에 소급 적립
+            _unc = _cr.uncredited_store_returns()
+            if _unc:
+                st.warning(
+                    f"💳 예치금에 아직 적립 안 된 매장 반품 **{len(_unc)}건 · "
+                    f"{fmt(sum(int(r['refund_amount'] or 0) for r in _unc))}원** — "
+                    + " · ".join(f"#{r['id']} {_dmap.get(r['username'], r['username'])} "
+                                 f"{str(r['product_name'])[:14]} {fmt(int(r['refund_amount']))}원"
+                                 for r in _unc[:6])
+                    + "\n\n예전에 여러 건을 묶어 처리한 경우 합계가 **첫 건에만** 적혀 "
+                      "있습니다 — 판매자가 섞였으면 소급 적립 대신 예치금 화면에서 직접 "
+                      "나눠 넣으세요.")
+                if st.button(f"💳 미적립 {len(_unc)}건 예치금에 적립", key="cr_backfill"):
+                    _ok, _err = [], []
+                    for r in _unc:
+                        _c = _cr.credit_deposit(r['id'], by=USERNAME)
+                        (_ok if _c['ok'] else _err).append(_c if _c['ok'] else
+                                                           f"#{r['id']} {_c['msg']}")
+                    st.success(f"💳 {len(_ok)}건 {fmt(sum(c['amount'] for c in _ok))}원 적립")
+                    if _err:
+                        st.error(" / ".join(_err[:4]))
+                    st.rerun()
 
 
 def _user_returns(USERNAME):
@@ -1077,10 +1140,18 @@ def _user_returns(USERNAME):
                           if r['status'] == 'restocked' else '—'),
                 "반품입고일": r['returned_at'], "수취인": r['recipient'],
                 "상품명": str(r['product_name'])[:34], "수량": int(r['qty'] or 0),
+                "구입가 합계": _cr.purchase_total(r),
+                # 적립액만 보여 준다 — 예전 묶음 처리의 환불액은 합계라 건별 값이 아니다
+                "예치금 적립": (int(r.get('deposit_amount') or 0)
+                           if int(r.get('deposit_id') or 0) > 0 else None),
                 "사유": r['reason'], "주문번호": r['order_no'],
-            } for r in _done]), use_container_width=True, hide_index=True)
+            } for r in _done]), use_container_width=True, hide_index=True,
+                column_config={_k: st.column_config.NumberColumn(_k, format='%d')
+                               for _k in ("구입가 합계", "예치금 적립")})
             st.caption("'재고로 되돌림'은 **📦 내 재고**에 수량이 다시 잡힌 건입니다. "
-                       "반품분 정산은 관리자가 정산·청구에서 따로 처리합니다.")
+                       "'매장 반품 완료'는 매장에서 돌려받은 금액이 **💳 예치금에 적립**되며, "
+                       "내 구매내역 정산 › 예치금 내역에 '매장반품 적립'으로 사유와 함께 "
+                       "남습니다.")
 
 
 # ── 반품 대상 ─────────────────────────────────────────────

@@ -21,6 +21,9 @@
   spend_void  되돌려진 차감 (합계에서 제외)      0으로 취급하지 않고 refund와 짝
   refund      차감 되돌림                       +
   adjust      관리자 수동 조정 (사유 필수)       ±
+  return_credit 매장반품 환불 적립 (반품 1건 = 1줄) +
+               메모에 반품번호·상품·구입가·환불액을 남기고, 반품 원장
+               (customer_return.deposit_id)이 이 행을 가리킨다.
 
 하루 한 번만 차감된다:
   (username, settle_date) 부분 유니크 인덱스가 kind='spend'에만 걸려 있다.
@@ -38,6 +41,7 @@ KIND_LABEL = {
     'spend_void': '차감 취소됨',
     'refund':     '차감 되돌림',
     'adjust':     '관리자 조정',
+    'return_credit': '매장반품 적립',
 }
 
 #: 되돌려진 차감 — 금액은 원장에 그대로 남고, 짝이 되는 refund 행이 상쇄한다.
@@ -155,7 +159,7 @@ def summaries():
                 "FROM deposit_ledger GROUP BY username, kind"):
             e = out.setdefault(str(r['username']), {
                 'balance': 0, 'charged': 0, 'spent': 0, 'adjusted': 0,
-                'last_charge': ''})
+                'returned': 0, 'last_charge': ''})
             e['balance'] += _i(r['s'])
             if str(r['kind']) == 'charge':
                 e['charged'] = _i(r['s'])
@@ -168,6 +172,8 @@ def summaries():
                 # 조정을 안 내보내면 '입금 − 차감 = 잔액'이 안 맞는 사람이
                 # 생기고, 화면만 보면 장부가 틀린 것으로 읽힌다.
                 e['adjusted'] = _i(r['s'])
+            elif str(r['kind']) == 'return_credit':
+                e['returned'] = _i(r['s'])
         return out
     finally:
         conn.close()
@@ -208,7 +214,8 @@ def totals(date_from='', date_to='', username=None):
         'refunded': by.get('refund', 0),
         'voided': -by.get(VOID_KIND, 0),
         'adjusted': by.get('adjust', 0),
-        'net': sum(by.values()),               # 이 기간 증감 (= 잔액 변화)
+        'returned': by.get('return_credit', 0),   # 매장반품 환불 적립(+)
+        'net': sum(by.values()),              # 이 기간 증감 (= 잔액 변화)
         'by_kind': by,
     }
 
@@ -331,6 +338,25 @@ def adjust(username, amount, memo, by=''):
     return {'ok': True, 'msg': "조정 완료", 'balance': balance(username)}
 
 
+def return_credit(username, amount, memo, by=''):
+    """매장반품 환불 적립 — 반품 원장(db_customer_return.credit_deposit)만 부른다.
+
+    반환: 새 원장 행 id (금액이 0 이하면 0). 메모가 곧 적립 사유다.
+    """
+    amt = _i(amount)
+    if amt <= 0:
+        return 0
+    conn = _conn()
+    ensure(conn)
+    try:
+        _id = _insert(conn, username, _today(), 'return_credit', amt,
+                      memo=str(memo or '').strip(), by=by)
+        conn.commit()
+        return _id
+    finally:
+        conn.close()
+
+
 def deduct(settle_date, username, amount, by='', memo=''):
     """그날 구매금액을 예치금에서 뺀다.
 
@@ -407,6 +433,10 @@ def delete_entry(entry_id):
             return False, "없는 내역입니다."
         if str(r['kind']) in ('spend', 'spend_void', 'refund'):
             return False, "차감 관련 내역은 여기서 지울 수 없습니다 — 정산·청구에서 '차감 취소'를 쓰세요."
+        if str(r['kind']) == 'return_credit':
+            # 반품 원장이 이 행을 가리킨다 — 지우면 '적립됨'으로 남은 반품과 어긋난다
+            return False, ("매장반품 적립은 반품 기록과 짝이라 지울 수 없습니다 — "
+                           "잘못 적립됐으면 '관리자 조정'(−)으로 상쇄하세요.")
         conn.execute("DELETE FROM deposit_ledger WHERE id=?", (int(entry_id),))
         conn.commit()
         return True, "삭제했습니다."
