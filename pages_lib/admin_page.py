@@ -286,6 +286,24 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     st.success("✅ 카페24 메뉴 오픈됨" if _cmo_new else "🙈 카페24 메뉴 숨김 처리됨")
                     st.rerun()
 
+                # ── 🛍 코스트코 상품 네이버 자동 등록(Task 7) 사용 허용/해제 ──
+                #   기본 허용(값 없음). '0'이면 사용자가 켜 둬도 크론·테스트 실행이 막힌다.
+                #   사용자 본인 설정(auto_register_enabled)은 건드리지 않는다 —
+                #   다시 허용하면 원래 설정대로 이어서 돈다.
+                _ara_cur = get_setting(u['username'], 'auto_register_allowed') != '0'
+                _ara_new = st.checkbox(
+                    "🛍 코스트코 상품 네이버 자동 등록(Task 7) 사용 허용",
+                    value=_ara_cur, key=f"autoreg_ok_{u['username']}",
+                    help="끄면 이 사용자의 자동 등록이 즉시 멈춥니다(다음 크론부터 건너뜀). "
+                         "사용자 자동화 탭의 Task 7 저장·테스트 실행 버튼도 잠깁니다.")
+                st.caption("　사용자 설정: Task 7 "
+                           + ("**켜짐**" if get_setting(u['username'], 'auto_register_enabled') == '1'
+                              else "꺼짐"))
+                if _ara_new != _ara_cur:
+                    set_setting(u['username'], 'auto_register_allowed', '1' if _ara_new else '0')
+                    st.success("✅ 자동 등록 사용 허용" if _ara_new else "⛔ 자동 등록 사용 해제됨")
+                    st.rerun()
+
                 # ── 🏪 직접구매 계정 — 청구만 안 한다 (매칭·재고 정리는 그대로) ──
                 #   이 값을 읽는 코드는 있는데 켜고 끄는 화면이 없었다.
                 _sp_cur = get_setting(u['username'], 'self_purchase') == '1'

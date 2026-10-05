@@ -1476,6 +1476,10 @@ def run_naver_register_task(username="admin"):
         log(f"❌ '{username}' 사용자 DB 없음")
         return False
 
+    # ── 안전 게이트: 관리자가 사용 해제했으면 사용자 설정과 무관하게 중단 ──
+    if settings.get("auto_register_allowed", "") == "0":
+        log("⛔ 관리자가 이 사용자의 자동 등록을 해제함 — 건너뜀")
+        return True
     # ── 안전 게이트: 켜져 있어야만 라이브 등록 진행 ──
     if settings.get("auto_register_enabled", "") != "1":
         log("⏭ auto_register_enabled 미설정 — 자동 등록 건너뜀 (자동화 탭에서 활성화 필요)")

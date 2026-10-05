@@ -615,6 +615,12 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                "AI가 카테고리를 자동 판단하고, 판단하지 못한 건은 '네이버 등록' 탭 장바구니로 남겨 수동 확인합니다. "
                "⚠️ 실제 스토어에 상품이 올라가므로 마진율·회당 최대 수를 확인하고 사용하세요.")
 
+    # 관리자가 이 사용자의 자동 등록을 해제했으면 저장·실행을 잠근다(크론도 막힘)
+    _t7_blocked = _gs('auto_register_allowed') == '0'
+    if _t7_blocked:
+        st.error("⛔ 관리자가 이 계정의 자동 등록 사용을 해제했습니다. "
+                 "설정은 볼 수 있지만 저장·실행은 할 수 없습니다. 관리자에게 문의하세요.")
+
     TASK7_NAME = f"CostcoAutoRegister_{USERNAME}"
     t7_ok, t7_out = _query_task(TASK7_NAME)
     if t7_ok:
@@ -751,7 +757,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                    "(없으면 카테고리 매핑/저장값 있는 건만 등록되고 나머지는 장바구니로 남습니다.)")
 
     _s7c1, _s7c2, _s7c3 = st.columns(3)
-    if _s7c1.button("💾 Task 7 저장 & 등록", key="save_t7", type="primary", use_container_width=True):
+    if _s7c1.button("💾 Task 7 저장 & 등록", key="save_t7", type="primary",
+                    use_container_width=True, disabled=_t7_blocked):
         t7_str = new_t7_time.strftime("%H:%M")
         set_setting(USERNAME, 'auto_register_enabled', '1' if new_t7_en else '0')
         set_setting(USERNAME, 'auto_register_time', t7_str)
@@ -776,7 +783,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         st.success("삭제됨") if ok else st.error(f"삭제 실패: {out}")
         st.rerun()
 
-    if _s7c3.button("▶ 지금 테스트 실행", key="run_t7", use_container_width=True):
+    if _s7c3.button("▶ 지금 테스트 실행", key="run_t7", use_container_width=True,
+                    disabled=_t7_blocked):
         st.caption("※ '활성화' 저장 후 실행해야 실제 등록됩니다 (미활성 시 로그에 '건너뜀' 표시).")
         with st.spinner("네이버 자동 등록 실행 중... (상품 수·AI 호출에 따라 수 분 소요될 수 있음)"):
             r = subprocess.run(
