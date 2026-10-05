@@ -1102,13 +1102,56 @@ def _cr_done_panel(status, USERNAME, _dmap):
         _e.update({"처리일시": _r['done_at'], "처리자": _r['done_by'],
                    "주문번호": _r['order_no']})
         _tbl.append(_e)
+    # 매장 반품은 적립 전이면 구입가·환불액을 표에서 바로 고친다
+    _EDIT = ("구입가(개당)", "환불액") if _is_store else ()
+    _cfg = {"선택": st.column_config.CheckboxColumn("선택"),
+            **{_k: st.column_config.NumberColumn(_k, format='%d')
+               for _k in ("번호", "수량", "구입가(개당)", "구입가 합계", "환불액")}}
+    if _is_store:
+        _cfg["구입가(개당)"] = st.column_config.NumberColumn(
+            "구입가(개당) ✏️", format='%d', min_value=0, step=100)
+        _cfg["환불액"] = st.column_config.NumberColumn(
+            "환불액 ✏️", format='%d', min_value=0, step=100,
+            help="예치금에 적립되는 금액. 적립된 건은 처리 취소 후 고치세요.")
+    _vkey = f"cr_done_ed_{status}_{st.session_state.get('cr_done_v', 0)}"
     _ed = st.data_editor(
         pd.DataFrame(_tbl), use_container_width=True, hide_index=True,
-        key=f"cr_done_ed_{status}", disabled=[c for c in _tbl[0] if c != "선택"],
-        column_config={"선택": st.column_config.CheckboxColumn("선택"),
-                       **{_k: st.column_config.NumberColumn(_k, format='%d')
-                          for _k in ("번호", "수량", "구입가(개당)", "구입가 합계", "환불액")}})
-    _sel = [_tbl[i]['번호'] for i, _x in enumerate(_ed.to_dict('records')) if _x.get('선택')]
+        key=_vkey, disabled=[c for c in _tbl[0] if c not in ("선택",) + _EDIT],
+        column_config=_cfg)
+    _recs = _ed.to_dict('records')
+    _sel = [_tbl[i]['번호'] for i, _x in enumerate(_recs) if _x.get('선택')]
+
+    if _is_store:
+        _chg = {}
+        for _o, _x in zip(_tbl, _recs):
+            _d = {}
+            if int(_x.get('구입가(개당)') or 0) != int(_o['구입가(개당)'] or 0):
+                _d['unit_cost'] = int(_x.get('구입가(개당)') or 0)
+            if int(_x.get('환불액') or 0) != int(_o['환불액'] or 0):
+                _d['refund_amount'] = int(_x.get('환불액') or 0)
+            if _d:
+                _chg[int(_o['번호'])] = _d
+        if _chg:
+            st.info(f"✏️ 수정한 건 {len(_chg)}건 — "
+                    + " · ".join(f"#{_k}" for _k in list(_chg)[:8])
+                    + " (예치금 적립 전인 건만 저장됩니다)")
+            _sv1, _sv2 = st.columns(2)
+            if _sv1.button(f"💾 수정 저장 ({len(_chg)}건)", key="cr_done_save",
+                           type="primary", use_container_width=True):
+                _bad = []
+                for _k, _d in _chg.items():
+                    _res = _cr.update_store_returned(_k, by=USERNAME, **_d)
+                    if not _res['ok']:
+                        _bad.append(f"#{_k} {_res['msg']}")
+                st.session_state['cr_done_v'] = st.session_state.get('cr_done_v', 0) + 1
+                if _bad:
+                    st.error(" / ".join(_bad[:4]))
+                else:
+                    st.toast(f"💾 {len(_chg)}건 수정 저장", icon="✅")
+                st.rerun()
+            if _sv2.button("↩ 수정 취소", key="cr_done_cancel", use_container_width=True):
+                st.session_state['cr_done_v'] = st.session_state.get('cr_done_v', 0) + 1
+                st.rerun()
     if _is_store:
         _ref = sum(int(_r['refund_amount'] or 0) for _r in _rows)
         _crd = sum(int(_r.get('deposit_amount') or 0) for _r in _rows

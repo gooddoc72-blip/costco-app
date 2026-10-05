@@ -385,6 +385,42 @@ def update(_id, by='', **fields):
     return {'ok': True, 'msg': '수정했습니다.'}
 
 
+def update_store_returned(_id, by='', unit_cost=None, refund_amount=None):
+    """매장 반품 완료 건의 개당 구입가·환불액 수정 — **예치금 적립 전**에만.
+
+    적립된 뒤 환불액을 고치면 예치금과 어긋난다. 그때는 처리 취소 → 다시 처리.
+    반환: {'ok', 'msg'}"""
+    r = get(_id)
+    if not r:
+        return {'ok': False, 'msg': '없는 반품 건입니다.'}
+    if str(r.get('status')) != 'store_returned':
+        return {'ok': False, 'msg': '매장 반품 완료 건이 아닙니다.'}
+    if _i(r.get('deposit_id')):
+        return {'ok': False, 'msg': '이미 예치금에 적립된 건입니다 — 처리 취소 후 고치세요.'}
+    _set, _args = [], []
+    if unit_cost is not None:
+        _set.append('unit_cost=?'); _args.append(max(0, _i(unit_cost)))
+    if refund_amount is not None:
+        _set.append('refund_amount=?'); _args.append(max(0, _i(refund_amount)))
+    if not _set:
+        return {'ok': False, 'msg': '바꿀 내용이 없습니다.'}
+    _note = f"{_now()} {by} 수정(구입가 {_i(r.get('unit_cost')):,}→" \
+            f"{_i(unit_cost if unit_cost is not None else r.get('unit_cost')):,} · 환불 " \
+            f"{_i(r.get('refund_amount')):,}→" \
+            f"{_i(refund_amount if refund_amount is not None else r.get('refund_amount')):,})"
+    conn = _conn()
+    try:
+        conn.execute(
+            f"UPDATE customer_return SET {', '.join(_set)}, "
+            "memo=CASE WHEN COALESCE(memo,'')='' THEN ? ELSE memo || ' / ' || ? END "
+            "WHERE id=? AND status='store_returned' AND COALESCE(deposit_id,0)=0",
+            (*_args, _note, _note, _i(_id)))
+        conn.commit()
+    finally:
+        conn.close()
+    return {'ok': True, 'msg': '수정했습니다.'}
+
+
 def cancel(_id, by=''):
     """처리 취소 — 정리된 건을 정리 대기(received)로 되돌린다.
 
