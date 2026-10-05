@@ -1181,28 +1181,50 @@ def _cr_done_panel(status, USERNAME, _dmap):
             st.session_state['cr_view'] = 'open'
         st.rerun()
 
-    # 이 기능 전에 매장 반품한 건 — 확인하고 한 번에 소급 적립
+    # 미적립 매장 반품 — 표에서 **선택한 건만** 예치금에 적립
     if _is_store:
         _unc = _cr.uncredited_store_returns()
         if _unc:
             st.warning(
                 f"💳 예치금에 아직 적립 안 된 매장 반품 **{len(_unc)}건 · "
                 f"{fmt(sum(int(r['refund_amount'] or 0) for r in _unc))}원** — "
-                + " · ".join(f"#{r['id']} {_dmap.get(r['username'], r['username'])} "
-                             f"{str(r['product_name'])[:14]} {fmt(int(r['refund_amount']))}원"
-                             for r in _unc[:6])
-                + "\n\n예전에 여러 건을 묶어 처리한 경우 합계가 **첫 건에만** 적혀 "
-                  "있습니다 — 판매자가 섞였으면 소급 적립 대신 예치금 화면에서 직접 "
-                  "나눠 넣으세요.")
-            if st.button(f"💳 미적립 {len(_unc)}건 예치금에 적립", key="cr_backfill"):
+                "위 표에서 **선택**한 뒤 아래 버튼을 누르면 그 건만 적립됩니다. "
+                "환불액이 맞는지 먼저 확인하세요(✏️로 수정 가능).\n\n"
+                "예전에 여러 건을 묶어 처리한 경우 합계가 **첫 건에만** 적혀 "
+                "있습니다 — 판매자가 섞였으면 환불액을 건별로 고친 뒤 적립하세요.")
+            _unc_ids = {int(r['id']) for r in _unc}
+            _pick = [r for r in _unc if int(r['id']) in set(_sel)]
+            _skip = [i for i in _sel if i not in _unc_ids]
+            if _pick:
+                st.markdown(
+                    "적립 예정: " + " · ".join(
+                        f"**{_dmap.get(r['username'], r['username'])}** "
+                        f"{str(r['product_name'])[:16]} **{fmt(int(r['refund_amount']))}원**"
+                        for r in _pick)
+                    + f"  →  합계 **{fmt(sum(int(r['refund_amount']) for r in _pick))}원**")
+                _zero = [r for r in _pick if not int(r['unit_cost'] or 0)]
+                if _zero:
+                    st.caption("⚠️ 구입가가 0원인 건이 있습니다 — "
+                               + " · ".join(f"#{r['id']}" for r in _zero)
+                               + " (적립 사유에 구입가 0원으로 남습니다. 필요하면 먼저 ✏️ 수정)")
+            if _skip:
+                st.caption("ℹ️ 선택한 건 중 " + " · ".join(f"#{i}" for i in _skip[:6])
+                           + "은 이미 적립됐거나 환불액이 0원이라 건너뜁니다.")
+            if _chg:
+                st.caption("⚠️ 저장 안 한 수정이 있습니다 — **💾 수정 저장**을 먼저 누르세요 "
+                           "(적립은 저장된 환불액으로 됩니다).")
+            if st.button(f"💳 선택한 {len(_pick)}건 예치금에 적립", key="cr_backfill",
+                         type="primary", disabled=not _pick or bool(_chg)):
                 _ok, _err = [], []
-                for r in _unc:
+                for r in _pick:
                     _c = _cr.credit_deposit(r['id'], by=USERNAME)
                     (_ok if _c['ok'] else _err).append(_c if _c['ok'] else
                                                        f"#{r['id']} {_c['msg']}")
-                st.success(f"💳 {len(_ok)}건 {fmt(sum(c['amount'] for c in _ok))}원 적립")
+                st.toast(f"💳 {len(_ok)}건 {fmt(sum(c['amount'] for c in _ok))}원 적립",
+                         icon="✅")
                 if _err:
                     st.error(" / ".join(_err[:4]))
+                st.session_state['cr_done_v'] = st.session_state.get('cr_done_v', 0) + 1
                 st.rerun()
 
 
