@@ -3567,7 +3567,10 @@ def _render_manual_stock(lots, key_prefix="rs"):
     _labels = [_dm.get(u, u) for u in _opts]
     _l2u = {_dm.get(u, u): u for u in _opts}
 
-    with st.expander("🛠 수동 입출고 (관리자)", expanded=False):
+    # expander는 입력할 때마다(rerun) 닫혔다 — 열림 상태를 세션에 두는 토글로 연다
+    if not st.toggle("🛠 수동 입출고 (관리자)", key=f"{key_prefix}_adj_open"):
+        return
+    with st.container(border=True):
         st.caption("실물과 장부가 다를 때만 쓰세요 — 파손·분실·반품, 매장에서 더 사 온 것, "
                    "세어 보니 다른 것. 정상 흐름(영수증 배정·판매 차감)으로 맞출 수 있으면 "
                    "그쪽을 쓰는 게 낫습니다. **수량은 소분 단위**입니다.")
@@ -3585,11 +3588,39 @@ def _render_manual_stock(lots, key_prefix="rs"):
 
         _direct = _pick == _pick_opts[0]
         if _direct:
+            # 🔍 새 상품은 영수증 구매이력·가격DB에서 찾아 고르면 번호·이름·단가가 채워진다
+            from product_search import search_products
+            _q = st.text_input("🔍 상품명·상품번호로 찾기", key=f"{key_prefix}_adj_q",
+                               placeholder="예: 팬틴 / pantene 콜라겐 / 854362 — 입력 후 엔터")
+            _hits = search_products(_q) if _q.strip() else []
+            if _q.strip() and not _hits:
+                st.caption("영수증 구매이력·가격DB에서 찾지 못했습니다 — 아래에 직접 입력하세요.")
+            _hs = None
+            if _hits:
+                _hl = ["(직접 입력)"] + [
+                    f"{h['product_no'] or '번호없음'} · {h['name'][:40]} · "
+                    + (f"🧾 최근구매 {h['receipt_date']} {h['paid']:,}원" if h['paid']
+                       else f"매장가 {h['store']:,}원") for h in _hits]
+                _hp = st.selectbox(f"찾은 상품 {len(_hits)}개 (🧾 = 영수증 구매이력)", _hl,
+                                   index=1, key=f"{key_prefix}_adj_hit")
+                if _hp != "(직접 입력)":
+                    _hs = _hits[_hl.index(_hp) - 1]
+            # 고른 상품이 바뀌면 key가 바뀌어 기본값이 새로 채워진다
+            _hk = (str((_hs or {}).get('product_no') or '')
+                   or ('n' + str(abs(hash((_hs or {}).get('name') or 'manual')))))
             d1, d2, d3, d4 = st.columns([1.2, 2.2, 1.2, 1])
-            _pno = d1.text_input("코스트코번호", key=f"{key_prefix}_adj_pno")
-            _pnm = d2.text_input("상품명", key=f"{key_prefix}_adj_pnm")
-            _cost = d3.number_input("팩단가(원)", min_value=0, step=100, key=f"{key_prefix}_adj_cost")
+            _pno = d1.text_input("코스트코번호", value=str((_hs or {}).get('product_no') or ''),
+                                 key=f"{key_prefix}_adj_pno_{_hk}")
+            _pnm = d2.text_input("상품명", value=str((_hs or {}).get('name') or ''),
+                                 key=f"{key_prefix}_adj_pnm_{_hk}")
+            _cost = d3.number_input("팩단가(원)", min_value=0, step=100,
+                                    value=int((_hs or {}).get('paid') or (_hs or {}).get('store') or 0),
+                                    key=f"{key_prefix}_adj_cost_{_hk}",
+                                    help="영수증 최근 실결제가(없으면 매장가). 다르면 고치세요.")
             _sq = d4.number_input("소분수", min_value=1, step=1, value=1, key=f"{key_prefix}_adj_sq")
+            if _hs is not None and not str(_hs.get('product_no') or '').strip():
+                st.caption("⚠️ 이 상품은 영수증에서 번호를 못 읽어 번호 없이 저장돼 있습니다 — "
+                           "코스트코번호를 직접 넣어 주세요.")
         else:
             _src = _mine[_pick_opts.index(_pick) - 1]
             _pno = str(_src['product_no'])
