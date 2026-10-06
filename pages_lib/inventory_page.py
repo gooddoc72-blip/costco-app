@@ -562,37 +562,30 @@ def _admin_stock():
             # 🔍 상품명·번호로 공용 DB를 찾아 고르면 번호·매장가가 채워진다
             _q = st.text_input("🔍 상품명·상품번호로 찾기", key="ml_q",
                                placeholder="예: 팬틴 / 메이플시럽 / 854362 — 입력 후 엔터")
-            _hits = []
-            if _q.strip():
-                _qk, _qt = _name_key(_q), _name_tokens(_q)
-                try:
-                    _shared = get_shared_products() or []
-                except Exception:
-                    _shared = []
-                for s in _shared:
-                    _pn = str(s.get('product_no') or '').strip()
-                    if not _pn:
-                        continue
-                    _k = _name_key(s.get('costco_name'))
-                    if (_qk and _qk in _k) or (_qt and all(t in _k for t in _qt)) \
-                            or _q.strip() in _pn:
-                        _hits.append(s)
-                    if len(_hits) >= 50:
-                        break
-                if not _hits:
-                    st.caption("공용 DB에서 찾지 못했습니다 — 더 짧게 넣거나 아래에 직접 입력하세요.")
+            # 공용 DB(크롤링 카탈로그)만 보면 매장 전용·미수집 상품은 안 나온다 —
+            # 영수증 구매이력(실제로 산 것)을 함께 찾고, 같은 번호면 하나로 합친다.
+            _hits = _manual_lot_search(_q) if _q.strip() else []
+            if _q.strip() and not _hits:
+                st.caption("공용 DB·영수증 구매이력에서 찾지 못했습니다 — 더 짧게 넣거나 "
+                           "아래에 직접 입력하세요.")
             _sel = None
             if _hits:
                 _lbls = ["(직접 입력)"] + [
-                    f"{s['product_no']} · {str(s.get('costco_name') or '')[:40]} · "
-                    f"매장가 {fmt(int(s.get('store_price') or s.get('unit_price') or 0))}원"
-                    for s in _hits]
-                _pk = st.selectbox(f"찾은 상품 {len(_hits)}개", _lbls, index=1, key="ml_pick")
+                    f"{h['product_no']} · {h['name'][:40]} · "
+                    + (f"🧾 최근구매 {h['receipt_date']} {fmt(h['paid'])}원"
+                       if h['paid'] else f"매장가 {fmt(h['store'])}원")
+                    for h in _hits]
+                _pk = st.selectbox(f"찾은 상품 {len(_hits)}개 (🧾 = 영수증 구매이력)",
+                                   _lbls, index=1, key="ml_pick")
                 if _pk != "(직접 입력)":
                     _sel = _hits[_lbls.index(_pk) - 1]
             # 고른 상품이 바뀌면 key가 바뀌어 기본값(번호·이름·가격)이 새로 채워진다
             _sk = str((_sel or {}).get('product_no') or 'manual')
-            _sp = int((_sel or {}).get('store_price') or (_sel or {}).get('unit_price') or 0)
+            # 구입가 = 최근 영수증 실결제가 우선, 없으면 매장가
+            _sp = int((_sel or {}).get('paid') or (_sel or {}).get('store') or 0)
+            _lp0 = int((_sel or {}).get('list') or _sp)
+            if _sel is not None:
+                _sel = dict(_sel, costco_name=_sel['name'])
             c1, c2 = st.columns([2, 1])
             name = c1.text_input("상품명", value=str((_sel or {}).get('costco_name') or ''),
                                  key=f"ml_name_{_sk}")
@@ -605,7 +598,7 @@ def _admin_stock():
             cost = c4.number_input("구입가(1팩)", min_value=0, step=100, value=_sp,
                                    key=f"ml_cost_{_sk}",
                                    help="상품을 고르면 매장가가 들어갑니다. 실제 결제가로 고치세요.")
-            lprice = c5.number_input("정가(1팩)", min_value=0, step=100, value=_sp,
+            lprice = c5.number_input("정가(1팩)", min_value=0, step=100, value=_lp0,
                                      key=f"ml_lp_{_sk}",
                                      help="할인 전 금액. 0이면 구입가와 같게 봅니다.")
             packs = c6.number_input("수량(팩)", min_value=1, step=1, value=1, key="ml_packs")
@@ -780,6 +773,90 @@ def _search_orders(usernames, keyword, product_name, date_from, date_to, limit=3
             out.append(_r)
     out.sort(key=lambda r: str(r.get('order_date') or ''), reverse=True)
     return out[:200]
+
+
+#: 영수증·카탈로그가 한쪽은 한글, 한쪽은 영문으로 적는 브랜드 — 서로 바꿔서도 찾는다
+_BRAND_ALIAS = {
+    '팬틴': 'pantene', '커클랜드': 'kirkland', '스타벅스': 'starbucks', '다우니': 'downy',
+    '타이드': 'tide', '바운티': 'bounty', '세타필': 'cetaphil', '뉴트로지나': 'neutrogena',
+    '필립스': 'philips', '브라운': 'braun', '다이슨': 'dyson', '페리에': 'perrier',
+    '에비앙': 'evian', '고디바': 'godiva', '헤드앤숄더': 'headshoulders', '오랄비': 'oralb',
+    '질레트': 'gillette', '크레스트': 'crest', '하기스': 'huggies', '네슬레': 'nestle',
+}
+
+
+def _query_variants(q):
+    """검색어 + 브랜드 한↔영 바꾼 것들 — [(정규화 키, 필수 토막)]."""
+    _base = str(q or '').strip().lower()
+    _vs = {_base}
+    for ko, en in _BRAND_ALIAS.items():
+        if ko in _base:
+            _vs.add(_base.replace(ko, en))
+        if en in _name_key(_base):
+            _vs.add(_name_key(_base).replace(en, ko))
+    return [(_name_key(v), _name_tokens(v)) for v in _vs if v]
+
+
+def _manual_lot_search(q, limit=50):
+    """재고 직접 입고용 상품 찾기 — 영수증 구매이력 + 공용 DB를 상품번호로 합친다.
+
+    반환: [{product_no, name, paid(최근 영수증 실결제 단가), list(정가),
+           receipt_date, store(공용 DB 매장가)}] — 최근 구매한 것이 먼저.
+    """
+    _qs = str(q or '').strip()
+    _vars = _query_variants(_qs)
+
+    def _hit(name, pno):
+        _k = _name_key(name)
+        if _qs and _qs in str(pno or ''):
+            return True
+        return any((vk and vk in _k) or (vt and all(t in _k for t in vt))
+                   for vk, vt in _vars)
+
+    out = {}
+    # ① 영수증 구매이력 — 상품번호별 가장 최근 줄
+    try:
+        from db_stats import _receipt_conn
+        conn = _receipt_conn()
+        try:
+            rows = conn.execute(
+                "SELECT product_no, product_name, unit_price, "
+                "COALESCE(list_price,0) AS list_price, receipt_date FROM receipt_items "
+                "WHERE COALESCE(product_no,'')<>'' ORDER BY receipt_date DESC, id DESC"
+            ).fetchall()
+        finally:
+            conn.close()
+        for r in rows:
+            _pn = str(r['product_no'] or '').strip()
+            if _pn in out or not _hit(r['product_name'], _pn):
+                continue
+            out[_pn] = {'product_no': _pn, 'name': str(r['product_name'] or ''),
+                        'paid': int(r['unit_price'] or 0),
+                        'list': int(r['list_price'] or 0) or int(r['unit_price'] or 0),
+                        'receipt_date': str(r['receipt_date'] or ''), 'store': 0}
+    except Exception:
+        pass
+    # ② 공용 DB — 영수증에 있으면 이름(카탈로그 정식명)·매장가만 보탠다
+    try:
+        for s in (get_shared_products() or []):
+            _pn = str(s.get('product_no') or '').strip()
+            if not _pn:
+                continue
+            _sp = int(s.get('store_price') or 0) or int(s.get('unit_price') or 0)
+            if _pn in out:
+                out[_pn]['store'] = _sp
+                if s.get('costco_name'):
+                    out[_pn]['name'] = str(s['costco_name'])
+                continue
+            if _hit(s.get('costco_name'), _pn):
+                out[_pn] = {'product_no': _pn, 'name': str(s.get('costco_name') or ''),
+                            'paid': 0, 'list': 0, 'receipt_date': '', 'store': _sp}
+    except Exception:
+        pass
+    # 영수증 건은 최근 구매순으로 이미 들어 있다 — 그 뒤에 공용 DB 건
+    _res = ([h for h in out.values() if h['receipt_date']]
+            + [h for h in out.values() if not h['receipt_date']])
+    return _res[:limit]
 
 
 def _store_price_of(costco_no):
