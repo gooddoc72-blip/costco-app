@@ -571,7 +571,7 @@ def _admin_stock():
             _sel = None
             if _hits:
                 _lbls = ["(직접 입력)"] + [
-                    f"{h['product_no']} · {h['name'][:40]} · "
+                    f"{h['product_no'] or '번호없음'} · {h['name'][:40]} · "
                     + (f"🧾 최근구매 {h['receipt_date']} {fmt(h['paid'])}원"
                        if h['paid'] else f"매장가 {fmt(h['store'])}원")
                     for h in _hits]
@@ -580,7 +580,8 @@ def _admin_stock():
                 if _pk != "(직접 입력)":
                     _sel = _hits[_lbls.index(_pk) - 1]
             # 고른 상품이 바뀌면 key가 바뀌어 기본값(번호·이름·가격)이 새로 채워진다
-            _sk = str((_sel or {}).get('product_no') or 'manual')
+            _sk = (str((_sel or {}).get('product_no') or '')
+                   or ('n' + str(abs(hash((_sel or {}).get('name') or 'manual')))))
             # 구입가 = 최근 영수증 실결제가 우선, 없으면 매장가
             _sp = int((_sel or {}).get('paid') or (_sel or {}).get('store') or 0)
             _lp0 = int((_sel or {}).get('list') or _sp)
@@ -591,6 +592,9 @@ def _admin_stock():
                                  key=f"ml_name_{_sk}")
             pno = c2.text_input("코스트코 상품번호", value=str((_sel or {}).get('product_no') or ''),
                                 key=f"ml_pno_{_sk}")
+            if _sel is not None and not str(_sel.get('product_no') or '').strip():
+                st.caption("⚠️ 이 상품은 영수증에서 코스트코 상품번호를 못 읽어 번호 없이 "
+                           "저장돼 있습니다 — 영수증(또는 상품 라벨)의 번호를 직접 넣어 주세요.")
             c3, c4, c5, c6, c7 = st.columns(5)
             users = [u['username'] for u in get_all_users() if u.get('status', 'active') == 'active']
             owner = (c3.selectbox("보유자", users, key="ml_owner") if users
@@ -822,15 +826,17 @@ def _manual_lot_search(q, limit=50):
             rows = conn.execute(
                 "SELECT product_no, product_name, unit_price, "
                 "COALESCE(list_price,0) AS list_price, receipt_date FROM receipt_items "
-                "WHERE COALESCE(product_no,'')<>'' ORDER BY receipt_date DESC, id DESC"
+                "ORDER BY receipt_date DESC, id DESC"
             ).fetchall()
         finally:
             conn.close()
         for r in rows:
             _pn = str(r['product_no'] or '').strip()
-            if _pn in out or not _hit(r['product_name'], _pn):
+            # 번호를 못 읽은 품목도 낸다 — 이름으로 묶고, 번호는 고른 뒤 직접 넣는다
+            _key = _pn or ('name:' + _name_key(r['product_name']))
+            if _key in out or not _hit(r['product_name'], _pn):
                 continue
-            out[_pn] = {'product_no': _pn, 'name': str(r['product_name'] or ''),
+            out[_key] = {'product_no': _pn, 'name': str(r['product_name'] or ''),
                         'paid': int(r['unit_price'] or 0),
                         'list': int(r['list_price'] or 0) or int(r['unit_price'] or 0),
                         'receipt_date': str(r['receipt_date'] or ''), 'store': 0}
@@ -840,16 +846,15 @@ def _manual_lot_search(q, limit=50):
     try:
         for s in (get_shared_products() or []):
             _pn = str(s.get('product_no') or '').strip()
-            if not _pn:
-                continue
+            _key = _pn or ('name:' + _name_key(s.get('costco_name')))
             _sp = int(s.get('store_price') or 0) or int(s.get('unit_price') or 0)
-            if _pn in out:
-                out[_pn]['store'] = _sp
+            if _key in out:
+                out[_key]['store'] = _sp
                 if s.get('costco_name'):
-                    out[_pn]['name'] = str(s['costco_name'])
+                    out[_key]['name'] = str(s['costco_name'])
                 continue
             if _hit(s.get('costco_name'), _pn):
-                out[_pn] = {'product_no': _pn, 'name': str(s.get('costco_name') or ''),
+                out[_key] = {'product_no': _pn, 'name': str(s.get('costco_name') or ''),
                             'paid': 0, 'list': 0, 'receipt_date': '', 'store': _sp}
     except Exception:
         pass
