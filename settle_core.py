@@ -149,6 +149,8 @@ def to_ledger_rows(alloc_rows, settle_date, receipt_date=''):
             'source': _VIA_TO_SOURCE.get(str(r.get('via') or ''), 'receipt'),
             'receipt_date': str(r.get('receipt_date') or receipt_date or settle_date),
             'memo': str(r.get('memo') or ''),
+            # 📦 재고 출고로 고른 보유자 — 확정 때 그 사람 재고 장부에서 뺀다
+            'stock_owner': str(r.get('stock_owner') or ''),
         }
         if not row['username']:
             continue
@@ -201,8 +203,63 @@ def finalize(settle_date, alloc_rows, created_by='', with_fees=False,
 
     totals = _ds.save_settlement(settle_date, rows, fees_by_user=fees,
                                  created_by=created_by, replace=replace)
+    stock = consume_stock_rows(rows, settle_date)
     return {'saved': len(rows), 'applied': applied, 'dropped': dropped,
-            'totals': totals, 'learned': learned, 'fees': fees}
+            'totals': totals, 'learned': learned, 'fees': fees, 'stock': stock}
+
+
+def consume_stock_rows(rows, settle_date):
+    """📦 재고 출고 행(stock_owner 있음)만큼 그 보유자 재고 장부에서 뺀다.
+
+    재고가 둘로 갈라지지 않게 하는 자리다. 예전엔 정산이 '재고에서 나갔다'고
+    청구만 하고 장부(inventory_lots)는 그대로 둬서, 📊 전체 재고에는 안 줄어든
+    채 남았고, 그 입고는 '한 번도 안 쓰인 입고'로 보여 초기화 때 통째로 지워졌다.
+
+    같은 주문이 발송 때 이미 차감됐으면(consume_for_sale 멱등) 다시 빼지 않는다.
+    수량 = 주문수량 × 묶음배수(발송 차감과 같은 해석).
+    반환: {'consumed': 소분 수, 'already': 주문 수, 'short': [{order_no, name, owner, short}]}
+    """
+    out = {'consumed': 0, 'already': 0, 'short': []}
+    _todo = [r for r in (rows or []) if str(r.get('stock_owner') or '').strip()
+             and str(r.get('order_no') or '').strip()
+             and str(r.get('product_no') or '').strip()]
+    if not _todo:
+        return out
+    try:
+        from db_inventory import consume_for_sale
+        from db_dispatch_log import _pack_factor
+        from db_core import get_user_db
+    except Exception:
+        return out
+    _pk = {}
+    for r in _todo:
+        u, pno = str(r['username']), str(r['product_no'])
+        try:
+            if (u, pno) not in _pk:
+                uc = get_user_db(u)
+                try:
+                    _pk[(u, pno)] = max(1, int(_pack_factor(uc, pno, r.get('product_name') or '') or 1))
+                finally:
+                    uc.close()
+        except Exception:
+            _pk[(u, pno)] = 1
+        units = max(1, _i(r.get('qty'))) * _pk[(u, pno)]
+        try:
+            res = consume_for_sale(u, pno, units, str(r['order_no']),
+                                   dispatched_at=str(settle_date), platform='settle',
+                                   owner=str(r['stock_owner']))
+        except Exception:
+            continue
+        if res.get('skipped'):
+            out['already'] += 1
+            continue
+        out['consumed'] += _i(res.get('consumed'))
+        if _i(res.get('shortage')):
+            out['short'].append({'order_no': str(r['order_no']),
+                                 'name': str(r.get('product_name') or '')[:24],
+                                 'owner': str(r['stock_owner']),
+                                 'short': _i(res.get('shortage'))})
+    return out
 
 
 # ── 미매칭 품목 → 사용자 재고 입고 ────────────────────────────

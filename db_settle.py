@@ -120,6 +120,11 @@ def ensure(conn=None):
         # 기존 행은 0이다: 예전 매칭분은 대리구매인지 알 수 없으므로 소급 청구하지 않는다.
         if 'proxy' not in _cols:
             conn.execute("ALTER TABLE settle_item ADD COLUMN proxy INTEGER DEFAULT 0")
+        # 📦 재고 출고 — 어느 보유자 재고에서 나갔나. 값이 있으면 정산 확정 때
+        # 그 사람 재고 장부(inventory_lots)에서 실제로 차감하고, 이 행이 지워질 때
+        # 되돌린다. 재고가 '정산 계산'과 '재고 장부' 둘로 갈라지지 않게 하는 연결점.
+        if 'stock_owner' not in _cols:
+            conn.execute("ALTER TABLE settle_item ADD COLUMN stock_owner TEXT DEFAULT ''")
     except sqlite3.Error:
         pass
     conn.execute("CREATE INDEX IF NOT EXISTS idx_si_date ON settle_item(settle_date)")
@@ -167,6 +172,28 @@ def ensure(conn=None):
         conn.close()
 
 
+def _revert_stock(order_nos):
+    """정산이 재고 장부에서 뺀 것(📦 재고 출고)을 되돌린다 — 품목이 지워질 때.
+    재고 실패가 정산 취소를 막으면 안 되므로 예외는 삼킨다."""
+    if not order_nos:
+        return 0
+    try:
+        from db_inventory import revert_settle_moves
+        return revert_settle_moves(sorted(set(order_nos)))
+    except Exception:
+        return 0
+
+
+def _stock_orders(conn, where, args):
+    """조건에 맞는 품목 중 재고 장부에서 뺀 주문번호 — 지우기 **전에** 잡아 둔다."""
+    try:
+        return [str(r['order_no']) for r in conn.execute(
+            "SELECT order_no FROM settle_item WHERE COALESCE(stock_owner,'')<>'' "
+            "AND order_no<>'' AND " + where, args)]
+    except sqlite3.Error:
+        return []
+
+
 # ── 쓰기 ────────────────────────────────────────────────────
 def _write_items(conn, settle_date, username, rows, created_by, now):
     """품목 INSERT만 — 무엇을 먼저 지울지는 부르는 쪽이 정한다."""
@@ -176,8 +203,8 @@ def _write_items(conn, settle_date, username, rows, created_by, now):
             """INSERT OR REPLACE INTO settle_item
                (settle_date, username, order_no, product_no, naver_no, product_name,
                 recipient, qty, split_qty, pack, unit_price, amount, prev_cost,
-                source, receipt_date, memo, created_by, created_at, proxy)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                source, receipt_date, memo, created_by, created_at, proxy, stock_owner)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (str(settle_date), str(username), str(r.get('order_no') or ''),
              str(r.get('product_no') or ''), str(r.get('naver_no') or ''),
              str(r.get('product_name') or ''), str(r.get('recipient') or ''),
@@ -185,7 +212,7 @@ def _write_items(conn, settle_date, username, rows, created_by, now):
              _i(r.get('unit_price')), _i(r.get('amount')), _i(r.get('prev_cost')),
              str(r.get('source') or 'receipt'), str(r.get('receipt_date') or ''),
              str(r.get('memo') or ''), str(created_by or ''), now,
-             1 if r.get('proxy') else 0))
+             1 if r.get('proxy') else 0, str(r.get('stock_owner') or '')))
         n += 1
     return n
 
@@ -208,10 +235,15 @@ def merge_items(settle_date, username, rows, created_by=''):
     conn = _conn()
     ensure(conn)
     now = _now()
+    _old_stock = []
     try:
         CHUNK = 900                       # SQLite 변수 한도
         for i in range(0, len(onos), CHUNK):
             part = onos[i:i + CHUNK]
+            # 덮어쓸 옛 행이 재고에서 뺀 것은 먼저 되돌린다 — 새 행이 다시 뺀다
+            _old_stock += _stock_orders(
+                conn, "settle_date=? AND username=? AND order_no IN (%s)"
+                % ",".join("?" * len(part)), [str(settle_date), str(username)] + part)
             conn.execute(
                 "DELETE FROM settle_item WHERE settle_date=? AND username=? "
                 "AND order_no IN (%s)" % ",".join("?" * len(part)),
@@ -220,6 +252,7 @@ def merge_items(settle_date, username, rows, created_by=''):
         conn.commit()
     finally:
         conn.close()
+    _revert_stock(_old_stock)
     recompute_invoice(settle_date, username, created_by=created_by)
     return n
 
@@ -234,12 +267,15 @@ def replace_items(settle_date, username, rows, created_by=''):
     ensure(conn)
     now = _now()
     try:
+        _old_stock = _stock_orders(conn, "settle_date=? AND username=?",
+                                   [str(settle_date), str(username)])
         conn.execute("DELETE FROM settle_item WHERE settle_date=? AND username=?",
                      (str(settle_date), str(username)))
         n = _write_items(conn, settle_date, username, rows, created_by, now)
         conn.commit()
     finally:
         conn.close()
+    _revert_stock(_old_stock)
     recompute_invoice(settle_date, username, created_by=created_by)
     return n
 
@@ -459,15 +495,20 @@ def delete_settlement(settle_date, username=None, only_status=None):
             if _ok is not None and 'draft' not in _ok:
                 continue      # 청구서가 없으니 '청구 전'으로만 볼 수 있다
             targets.append(_u)
+        _old_stock = []
         for u in targets:
+            _old_stock += _stock_orders(conn, "settle_date=? AND username=?",
+                                        [str(settle_date), u])
             conn.execute("DELETE FROM settle_item WHERE settle_date=? AND username=?",
                          (str(settle_date), u))
             conn.execute("DELETE FROM settle_invoice WHERE settle_date=? AND username=?",
                          (str(settle_date), u))
         conn.commit()
-        return len(targets), sorted(paid)
     finally:
         conn.close()
+    # 정산을 취소하면 그 정산이 재고 장부에서 뺀 것도 돌려놓는다
+    _revert_stock(_old_stock)
+    return len(targets), sorted(paid)
 
 
 def reset_all(include_paid=False, restore_cost=True, drop_lots=False):
@@ -512,6 +553,11 @@ def reset_all(include_paid=False, restore_cost=True, drop_lots=False):
             "SELECT settle_date, username FROM settle_invoice"
             + ("" if include_paid else " WHERE status<>'paid'"))]
 
+        # 지워질 품목이 재고 장부에서 뺀 주문 — 초기화 뒤 되돌린다
+        _old_stock = _stock_orders(
+            conn, "1=1" if include_paid else
+            "(settle_date, username) NOT IN "
+            "(SELECT settle_date, username FROM settle_invoice WHERE status='paid')", [])
         if include_paid:
             res['items'] = conn.execute("DELETE FROM settle_item").rowcount
             res['invoices'] = conn.execute("DELETE FROM settle_invoice").rowcount
@@ -526,6 +572,7 @@ def reset_all(include_paid=False, restore_cost=True, drop_lots=False):
         conn.commit()
     finally:
         conn.close()
+    res['stock_reverted'] = _revert_stock(_old_stock)
 
     # 없어진 청구서에 딸려 있던 예치금 차감을 사용자에게 돌려준다
     import db_deposit as _dep
@@ -767,11 +814,13 @@ def remove_items(username, order_nos):
     conn = _conn()
     ensure(conn)
     try:
-        removed, dates = 0, set()
+        removed, dates, _old_stock = 0, set(), []
         CHUNK = 900                       # SQLite 변수 한도
         for i in range(0, len(onos), CHUNK):
             part = onos[i:i + CHUNK]
             ph = ",".join("?" * len(part))
+            _old_stock += _stock_orders(conn, "username=? AND order_no IN (%s)" % ph,
+                                        [str(username)] + part)
             for r in conn.execute(
                     "SELECT DISTINCT settle_date FROM settle_item "
                     "WHERE username=? AND order_no IN (%s)" % ph, [str(username)] + part):
@@ -783,6 +832,7 @@ def remove_items(username, order_nos):
         conn.commit()
     finally:
         conn.close()
+    _revert_stock(_old_stock)
     for d in dates:
         recompute_invoice(d, username)
     return removed
@@ -821,11 +871,12 @@ def delete_items_by_id(item_ids, restore_cost=True):
     conn = _conn()
     ensure(conn)
     try:
-        pairs, gone, removed = set(), [], 0
+        pairs, gone, removed, _old_stock = set(), [], 0, []
         CHUNK = 900
         for i in range(0, len(ids), CHUNK):
             part = ids[i:i + CHUNK]
             ph = ",".join("?" * len(part))
+            _old_stock += _stock_orders(conn, "id IN (%s)" % ph, part)
             for r in conn.execute(
                     "SELECT settle_date, username, order_no, prev_cost FROM settle_item "
                     "WHERE id IN (%s)" % ph, part):
@@ -837,6 +888,7 @@ def delete_items_by_id(item_ids, restore_cost=True):
         conn.commit()
     finally:
         conn.close()
+    _revert_stock(_old_stock)
 
     if restore_cost and gone:
         from db_core import get_user_db

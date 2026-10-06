@@ -2089,6 +2089,14 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 f"사용자 {len(res['totals'])}명 청구서 생성 "
                 f"(합계 {fmt(sum(res['totals'].values()))}원). "
                 "관리자 › 정산·청구에서 청구하세요." + _lmsg)
+            # 📦 재고 출고가 재고 장부에서 실제로 빠졌는지 — rerun에도 남게 toast로
+            _stk = res.get('stock') or {}
+            if _stk.get('consumed') or _stk.get('already') or _stk.get('short'):
+                st.toast(f"📦 재고 장부 차감 {_stk.get('consumed', 0)}개"
+                         + (f" · 발송 때 이미 차감 {_stk['already']}건" if _stk.get('already') else "")
+                         + (f" · ⚠️ 재고 부족 {len(_stk['short'])}건("
+                            + ", ".join(f"{s['name']} {s['short']}개" for s in _stk['short'][:3])
+                            + ")" if _stk.get('short') else ""), icon="📦")
             st.rerun()
 
     _render_stock_status()
@@ -2639,7 +2647,7 @@ def _render_unmatched_panel(alloc, dmap, d_day, USERNAME, receipt_items):
             })
 
         _recs = _ed.to_dict('records')
-        _rows_new, _row_idx, _zero = [], [], 0
+        _rows_new, _row_idx, _zero, _no_ledger = [], [], 0, []
         for _i, _r in enumerate(_recs):
             _how = str(_r.get('처리') or _NONE)
             if _how == _NONE:
@@ -2671,17 +2679,26 @@ def _render_unmatched_panel(alloc, dmap, d_day, USERNAME, receipt_items):
                              + (f" · {dmap.get(_own, _own)} 재고" if _own else "")
                              + (f" · 웃돈 {_surch:,}원" if _cross else ""))
                 _via = 'stock'
+                # 장부에 그 보유자 재고가 있으면 정산 확정 때 거기서 실제로 뺀다
+                # (재고가 '정산 청구'와 '재고 장부' 둘로 갈라지지 않게)
+                _stk_owner = _own if (_own and _own in _have) else ''
+                if not _stk_owner:
+                    _no_ledger.append(str(_o.get('product_name') or '')[:20])
             else:
                 if _amt <= 0:
                     _zero += 1
                     continue
                 _via = 'manual'
+                _stk_owner = ''
 
             _row_idx.append(_i)
             _rows_new.append({
                 'username': _me, 'order_no': _o.get('order_no', ''),
                 'order_date': _o.get('order_date', '') or str(d_day),
-                'costco_no': str(_o.get('costco_no') or ''),
+                # 재고 출고는 장부에서 찾은 그 재고의 번호로 — 상품명으로 찾은 경우
+                # 주문에 번호가 없어 차감할 상품을 특정하지 못했다
+                'costco_no': (str(_cno or '') if _stk_owner
+                              else str(_o.get('costco_no') or '')),
                 'naver_no': _o.get('naver_no', ''),
                 'product_name': _o.get('product_name', ''),
                 'qty': _qty,
@@ -2689,7 +2706,8 @@ def _render_unmatched_panel(alloc, dmap, d_day, USERNAME, receipt_items):
                 # 사람이 정한 금액이 어긋난다.
                 'unit_price': _amt, 'amount': _amt,
                 'prev_cost': int(_o.get('prev_cost') or 0),
-                'via': _via, 'split_qty': 1, 'pack': 1, 'memo': _memo})
+                'via': _via, 'split_qty': 1, 'pack': 1, 'memo': _memo,
+                'stock_owner': _stk_owner})
 
         if _zero:
             st.warning(f"⚠️ 금액이 0원인 {_zero}건은 저장되지 않습니다 — 0원으로 "
@@ -2700,6 +2718,15 @@ def _render_unmatched_panel(alloc, dmap, d_day, USERNAME, receipt_items):
         if _tot_n:
             st.markdown(f"**{_tot_n}건 · 청구액 "
                         f"{fmt(sum(r['amount'] for r in _rows_new))}원**")
+            _n_led = sum(1 for r in _rows_new if r.get('stock_owner'))
+            if _n_led:
+                st.caption(f"📦 {_n_led}건은 **정산 요청 때 그 보유자의 재고 장부(📊 전체 재고)"
+                           "에서 실제로 차감**됩니다. 정산을 취소하면 되돌아옵니다.")
+        if _no_ledger:
+            st.warning("⚠️ 재고 장부에 그 보유자 재고가 없어 **청구만 되고 재고는 차감되지 "
+                       "않는** 재고 출고: " + " · ".join(_no_ledger[:6])
+                       + " — 보유자를 재고 현황에 있는 사람으로 고르거나, 먼저 그 사람 "
+                         "재고로 입고하세요.")
         if st.button(f"✅ {_tot_n}건 처리해서 청구에 넣기",
                      key=f"rs_um2_apply_{d_day}", type="primary",
                      disabled=not _tot_n, use_container_width=True):
@@ -4076,8 +4103,10 @@ def _render_reset_panel(dmap, USERNAME=''):
                     "설명할 수 없습니다.")
 
         _c1, _c2 = st.columns(2)
+        # 기본은 끔 — 켜 두면 사용자 재고 장부의 입고가 통째로 지워진다
+        # (정산에서 재고로 쓴 입고가 '안 쓰인 것'으로 보여 같이 지워진 일이 있었다)
         _drop_lots = _c1.checkbox(
-            "재고 입고도 되돌리기", value=True, key="rs_reset_lots",
+            "재고 입고도 되돌리기", value=False, key="rs_reset_lots",
             help="영수증 정산으로 넣은 재고 입고를 함께 취소합니다. "
                  "판매에 쓰인 입고는 건너뜁니다.")
         _inc_paid = _c2.checkbox(

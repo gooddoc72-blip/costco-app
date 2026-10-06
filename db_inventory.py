@@ -514,7 +514,7 @@ def get_stock_summary(owner: str = None) -> list:
 
 # ── ④ 판매 차감 (핵심) ────────────────────────────────────
 def consume_for_sale(seller: str, product_no: str, units: int, order_no: str,
-                     dispatched_at: str = '', platform: str = '') -> dict:
+                     dispatched_at: str = '', platform: str = '', owner: str = '') -> dict:
     """발송된 주문 1건만큼 재고를 차감한다.
 
     차감 순서: 판매자 본인 재고 우선 → 없으면 보유자 중 오래된 입고분(FIFO).
@@ -524,6 +524,9 @@ def consume_for_sale(seller: str, product_no: str, units: int, order_no: str,
     log_dispatch_success가 INSERT OR REPLACE라 재실행이 가능하기 때문.
 
     재고가 없는 상품(대량구매 대상이 아닌 일반 상품)이면 조용히 0을 반환한다.
+
+    owner: 이 보유자 재고에서만 뺀다 — 영수증 정산 '📦 재고 출고'에서 관리자가
+      보유자를 골랐을 때(platform='settle'). 비우면 위 기본 순서.
 
     반환: {'consumed': 차감된 소분 수, 'shortage': 재고 부족분,
            'surcharge': 웃돈 합계, 'moves': [...], 'skipped': bool}
@@ -546,12 +549,21 @@ def consume_for_sale(seller: str, product_no: str, units: int, order_no: str,
         out['skipped'] = True
         return out
 
-    lots = conn.execute(
-        """SELECT * FROM inventory_lots
-           WHERE product_no=? AND status='ACTIVE' AND qty_left>0
-           ORDER BY (owner<>?) ASC, received_at ASC, id ASC""",
-        (product_no, str(seller))).fetchall()
+    if str(owner or '').strip():
+        lots = conn.execute(
+            """SELECT * FROM inventory_lots
+               WHERE product_no=? AND owner=? AND status='ACTIVE' AND qty_left>0
+               ORDER BY received_at ASC, id ASC""",
+            (product_no, str(owner).strip())).fetchall()
+    else:
+        lots = conn.execute(
+            """SELECT * FROM inventory_lots
+               WHERE product_no=? AND status='ACTIVE' AND qty_left>0
+               ORDER BY (owner<>?) ASC, received_at ASC, id ASC""",
+            (product_no, str(seller))).fetchall()
     if not lots:
+        if str(owner or '').strip():
+            out['shortage'] = units   # 고른 보유자에게 재고가 없다 — 부르는 쪽이 알린다
         conn.close()
         return out   # 재고 관리 대상 아님 — 정상
 
@@ -605,6 +617,40 @@ def revert_sale(order_no: str) -> int:
     conn.execute("DELETE FROM inventory_moves WHERE order_no=?", (order_no,))
     conn.commit()
     conn.close()
+    return n
+
+
+def revert_settle_moves(order_nos: list) -> int:
+    """영수증 정산('📦 재고 출고')이 만든 차감만 되돌린다 — platform='settle'.
+
+    정산을 취소·수정·초기화하면 그 정산이 뺀 재고도 장부로 돌아와야 한다.
+    발송이 만든 차감(실제로 물건이 나간 기록)은 건드리지 않는다. 타인재고
+    정산을 이미 마친(SETTLED) 차감도 남긴다 — 돈이 오간 근거가 사라진다.
+    반환: 되돌린 차감 건수
+    """
+    onos = [str(o).strip() for o in (order_nos or []) if str(o or '').strip()]
+    if not onos:
+        return 0
+    conn = _conn()
+    _ensure_tables(conn)
+    n = 0
+    try:
+        CHUNK = 900
+        for i in range(0, len(onos), CHUNK):
+            part = onos[i:i + CHUNK]
+            ph = ",".join("?" * len(part))
+            moves = conn.execute(
+                f"""SELECT * FROM inventory_moves
+                    WHERE platform='settle' AND COALESCE(settle_status,'')<>'SETTLED'
+                      AND order_no IN ({ph})""", part).fetchall()
+            for m in moves:
+                conn.execute("UPDATE inventory_lots SET qty_left=qty_left+? WHERE id=?",
+                             (int(m['qty'] or 0), int(m['lot_id'])))
+                conn.execute("DELETE FROM inventory_moves WHERE id=?", (int(m['id']),))
+                n += 1
+        conn.commit()
+    finally:
+        conn.close()
     return n
 
 
