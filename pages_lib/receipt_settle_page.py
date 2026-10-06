@@ -3842,7 +3842,11 @@ def _render_lot_undo(key_prefix="rs"):
     if _msg:
         (st.success if _msg.get('ok') else st.warning)(_msg.get('text', ''))
 
-    with st.expander("↩️ 재고 입고 되돌리기 — 잘못 넣은 입고 취소", expanded=False):
+    # expander는 체크할 때마다(rerun) 닫혔다 — 열림 상태를 세션에 두는 토글로 연다
+    if not st.toggle("↩️ 재고 입고 되돌리기 — 잘못 넣은 입고 취소",
+                     key=f"{key_prefix}_lot_open"):
+        return
+    with st.container(border=True):
         try:
             # 잘못 넣는 경로는 여럿인데(영수증 정산 배정·재고 직접 입고·대량구매
             # 입고·고객 반품 재입고) 되돌리는 화면은 영수증 정산 것만 보여 줬다.
