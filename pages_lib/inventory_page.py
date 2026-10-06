@@ -552,28 +552,74 @@ def _admin_stock():
     _admin_self_purchase_view()
 
     st.divider()
-    with st.expander("➕ 재고 직접 입고 (추천건 없이)"):
-        with st.form("manual_lot"):
+    # 폼을 쓰지 않는다 — 폼 안에서 엔터를 치면 '입고'가 눌려 검증 오류와 함께
+    # 처음으로 돌아갔다. 접기 박스도 rerun마다 닫혀 토글(세션 유지)로 연다.
+    _ml_msg = st.session_state.pop('_ml_msg', None)
+    if _ml_msg:
+        st.success(_ml_msg)
+    if st.toggle("➕ 재고 직접 입고 (추천건 없이)", key="inv_manual_open"):
+        with st.container(border=True):
+            # 🔍 상품명·번호로 공용 DB를 찾아 고르면 번호·매장가가 채워진다
+            _q = st.text_input("🔍 상품명·상품번호로 찾기", key="ml_q",
+                               placeholder="예: 팬틴 / 메이플시럽 / 854362 — 입력 후 엔터")
+            _hits = []
+            if _q.strip():
+                _qk, _qt = _name_key(_q), _name_tokens(_q)
+                try:
+                    _shared = get_shared_products() or []
+                except Exception:
+                    _shared = []
+                for s in _shared:
+                    _pn = str(s.get('product_no') or '').strip()
+                    if not _pn:
+                        continue
+                    _k = _name_key(s.get('costco_name'))
+                    if (_qk and _qk in _k) or (_qt and all(t in _k for t in _qt)) \
+                            or _q.strip() in _pn:
+                        _hits.append(s)
+                    if len(_hits) >= 50:
+                        break
+                if not _hits:
+                    st.caption("공용 DB에서 찾지 못했습니다 — 더 짧게 넣거나 아래에 직접 입력하세요.")
+            _sel = None
+            if _hits:
+                _lbls = ["(직접 입력)"] + [
+                    f"{s['product_no']} · {str(s.get('costco_name') or '')[:40]} · "
+                    f"매장가 {fmt(int(s.get('store_price') or s.get('unit_price') or 0))}원"
+                    for s in _hits]
+                _pk = st.selectbox(f"찾은 상품 {len(_hits)}개", _lbls, index=1, key="ml_pick")
+                if _pk != "(직접 입력)":
+                    _sel = _hits[_lbls.index(_pk) - 1]
+            # 고른 상품이 바뀌면 key가 바뀌어 기본값(번호·이름·가격)이 새로 채워진다
+            _sk = str((_sel or {}).get('product_no') or 'manual')
+            _sp = int((_sel or {}).get('store_price') or (_sel or {}).get('unit_price') or 0)
             c1, c2 = st.columns([2, 1])
-            name = c1.text_input("상품명")
-            pno = c2.text_input("코스트코 상품번호")
+            name = c1.text_input("상품명", value=str((_sel or {}).get('costco_name') or ''),
+                                 key=f"ml_name_{_sk}")
+            pno = c2.text_input("코스트코 상품번호", value=str((_sel or {}).get('product_no') or ''),
+                                key=f"ml_pno_{_sk}")
             c3, c4, c5, c6, c7 = st.columns(5)
             users = [u['username'] for u in get_all_users() if u.get('status', 'active') == 'active']
-            owner = c3.selectbox("보유자", users) if users else c3.text_input("보유자")
-            cost = c4.number_input("구입가(1팩)", min_value=0, step=100)
-            lprice = c5.number_input("정가(1팩)", min_value=0, step=100,
+            owner = (c3.selectbox("보유자", users, key="ml_owner") if users
+                     else c3.text_input("보유자", key="ml_owner_t"))
+            cost = c4.number_input("구입가(1팩)", min_value=0, step=100, value=_sp,
+                                   key=f"ml_cost_{_sk}",
+                                   help="상품을 고르면 매장가가 들어갑니다. 실제 결제가로 고치세요.")
+            lprice = c5.number_input("정가(1팩)", min_value=0, step=100, value=_sp,
+                                     key=f"ml_lp_{_sk}",
                                      help="할인 전 금액. 0이면 구입가와 같게 봅니다.")
-            packs = c6.number_input("수량(팩)", min_value=1, step=1, value=1)
-            sq = c7.number_input("소분수", min_value=1, step=1, value=1)
-            rdate = st.date_input("입고일", value=datetime.now())
-            if st.form_submit_button("입고", type="primary"):
+            packs = c6.number_input("수량(팩)", min_value=1, step=1, value=1, key="ml_packs")
+            sq = c7.number_input("소분수", min_value=1, step=1, value=1, key="ml_sq")
+            rdate = st.date_input("입고일", value=datetime.now(), key="ml_date")
+            if st.button("입고", type="primary", key="ml_add"):
                 if not (name.strip() and pno.strip() and owner):
                     st.error("상품명·상품번호·보유자를 채우세요.")
                 else:
                     add_lot(pno.strip(), name.strip(), owner, int(cost), int(packs),
                             split_qty=int(sq), received_at=rdate.strftime("%Y-%m-%d"),
                             list_price=int(lprice or cost))
-                    st.success("입고 완료")
+                    st.session_state['_ml_msg'] = (f"✅ 입고 완료 — {name.strip()[:30]} "
+                                                   f"{int(packs)}팩 → {owner}")
                     st.rerun()
 
     # ── 잘못 들어간 재고를 고치는 두 길 ──────────────────────
