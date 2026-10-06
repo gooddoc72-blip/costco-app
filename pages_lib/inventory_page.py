@@ -632,6 +632,8 @@ def _admin_settlement(sur):
     if not rows:
         st.success("정산할 건이 없습니다.")
         return
+    import pandas as pd
+    from db_inventory import get_cross_moves
     total = sum(int(r['payable'] or 0) for r in rows)
     st.metric("정산 대기 총액", f"{fmt(total)}원")
     for r in rows:
@@ -645,6 +647,30 @@ def _admin_settlement(sur):
                          type="primary", use_container_width=True):
                 mark_cross_settled(r['owner'], r['seller'], r['product_no'])
                 st.rerun()
+            # 합계만으로는 '어느 주문이 얼마'인지 모른다 — 펼치면 차감 건별 내역
+            _mv = get_cross_moves(r['owner'], r['seller'], r['product_no'])
+            _nm = next((m['product_name'] for m in _mv if m.get('product_name')), '')
+            with st.expander(f"🔍 내역 보기 — {_nm[:30] or r['product_no']} · {len(_mv)}건",
+                             expanded=False):
+                if not _mv:
+                    st.caption("내역이 없습니다.")
+                else:
+                    st.dataframe(pd.DataFrame([{
+                        "발송일": str(m['dispatched_at'] or '')[:16],
+                        "주문번호": m['order_no'],
+                        "상품명": str(m.get('product_name') or '')[:34],
+                        "수량": int(m['qty'] or 0),
+                        "구입가(개당)": int(m['unit_cost'] or 0),
+                        "웃돈": int(m['surcharge'] or 0),
+                        "금액": int(m['unit_cost'] or 0) * int(m['qty'] or 0)
+                                + int(m['surcharge'] or 0),
+                        "재고 입고일": str(m.get('lot_received_at') or '')[:10],
+                        "판매처": m.get('platform') or '',
+                    } for m in _mv]), use_container_width=True, hide_index=True,
+                        column_config={_k: st.column_config.NumberColumn(_k, format='%d')
+                                       for _k in ("수량", "구입가(개당)", "웃돈", "금액")})
+                    st.caption(f"금액 = 구입가 × 수량 + 웃돈 · 합계 "
+                               f"**{fmt(sum(int(m['unit_cost'] or 0) * int(m['qty'] or 0) + int(m['surcharge'] or 0) for m in _mv))}원**")
 
 
 def _name_key(s):

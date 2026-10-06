@@ -677,6 +677,24 @@ def get_cross_settlement_summary(settle_status: str = 'PENDING') -> list:
     return [dict(r) for r in rows]
 
 
+def get_cross_moves(owner: str, seller: str, product_no: str = None,
+                    settle_status: str = 'PENDING') -> list:
+    """정산 장부 한 줄(보유자×판매자×상품)을 이루는 차감 건 — 어느 주문이 얼마인지.
+    lot을 붙여 상품명·입고일을 함께 낸다. 금액 = 구입가 × 수량 + 웃돈."""
+    conn = _conn()
+    _ensure_tables(conn)
+    sql = """SELECT m.*, l.product_name AS product_name, l.received_at AS lot_received_at
+             FROM inventory_moves m LEFT JOIN inventory_lots l ON l.id = m.lot_id
+             WHERE m.is_cross=1 AND m.settle_status=? AND m.owner=? AND m.seller=?"""
+    params = [str(settle_status), str(owner), str(seller)]
+    if product_no:
+        sql += " AND m.product_no=?"; params.append(str(product_no))
+    sql += " ORDER BY m.dispatched_at DESC, m.id DESC"
+    rows = conn.execute(sql, params).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
 def mark_cross_settled(owner: str, seller: str, product_no: str = None) -> int:
     conn = _conn()
     _ensure_tables(conn)
