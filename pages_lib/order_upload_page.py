@@ -1303,14 +1303,47 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 _src_nv = st.session_state.get('order_full')
             # 네이버 전용 + 오늘 수집한 배치만 — 현재 화면 네이버 주문(상품주문번호에 '-' 없는 것)으로 제한
             # (쿠팡 주문은 '-' 포함 → 자동 제외되어 네이버 엑셀에 안 섞임)
+            def _ono(v):
+                """주문번호 대조용 — 숫자형으로 읽혀 '…678.0'이 된 값도 같은 번호로 본다."""
+                _s = str(v if v is not None else '').strip()
+                return _s[:-2] if _s.endswith('.0') else _s
+
+            _nv_missing = []
             if (_src_nv is not None and not getattr(_src_nv, 'empty', True)
                     and '상품주문번호' in getattr(_src_nv, 'columns', [])):
                 if _naver_df is not None and '상품주문번호' in getattr(_naver_df, 'columns', []):
-                    _nv_ids = set(_naver_df['상품주문번호'].astype(str))
-                    _src_nv = _src_nv[_src_nv['상품주문번호'].astype(str).isin(_nv_ids)].reset_index(drop=True)
+                    _nv_ids = {_ono(x) for x in _naver_df['상품주문번호']}
+                    _src_nv = _src_nv[_src_nv['상품주문번호'].map(_ono).isin(_nv_ids)].reset_index(drop=True)
+                    # 화면엔 있는데 DB 미발송 목록에서 빠진 주문(그사이 송장·상태가 바뀌었거나
+                    # 번호 형식이 달라 못 맞춘 건) — 조용히 빠지면 엑셀 건수만 줄어든다.
+                    # 수집 때 받아 둔 원본으로 채우고, 그래도 없으면 알린다.
+                    _have = {_ono(x) for x in _src_nv['상품주문번호']}
+                    _lack = _nv_ids - _have
+                    if _lack:
+                        _fill = None
+                        for _sk in ('order_full_naver', 'order_full'):
+                            _sdf = st.session_state.get(_sk)
+                            if (_sdf is not None and not getattr(_sdf, 'empty', True)
+                                    and '상품주문번호' in _sdf.columns):
+                                _fill = _sdf[_sdf['상품주문번호'].map(_ono).isin(_lack)]
+                                if not _fill.empty:
+                                    break
+                        if _fill is not None and not _fill.empty:
+                            _fill = _fill.drop_duplicates(subset=['상품주문번호']).reindex(
+                                columns=list(_src_nv.columns), fill_value="")
+                            _src_nv = pd.concat([_src_nv, _fill], ignore_index=True)
+                            _lack -= {_ono(x) for x in _fill['상품주문번호']}
+                        _nm_by = dict(zip(_naver_df['상품주문번호'].map(_ono),
+                                          _naver_df.get('수취인명', pd.Series([''] * len(_naver_df)))))
+                        _nv_missing = [f"{_nm_by.get(x, '')}({x})" for x in sorted(_lack)]
                 else:
                     # 네이버 표시분이 없으면 최소한 쿠팡('-')만이라도 제외
                     _src_nv = _src_nv[~_src_nv['상품주문번호'].astype(str).str.contains('-', na=False)].reset_index(drop=True)
+            if _nv_missing:
+                st.warning(f"⚠️ 화면의 네이버 {len(_naver_df)}건 중 **{len(_nv_missing)}건은 엑셀에 "
+                           "넣지 못했습니다** — " + ", ".join(_nv_missing[:5])
+                           + ". 이미 송장이 등록됐거나 발송·취소로 상태가 바뀐 주문입니다. "
+                             "**🚚 발송상태 동기화** 후 다시 수집해 확인하세요.")
             if _src_nv is not None and not getattr(_src_nv, 'empty', True):
                 _tmp_nv = io.BytesIO()
                 with pd.ExcelWriter(_tmp_nv, engine='openpyxl') as _w:
