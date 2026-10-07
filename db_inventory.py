@@ -685,17 +685,19 @@ def get_moves(seller: str = None, owner: str = None, only_cross: bool = False,
               settle_status: str = None, limit: int = 500) -> list:
     conn = _conn()
     _ensure_tables(conn)
-    sql = "SELECT * FROM inventory_moves WHERE 1=1"
+    # 차감 기록엔 상품명이 없다 — 입고(lot)에서 붙여 낸다
+    sql = ("SELECT m.*, COALESCE(l.product_name,'') AS product_name "
+           "FROM inventory_moves m LEFT JOIN inventory_lots l ON l.id = m.lot_id WHERE 1=1")
     params = []
     if seller:
-        sql += " AND seller=?"; params.append(str(seller))
+        sql += " AND m.seller=?"; params.append(str(seller))
     if owner:
-        sql += " AND owner=?"; params.append(str(owner))
+        sql += " AND m.owner=?"; params.append(str(owner))
     if only_cross:
-        sql += " AND is_cross=1"
+        sql += " AND m.is_cross=1"
     if settle_status:
-        sql += " AND settle_status=?"; params.append(str(settle_status))
-    sql += " ORDER BY id DESC LIMIT ?"
+        sql += " AND m.settle_status=?"; params.append(str(settle_status))
+    sql += " ORDER BY m.id DESC LIMIT ?"
     params.append(int(limit))
     rows = conn.execute(sql, params).fetchall()
     conn.close()

@@ -660,9 +660,12 @@ def _admin_stock():
         st.caption("차감 내역이 없습니다.")
         return
     import pandas as pd
+    _nmv = _name_map()
     st.dataframe(pd.DataFrame([{
         "발송일": m['dispatched_at'], "상품번호": m['product_no'],
-        "판매자": m['seller'], "재고 보유자": m['owner'],
+        "상품명": str(m.get('product_name') or '')[:34],
+        "판매자": _nmv.get(m['seller'], m['seller']),
+        "재고 보유자": _nmv.get(m['owner'], m['owner']),
         "구분": "🔀 타인재고" if m['is_cross'] else "본인재고",
         "수량": m['qty'], "웃돈": fmt(int(m['surcharge'])) if m['surcharge'] else "—",
         "주문번호": m['order_no'],
@@ -1567,7 +1570,8 @@ def _user_stock(USERNAME, sur):
         st.dataframe(pd.DataFrame([{
             "발송일": m['dispatched_at'],
             "가져간 판매자": _nm.get(m['seller'], m['seller']),
-            "상품번호": m['product_no'], "수량": m['qty'],
+            "상품번호": m['product_no'],
+            "상품명": str(m.get('product_name') or '')[:30], "수량": m['qty'],
             "구입가(개당)": int(m['unit_cost']), "웃돈": int(m['surcharge']),
             "정산액": int(m['unit_cost']) * int(m['qty']) + int(m['surcharge']),
             "주문번호": m['order_no'],
@@ -1589,7 +1593,8 @@ def _user_stock(USERNAME, sur):
         st.dataframe(pd.DataFrame([{
             "발송일": m['dispatched_at'],
             "재고 보유자": _nm2.get(m['owner'], m['owner']),
-            "상품번호": m['product_no'], "수량": m['qty'],
+            "상품번호": m['product_no'],
+            "상품명": str(m.get('product_name') or '')[:30], "수량": m['qty'],
             "구입가(개당)": int(m['unit_cost']), "추가 부담": int(m['surcharge']),
             "주문번호": m['order_no'],
         } for m in ms]), use_container_width=True, hide_index=True,
