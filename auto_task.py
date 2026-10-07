@@ -562,7 +562,9 @@ def run_shopping_task(username="admin"):
             _order_date = now.strftime("%Y-%m-%d")
             # 하루 1회만 관리자 제출 (예약 최초 1회). 이미 오늘 발송됐으면 생략.
             #   (12시 Task 5가 최신 수집으로 다시 덮어쓴다 — _submit_admin_shopping)
-            if get_setting(username, 'admin_shop_sent_date') == _order_date:
+            if _is_self_purchase(username):
+                log("📋 관리자 제출 생략 — 직접구매 계정(본인이 직접 구매·발송)")
+            elif get_setting(username, 'admin_shop_sent_date') == _order_date:
                 log("📋 관리자 제출 생략 (오늘 이미 발송됨)")
             else:
                 submit_shopping_list(username, _order_date, _admin_items,
@@ -709,6 +711,16 @@ def _build_shopping_list(username, orders, now, fallback_all=False):
             'n_orders': len(shopping_orders)}
 
 
+def _is_self_purchase(username):
+    """직접구매 계정 — 자기가 사서 자기가 보낸다. 관리자 장보기에 자동 제출하지 않는다.
+    (수집·저장·수익계산은 그대로 — 막는 것은 '관리자가 대신 사라'는 목록뿐이다)"""
+    try:
+        from receipt_settle import is_self_purchase
+        return is_self_purchase(username)
+    except Exception:
+        return False
+
+
 def _submit_admin_shopping(username, orders, now=None):
     """Task 5(12시 자동수집) 결과로 관리자 장보기 목록을 제출 — 이미 있으면 **덮어쓴다.**
 
@@ -720,6 +732,9 @@ def _submit_admin_shopping(username, orders, now=None):
 
     orders: Task 5가 가져온 주문(네이버 한글 상태 + 쿠팡 영문 상태 혼재).
     """
+    if _is_self_purchase(username):
+        log("📋 관리자 제출 생략 — 직접구매 계정(본인이 직접 구매·발송)")
+        return
     from db_shopping import get_shopping_submissions_detail
     now = now or datetime.now()
     _date = now.strftime("%Y-%m-%d")

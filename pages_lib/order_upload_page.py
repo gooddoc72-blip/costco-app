@@ -1826,7 +1826,15 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         if len(_pp) > 1: set_setting(USERNAME, 'kakao_refresh_token', _pp[1])
             # (2) 관리자 제출 — 하루 1회만 (예약/최초 수집 1회).
             #     이후 수동 재수집의 자동발송은 생략 (관리자는 최초 제출본 유지).
-            if get_setting(USERNAME, 'admin_shop_sent_date') == order_date_str:
+            try:
+                from receipt_settle import is_self_purchase as _isp
+                _self_buy = _isp(USERNAME)
+            except Exception:
+                _self_buy = False
+            if _self_buy:
+                # 직접구매 계정 — 본인이 사서 보낸다. 대신 사 달라면 아래 버튼으로 직접 보낸다
+                _auto_msgs.append("📋 관리자 제출 생략(직접구매 계정)")
+            elif get_setting(USERNAME, 'admin_shop_sent_date') == order_date_str:
                 _auto_msgs.append("📋 관리자 제출 생략(오늘 이미 발송됨)")
             else:
                 _items_a, _total_a = _build_shop_items()
