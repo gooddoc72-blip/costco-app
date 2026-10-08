@@ -55,8 +55,16 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                "**예치금이 있는 판매자는 입금을 기다리지 않고 그 자리에서 차감합니다.**")
 
     dmap = _disp_map()
-    t_day, t_dep, t_unpaid, t_month = st.tabs(
-        ["📋 일별 정산·청구", "💳 예치금", "🔴 미입금자", "📆 월별 정리"])
+    t_day, t_dep, t_unpaid, t_month, t_hist = st.tabs(
+        ["📋 일별 정산·청구", "💳 예치금", "🔴 미입금자", "📆 월별 정리", "📚 정산 이력"])
+    with t_hist:
+        # 영수증 정산 화면 하단에 있던 정산 이력·정산 취소·전체 초기화를 옮겨 왔다
+        # (영수증 정산은 그날 매칭·정산만, 돈의 이력·취소는 여기서).
+        try:
+            from pages_lib import receipt_settle_page as _rsp
+            _rsp._render_history(dmap, USERNAME)
+        except Exception as _e:
+            st.error(f"정산 이력을 열지 못했습니다: {_e}")
     with t_day:
         _tab_day(USERNAME, dmap)
     with t_dep:

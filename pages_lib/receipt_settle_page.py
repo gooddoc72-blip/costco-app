@@ -1113,8 +1113,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                      "온라인몰 직배송 건은 아래에서 지정합니다. "
                      "영수증 올리는 것을 잊은 것이라면 체크하지 마세요 — "
                      "그날 산 물건이 재고로 안 잡힙니다."):
-            _render_stock_status()
-            _render_history(_disp_map(), USERNAME)
+            _moved_note()
             return
         st.caption("🧾 영수증 없이 진행합니다 — 발송건은 **과거 구매분(재고)에서 자동 "
                    "차감**되고, 온라인몰 직배송 건은 아래 **🛒 코스트코 온라인몰 직배송 "
@@ -1374,8 +1373,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         st.warning(f"⚠️ AI 자동매칭 실패: {alloc['_auto_ai_err']} — "
                    "아래 **📋 영수증에 없는 발송건**에서 손으로 처리하세요.")
     if not alloc:
-        _render_stock_status()
-        _render_history(_disp_map(), USERNAME)
+        _moved_note()
         return
 
     rows = alloc['rows']
@@ -1386,6 +1384,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     unmatched = alloc['unmatched_receipt']
 
     st.divider()
+    _render_day_overview(alloc, receipt_items, d_day, dmap)
     if not rows:
         if not receipt_items:
             st.info("영수증 없이 진행 중입니다 — 아래 **🛒 코스트코 온라인몰 직배송 지정**에서 "
@@ -1713,10 +1712,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     # 그날 이미 지정해 둔 온라인몰 건 확인·취소
     _render_online_panel(alloc, dmap, d_day, USERNAME)
 
-    # ── 3.4) 잘못 붙은 매칭 고치기·끊기 ── (끊은 건은 아래 🔗·📋 패널에서 다시 청구)
-    _render_unmatch_panel(alloc, dmap, receipt_items)
-    # ── 3.45) 🔗 수동 매칭 — 못 붙은 주문에 영수증 품목을 사람이 잇는다 ──
-    _render_manual_match_panel(alloc, dmap, d_day, receipt_items)
+    # 매칭 수정·수동 매칭은 화면 맨 아래 🔧 고급 토글로 옮겼다
     # 자동매칭이 한 건도 없으면 아래 '저장·정산 요청' 블록(그 안의 📋 패널 포함)이
     # 통째로 안 뜬다 — 손으로 처리할 길이 없었다. 여기서 먼저 보여 준다.
     if not rows and alloc.get('unmatched_orders'):
@@ -2103,8 +2099,132 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                             + ")" if _stk.get('short') else ""), icon="📦")
             st.rerun()
 
-    _render_stock_status()
-    _render_history(dmap, USERNAME)
+    # ── 🔧 고급 — 매칭을 사람이 고치는 도구(자주 안 씀) ──
+    #   화면이 복잡해 기본 흐름(한눈에 → 처리 → 정산 요청)에서 뺐다. 켜면 그대로 쓴다.
+    st.divider()
+    if st.toggle("🔧 고급 — 매칭 수정 · 수동 매칭", key=f"rs_adv_{d_day}",
+                 help="잘못 붙은 매칭을 고치거나 끊기, 못 붙은 주문에 영수증 품목을 직접 잇기"):
+        _render_unmatch_panel(alloc, dmap, receipt_items)
+        _render_manual_match_panel(alloc, dmap, d_day, receipt_items)
+    _moved_note()
+
+
+def _moved_note():
+    """옮긴 기능 안내 — 영수증 정산은 그날 매칭·정산만 한다."""
+    st.caption("📦 **재고 현황·배정 대기·수동 입출고·입고 되돌리기** → 재고 관리 › ⏳ 배정 대기 / 📊 전체 재고  ·  📚 **정산 이력·정산 취소·전체 초기화** → 정산·청구 › 📚 정산 이력 으로 옮겼습니다.")
+
+
+_VIA_RECEIPT = {'number', 'name', 'ai', 'order', 'carry', 'shopping', 'shopping-name', 'bridge'}
+_VIA_DIRECT = {'manual', 'memo', 'direct'}
+
+
+def _render_day_overview(alloc, receipt_items, d_day, dmap):
+    """📊 오늘 한눈에 — 그날 발송건과 영수증이 어디로 갔는지 칸별로.
+
+    매칭·배정·청구가 화면 곳곳에 흩어져 있어 '오늘 무엇이 남았나'를 끝까지
+    내려 봐야 알 수 있었다. 이미 계산된 매칭 결과(alloc)를 나눠 보여 주기만
+    한다 — 여기서는 아무것도 바꾸지 않는다(처리는 아래 각 패널).
+    """
+    rows = alloc.get('rows') or []
+    um = alloc.get('unmatched_orders') or []
+    _rcpt = [r for r in rows if str(r.get('via') or '') in _VIA_RECEIPT]
+    _stk = [r for r in rows if str(r.get('via') or '') == 'stock']
+    _onl = [r for r in rows if str(r.get('via') or '') == 'online']
+    _dir = [r for r in rows if str(r.get('via') or '') in _VIA_DIRECT]
+    _etc = [r for r in rows if r not in _rcpt + _stk + _onl + _dir]
+    # 영수증에 없는 발송건 — 재고 장부에 그 상품이 있으면 '재고 출고로 처리 가능',
+    # 없으면 영수증·재고 둘 다 없는 건(구매 누락·번호 오류·온라인몰 의심)
+    try:
+        import db_inventory as _inv
+        _have = {_n(s.get('product_no')) for s in (_inv.get_stock_summary() or [])
+                 if int(s.get('qty_left') or 0) > 0}
+    except Exception:
+        _have = set()
+    _um_stock = [o for o in um if _n(o.get('costco_no')) in _have]
+    _um_none = [o for o in um if _n(o.get('costco_no')) not in _have]
+    try:
+        _left = _build_assign_rows(alloc.get('unmatched_receipt') or [], receipt_items,
+                                   alloc, d_day) or []
+    except Exception:
+        _left = []
+    _amt = lambda rs: sum(int(r.get('amount') or 0) for r in rs)
+    _bill = _amt(rows)
+    _todo = len(um) + len(_left)
+
+    st.subheader(f"📊 {d_day} 한눈에")
+    st.caption("그날 **발송건**이 무엇으로 나갔는지, **영수증 품목**이 어디로 갔는지입니다. "
+               "읽기 전용 — 처리는 아래 각 패널에서 합니다."
+               + ("" if _todo else "  ✅ 처리할 것이 없습니다 — **정산 요청**만 누르면 됩니다."))
+    c = st.columns(6)
+    c[0].metric("🧾 영수증 구입", f"{len(_rcpt)}건", f"{fmt(_amt(_rcpt))}원", delta_color="off")
+    c[1].metric("📦 재고 출고", f"{len(_stk)}건", f"{fmt(_amt(_stk))}원", delta_color="off")
+    c[2].metric("🛒 온라인 주문", f"{len(_onl)}건", f"{fmt(_amt(_onl))}원", delta_color="off")
+    c[3].metric("❓ 영수증·재고 없음", f"{len(_um_none)}건",
+                f"재고 있음 {len(_um_stock)}건" if _um_stock else "처리 필요" if _um_none else "없음",
+                delta_color="inverse" if _um_none else "off")
+    c[4].metric("📥 출고 안 된 영수증", f"{len(_left)}종",
+                f"{sum(int(x['남은수량']) for x in _left)}팩" if _left else "없음",
+                delta_color="inverse" if _left else "off")
+    c[5].metric("💰 청구 예정", f"{fmt(_bill)}원",
+                f"{len({r['username'] for r in rows})}명", delta_color="off")
+
+    def _odf(rs, amount=True):
+        return pd.DataFrame([{
+            '판매자': dmap.get(str(r.get('username') or ''), str(r.get('username') or '')),
+            '주문번호': str(r.get('order_no') or ''),
+            '상품명': str(r.get('product_name') or '')[:36],
+            '수량': int(r.get('qty') or 1),
+            **({'금액': int(r.get('amount') or 0),
+                '근거': _VIA_LABEL.get(str(r.get('via') or ''), str(r.get('via') or '')),
+                '메모': str(r.get('memo') or '')} if amount else
+               {'코스트코번호': str(r.get('costco_no') or '')}),
+        } for r in rs])
+
+    _tabs = st.tabs([f"🧾 영수증 {len(_rcpt)}", f"📦 재고 {len(_stk)}", f"🛒 온라인 {len(_onl)}",
+                     f"❓ 없음 {len(_um_none)}" + (f"+재고있음 {len(_um_stock)}" if _um_stock else ""),
+                     f"📥 출고 안 됨 {len(_left)}",
+                     f"✍️ 직접 지정 {len(_dir) + len(_etc)}"])
+    with _tabs[0]:
+        st.dataframe(_odf(_rcpt), use_container_width=True, hide_index=True) if _rcpt \
+            else st.caption("영수증으로 매칭된 발송건이 없습니다.")
+    with _tabs[1]:
+        st.dataframe(_odf(_stk), use_container_width=True, hide_index=True) if _stk \
+            else st.caption("재고에서 나간 발송건이 없습니다.")
+    with _tabs[2]:
+        st.dataframe(_odf(_onl), use_container_width=True, hide_index=True) if _onl \
+            else st.caption("온라인몰 직배송으로 지정한 주문이 없습니다 — 아래 "
+                            "**🛒 온라인몰** 패널에서 고릅니다.")
+    with _tabs[3]:
+        if _um_none:
+            st.markdown("**영수증에도 재고에도 없는 발송건** — 구매 누락, 상품번호 오류, "
+                        "온라인몰 주문을 의심하세요. 아래 **영수증에 없는 발송건**에서 "
+                        "금액 지정하거나, 영수증 품목과 직접 이으려면 맨 아래 "
+                        "**🔧 고급 › 수동 매칭**을 켜세요.")
+            st.dataframe(_odf(_um_none, amount=False), use_container_width=True, hide_index=True)
+        if _um_stock:
+            st.markdown("**재고 장부에 그 상품이 있는 건** — 아래 패널에서 **📦 재고 출고**로 "
+                        "처리하면 재고에서 빠지고 청구됩니다.")
+            st.dataframe(_odf(_um_stock, amount=False), use_container_width=True, hide_index=True)
+        if not um:
+            st.caption("✅ 모든 발송건이 영수증·재고·온라인으로 설명됩니다.")
+    with _tabs[4]:
+        if _left:
+            st.markdown("**샀는데 주문에 안 붙은 품목** — 아래 배정 패널에서 **재고 입고** "
+                        "또는 **청구**, 잘못 산 것은 **반품요청**으로 정리합니다.")
+            st.dataframe(pd.DataFrame([{
+                '상품번호': x['상품번호'], '상품명': x['상품명'][:36],
+                '영수증수량': x['영수증수량'], '남은수량(팩)': x['남은수량'],
+                '단가': x['단가'], '금액': x['단가'] * x['남은수량'],
+                '구분': x['구분'],
+                '요청자': dmap.get(x['요청자'], x['요청자']) if x['요청자'] else ''}
+                for x in _left]), use_container_width=True, hide_index=True)
+        else:
+            st.caption("✅ 영수증 품목이 모두 주문·재고로 정리됐습니다.")
+    with _tabs[5]:
+        _d2 = _dir + _etc
+        st.dataframe(_odf(_d2), use_container_width=True, hide_index=True) if _d2 \
+            else st.caption("수동 매칭·금액 지정·직접 배정한 건이 없습니다.")
+    st.divider()
 
 
 def _resolve_ai_key(name, settings=None):
@@ -3456,6 +3576,76 @@ def _render_return_panel(d_day, USERNAME):
 
 
 @st.fragment
+def _render_wait_pool(_sd=None):
+    """⏳ 배정 대기 — 영수증으로 샀는데 아직 주문에도 안 붙고 누구 재고로도 안 넘긴 물건.
+
+    영수증 정산 화면 하단에 있던 것을 재고 관리 탭으로 옮겼다(영수증 정산은 그날
+    매칭·정산만). 함수는 그대로 두고 두 곳에서 부른다.
+    """
+    if _sd is None:
+        _sd = get_settle_start_date()
+    try:
+        rows = get_stock_status()
+    except Exception as e:
+        st.error(f"재고 조회 실패: {e}")
+        rows = []
+    if not rows:
+        st.info("영수증을 업로드하면 구입분이 여기 잡힙니다.")
+    else:
+        # 재고가 부풀어 보이는 원인 1위 — 미리보기에서 매칭만 하고 '정산 요청'을
+        # 누르지 않으면 사용량이 0이라 산 것이 통째로 남는다. 화면에는
+        # '사용 0'만 보여 매칭이 안 된 것처럼 읽힌다 — 매칭은 됐고 저장이 안 된 것이다.
+        try:
+            _unap = _rs.unapplied_receipt_dates()
+        except Exception:
+            _unap = []
+        if _unap:
+            _msg = ["🚨 **정산하지 않은 영수증이 있습니다** — 그날 산 것이 "
+                    "통째로 배정 대기로 잡혀 있습니다.", ""]
+            _msg += [f"- **{d}** 영수증 {n}종 · 정산 0건" for d, n in _unap[:6]]
+            _msg += ["", "미리보기에서 매칭만 하고 **'정산 요청'을 누르지 않으면** "
+                     "사용량이 0으로 남습니다. 위 날짜로 영수증 정산을 다시 열어 "
+                     "매칭 후 **정산 요청**까지 누르면 여기서 빠집니다."]
+            st.error("\n".join(_msg))
+
+        if any(r.get('lots_error') for r in rows):
+            st.error("🚫 **재고 배정 이력을 읽지 못했습니다.** 아래 '재고배정'이 "
+                     "0으로 보이고 **배정 대기가 실제보다 크게** 나옵니다 — "
+                     "이 숫자로 판단하지 마세요. 잠시 뒤 다시 열어 보세요.")
+        _left = [r for r in rows if r['units_left'] > 0]
+        _neg = [r for r in rows if r['units_left'] < 0]
+        _amt = sum(r['amount'] for r in _left)
+        _m1, _m2, _m3 = st.columns(3)
+        _m1.metric("배정 대기", f"{len(_left)}종")
+        _m2.metric("묶인 금액", f"{fmt(_amt)}원")
+        _m3.metric("소진 품목", f"{len(rows) - len(_left) - len(_neg)}종")
+
+        if _neg:
+            st.warning(f"⚠️ 사용량이 입고량을 넘은 품목 {len(_neg)}종 — 영수증 누락이 "
+                       "의심됩니다. 그날 구매한 영수증이 업로드됐는지 확인하세요.")
+
+        _only = st.checkbox("잔량 있는 것만", value=True, key="rs_stock_only")
+        _view = _left if _only else rows
+        st.dataframe(pd.DataFrame([
+            {'코스트코번호': r['costco_no'], '상품명': str(r['name'])[:34],
+             '입고': r['units_in'], '주문사용': r['units_used'],
+             '재고배정': r.get('units_assigned', 0),
+             '반품요청': r.get('units_returned', 0), '배정대기': r['units_left'],
+             '단가': r['price'], '묶인금액': r['amount']}
+            for r in _view
+        ]), use_container_width=True, hide_index=True,
+            column_config={_k: st.column_config.NumberColumn(_k, format='%d')
+                           for _k in ('입고', '주문사용', '재고배정', '반품요청',
+                                      '배정대기', '단가', '묶인금액')})
+        st.caption("**입고** = 영수증 구매 · **주문사용** = 정산에서 주문에 붙은 양 · "
+                   "**재고배정** = 사용자 재고로 넘긴 양 · "
+                   "**반품요청** = 잘못 사서 매장에 돌려줄 양 · **배정대기** = 남은 것. "
+                   "단위는 소분 단위입니다 — 1팩을 N개로 나눠 파는 상품은 낱개 기준입니다.")
+        _render_wait_assign(_left)
+    _render_wait_reset(_sd)
+
+
+@st.fragment
 def _render_stock_status():
     """📦 재고 — '아직 임자 없는 구입잔량'과 '사용자별 재고'를 갈라서 본다.
 
@@ -3477,65 +3667,7 @@ def _render_stock_status():
     _t_wait, _t_user = st.tabs(["⏳ 배정 대기", "👥 사용자별 재고"])
 
     with _t_wait:
-        try:
-            rows = get_stock_status()
-        except Exception as e:
-            st.error(f"재고 조회 실패: {e}")
-            rows = []
-        if not rows:
-            st.info("영수증을 업로드하면 구입분이 여기 잡힙니다.")
-        else:
-            # 재고가 부풀어 보이는 원인 1위 — 미리보기에서 매칭만 하고 '정산 요청'을
-            # 누르지 않으면 사용량이 0이라 산 것이 통째로 남는다. 화면에는
-            # '사용 0'만 보여 매칭이 안 된 것처럼 읽힌다 — 매칭은 됐고 저장이 안 된 것이다.
-            try:
-                _unap = _rs.unapplied_receipt_dates()
-            except Exception:
-                _unap = []
-            if _unap:
-                _msg = ["🚨 **정산하지 않은 영수증이 있습니다** — 그날 산 것이 "
-                        "통째로 배정 대기로 잡혀 있습니다.", ""]
-                _msg += [f"- **{d}** 영수증 {n}종 · 정산 0건" for d, n in _unap[:6]]
-                _msg += ["", "미리보기에서 매칭만 하고 **'정산 요청'을 누르지 않으면** "
-                         "사용량이 0으로 남습니다. 위 날짜로 영수증 정산을 다시 열어 "
-                         "매칭 후 **정산 요청**까지 누르면 여기서 빠집니다."]
-                st.error("\n".join(_msg))
-
-            if any(r.get('lots_error') for r in rows):
-                st.error("🚫 **재고 배정 이력을 읽지 못했습니다.** 아래 '재고배정'이 "
-                         "0으로 보이고 **배정 대기가 실제보다 크게** 나옵니다 — "
-                         "이 숫자로 판단하지 마세요. 잠시 뒤 다시 열어 보세요.")
-            _left = [r for r in rows if r['units_left'] > 0]
-            _neg = [r for r in rows if r['units_left'] < 0]
-            _amt = sum(r['amount'] for r in _left)
-            _m1, _m2, _m3 = st.columns(3)
-            _m1.metric("배정 대기", f"{len(_left)}종")
-            _m2.metric("묶인 금액", f"{fmt(_amt)}원")
-            _m3.metric("소진 품목", f"{len(rows) - len(_left) - len(_neg)}종")
-
-            if _neg:
-                st.warning(f"⚠️ 사용량이 입고량을 넘은 품목 {len(_neg)}종 — 영수증 누락이 "
-                           "의심됩니다. 그날 구매한 영수증이 업로드됐는지 확인하세요.")
-
-            _only = st.checkbox("잔량 있는 것만", value=True, key="rs_stock_only")
-            _view = _left if _only else rows
-            st.dataframe(pd.DataFrame([
-                {'코스트코번호': r['costco_no'], '상품명': str(r['name'])[:34],
-                 '입고': r['units_in'], '주문사용': r['units_used'],
-                 '재고배정': r.get('units_assigned', 0),
-                 '반품요청': r.get('units_returned', 0), '배정대기': r['units_left'],
-                 '단가': r['price'], '묶인금액': r['amount']}
-                for r in _view
-            ]), use_container_width=True, hide_index=True,
-                column_config={_k: st.column_config.NumberColumn(_k, format='%d')
-                               for _k in ('입고', '주문사용', '재고배정', '반품요청',
-                                          '배정대기', '단가', '묶인금액')})
-            st.caption("**입고** = 영수증 구매 · **주문사용** = 정산에서 주문에 붙은 양 · "
-                       "**재고배정** = 사용자 재고로 넘긴 양 · "
-                       "**반품요청** = 잘못 사서 매장에 돌려줄 양 · **배정대기** = 남은 것. "
-                       "단위는 소분 단위입니다 — 1팩을 N개로 나눠 파는 상품은 낱개 기준입니다.")
-            _render_wait_assign(_left)
-        _render_wait_reset(_sd)
+        _render_wait_pool(_sd)
 
     with _t_user:
         try:

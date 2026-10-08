@@ -42,7 +42,16 @@ def render(USERNAME, IS_ADMIN, settings):
     if IS_ADMIN:
         tabs = st.tabs(["📢 공지사항", "🏷 할인제품 등록", "✅ 요청 승인·입고",
                         "📊 전체 재고", "💳 정산 장부", "↩️ 반품 대상",
-                        "📥 고객 반품", "📖 구매 가이드"])
+                        "📥 고객 반품", "📖 구매 가이드", "⏳ 배정 대기"])
+        with tabs[8]:
+            # 영수증으로 샀는데 아직 누구 재고로도 안 넘긴 물건 — 영수증 정산 화면
+            # 하단에서 옮겨 왔다(영수증 정산은 그날 매칭·정산만).
+            st.subheader("⏳ 배정 대기 — 영수증 남은 물건")
+            try:
+                from pages_lib import receipt_settle_page as _rsp
+                _rsp._render_wait_pool()
+            except Exception as _e:
+                st.error(f"배정 대기를 열지 못했습니다: {_e}")
         with tabs[0]:
             _admin_notices(USERNAME)
         with tabs[1]:
