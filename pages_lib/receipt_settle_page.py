@@ -207,6 +207,10 @@ _VIA_LABEL = {
 }
 
 
+# 부분 갱신(st.fragment): 이 패널 안의 표 체크·입력은 이 패널만 다시 그린다.
+#   처리 버튼은 끝에서 st.rerun()으로 화면 전체를 다시 그린다(합계·정산표 반영).
+#   예전엔 체크 한 번에 4천 줄 화면 전체가 다시 돌아 느리고 접기 박스가 닫혔다.
+@st.fragment
 def _render_dispatch_move(dmap, d_day):
     """📅 발송 기록의 날짜를 옮긴다 — 잘못된 날로 들어간 건을 바로잡는다.
 
@@ -2273,6 +2277,7 @@ def _unmatch_rows(alloc, keys, receipt_items):
     return len(_drop)
 
 
+@st.fragment
 def _render_online_panel(alloc, dmap, d_day, USERNAME=''):
     """🛒 코스트코 온라인몰 직배송 지정 — 미매칭 주문에서 골라 청구에 싣는다.
 
@@ -2379,6 +2384,7 @@ def _render_online_panel(alloc, dmap, d_day, USERNAME=''):
 
 
 
+@st.fragment
 def _render_online_pick_panel(alloc, dmap, d_day, USERNAME):
     """🛒 코스트코 온라인몰 직배송 지정 — **미발송 주문**에서 고른다.
 
@@ -2516,6 +2522,7 @@ def _render_online_pick_panel(alloc, dmap, d_day, USERNAME):
                 st.rerun()
 
 
+@st.fragment
 def _render_unmatched_panel(alloc, dmap, d_day, USERNAME, receipt_items):
     """📋 영수증에 없는 발송건 — 한 곳에서 분류하고 처리한다.
 
@@ -2739,6 +2746,7 @@ def _render_unmatched_panel(alloc, dmap, d_day, USERNAME, receipt_items):
             st.rerun()
 
 
+@st.fragment
 def _render_overflow_panel(alloc, dmap, receipt_items, d_day,
                            settings=None, USERNAME=''):
     """⚠️ 영수증보다 많이 붙은 품목 — 수량이 안 맞는 지점을 짚는다.
@@ -2859,6 +2867,7 @@ def _render_overflow_panel(alloc, dmap, receipt_items, d_day,
             st.rerun()
 
 
+@st.fragment
 def _render_unmatch_panel(alloc, dmap, receipt_items):
     """잘못 붙은 매칭을 골라 끊는다.
 
@@ -3043,6 +3052,7 @@ def _render_unmatch_panel(alloc, dmap, receipt_items):
 
 
 
+@st.fragment
 def _render_manual_match_panel(alloc, dmap, d_day, receipt_items):
     """🔗 수동 매칭 — 매칭 안 된 주문에 그날 영수증 품목을 사람이 직접 잇는다.
 
@@ -3361,6 +3371,7 @@ def _clear_assign_inputs(d_day, picks):
             st.session_state.pop(f"rs_asg_{d_day}_{_r['상품번호']}{_sfx}", None)
 
 
+@st.fragment
 def _render_return_panel(d_day, USERNAME):
     """↩️ 반품요청 — 잘못 산 물건이 지금 어디까지 갔는지 본다.
 
@@ -3444,6 +3455,7 @@ def _render_return_panel(d_day, USERNAME):
                 + (f" … 외 {len(older) - 8}건" if len(older) > 8 else ""))
 
 
+@st.fragment
 def _render_stock_status():
     """📦 재고 — '아직 임자 없는 구입잔량'과 '사용자별 재고'를 갈라서 본다.
 
@@ -3977,6 +3989,7 @@ def _render_lot_undo(key_prefix="rs"):
             st.rerun()
 
 
+@st.fragment
 def _render_history(dmap, USERNAME=''):
     """정산 이력 — 원장에 남은 것 그대로.
 
