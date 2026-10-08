@@ -2,7 +2,9 @@
 
 ## 프로젝트 개요
 - **운영 URL**: cocobiz.shop (Cafe24 VPS, Ubuntu 22.04)
-- **배포 방식**: GitHub main push → GitHub Actions → SSH `git pull` → `systemctl restart costco-app`
+- **배포 방식**: GitHub Actions가 **매일 03:00(KST) 1회** SSH `git pull` → `systemctl restart costco-app`
+  (main push만으로는 배포 안 됨 — 재시작이 접속자 화면을 끊기 때문. 서버가 최신이면 재시작 생략.)
+  급한 수정만 `gh workflow run deploy.yml`로 즉시 배포.
 - **SSH 키**: `C:\Users\blocklabs02\.ssh\costco_key` (ubuntu@cocobiz.shop)
 - **앱 경로**: `/opt/costco-app` (서비스명: costco-app)
 - **GitHub Actions 장애 시**: SSH 직접 접속 후 수동 배포
