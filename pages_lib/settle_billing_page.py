@@ -290,6 +290,7 @@ def _tab_user(USERNAME, dmap):
         st.info(f"{_name} — {_f} ~ {_t} 기간에 "
                 + ("" if _stl == "전체" else f"'{_stl}' 상태인 ")
                 + f"청구서가 없습니다. (예치금 잔액 {fmt(_bal)}원)")
+        _user_deposit_section(_u, _name, _f, _t)   # 청구가 없어도 예치금 움직임은 본다
         return
 
     # 결제수단 — 그날 예치금 차감 기록이 있으면 예치금 결제다
@@ -343,13 +344,18 @@ def _tab_user(USERNAME, dmap):
                              ded={_u: _ded[_sd]} if _ded.get(_sd) else {},
                              by=USERNAME, box=_box)
 
-    # 엑셀 — 청구서 + 품목
+    # 💳 예치금 입금·차감·적립 — 같은 기간, 같은 사람
+    _dep_rows = _user_deposit_section(_u, _name, _f, _t)
+
+    # 엑셀 — 청구서 + 품목 + 예치금
     try:
         import io
         _items = _ds.get_items_range(str(_f), str(_t), username=_u)
         _buf = io.BytesIO()
         with pd.ExcelWriter(_buf, engine='openpyxl') as _xw:
             pd.DataFrame(_rows).to_excel(_xw, index=False, sheet_name='청구내역')
+            if _dep_rows:
+                pd.DataFrame(_dep_rows).to_excel(_xw, index=False, sheet_name='예치금')
             pd.DataFrame([{
                 '날짜': it['settle_date'], '상품명': it['product_name'],
                 '코스트코번호': it['product_no'], '수량': int(it['qty'] or 1),
@@ -395,6 +401,57 @@ def _tab_user(USERNAME, dmap):
                           memo=str(r.get('메모') or ''))
         st.toast(f"✅ {_name} {len(_picked)}일 입금완료 처리", icon="💰")
         st.rerun()
+
+
+def _user_deposit_section(_u, _name, _f, _t):
+    """한 사람의 예치금 내역 — 입금(예치)·구매 차감·되돌림·조정·매장반품 적립.
+
+    사용자별 화면에 잔액 숫자 하나만 있어 "언제 얼마 넣고 무엇에 빠졌나"를 보려면
+    예치금 탭으로 건너가 사람을 다시 골라야 했다. 같은 기간으로 바로 아래에 둔다.
+    잔액 열은 기간과 무관하게 **그 시점까지의 누적**이다(원장 합계와 같은 계산).
+    반환: 표 행 목록(엑셀용)
+    """
+    try:
+        _all = _dep.ledger(username=_u, limit=5000) or []
+    except Exception as _e:
+        st.caption(f"예치금 내역 조회 실패: {_e}")
+        return []
+    st.markdown(f"##### 💳 {_name} 예치금 내역")
+    if not _all:
+        st.caption("예치금 내역이 없습니다 — 예치금을 쓰지 않는 사용자입니다.")
+        return []
+    # 시간순으로 누적 잔액을 매긴 뒤 기간으로 자른다
+    _asc = sorted(_all, key=lambda x: (str(x['tx_date']), int(x['id'])))
+    _run, _bal_at = 0, {}
+    for r in _asc:
+        _run += int(r['amount'] or 0)
+        _bal_at[int(r['id'])] = _run
+    _in = [r for r in _asc if str(_f) <= str(r['tx_date'])[:10] <= str(_t)]
+    _sum = lambda k: sum(int(r['amount'] or 0) for r in _in if r['kind'] == k)
+    d1, d2, d3, d4 = st.columns(4)
+    d1.metric("기간 예치 입금", f"{fmt(_sum('charge'))}원")
+    d2.metric("기간 구매 차감", f"{fmt(-_sum('spend'))}원")
+    d3.metric("기간 적립·조정", f"{fmt(_sum('return_credit') + _sum('adjust'))}원",
+              help="매장반품 적립 + 관리자 조정(±)")
+    d4.metric("현재 잔액", f"{fmt(_run)}원")
+    if not _in:
+        st.caption(f"{_f} ~ {_t} 기간에 예치금 움직임이 없습니다.")
+        return []
+    _rows = [{
+        '날짜': str(r['tx_date'])[:10],
+        '구분': _dep.KIND_LABEL.get(r['kind'], r['kind']),
+        '금액': int(r['amount'] or 0),
+        '잔액': _bal_at.get(int(r['id']), 0),
+        '정산일': r.get('settle_date') or '',
+        '메모': r.get('memo') or '',
+        '처리자': r.get('created_by') or '',
+    } for r in reversed(_in)]
+    st.dataframe(pd.DataFrame(_rows), use_container_width=True, hide_index=True,
+                 column_config={k: st.column_config.NumberColumn(k, format='%d')
+                                for k in ('금액', '잔액')})
+    st.caption(f"{len(_rows)}건 · 최신순 · **잔액 = 그 시점까지 누적** · "
+               "'차감 취소됨'은 아래 '차감 되돌림'과 짝을 이뤄 상쇄됩니다.")
+    return _rows
 
 
 def _render_reset_draft(ds, drafts, dmap, USERNAME):
