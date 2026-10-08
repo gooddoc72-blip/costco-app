@@ -536,6 +536,104 @@ def _admin_self_purchase_view():
 
 
 # ── 관리자: 전체 재고 ─────────────────────────────────────
+@st.fragment
+def _stock_store_return(rows):
+    """↩️ 재고 매장 반품 → 보유자 예치금 적립.
+
+    사용자 재고(팔리지 않은 물건)를 코스트코 매장에 돌려주고 받은 환불을 그
+    사용자 예치금에 넣는다. 고객 반품(📥 고객 반품 탭)과 같은 '매장반품 적립'으로
+    남기되, 출처가 재고라 재고 장부에서 그 수량을 함께 뺀다(수동 출고 기록).
+    보유자가 관리자면 관리자 돈으로 산 것이라 적립하지 않고 재고만 뺀다.
+    """
+    import pandas as pd
+    if not st.toggle("↩️ 재고 매장 반품 → 예치금 적립", key="inv_sr_open",
+                     help="안 팔린 재고를 매장에 돌려주고, 받은 환불을 보유자 예치금에 넣습니다."):
+        return
+    _msg = st.session_state.pop('_inv_sr_msg', None)
+    if _msg:
+        (st.success if _msg.get('ok') else st.error)(_msg['text'])
+    _nm = _name_map()
+    _admins = {u['username'] for u in (get_all_users() or []) if u.get('is_admin')}
+    with st.container(border=True):
+        st.caption("반품할 재고를 **선택**하고 반품 수량·환불액을 고치세요. 환불액을 0으로 두면 "
+                   "**구입가 × 수량**으로 적립합니다. 관리자 재고는 적립 없이 재고만 뺍니다.")
+        _tbl = [{
+            "선택": False,
+            "보유자": _nm.get(r['owner'], r['owner']),
+            "상품번호": r['product_no'], "상품명": str(r['product_name'])[:30],
+            "잔여": int(r['qty_left'] or 0),
+            "구입가(개당)": int(r.get('unit_cost') or 0),
+            "반품수량": 1, "환불액": 0,
+            "_owner": r['owner'],
+        } for r in rows]
+        _ed = st.data_editor(
+            pd.DataFrame(_tbl), use_container_width=True, hide_index=True,
+            key=f"inv_sr_ed_{st.session_state.get('inv_sr_v', 0)}",
+            disabled=["보유자", "상품번호", "상품명", "잔여", "구입가(개당)", "_owner"],
+            column_config={
+                "선택": st.column_config.CheckboxColumn("선택"),
+                "_owner": None,
+                "반품수량": st.column_config.NumberColumn("반품수량 ✏️", min_value=1, step=1,
+                                                       format='%d'),
+                "환불액": st.column_config.NumberColumn(
+                    "환불액 ✏️", min_value=0, step=100, format='%d',
+                    help="매장에서 실제로 돌려받은 금액. 0이면 구입가×수량"),
+                **{_k: st.column_config.NumberColumn(_k, format='%d')
+                   for _k in ("잔여", "구입가(개당)")},
+            })
+        _picks = []
+        for x in _ed.to_dict('records'):
+            if not x.get('선택'):
+                continue
+            _q = min(int(x.get('반품수량') or 1), int(x['잔여']))
+            _amt = int(x.get('환불액') or 0) or int(x['구입가(개당)']) * _q
+            _picks.append({**x, '반품수량': _q, '환불액': _amt,
+                           '_credit': x['_owner'] not in _admins})
+        if not _picks:
+            return
+        _cred = [p for p in _picks if p['_credit']]
+        st.markdown(f"**{len(_picks)}건** 매장 반품 · 재고에서 "
+                    f"{sum(p['반품수량'] for p in _picks)}개 차감 · 예치금 적립 "
+                    + (", ".join(f"{p['보유자']} {fmt(p['환불액'])}원" for p in _cred) or "없음"))
+        _why = st.text_input("메모(선택)", key="inv_sr_memo",
+                             placeholder="예: 유통기한 임박, 판매 부진")
+        if st.button(f"↩️ {len(_picks)}건 매장 반품 처리", type="primary", key="inv_sr_go"):
+            from db_inventory import adjust_stock
+            import db_deposit as _dep
+            _ok, _bad, _amt_sum = 0, [], 0
+            _by = st.session_state.get('user', {}).get('username', '')
+            for p in _picks:
+                _tag = (f"재고 매장반품 · {p['상품명']} {p['반품수량']}개"
+                        + (f" · {_why.strip()}" if _why.strip() else ""))
+                _r = adjust_stock(p['_owner'], str(p['상품번호']), -int(p['반품수량']),
+                                  _tag, by=_by)
+                if not _r.get('ok'):
+                    _bad.append(f"{p['보유자']} {p['상품명'][:12]}: {_r.get('msg')}")
+                    continue
+                _ok += 1
+                if p['_credit'] and p['환불액'] > 0:
+                    try:
+                        _did = _dep.return_credit(
+                            p['_owner'], p['환불액'],
+                            f"매장반품 환불 적립(재고) · {p['상품명']} {p['반품수량']}개 · "
+                            f"구입가 {int(p['구입가(개당)']) * int(p['반품수량']):,}원 · "
+                            f"환불 {int(p['환불액']):,}원 · 상품번호 {p['상품번호']}"
+                            + (f" · {_why.strip()}" if _why.strip() else ""), by=_by)
+                    except Exception as _e:
+                        _did = 0
+                    if _did:
+                        _amt_sum += int(p['환불액'])
+                    else:
+                        _bad.append(f"{p['보유자']} {p['상품명'][:12]}: 재고는 뺐지만 예치금 "
+                                    "적립 실패 — 예치금 화면에서 직접 넣으세요")
+            st.session_state['inv_sr_v'] = st.session_state.get('inv_sr_v', 0) + 1
+            st.session_state['_inv_sr_msg'] = {
+                'ok': not _bad,
+                'text': (f"↩️ {_ok}건 매장 반품 · 예치금 적립 {fmt(_amt_sum)}원"
+                         + (" / ⚠️ " + " / ".join(_bad[:4]) if _bad else ""))}
+            st.rerun()
+
+
 def _admin_stock():
     st.subheader("📊 전체 재고")
     rows = get_stock_summary()
@@ -559,6 +657,7 @@ def _admin_stock():
                                     for _k in ("정가", "구입가", "할인", "재고금액")})
         st.caption("정가는 할인 전 영수증 단가, 구입가는 실제 지불 단가입니다 "
                    "(판매 1개 기준). 이 기능 이전 입고분은 정가가 0입니다.")
+        _stock_store_return(rows)
 
     _admin_self_purchase_view()
 
