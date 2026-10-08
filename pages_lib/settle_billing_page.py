@@ -304,6 +304,20 @@ def _tab_user(USERNAME, dmap):
     # 결제수단 — 그날 예치금 차감 기록이 있으면 예치금 결제다
     _ded = {i['settle_date']: _dep.deducted_map(i['settle_date']).get(_u)
             for i in invs if i['status'] == 'paid'}
+    # 예치금 원장 — 날짜별 입금(예치)과 그날 차감 직후 잔액을 펼침 줄에 붙인다
+    try:
+        _lg = sorted(_dep.ledger(username=_u, limit=5000) or [],
+                     key=lambda x: (str(x['tx_date']), int(x['id'])))
+    except Exception:
+        _lg = []
+    _run, _bal_after, _chg_day = 0, {}, {}
+    for _r in _lg:
+        _run += int(_r['amount'] or 0)
+        if _r['kind'] == 'spend' and _r.get('settle_date'):
+            _bal_after[str(_r['settle_date'])] = _run       # 그날 구매분 차감 직후 잔액
+        if _r['kind'] == 'charge':
+            _k = str(_r['tx_date'])[:10]
+            _chg_day[_k] = _chg_day.get(_k, 0) + int(_r['amount'] or 0)
     _billed = [i for i in invs if i['status'] == 'billed']
     _tot = sum(int(i['total_amount'] or 0) for i in invs)
     _paid_amt = sum(int(i['paid_amount'] or 0) for i in invs if i['status'] == 'paid')
@@ -340,7 +354,9 @@ def _tab_user(USERNAME, dmap):
         _lbl = (f"📅 **{_sd}** · {r['상태']} · 품목 {r['품목']}개 · "
                 f"**{fmt(r['청구액(물건값)'])}원**"
                 + (f" · 입금 {fmt(r['입금액'])}원" if r['입금액'] else "")
-                + (f" · {r['결제']}" if r['결제'] else ""))
+                + (f" · {r['결제']}" if r['결제'] else "")
+                + (f" · 💳 예치금 입금 **{fmt(_chg_day[_sd])}원**"
+                   if _chg_day.get(_sd) else ""))
         _box = st.expander(_lbl, expanded=False)
         _meta = " · ".join(x for x in (
             f"청구 {r['청구일시']}" if r['청구일시'] else "",
@@ -352,6 +368,22 @@ def _tab_user(USERNAME, dmap):
                              ded={_u: _ded[_sd]} if _ded.get(_sd) else {},
                              by=USERNAME, box=_box)
         with _box:
+            # 청구금액 − 예치금 차감 = 남은 청구 · 예치금 잔액
+            _amt = int(i['total_amount'] or 0)
+            _dd = int(_ded.get(_sd) or 0)
+            _acct = int(i['paid_amount'] or 0) if (i['status'] == 'paid' and not _dd) else 0
+            _left_amt = max(0, _amt - _dd - _acct)
+            _parts = [f"청구금액 **{fmt(_amt)}원**"]
+            if _dd:
+                _parts.append(f"− 💳 예치금 차감 **{fmt(_dd)}원**")
+            if _acct:
+                _parts.append(f"− 🏦 계좌입금 **{fmt(_acct)}원**")
+            _line = " ".join(_parts) + f" = 남은 청구 **{fmt(_left_amt)}원**"
+            if _sd in _bal_after:
+                _line += f"  ·  예치금 잔액 **{fmt(_bal_after[_sd])}원**(이날 차감 후)"
+            elif _chg_day.get(_sd):
+                _line += f"  ·  이날 예치금 입금 {fmt(_chg_day[_sd])}원"
+            (st.success if not _left_amt else st.warning)(_line)
             _receipt_original(_sd, _u, _name)
 
     # 💳 예치금 입금·차감·적립 — 같은 기간, 같은 사람
