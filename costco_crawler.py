@@ -1107,6 +1107,30 @@ def fetch_costco_spec(product_no: str) -> dict:
     return spec
 
 
+#: 생활화학제품 신고·승인번호 — 'FB23-03-0203'(안전확인대상 신고), 'CB25-03-0015'(안전기준 적합확인)
+_CHEM_NO_RE = re.compile(r'(?<![A-Z0-9])([A-Z]{2}\d{2}-\d{2}-\d{4})(?![0-9])')
+
+
+def parse_chemical_cert_numbers(spec: dict) -> list:
+    """한글표시사항에서 생활화학제품 신고·승인번호를 뽑는다 — 네이버 인증정보용.
+
+    코스트코 표시사항 항목 '안전기준적합확인신고번호 또는 안전확인대상생활화학제품승인번호'
+    에 '안전확인대상생활화학제품 신고번호 : FB23-03-0203'처럼 들어 있다. 세트 상품은
+    번호가 여러 개다(세제+유연제). 신고번호 항목을 먼저 보고, 없으면 전체 값을 훑는다.
+    번호를 지어내지 않는다 — 표시사항에 없으면 빈 목록.
+    """
+    if not spec:
+        return []
+    _keys = [k for k in spec if any(t in str(k) for t in ('신고번호', '승인번호', '생활화학'))]
+    _src = [str(spec[k]) for k in _keys] or [str(v) for v in spec.values()]
+    out = []
+    for v in _src:
+        for n in _CHEM_NO_RE.findall(v):
+            if n not in out:
+                out.append(n)
+    return out
+
+
 def fetch_costco_status(product_no: str) -> dict:
     """코스트코 상세 API로 상품 상태·가격 조회 (브라우저 불필요).
     반환: {exists, available, price, reason}.

@@ -548,6 +548,60 @@ CERT_EXCLUDE_ALL = {
 }
 
 
+_CHEM_CERT_IDS = {}   # {카테고리ID: [certificationInfoId…]} — 프로세스 안 캐시
+
+
+def get_chemical_cert_ids(client_id, client_secret, category_id):
+    """카테고리의 생활화학(안전확인·안전기준적합확인) 인증유형 ID — productCertificationInfos용.
+
+    GET /v1/categories/{id} 의 certificationInfos에서 생활화학 항목만 고른다
+    (commerce-api discussions #704). 반환: [id, …] (없으면 [])
+    """
+    _cid = str(category_id or '').strip()
+    if not _cid:
+        return []
+    if _cid in _CHEM_CERT_IDS:
+        return _CHEM_CERT_IDS[_cid]
+    token, _ = get_token(client_id, client_secret)
+    if not token:
+        return []
+    try:
+        r = requests.get(f"https://api.commerce.naver.com/external/v1/categories/{_cid}",
+                         headers={"Authorization": f"Bearer {token}"}, timeout=15)
+        data = r.json() if r.status_code == 200 else {}
+    except Exception:
+        data = {}
+    ids = []
+    for c in (data.get("certificationInfos") or []):
+        _txt = " ".join(str(x) for x in (c.get("kindTypes") or c.get("certificationKindTypes")
+                                          or [c.get("certificationKindType") or ""]))
+        _nm = str(c.get("name") or "")
+        if ("CHEMICAL" in _txt.upper()
+                or any(k in _nm for k in ("생활화학", "안전확인", "안전기준", "살생물"))):
+            try:
+                ids.append(int(c.get("id")))
+            except (TypeError, ValueError):
+                pass
+    _CHEM_CERT_IDS[_cid] = ids
+    return ids
+
+
+def _chemical_cert_numbers(product_info):
+    """생활화학 신고번호 — 호출측이 주거나, 코스트코 번호(판매자코드)로 표시사항에서 읽는다."""
+    _given = [str(x).strip() for x in (product_info.get("chemical_cert_numbers") or [])
+              if str(x).strip()]
+    if _given:
+        return _given
+    _cno = str(product_info.get("costco_no") or product_info.get("seller_code") or "").strip()
+    if not (_cno.isdigit() and 4 <= len(_cno) <= 7):
+        return []
+    try:
+        import costco_crawler as _cc
+        return _cc.parse_chemical_cert_numbers(_cc.fetch_costco_spec(_cno) or {})
+    except Exception:
+        return []
+
+
 def _is_cert_error(err):
     """네이버 거부 사유가 '인증정보 필요'인가.
 
@@ -556,7 +610,7 @@ def _is_cert_error(err):
     """
     _l = str(err or "").lower()
     return any(k in _l for k in ("productcertificationinfos", "certificationtargetexclude",
-                                 "인증대상", "인증 대상", "어린이인증"))
+                                 "인증대상", "인증 대상", "어린이인증", "생활화학", "인증정보"))
 
 
 def register_product(client_id, client_secret, product_info):
@@ -776,6 +830,42 @@ def register_product(client_id, client_secret, product_info):
 
     try:
         _res, _err = _do_post(payload)
+        _chem_nos = []
+        # ── 생활화학제품(세제 등) — 표시사항의 신고번호로 인증정보를 넣어 재시도 ──
+        #   세제는 실제 인증 대상이라 '인증대상 아님'으로 우회하면 안 된다(거짓 신고).
+        #   코스트코 한글표시사항에 신고번호가 있으니 그 번호를 그대로 쓴다.
+        if _err and _is_cert_error(_err):
+            _chem_nos = _chemical_cert_numbers(product_info)
+            _chem_ids = (get_chemical_cert_ids(client_id, client_secret, _cat)
+                         if _chem_nos else [])
+            _da = payload["originProduct"]["detailAttribute"]
+            for _ci in _chem_ids[:3]:
+                _da["productCertificationInfos"] = [{
+                    "certificationInfoId": _ci,
+                    "certificationKindType": "CHEMICAL_CERTIFICATION",
+                    "name": "생활화학제품 신고",
+                    "certificationNumber": _n,
+                    "certificationMark": False,
+                } for _n in _chem_nos[:5]]
+                _da["certificationTargetExcludeContent"] = {
+                    "chemicalCertifiedProductExclusionYn": False}
+                _r2, _e2 = _do_post(payload)
+                if not _e2:
+                    _r2 = dict(_r2 or {})
+                    _r2["warning"] = ("생활화학 신고번호 " + ", ".join(_chem_nos[:5])
+                                      + "(코스트코 표시사항)로 인증정보를 넣어 등록했습니다"
+                                      + (" · " + _r2["warning"] if _r2.get("warning") else ""))
+                    return _r2, None
+                _err = _e2
+            # 신고번호로도 안 되면 원래 상태로 되돌려 아래 경로를 탄다
+            _da.pop("productCertificationInfos", None)
+            _da.pop("certificationTargetExcludeContent", None)
+            if _chem_nos and not _chem_ids:
+                _err = (str(_err) + " · 표시사항 신고번호(" + ", ".join(_chem_nos[:3])
+                        + ")는 찾았지만 이 카테고리의 생활화학 인증유형을 조회하지 못했습니다")
+            elif not _chem_nos and "생활화학" in str(_err):
+                _err = (str(_err) + " · 코스트코 표시사항에서 생활화학 신고번호를 찾지 못했습니다"
+                        " — 스마트스토어센터에서 신고번호를 직접 입력해 등록하세요")
         # ── 인증대상 아님 표시 — 인증 때문에 거부됐을 때만 붙여 1회 재시도 ──
         #   KC·어린이·친환경·생활화학 인증 대상 카테고리는 인증정보를 넣거나
         #   '인증대상 아님'을 표시해야 등록된다(스마트스토어센터의 그 체크박스).
@@ -784,7 +874,9 @@ def register_product(client_id, client_secret, product_info):
         #   형식: detailAttribute.certificationTargetExcludeContent
         #     kc = 문자열 "TRUE"(대상 아님) / 나머지는 boolean true
         #   (commerce-api-naver discussions #704)
-        if _err and product_info.get("cert_exclude") and _is_cert_error(_err):
+        # 신고번호가 있는 상품(=실제 생활화학 인증 대상)은 '대상 아님'으로 우회하지 않는다
+        if (_err and product_info.get("cert_exclude") and _is_cert_error(_err)
+                and not _chem_nos):
             payload["originProduct"]["detailAttribute"][
                 "certificationTargetExcludeContent"] = dict(CERT_EXCLUDE_ALL)
             _res, _err = _do_post(payload)
