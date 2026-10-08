@@ -343,6 +343,8 @@ def _tab_user(USERNAME, dmap):
         _render_items_detail(_sd, [i], dmap,
                              ded={_u: _ded[_sd]} if _ded.get(_sd) else {},
                              by=USERNAME, box=_box)
+        with _box:
+            _receipt_original(_sd, _u, _name)
 
     # 💳 예치금 입금·차감·적립 — 같은 기간, 같은 사람
     _dep_rows = _user_deposit_section(_u, _name, _f, _t)
@@ -401,6 +403,52 @@ def _tab_user(USERNAME, dmap):
                           memo=str(r.get('메모') or ''))
         st.toast(f"✅ {_name} {len(_picked)}일 입금완료 처리", icon="💰")
         st.rerun()
+
+
+def _receipt_original(settle_date, username, name):
+    """그날 정산에 쓰인 영수증 원본 품목 전체 — 이 사람 청구에 붙은 품목은 ✅.
+
+    영수증은 관리자가 올리는 공용 기록이라 그날 산 것 전부가 나온다. 청구 근거만
+    보면 '영수증에 실제로 뭐가 찍혔나'(수량·할인·남은 것)를 확인할 수 없었다.
+    날짜마다 다 읽으면 무거워서 토글을 켤 때만 읽는다.
+    """
+    if not st.toggle("🧾 그날 영수증 원본 전체 보기", key=f"sbu_rc_{username}_{settle_date}"):
+        return
+    items = _ds.get_items(settle_date, username=username) or []
+    _rdates = sorted({str(it.get('receipt_date') or '') for it in items
+                      if str(it.get('receipt_date') or '')}) or [str(settle_date)]
+    _mine = {}
+    for it in items:
+        _k = (str(it.get('receipt_date') or settle_date), str(it.get('product_no') or ''))
+        _mine[_k] = _mine.get(_k, 0) + int(it.get('qty') or 1)
+    for _rd in _rdates:
+        try:
+            _rc = get_receipt_items_by_date('', _rd) or []
+        except Exception as _e:
+            st.caption(f"영수증 조회 실패: {_e}")
+            continue
+        if not _rc:
+            st.caption(f"🧾 {_rd} 영수증이 없습니다(삭제됐거나 다른 날짜로 올라감).")
+            continue
+        _rows = [{
+            '청구': '✅' if (_rd, str(r['상품번호'])) in _mine else '',
+            '상품번호': r['상품번호'], '상품명': str(r['상품명'])[:36],
+            '영수증수량': int(r['수량'] or 0),
+            f'{name} 청구수량': _mine.get((_rd, str(r['상품번호'])), 0) or None,
+            '정가': int(r['정가단가'] or 0), '할인': int(r['할인'] or 0),
+            '실단가': int(r['단가'] or 0),
+            '금액': int(r['단가'] or 0) * int(r['수량'] or 0),
+        } for r in _rc]
+        _rows.sort(key=lambda x: x['청구'] != '✅')
+        st.caption(f"🧾 **{_rd} 영수증** {len(_rc)}종 · 합계 "
+                   f"{fmt(sum(x['금액'] for x in _rows))}원 · ✅ {name} 청구에 붙은 품목 "
+                   f"{sum(1 for x in _rows if x['청구'])}종")
+        st.dataframe(pd.DataFrame(_rows), use_container_width=True, hide_index=True,
+                     column_config={k: st.column_config.NumberColumn(k, format='%d')
+                                    for k in ('영수증수량', f'{name} 청구수량', '정가',
+                                              '할인', '실단가', '금액')})
+    st.caption("영수증은 그날 산 것 **전부**입니다 — 다른 판매자 몫과 재고로 남은 것도 "
+               "함께 나옵니다. ✅만 이 판매자 청구에 들어간 품목입니다.")
 
 
 def _user_deposit_section(_u, _name, _f, _t):
