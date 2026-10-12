@@ -389,22 +389,38 @@ def _tab_user(USERNAME, dmap):
     # 💳 예치금 입금·차감·적립 — 같은 기간, 같은 사람
     _dep_rows = _user_deposit_section(_u, _name, _f, _t)
 
-    # 엑셀 — 청구서 + 품목 + 예치금
+    # 엑셀 — 청구서 + 구매내역(품목) + 예치금
+    #   구매내역은 화면의 날짜 펼침과 같은 내용(정가·할인 포함)을 기간 전체로 편 것.
+    #   전엔 '품목'이라는 이름으로 맨 뒤 시트에 있어 내려받고도 없는 줄 알았다 —
+    #   청구내역 바로 다음 시트로 올리고 이름을 화면 말(구매내역)에 맞춘다.
     try:
         import io
         _items = _ds.get_items_range(str(_f), str(_t), username=_u)
+        _rmap = _receipt_price_map(_items)
+        _buy = []
+        for it in _items:
+            _ri = _rmap.get((str(it.get('receipt_date') or ''),
+                             str(it.get('product_no') or ''))) or {}
+            _list = int(_ri.get('정가단가') or 0)
+            _paid_unit = int(_ri.get('단가') or 0)
+            _buy.append({
+                '날짜': it['settle_date'],
+                '근거': _ds.SOURCE_LABEL.get(it['source'], it['source']),
+                '상품명': it['product_name'],
+                '코스트코번호': it['product_no'], '수량': int(it['qty'] or 1),
+                '정가': _list,
+                '할인(팩당)': max(0, _list - _paid_unit) if (_list and _paid_unit) else 0,
+                '팩단가': int(it['unit_price'] or 0), '금액': int(it['amount'] or 0),
+                '주문번호': it['order_no'],
+                '영수증날짜': str(it.get('receipt_date') or '')})
         _buf = io.BytesIO()
         with pd.ExcelWriter(_buf, engine='openpyxl') as _xw:
             pd.DataFrame(_rows).to_excel(_xw, index=False, sheet_name='청구내역')
+            pd.DataFrame(_buy).to_excel(_xw, index=False, sheet_name='구매내역')
             if _dep_rows:
                 pd.DataFrame(_dep_rows).to_excel(_xw, index=False, sheet_name='예치금')
-            pd.DataFrame([{
-                '날짜': it['settle_date'], '상품명': it['product_name'],
-                '코스트코번호': it['product_no'], '수량': int(it['qty'] or 1),
-                '팩단가': int(it['unit_price'] or 0), '금액': int(it['amount'] or 0),
-                '근거': _ds.SOURCE_LABEL.get(it['source'], it['source']),
-                '주문번호': it['order_no']} for it in _items]).to_excel(
-                    _xw, index=False, sheet_name='품목')
+        st.caption(f"엑셀 시트: **청구내역** {len(_rows)}일 · **구매내역** {len(_buy)}건"
+                   + (f" · **예치금** {len(_dep_rows)}건" if _dep_rows else ""))
         st.download_button(f"📥 {_name} {_f}~{_t} 엑셀", data=_buf.getvalue(),
                            file_name=f"청구_{_u}_{_f}_{_t}.xlsx",
                            mime=("application/vnd.openxmlformats-officedocument"
