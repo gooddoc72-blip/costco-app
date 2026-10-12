@@ -411,6 +411,54 @@ with st.sidebar:
         unsafe_allow_html=True,
     )
 
+    # ── 달력(날짜 선택) 한글화 — 'October 2026' → '2026년 10월', 'Su Mo' → '일 월' ──
+    #   st.date_input 달력은 언어 옵션이 없어 영어로만 나온다. 부모 문서에 감시자를
+    #   한 번만 걸어(브라우저 새로고침 전까지 유지) 달력·월 선택 목록의 글자만 바꾼다.
+    #   사이드바에 두는 이유: 높이 0 iframe이라도 본문에 두면 위쪽에 빈 줄이 생긴다.
+    _components.html(
+        """<script>
+(function () {
+  try {
+    var W = window.parent, D = W.document;
+    if (W.__cocoKoCal) return;
+    W.__cocoKoCal = 1;
+    var M = {January: '1월', February: '2월', March: '3월', April: '4월', May: '5월',
+             June: '6월', July: '7월', August: '8월', September: '9월',
+             October: '10월', November: '11월', December: '12월'};
+    var WD = {Su: '일', Mo: '월', Tu: '화', We: '수', Th: '목', Fr: '금', Sa: '토',
+              Sun: '일', Mon: '월', Tue: '화', Wed: '수', Thu: '목', Fri: '금', Sat: '토'};
+    var RE = /^(January|February|March|April|May|June|July|August|September|October|November|December)(?:\\s+(\\d{4}))?$/;
+    var BOX = '[data-baseweb="calendar"],[data-baseweb="popover"],[data-baseweb="menu"]';
+    function fix(n) {
+      var p = n.parentElement;
+      if (!p || !p.closest || !p.closest(BOX)) return;
+      var s = (n.nodeValue || '').trim();
+      if (!s) return;
+      var m = s.match(RE);
+      if (m) { n.nodeValue = m[2] ? (m[2] + '년 ' + M[m[1]]) : M[m[1]]; return; }
+      if (WD[s] && p.closest('[data-baseweb="calendar"]')) n.nodeValue = WD[s];
+    }
+    function walk(el) {
+      if (el.nodeType === 3) { fix(el); return; }
+      if (el.nodeType !== 1) return;
+      if (!(el.closest && el.closest(BOX)) && !(el.querySelector && el.querySelector(BOX))) return;
+      var tw = D.createTreeWalker(el, NodeFilter.SHOW_TEXT, null), t;
+      while ((t = tw.nextNode())) fix(t);
+    }
+    new W.MutationObserver(function (ms) {
+      for (var i = 0; i < ms.length; i++) {
+        var mu = ms[i];
+        if (mu.type === 'characterData') { fix(mu.target); continue; }
+        for (var j = 0; j < mu.addedNodes.length; j++) walk(mu.addedNodes[j]);
+      }
+    }).observe(D.body, {childList: true, subtree: true, characterData: true});
+    walk(D.body);
+  } catch (e) {}
+})();
+</script>""",
+        height=0,
+    )
+
 
 # ── 페이지 라우터 (st.navigation 사용) ──────────────────────
 def run_home():

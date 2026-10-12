@@ -348,6 +348,10 @@ def register_one(username, api_id, api_secret, product, cat_id, opts=None):
           source('auto'면 무인 경로로 집계 — 기본 manual), actor(대행자).
     반환: (origin_product_no, err)."""
     opts = opts or {}
+    # 로그 함수 — 안 넘기면 조용히. (예전엔 정의 없이 log()를 불러, 경고가 붙은
+    # 등록(생활화학 신고번호 등)마다 NameError로 죽었다 → 네이버엔 올라갔는데
+    # 등록완료 표시가 안 남아 다음 날 같은 상품을 또 올렸다.)
+    log = opts.get("log") or _noop
     name = (product.get("costco_name") or "").strip()
     if not name:
         return None, "상품명 없음"
@@ -724,7 +728,7 @@ def auto_register(username, api_id, api_secret, *, margin=10, max_count=20,
                   "cat_full": cat_full or "",
                   "gen_tags": gen_tags, "optimize_name": optimize_name,
                   "ai_desc": ai_desc, "with_spec": with_spec,
-                  "source": source, "actor": username})
+                  "source": source, "actor": username, "log": log})
         if err or not origin_no:
             out["fail"] += 1
             # 오류는 자르지 않는다 — 예전엔 80자에서 끊겨 네이버가 지목한 항목이
