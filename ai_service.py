@@ -151,13 +151,24 @@ GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:ge
 #    oxo·baremi542는 계속 됐다). 그래서 별칭을 기본으로 쓴다.
 GEMINI_MODEL = "gemini-flash-latest"   # 현행 flash 별칭. thinking 끄고 사용(아래).
 #: 모델이 막혔을 때(404/모델 없음) 순서대로 다시 시도할 후보.
-GEMINI_FALLBACK_MODELS = ("gemini-flash-latest", "gemini-3.7-flash", "gemini-2.5-flash")
+#  2.5-flash를 3.7보다 앞에 둔다 — 2026-10-13 실측: 3.7-flash는 과부하로 응답에
+#  176초가 걸리거나 시간초과였고(사진 한 장에 3분), 2.5-flash는 2~10초였다. 새 키에서
+#  2.5가 404여도 0.3초 만에 떨어져 3.7로 넘어가므로 손해가 없다.
+GEMINI_FALLBACK_MODELS = ("gemini-flash-latest", "gemini-2.5-flash", "gemini-3.7-flash")
+#: 후보 모델(2번째부터)에 주는 대기 상한(초). 과부하 모델은 끊지 않고 몇 분씩 끈다.
+GEMINI_FALLBACK_TIMEOUT = 60
 # 영수증처럼 깨알글씨·부호(-T)·검산이 필요한 판독은 flash가 자주 틀린다.
 # → pro로 먼저 읽고 실패 시 flash로 폴백. (pro는 느리고 비싸지만 여전히 Claude보다 저렴)
 # ⚠️ 'gemini-2.5-pro'는 신규 사용자에게 404다. 버전이 바뀌어도 안 깨지도록 별칭을 쓴다.
 #    (flash도 같은 이유로 별칭으로 되돌렸다 — 'gemini-flash-latest' 400은 옛 이야기이고
 #     2026-09 실측에서 thinkingBudget=0을 포함해도 200이다)
 GEMINI_VISION_MODEL = "gemini-pro-latest"
+
+
+#: 이 키로는 못 쓰는 모델 — {(키 끝 6자, 모델): 다시 시도할 시각}. 프로세스 안 캐시.
+#  무료 키는 pro 한도가 0이라(429 'limit: 0') 부를 때마다 실패한다. 한 번 확인되면
+#  한 시간은 건너뛰어 사진마다 헛호출 한 번씩을 아낀다.
+_GEMINI_SKIP = {}
 
 
 def _gemini_post(api_key, model, body, timeout=60, feature=''):
@@ -169,6 +180,10 @@ def _gemini_post(api_key, model, body, timeout=60, feature=''):
       · thinkingBudget=0 거부(400) — gemini-3.6-flash는 thinking 끄기를 안 받는다
         (실측: 3.6은 400, 3.7·flash-latest는 200).
         → thinkingConfig를 빼고 1회 재시도.
+      · 한도 초과(429)·과부하(503/500) — 모델마다 따로 걸린다. 2026-10-13 실측:
+        무료 키에서 pro는 429(limit: 0), flash-latest·3.7-flash는 503인데
+        2.5-flash는 200이었다. 예전엔 404가 아니면 거기서 포기해서, 되는 모델이
+        있는데도 '이미지 인식 실패'가 됐다 → 다음 후보 모델로 넘어간다.
     """
     _blocked = _usage_gate()
     if _blocked:
@@ -176,9 +191,16 @@ def _gemini_post(api_key, model, body, timeout=60, feature=''):
     import copy as _copy
     tried, last_err, _bumped = [], None, False
     queue = [model] + [m for m in GEMINI_FALLBACK_MODELS if m != model]
+    _ktag = str(api_key or '').strip()[-6:]
+    import time as _time
     for _m in queue:
         if _m in tried:
             continue
+        if _GEMINI_SKIP.get((_ktag, _m), 0) > _time.time():
+            last_err = last_err or f"[429] {_m} — 이 키로는 사용 한도가 없는 모델(무료 키)"
+            continue
+        # 첫 모델은 호출측 대기시간 그대로, 넘어간 후보는 짧게 끊는다
+        _to = timeout if not tried else min(timeout, GEMINI_FALLBACK_TIMEOUT)
         tried.append(_m)
         for _drop_think in (False, True):
             _b = _copy.deepcopy(body)
@@ -192,9 +214,10 @@ def _gemini_post(api_key, model, body, timeout=60, feature=''):
                     GEMINI_URL.format(model=_m),
                     headers={"x-goog-api-key": str(api_key).strip(),
                              "content-type": "application/json"},
-                    json=_b, timeout=timeout)
+                    json=_b, timeout=_to)
             except Exception as e:
-                last_err = str(e)
+                # 시간초과·연결 끊김은 그 모델 사정이다 — [503]으로 표시해 다음 후보로 넘긴다
+                last_err = f"[503] {_m} 응답 없음({type(e).__name__})"
                 break
             if r.status_code == 200:
                 data = r.json()
@@ -221,7 +244,7 @@ def _gemini_post(api_key, model, body, timeout=60, feature=''):
                         GEMINI_URL.format(model=_m),
                         headers={"x-goog-api-key": str(api_key).strip(),
                                  "content-type": "application/json"},
-                        json=_b, timeout=timeout)
+                        json=_b, timeout=_to)
                     if r.status_code == 200:
                         _retry_json = r.json()
                         _track_gemini(_m, feature, _retry_json)   # 재시도분도 과금된다
@@ -238,11 +261,14 @@ def _gemini_post(api_key, model, body, timeout=60, feature=''):
             except Exception:
                 _msg = r.text[:200]
             last_err = f"[{r.status_code}] {_msg}"
+            if r.status_code == 429 and "limit: 0" in str(_msg):
+                _GEMINI_SKIP[(_ktag, _m)] = _time.time() + 3600
             if r.status_code == 400 and not _drop_think:
                 continue                        # thinking 빼고 한 번 더
             break                               # 그 외에는 다음 모델로
-        if last_err and not str(last_err).startswith("[404]"):
-            # 404(모델 없음)가 아니면 다른 모델로 바꿔도 소용없다 — 키·쿼터·요청 문제
+        if last_err and not str(last_err).startswith(("[404]", "[429]", "[500]", "[503]")):
+            # 모델 없음(404)·한도(429)·과부하(500/503)는 모델마다 달라 다음 후보로 넘어간다.
+            # 그 밖(키 오류 401/403 등)은 모델을 바꿔도 소용없다.
             if not (str(last_err).startswith("[400]") and "model" in str(last_err).lower()):
                 break
     return None, last_err or "빈 응답"
