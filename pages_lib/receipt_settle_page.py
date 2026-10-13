@@ -544,6 +544,34 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             f"이 날짜를 제대로 정산하려면 위 **⚙️ 재고 계산 시작일**을 **{d_day} 이전**으로 "
             "바꿔 저장하세요. (배치·청구 자체는 지금도 되지만 남은 재고가 유실됩니다.)")
 
+    # 직접구매 계정은 자기가 사서 자기가 보낸다 — 그 발송건은 여기서 모으지 않는다.
+    #   관리자가 대신 사 준 날(대리구매)만 이 정산일에 한해 켠다. 날짜별로 저장돼
+    #   다른 날은 다시 꺼진 채로 시작한다(켜 둔 걸 잊어 자기 구매분이 청구되는 일 방지).
+    try:
+        _sp_users = [u['username'] for u in get_all_users()
+                     if not u.get('is_admin') and _rs.is_self_purchase(u['username'])]
+    except Exception:
+        _sp_users = []
+    if _sp_users:
+        _sp_on_cur = str(d_day) in _rs.include_self_dates()
+        _sp_on = st.checkbox(
+            "🏪 직접구매 계정 발송건도 모으기 — "
+            + " · ".join(dmap.get(u, u) for u in _sp_users)
+            + " (관리자가 대신 사 준 날만 켜세요)",
+            value=_sp_on_cur, key=f"rs_incl_self_{d_day}",
+            help="직접구매 계정은 자기가 사서 자기가 보내므로 기본으로 발송건을 모으지 "
+                 "않습니다(발송 현황·매칭·미매칭 잠금·재고 차감 모두에서 빠집니다). "
+                 "켜면 이 정산일에만 그 사람 발송건이 매칭 대상에 들어오고, 여기서 "
+                 "붙은 행은 대리구매로 청구됩니다.")
+        if _sp_on != _sp_on_cur:
+            _rs.set_include_self(str(d_day), _sp_on)
+            st.session_state.pop('rs_alloc', None)   # 대상이 바뀌었으니 배치를 다시 돌린다
+            st.rerun()
+        if not _sp_on:
+            st.caption("🏪 직접구매 계정("
+                       + " · ".join(dmap.get(u, u) for u in _sp_users)
+                       + ") 발송건은 **모으지 않습니다** — 본인이 직접 구매·발송.")
+
     # 영수증↔발송 매칭은 발송 기록이 있어야 성립한다. 없으면 매칭이 아니라
     # 관리자 수작업이 되므로, 어느 사용자가 비어 있는지 먼저 보여준다.
     try:
@@ -867,6 +895,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         # 이제 표에만 채우고, 저장은 사람이 확인한 뒤에만 한다.
         st.session_state['_rs_unsaved'] = True
         st.session_state['_rs_fkey'] = _fkey
+        st.session_state.pop('_rs_pseen', None)   # 표가 PDF 것으로 바뀌었다 — 사진은 다시 읽어 합친다
         st.session_state['_rs_fails'] = fails
         st.session_state.pop('rs_alloc', None)   # 새 업로드 → 이전 미리보기 초기화
         # 정산일은 화면 맨 위에서 사람이 고른다 — 여기서 지우면 위젯 생성 뒤
@@ -883,8 +912,15 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         key="rs_photo", accept_multiple_files=True)
     from pages_lib.receipt_page import inject_native_camera as _inject_cam
     _inject_cam("영수증 촬영")   # 탭 → 폰 기본 카메라 → 촬영 → 자동 업로드
-    _pkey = tuple(sorted(f.name for f in _ph)) if _ph else ()
-    if _ph and st.session_state.get('_rs_pkey') != _pkey:
+    # 이미 읽은 사진은 다시 읽지 않는다. 폰 카메라는 사진이 **한 장씩** 추가되는데,
+    # 예전엔 추가될 때마다 앞 사진까지 전부 다시 읽어 표에 또 더했다 — 4장을 찍으면
+    # 첫 장 품목 수량이 4배가 됐다. 파일 이름도 폰에서는 전부 'image.jpg'라 못 쓴다.
+    def _pid(_f):
+        return str(getattr(_f, 'file_id', '') or (_f.name, getattr(_f, 'size', 0)))
+    _pseen = set(st.session_state.get('_rs_pseen') or [])
+    _ph_all, _ph = (_ph or []), [f for f in (_ph or []) if _pid(f) not in _pseen]
+    _pkey = tuple(sorted(_pid(f) for f in _ph_all))
+    if _ph:
         import ai_service
         from pages_lib.receipt_page import _image_for_ai
         _ak, _gk = ai_service.get_ai_keys(settings)
@@ -954,6 +990,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 # (정산일은 rs_day_val이 정본 — 위젯 생성 뒤라 여기선 안 건드린다)
                 st.success(f"📱 사진 {len(_ph)}장에서 {len(_merged_p)}품목 인식")
             st.session_state['_rs_pkey'] = _pkey
+            st.session_state['_rs_pseen'] = sorted(_pseen | {_pid(f) for f in _ph})
             st.session_state['_rs_fails'] = (st.session_state.get('_rs_fails') or []) + _pfails
 
     for fn, em in st.session_state.get('_rs_fails', []):
@@ -1040,6 +1077,22 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                   '수량': _qy, '단가': up,
                                   '정가단가': _lp or up, '할인': _dc,
                                   'receipt_date': _rd_by_cno.get(cno, '')})
+    # 날짜를 못 읽은 줄을 채운다. 긴 영수증을 여러 장으로 나눠 찍으면 날짜는
+    # 맨 아래 한 장에만 찍혀 있어 나머지 사진의 품목은 날짜가 비고, 표에 직접
+    # 넣은 줄도 날짜가 없다. 저장은 날짜 없는 줄을 버리므로(_persist_receipt)
+    # 화면엔 'N종 저장'이라 뜨는데 실제론 날짜 있는 줄만 들어갔다
+    # (10/13 사진 4장 → 1종만 저장). 같이 올린 영수증의 날짜가 하나면 그 날짜,
+    # 아니면 정산 날짜로 채우고 화면에 알린다.
+    _rd_known = sorted({x['receipt_date'] for x in receipt_items if x['receipt_date']})
+    _rd_fill = _rd_known[0] if len(_rd_known) == 1 else str(d_day)
+    _rd_missing = [x for x in receipt_items if not x['receipt_date']]
+    for _x in _rd_missing:
+        _x['receipt_date'] = _rd_fill
+    if _rd_missing:
+        st.info(f"📅 영수증 날짜를 못 읽은 **{len(_rd_missing)}줄**은 **{_rd_fill}** "
+                + ("(같이 올린 영수증의 날짜)" if len(_rd_known) == 1 else "(정산 날짜)")
+                + " 영수증으로 저장됩니다. 다른 날 영수증이면 맨 위 **정산 날짜**를 "
+                  "그 날로 바꾼 뒤 저장하세요.")
     if receipt_items:
         # 판독이 이상한 줄을 저장 전에 잡는다. 예전엔 올리는 즉시 저장돼서
         # 수량 오독(9/8 KS그릭요거트 64개 = 895,360원)이 그대로 재고가 됐다.
@@ -1165,7 +1218,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     _disp_n = 0
     try:
         _disp_n = sum(int((_sc.daily_fees(_u, str(d_day)) or {}).get('ship_count') or 0)
-                      for _u in _rs.matchable_users())
+                      for _u in _rs.settle_users(str(d_day)))
     except Exception:
         _disp_n = 0
     _basis_opts = ["🚚 발송건 기준 (그날 실제 발송한 주문 — 발송 파일 포함)",
@@ -1228,10 +1281,10 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     if _sp_excl:
         st.info(
             "🏪 **직접구매 계정** — " + " · ".join(dmap.get(u, u) for u in _sp_excl)
-            + "\n\n평소엔 자기 영수증을 **내 영수증 정산**에서 직접 올립니다. "
-              "여기(관리자 영수증)에서 이 사람 주문에 붙는 것은 **관리자가 대신 산 "
-              "대리구매**로 보고 **그 행만 청구**됩니다 — 자기가 산 것까지 여기서 "
-              "매칭하면 청구되니, 대리구매가 아니면 배치에서 빼세요.\n\n"
+            + "\n\n평소엔 자기 영수증을 **내 영수증 정산**에서 직접 올리고, "
+              "**이 사람 발송건은 여기서 모으지 않습니다.** 관리자가 대신 사 준 "
+              "날만 위 **1. 정산일** 아래 '🏪 직접구매 계정 발송건도 모으기'를 "
+              "켜세요 — 켠 날 여기서 붙는 행은 **대리구매로 청구**됩니다.\n\n"
               "구매대행 사용자인데 잘못 켜져 있다면 **관리자 › 회원 관리**에서 "
               "'🏪 직접구매 계정' 체크를 끄세요.")
 

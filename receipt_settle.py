@@ -592,6 +592,43 @@ def billable_users():
     return [u for u in matchable_users() if not is_self_purchase(u)]
 
 
+SETTLE_INCLUDE_SELF_KEY = 'settle_include_self_dates'   # 직접구매 발송건도 모을 정산일들(쉼표)
+
+
+def include_self_dates():
+    """직접구매 계정 발송건까지 모으기로 한 정산일들."""
+    try:
+        from db import get_global_setting
+        return {d.strip() for d in str(get_global_setting(SETTLE_INCLUDE_SELF_KEY) or '').split(',')
+                if d.strip()}
+    except Exception:
+        return set()
+
+
+def set_include_self(the_date, on):
+    """그 정산일에 직접구매 계정 발송건을 모을지 켜고 끈다(최근 60개 날짜만 보관)."""
+    from db import set_global_setting
+    _d = include_self_dates()
+    (_d.add if on else _d.discard)(str(the_date)[:10])
+    set_global_setting(SETTLE_INCLUDE_SELF_KEY, ','.join(sorted(_d)[-60:]))
+
+
+def settle_users(the_date=None):
+    """관리자 영수증 정산이 **발송건을 모으는** 대상.
+
+    직접구매 계정은 자기가 사서 자기가 보낸다 — 그 발송건은 관리자 영수증과
+    맞출 것이 없다. 같이 모으면 그날 발송 목록이 그 사람 건으로 채워지고
+    (tblue 하루 10여 건), 안 붙은 발송건이 남아 정산 요청이 잠기며, 잘못 붙으면
+    자기가 산 물건이 대리구매로 청구된다. 그래서 기본으로 뺀다.
+    관리자가 대신 사 준 날(대리구매)만 그 정산일에 한해 켠다 — set_include_self.
+    본인 영수증 정산(self_receipt_page)은 users를 직접 넘기므로 영향이 없다.
+    """
+    _us = matchable_users()
+    if the_date and str(the_date)[:10] in include_self_dates():
+        return _us
+    return [u for u in _us if not is_self_purchase(u)]
+
+
 def undispatched_orders(username, the_date):
     """그날 주문 중 **아직 한 번도 발송되지 않은** 건.
     [{order_no, recipient, product_name, qty, ...}]
@@ -650,7 +687,7 @@ def dispatch_coverage(the_date, users=None):
     반환: [{'username','orders','dispatched'}] — 주문이나 발송이 있는 사용자만
     """
     if users is None:
-        users = matchable_users()     # 직접구매 계정도 매칭·재고 정리 대상이다
+        users = settle_users(the_date)   # 직접구매 계정 발송건은 기본으로 안 모은다
     out = []
     for u in users:
         try:
@@ -756,7 +793,7 @@ def allocate_dispatched_to_receipt(receipt_items, dispatch_date, users=None,
             name_by_costco[cno] = _norm(it.get('상품명'))
 
     if users is None:
-        users = matchable_users()     # 직접구매 계정도 매칭·재고 정리 대상이다
+        users = settle_users(dispatch_date)   # 직접구매 계정 발송건은 기본으로 안 모은다
     bridge = build_shopping_bridge(shopping_date or dispatch_date, users=users)
     _ritems = [{'costco': c, 'name': name_by_costco.get(c, ''), 'price': price_by_costco[c]}
                for c in price_by_costco]
@@ -991,7 +1028,7 @@ def allocate_receipt_to_orders(receipt_items, date_from, date_to, users=None,
             name_by_costco[cno] = _norm(it.get('상품명'))
 
     if users is None:
-        users = matchable_users()     # 직접구매 계정도 매칭·재고 정리 대상이다
+        users = settle_users(date_to)   # 직접구매 계정 발송건은 기본으로 안 모은다
 
     # 이름 폴백용 영수증 목록
     _ritems = [{'costco': c, 'name': name_by_costco.get(c, ''), 'price': price_by_costco[c]}
@@ -1188,7 +1225,7 @@ def dispatch_consumption(dispatch_date, receipt_nos, matched_keys=None, users=No
     except Exception:
         _online = set()
     if users is None:
-        users = matchable_users()     # 직접구매 계정도 매칭·재고 정리 대상이다
+        users = settle_users(dispatch_date)   # 직접구매 계정 발송건은 기본으로 안 모은다
     used, rows = {}, []
     for uname in users:
         try:
