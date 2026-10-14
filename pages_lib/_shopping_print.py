@@ -90,9 +90,12 @@ def render(_subs, _period_label, get_items, name_map=None, key_prefix="shop_comb
                              help="목록을 두 단으로 흘려 더 많이 담습니다. "
                                   "종수가 적은 날에 유리합니다.")
     _hide_money = _cc3.checkbox("금액 숨기기", value=False, key=f"{key_prefix}_nomoney",
-                                help="매장에서 담기만 할 때는 금액이 없는 편이 읽기 쉽습니다.")
+                                help="매장에서 담기만 할 때는 금액이 없는 편이 읽기 쉽습니다. "
+                                     "켜면 정산금액·택배비가 함께 빠집니다.")
 
-    _blocks, _tot_items, _tot_amt = [], 0, 0
+    # 택배비도 함께 찍는다 — 사용자별 개별 프린트에는 택배비 열이 있는데 합본에만
+    # 없어서, 합본으로 찍으면 그 사람 몫 택배비를 따로 찾아봐야 했다.
+    _blocks, _tot_items, _tot_amt, _tot_ship = [], 0, 0, 0
     for _s in _sel:
         try:
             _its = list(get_items(_s) or [])
@@ -102,8 +105,10 @@ def render(_subs, _period_label, get_items, name_map=None, key_prefix="shop_comb
             continue
         _amt = int(_s.get('total_amount') or 0)
         _set = sum(int(_i.get('정산금액') or 0) for _i in _its)
+        _ship = sum(int(_i.get('배송비') or 0) for _i in _its)
         _tot_items += len(_its)
         _tot_amt += _amt
+        _tot_ship += _ship
         _rs = []
         for _it in _its:
             _pno = str(_it.get('코스트코상품번호') or '') or '—'
@@ -111,13 +116,14 @@ def render(_subs, _period_label, get_items, name_map=None, key_prefix="shop_comb
             _qty = int(_it.get('코스트코구매수량') or _it.get('주문수량') or 0)
             _cnt = int(_it.get('주문건수') or 0)
             _money = ('' if _hide_money else
-                      f'<td class="r">{fmt(int(_it.get("정산금액") or 0))}</td>')
+                      f'<td class="r">{fmt(int(_it.get("정산금액") or 0))}</td>'
+                      f'<td class="r">{fmt(int(_it.get("배송비") or 0))}</td>')
             _rs.append(f'<tr><td class="chk"></td><td class="no">{_pno}</td>'
                        f'<td>{_nm}</td><td class="r">{_qty}개'
                        + (f'<span class="sub">({_cnt}건)</span>' if _cnt else '')
                        + f'</td>{_money}</tr>')
-        _money_h = '' if _hide_money else '<th class="r">정산금액</th>'
-        _money_t = '' if _hide_money else f' · 정산 {fmt(_set)}원'
+        _money_h = '' if _hide_money else '<th class="r">정산금액</th><th class="r">택배비</th>'
+        _money_t = '' if _hide_money else f' · 정산 {fmt(_set)}원 · 택배비 {fmt(_ship)}원'
         _blocks.append(
             '<section class="blk">'
             f'<h2>👤 {_h.escape(str(_dn.get(_s["username"], _s["username"])))} '
@@ -162,7 +168,8 @@ def render(_subs, _period_label, get_items, name_map=None, key_prefix="shop_comb
         '</style></head><body>'
         f'<h1>🛒 장보기 합본 — {_h.escape(str(_period_label))}</h1>'
         f'<div class="top">{len(_blocks)}명 · {_tot_items}종 · '
-        f'매장금액 합계 {fmt(_tot_amt)}원</div>'
+        f'매장금액 합계 {fmt(_tot_amt)}원'
+        + ('' if _hide_money else f' · 택배비 합계 {fmt(_tot_ship)}원') + '</div>'
         + ''.join(_blocks) +
         '<button class="noprint" onclick="window.print()" '
         'style="margin-top:16px;padding:8px 20px;font-size:13px;cursor:pointer">'
@@ -170,7 +177,7 @@ def render(_subs, _period_label, get_items, name_map=None, key_prefix="shop_comb
     _esc = _h.escape(_html, quote=True)
 
     st.caption(f"📄 {len(_blocks)}명 · {_tot_items}종 · "
-               f"매장금액 합계 {fmt(_tot_amt)}원"
+               f"매장금액 합계 {fmt(_tot_amt)}원 · 택배비 합계 {fmt(_tot_ship)}원"
                + ("  ·  사용자마다 새 장" if _per_page
                   else "  ·  작은 목록은 같은 장에 이어 붙습니다"))
     _pc1, _pc2 = st.columns([1.2, 3])

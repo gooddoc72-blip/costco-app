@@ -203,14 +203,25 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         if _tr and _tr.get('months'):
                             st.markdown("**📈 최근 1년간 월별 검색량 추이**")
                             _figt = go.Figure()
+                            # 월 값은 'YY-MM' 문자열이다. 그대로 넘기면 plotly가 날짜로
+                            # 해석해 'Nov 2025'처럼 영어로 찍는다 → '25년 11월' 라벨로 바꾸고
+                            # 축을 범주형으로 둔다(마우스를 올렸을 때도 같은 글자가 나온다).
+                            def _ko_month(_m):
+                                try:
+                                    _yy, _mm = str(_m).split('-')[:2]
+                                    return f"{_yy}년 {int(_mm)}월"
+                                except Exception:
+                                    return str(_m)
+                            _xk = [_ko_month(_m) for _m in _tr['months']]
                             for _nm2, _ys, _cl in (('Total', _tr['total'], '#E74C3C'),
                                                    ('PC', _tr['pc'], '#9AC1F5'),
                                                    ('Mobile', _tr['mo'], '#2E6FDB')):
                                 _figt.add_trace(go.Scatter(
-                                    x=_tr['months'], y=_ys, name=_nm2, mode='lines',
+                                    x=_xk, y=_ys, name=_nm2, mode='lines',
                                     line=dict(color=_cl, width=2)))
                             _figt.update_layout(
                                 height=230, margin=dict(l=10, r=10, t=6, b=6),
+                                xaxis=dict(type='category'),
                                 legend=dict(orientation='h', yanchor='top', y=-0.25, x=0.2))
                             st.plotly_chart(_figt, use_container_width=True,
                                             key=f"kwga_t_{_hi}_{_h['q']}")
