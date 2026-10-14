@@ -120,7 +120,7 @@ def render(_subs, _period_label, get_items, name_map=None, key_prefix="shop_comb
         _money_t = '' if _hide_money else f' · 정산 {fmt(_set)}원'
         _blocks.append(
             '<section class="blk">'
-            f'<h2>👤 {_h.escape(str(_s["username"]))} '
+            f'<h2>👤 {_h.escape(str(_dn.get(_s["username"], _s["username"])))} '
             f'<span class="d">{_s["order_date"]}</span></h2>'
             f'<div class="meta">{len(_its)}종 · 매장금액 {fmt(_amt)}원{_money_t}</div>'
             '<table><thead><tr><th class="chk">✓</th><th class="no">상품번호</th>'

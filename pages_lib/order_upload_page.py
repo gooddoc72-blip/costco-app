@@ -239,6 +239,15 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 import html as _hl
                 import streamlit.components.v1 as _cmp
 
+                # 아이디 대신 이름으로 보여 준다 — 'sj20052p'보다 '김재호'가 바로 읽힌다.
+                # 이름이 없거나 아이디와 같으면 아이디 그대로.
+                try:
+                    _dn = {u['username']: (u.get('display_name') or u['username'])
+                           for u in get_all_users()}
+                except Exception:
+                    _dn = {}
+                _nm_of = lambda _u: _dn.get(_u, _u) or _u
+
                 # ── 사용자별 오늘 합계 (금액 = 코스트코 매장금액 합계) ──
                 #   제출은 (사용자×날짜) 1건으로 덮어쓰지만, 혹시 복수면 합산되도록 집계한다.
                 _agg = {}
@@ -267,7 +276,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 )
                 st.dataframe(
                     pd.DataFrame([
-                        {'사용자': _u, '상품 종수': f"{_v['종수']}개",
+                        {'사용자': _nm_of(_u), '상품 종수': f"{_v['종수']}개",
                          '주문건수': f"{_v['건수']}건",
                          '구매금액(예상)': f"{fmt(_v['금액'])}원",
                          '정산금액': f"{fmt(_v['정산'])}원",
@@ -301,7 +310,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     _its = _items_by_sub.get(_sub['id'], [])
                     _sub_set = sum(int(_i.get('정산금액') or 0) for _i in _its)
                     _sub_amt = int(_sub.get('total_amount') or 0)
-                    _lbl = (f"📅 {_sub['order_date']} | 👤 {_sub['username']} | "
+                    _lbl = (f"📅 {_sub['order_date']} | 👤 {_nm_of(_sub['username'])} | "
                             f"📦 {_sub['total_items']}개 | 💰 구매 {fmt(_sub_amt)}원 | "
                             f"🧾 정산 {fmt(_sub_set)}원 | ⏰ {_sub['submitted_at']}")
                     with st.expander(_lbl, expanded=False):
@@ -332,13 +341,13 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                             )
                         _ph = (
                             '<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8">'
-                            f'<title>장보기 {_sub["username"]}</title><style>'
+                            f'<title>장보기 {_hl.escape(_nm_of(_sub["username"]))}</title><style>'
                             'body{font-family:"맑은 고딕",sans-serif;padding:24px}h1{font-size:20px;margin:0 0 4px}'
                             '.meta{color:#666;font-size:13px;margin-bottom:12px}table{width:100%;border-collapse:collapse;font-size:13px}'
                             'th,td{border-bottom:1px solid #ddd;padding:6px 8px;text-align:left}th{background:#f4f4f4}'
                             '.tot{margin-top:16px;font-size:15px;font-weight:600}@media print{body{padding:8px}.noprint{display:none}}'
                             '</style></head><body>'
-                            f'<h1>🛒 장보기 — {_hl.escape(str(_sub["username"]))} ({_sub["order_date"]})</h1>'
+                            f'<h1>🛒 장보기 — {_hl.escape(str(_nm_of(_sub["username"])))} ({_sub["order_date"]})</h1>'
                             f'<div class="meta">총 {len(_its)}종 · 매장금액 {fmt(_sub_amt)}원 · '
                             f'정산금액 {fmt(_sub_set)}원 · 제출 {_sub["submitted_at"]}</div>'
                             '<table><thead><tr><th>상품번호</th><th>상품명</th><th>옵션</th>'

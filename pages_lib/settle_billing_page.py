@@ -951,12 +951,21 @@ def _tab_deposit(USERNAME, dmap):
         st.warning("⚠️ 잔액이 마이너스인 판매자 — 추가 예치를 받아야 합니다: "
                    + " · ".join(f"**{r['판매자']}** {fmt(-r['잔액'])}원" for r in _neg))
 
-    st.dataframe(pd.DataFrame([{k: v for k, v in r.items() if k != '_u'} for r in _rows]),
-                 use_container_width=True, hide_index=True,
-                 column_config={k: st.column_config.NumberColumn(k, format='%d')
-                                for k in ('누적 입금', '예치금 차감', '관리자 조정',
-                                          '매장반품 적립', '잔액', '청구 합계',
-                                          '예치금 외 결제')})
+    _bal_ev = st.dataframe(
+        pd.DataFrame([{k: v for k, v in r.items() if k != '_u'} for r in _rows]),
+        use_container_width=True, hide_index=True,
+        on_select="rerun", selection_mode="single-row", key="sb_dep_bal_tbl",
+        column_config={k: st.column_config.NumberColumn(k, format='%d')
+                       for k in ('누적 입금', '예치금 차감', '관리자 조정',
+                                 '매장반품 적립', '잔액', '청구 합계',
+                                 '예치금 외 결제')})
+    st.caption("👆 판매자 행을 누르면 그 사람의 **예치금 내역**(입금·차감·조정과 "
+               "그때그때 잔액)이 바로 아래에 펼쳐집니다.")
+    try:
+        _bal_sel = list(_bal_ev.selection.rows)
+    except Exception:
+        _bal_sel = []
+    _render_user_deposit_pick(_rows, _bal_sel, dmap)
     st.info(
         "**잔액 = 누적 입금 − 예치금 차감** (± 되돌림·조정 + 매장반품 적립)입니다. "
         "**청구 합계에서 빼는 것이 아닙니다.** "
@@ -1062,6 +1071,65 @@ def _tab_deposit(USERNAME, dmap):
                 (st.success if ok else st.error)(msg)
                 if ok:
                     st.rerun()
+
+
+def _render_user_deposit_pick(rows, sel, dmap):
+    """예치금 탭 — 한 판매자의 예치금 내역을 잔액 표 바로 아래에 편다.
+
+    잔액 표는 사람마다 합계 한 줄뿐이라 "이 잔액이 어떻게 만들어졌나"를 보려면
+    화면 맨 아래 📜 예치금 내역까지 내려가 사람을 다시 골라야 했고, 거긴 그때그때
+    잔액도 없다. 표에서 행을 누르거나 여기서 고르면 그 사람 것만 누적 잔액과 함께
+    보인다. 기본은 전체 기간 — 잔액은 처음부터 쌓인 값이라 일부만 보면 안 맞아 보인다.
+    """
+    _opts = [r['_u'] for r in rows if r['누적 입금'] or r['예치금 차감'] or r['잔액']
+             or r['관리자 조정'] or r['매장반품 적립']]
+    if not _opts:
+        return
+    # 표에서 누른 행이 있으면 그 사람으로 맞춘다(누를 때마다 한 번만 — 그 뒤엔
+    # 아래 선택 상자로도 바꿀 수 있어야 한다)
+    _clicked = rows[sel[0]]['_u'] if sel and sel[0] < len(rows) else None
+    if _clicked and st.session_state.get('_sb_dep_clicked') != _clicked:
+        st.session_state['_sb_dep_clicked'] = _clicked
+        if _clicked in _opts:
+            st.session_state['sb_dep_pick_u'] = _clicked
+    c1, c2 = st.columns([2, 1.4])
+    _u = c1.selectbox("👤 판매자별 예치금 내역", ['(선택)'] + _opts,
+                      format_func=lambda u: u if u == '(선택)' else
+                      (f"{dmap.get(u, u)} ({u})" if dmap.get(u, u) != u else u),
+                      key="sb_dep_pick_u")
+    _pl = c2.selectbox("기간", ["전체 기간"] + _PERIODS, key="sb_dep_pick_period")
+    if _u == '(선택)':
+        return
+    if _pl == "전체 기간":
+        _f, _t = date(2000, 1, 1), date.today()
+    else:
+        _rng = _period_range(_pl)
+        if _rng is None:
+            d1, d2 = st.columns(2)
+            _f = d1.date_input("시작", value=date.today() - timedelta(days=29),
+                               key="sb_dep_pick_f")
+            _t = d2.date_input("끝", value=date.today(), key="sb_dep_pick_t")
+        else:
+            _f, _t = _rng
+    if _f > _t:
+        st.error("시작일이 끝보다 늦습니다.")
+        return
+    _name = dmap.get(_u, _u)
+    _drows = _user_deposit_section(_u, _name, _f, _t)
+    if _drows:
+        try:
+            import io
+            _buf = io.BytesIO()
+            with pd.ExcelWriter(_buf, engine='openpyxl') as _xw:
+                pd.DataFrame(_drows).to_excel(_xw, index=False, sheet_name='예치금')
+            _per = "전체" if _pl == "전체 기간" else f"{_f}_{_t}"
+            st.download_button(f"📥 {_name} 예치금 내역 엑셀", data=_buf.getvalue(),
+                               file_name=f"예치금_{_u}_{_per}.xlsx",
+                               mime=("application/vnd.openxmlformats-officedocument"
+                                     ".spreadsheetml.sheet"), key=f"sb_dep_xls_{_u}")
+        except Exception as _e:
+            st.caption(f"엑셀 생성 실패: {_e}")
+    st.divider()
 
 
 # ── ⑧ 미입금자 ───────────────────────────────────────────────
