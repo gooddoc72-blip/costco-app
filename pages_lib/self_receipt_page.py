@@ -378,7 +378,9 @@ def render(USERNAME, IS_ADMIN, settings):
                             qty_units=_i(p['units_left']),
                             split_qty=max(1, _i(p.get('split_qty')) or 1),
                             received_at=_rdate,
-                            memo=f"{_sr.LOT_MEMO_PREFIX} {_rdate} · 잔량"):
+                            memo=f"{_sr.LOT_MEMO_PREFIX} {_rdate} · 잔량",
+                            # 본인 돈으로 산 재고 — 본인 주문으로 나갈 때 청구하지 않는다
+                            paid=1):
                         _ok += 1
                 except Exception as e:
                     _bad.append(f"{_n(p.get('name'))[:20]} — {str(e)[:60]}")

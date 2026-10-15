@@ -1312,9 +1312,15 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 # 재고 이월은 마지막 수단이다. 먼저 물어 가면 오늘 영수증에
                 # 있는 물건까지 과거 재고로 처리돼 그때 단가로 청구된다.
                 # AI까지 돌린 뒤 남은 것에만 이월을 적용한다.
+                # 나눠 보낸 주문(이틀에 한 상자씩)은 남은 수량만큼 다시 매칭한다
+                try:
+                    _sqmap = _ds.settled_qty_map(exclude_date=str(d_day))
+                except Exception:
+                    _sqmap = None
                 alloc = allocate_dispatched_to_receipt(
                     receipt_items, str(d_day), stock_pool=_pool,
                     exclude_orders=_settled, defer_stock=True,
+                    settled_qty=_sqmap,
                 )
             else:
                 alloc = allocate_receipt_to_orders(
@@ -1645,6 +1651,9 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 if _lf_msg.get('err'):
                     st.error(_lf_msg['err'])
 
+            _um_bill = st.checkbox(
+                "💳 재고로 입고할 때 구매비용 지금 청구 (관리자가 대신 사서 보관)",
+                value=True, key="rs_stock_bill", help="켜면 입고와 함께 **구매비용(구입가 × 수량)을 그 사람에게 청구**하고 재고를 '결제됨'으로 둡니다 — 나중에 본인 주문으로 나갈 때는 다시 청구하지 않습니다. 끄면 예전처럼 청구 없이 넣고, 나갈 때 구입가로 청구합니다.")
             _b1, _b2, _b3 = st.columns(3)
             if _b1.button(f"🧑‍💼 {len(_um_pick)}종을 {_um_bulk}에게 **청구**",
                           key="rs_memo_apply", type="primary", disabled=not _um_pick,
@@ -1672,8 +1681,9 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             if _b2.button(f"📦 {len(_um_pick)}종을 {_um_bulk} **재고로 입고**",
                           key="rs_stock_apply", disabled=not _um_pick,
                           use_container_width=True,
-                          help="안 팔려서 창고에 남은 물건입니다. 그 사용자 재고로 잡히고 "
-                               "청구되지 않습니다. 나중에 그 재고로 팔면 자동 차감됩니다."):
+                          help="안 팔려서 창고에 남은 물건입니다. 그 사용자 재고로 잡힙니다. "
+                               "위 '구매비용 지금 청구'를 켜 두면 입고와 함께 구입가가 "
+                               "청구되고, 본인 주문으로 나갈 때는 다시 청구하지 않습니다."):
                 _uname = _um_l2u.get(_um_bulk, '')
                 _split = {str(u['상품번호']): max(1, int(u.get('split_qty') or 1))
                           for u in _assign_src}
@@ -1689,10 +1699,15 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                            'units_left': int(r.get('수량(팩)') or 1)
                                          * _split.get(str(r.get('상품번호') or ''), 1),
                            'owner': _uname} for r in _um_pick]
-                _res = _sc.receive_leftovers(str(d_day), _picks)
+                _res = _sc.receive_leftovers(str(d_day), _picks, bill=_um_bill,
+                                             created_by=USERNAME)
                 if _res['ok']:
                     _text = (f"📦 {_um_bulk} 재고로 {_res['ok']}종 입고했습니다 — "
                              "아래 **재고 현황 › 사용자별 재고**에서 확인하세요.")
+                    if _res.get('billed'):
+                        _text += (f"\n\n💳 구매비용 **{fmt(_res['billed'])}원**을 "
+                                  f"{_um_bulk}에게 {d_day} 청구에 넣었습니다(재고 입고 청구). "
+                                  "본인 주문으로 나갈 때는 다시 청구되지 않습니다.")
                     if _res['skipped']:
                         _text += f" (이미 입고돼 건너뜀 {_res['skipped']}종)"
                     if _res.get('dupe'):
@@ -2847,21 +2862,40 @@ def _render_unmatched_panel(alloc, dmap, d_day, USERNAME, receipt_items):
                     _own = max(_have, key=lambda k: _have[k]['qty']) if _have else ''
                 _cost = int((_have.get(_own) or {}).get('cost') or 0)
                 _cross = bool(_own and _own != _me)
+                _cost_basis = 0
+                _own_paid = False
                 if not _amt:
-                    # 원장에 그 재고가 없으면 자동으로 채울 값이 없다. 사람이 적은
-                    # 금액이 있으면 그걸 쓰고, 둘 다 없을 때만 뺀다.
-                    _amt = (_cost + (_surch if _cross else 0)) * _qty
-                if _amt <= 0:
+                    if _own and not _cross:
+                        # 본인 재고를 본인 주문으로 — 이미 낸 재고(결제됨)는 다시 청구하지
+                        # 않는다. 예전 방식으로 들어온 미결제 재고만 구입가로 청구한다.
+                        try:
+                            _ou = _inv.own_unpaid_units(_own, _cno, _qty,
+                                                        order_no=str(_o.get('order_no') or ''))
+                        except Exception:
+                            _ou = {'unpaid_units': _qty, 'unpaid_amount': _cost * _qty,
+                                   'paid_units': 0}
+                        _amt = int(_ou.get('unpaid_amount') or 0)
+                        _cost_basis = _cost * _qty
+                        _own_paid = int(_ou.get('paid_units') or 0) > 0
+                    else:
+                        # 원장에 그 재고가 없으면 자동으로 채울 값이 없다. 사람이 적은
+                        # 금액이 있으면 그걸 쓰고, 둘 다 없을 때만 뺀다.
+                        _amt = (_cost + (_surch if _cross else 0)) * _qty
+                if _amt <= 0 and not _own_paid:
                     _zero += 1
                     continue
                 if not _memo:
                     _memo = ('재고 출고'
                              + (f" · {dmap.get(_own, _own)} 재고" if _own else "")
-                             + (f" · 웃돈 {_surch:,}원" if _cross else ""))
+                             + (f" · 웃돈 {_surch:,}원" if _cross else "")
+                             + (" · 본인 재고(결제됨) — 청구 없음" if _own_paid and not _amt
+                                else (" · 본인 재고 일부 결제됨" if _own_paid else "")))
                 _via = 'stock'
                 # 장부에 그 보유자 재고가 있으면 정산 확정 때 거기서 실제로 뺀다
                 # (재고가 '정산 청구'와 '재고 장부' 둘로 갈라지지 않게)
-                _stk_owner = _own if (_own and _own in _have) else ''
+                # 발송 때 이미 그 재고에서 빠져 남은 수량이 0이어도(장부 요약에 안 보여도)
+                # 본인 결제됨 재고였으면 그 보유자로 기록한다 — 0원 행이 원장에 남아야 한다
+                _stk_owner = _own if (_own and (_own in _have or _own_paid)) else ''
                 if not _stk_owner:
                     _no_ledger.append(str(_o.get('product_name') or '')[:20])
             else:
@@ -2870,6 +2904,7 @@ def _render_unmatched_panel(alloc, dmap, d_day, USERNAME, receipt_items):
                     continue
                 _via = 'manual'
                 _stk_owner = ''
+                _cost_basis = 0
 
             _row_idx.append(_i)
             _rows_new.append({
@@ -2887,7 +2922,9 @@ def _render_unmatched_panel(alloc, dmap, d_day, USERNAME, receipt_items):
                 'unit_price': _amt, 'amount': _amt,
                 'prev_cost': int(_o.get('prev_cost') or 0),
                 'via': _via, 'split_qty': 1, 'pack': 1, 'memo': _memo,
-                'stock_owner': _stk_owner})
+                'stock_owner': _stk_owner,
+                # 본인 재고(결제됨) 출고는 청구 0원이어도 주문 구입가는 재고 구입가다
+                'cost_basis': _cost_basis})
 
         if _zero:
             st.warning(f"⚠️ 금액이 0원인 {_zero}건은 저장되지 않습니다 — 0원으로 "
@@ -3861,13 +3898,35 @@ def _render_manual_stock(lots, key_prefix="rs"):
         if _qty and _pno:
             st.markdown(f"**{_owner_l}** · `{_pno}` 재고를 "
                         f"**{'+' if _qty > 0 else ''}{int(_qty)}개** 조정합니다.")
+        _IN_SELF, _IN_BILL, _IN_FIX = ("본인이 직접 구매 — 청구 없음",
+                                       "관리자가 대신 구매 — 구매비용 지금 청구",
+                                       "수량 정정 — 청구 없음(나갈 때 청구)")
+        _in_kind = _IN_FIX
+        if _qty and int(_qty) > 0:
+            _in_kind = st.radio("입고 종류", [_IN_SELF, _IN_BILL, _IN_FIX], index=2,
+                                horizontal=True, key=f"{key_prefix}_adj_kind",
+                                help="본인 구매·대신 구매는 '결제됨' 재고가 되어 본인 주문으로 "
+                                     "나갈 때 다시 청구하지 않습니다. 수량 정정은 예전처럼 "
+                                     "나갈 때 구입가로 청구합니다.")
         if st.button("🛠 조정 적용", type="primary", key=f"{key_prefix}_adj_go",
                      disabled=not (_qty and str(_pno).strip() and str(_why).strip())):
             from db_inventory import adjust_stock
+            _by = st.session_state.get('user', {}).get('username', '')
             _r = adjust_stock(_owner, str(_pno).strip(), int(_qty), _why,
-                              by=st.session_state.get('user', {}).get('username', ''),
+                              by=_by,
                               product_name=_pnm, unit_cost=int(_cost or 0),
-                              split_qty=int(_sq or 1))
+                              split_qty=int(_sq or 1),
+                              paid=1 if (int(_qty) > 0 and _in_kind != _IN_FIX) else 0)
+            if _r.get('ok') and int(_qty) > 0 and _in_kind == _IN_BILL and _r.get('lot_id'):
+                try:
+                    _bt = _sc.bill_stock_intake(str(date.today()), _owner, [{
+                        'lot_id': _r['lot_id'], 'costco_no': str(_pno).strip(),
+                        'name': _pnm, 'units': int(_qty), 'split_qty': int(_sq or 1),
+                        'pack_price': int(_cost or 0)}], created_by=_by)
+                    if _bt:
+                        _r['msg'] += f" · 구매비용 {_bt:,}원 청구({date.today()})"
+                except Exception as _be:
+                    _r['msg'] += f" · ⚠️ 구매비용 청구 실패: {_be}"
             st.session_state['_rs_adj_msg'] = {
                 'ok': _r['ok'],
                 'text': (f"🛠 {_owner_l} · {_pnm[:24] or _pno} — {_r['msg']}"
@@ -3948,12 +4007,18 @@ def _render_wait_assign(left_rows):
         _amt = sum(int(p['unit_price'] / max(1, p['split_qty']) * p['units_left'])
                    for p in _picks)
         st.markdown(f"**{_owner}** 에게 **{len(_picks)}종 · {fmt(_amt)}원** 배정합니다.")
+    _wbill = st.checkbox("💳 입고할 때 구매비용 지금 청구 (관리자가 대신 사서 보관)",
+                         value=True, key="rs_wait_bill", help="켜면 입고와 함께 **구매비용(구입가 × 수량)을 그 사람에게 청구**하고 재고를 '결제됨'으로 둡니다 — 나중에 본인 주문으로 나갈 때는 다시 청구하지 않습니다. 끄면 예전처럼 청구 없이 넣고, 나갈 때 구입가로 청구합니다.")
     _wb1, _wb2 = st.columns([2, 1])
     if _wb1.button(f"📦 {_owner} 재고로 입고 ({len(_picks)}종)", type="primary",
                    key="rs_wait_assign_go", disabled=not _picks or bool(_over),
                    use_container_width=True):
-        _res = _sc.receive_leftovers(str(date.today()), _picks)
+        _res = _sc.receive_leftovers(
+            str(date.today()), _picks, bill=_wbill,
+            created_by=st.session_state.get('user', {}).get('username', ''))
         _msg = f"📦 {_owner} 재고로 {_res['ok']}종 입고했습니다."
+        if _res.get('billed'):
+            _msg += f" 💳 구매비용 {fmt(_res['billed'])}원 청구({date.today()})."
         if _res.get('skipped'):
             _msg += f" (건너뜀 {_res['skipped']}종)"
         if _res.get('failed'):
@@ -4134,6 +4199,7 @@ def _render_lot_undo(key_prefix="rs"):
                 '입고': int(l['qty_in'] or 0),
                 '남음': int(l['qty_left'] or 0),
                 '판매사용': int(l.get('used') or 0),
+                '결제됨': bool(int(l.get('paid') or 0)),
                 '_id': int(l['id']),
             } for l in _view]),
             use_container_width=True, hide_index=True,
@@ -4142,10 +4208,32 @@ def _render_lot_undo(key_prefix="rs"):
                       '판매사용', '_id'],
             column_config={
                 '취소': st.column_config.CheckboxColumn('취소', help='체크한 입고를 지웁니다'),
+                '결제됨': st.column_config.CheckboxColumn(
+                    '결제됨', help='보유자가 이미 구입비를 낸 재고(입고 때 청구했거나 본인이 '
+                                  '직접 삼). 본인 주문으로 나갈 때 청구하지 않습니다. '
+                                  '바꾸면 아래 저장 버튼이 나옵니다.'),
                 '판매사용': st.column_config.NumberColumn(
                     '판매사용', format='%d', help='0보다 크면 지울 수 없습니다'),
                 '_id': None,
             })
+        # 결제됨 표시 바꾸기 — 예전 방식으로 넣었지만 따로 청구해 둔 재고 등을 바로잡는다
+        _orig_paid = {int(l['id']): bool(int(l.get('paid') or 0)) for l in _view}
+        _paid_chg = [r for r in _ed.to_dict('records')
+                     if bool(r.get('결제됨')) != _orig_paid.get(int(r['_id']), False)]
+        if _paid_chg:
+            st.info(f"💳 결제됨 표시를 바꾼 입고 {len(_paid_chg)}건 — "
+                    + " · ".join(f"{r['보유자']} {r['상품명'][:14]} → "
+                                 f"{'결제됨' if r.get('결제됨') else '미결제'}"
+                                 for r in _paid_chg[:5]))
+            if st.button(f"💳 결제됨 표시 저장 ({len(_paid_chg)}건)",
+                         key=f"{key_prefix}_lot_paid_save"):
+                from db_inventory import set_lot_paid
+                _n_ok = sum(1 for r in _paid_chg
+                            if set_lot_paid(int(r['_id']), 1 if r.get('결제됨') else 0))
+                st.session_state['_rs_lot_msg'] = {
+                    'ok': True, 'text': f"💳 결제됨 표시 {_n_ok}건 저장했습니다."}
+                st.rerun()
+
         _picked = [r for r in _ed.to_dict('records') if r.get('취소')]
         if not _picked:
             st.caption("되돌릴 입고를 체크하세요.")
@@ -4161,9 +4249,21 @@ def _render_lot_undo(key_prefix="rs"):
 
         if st.button(f"↩️ 선택한 {len(_picked)}건 입고 취소", key=f"{key_prefix}_lot_del"):
             _res = delete_lots([int(r['_id']) for r in _picked])
+            _ub = {}
+            if _res.get('deleted_ids'):
+                # 입고 때 청구했던 구매비용도 함께 지운다(입금완료분은 남긴다)
+                try:
+                    _ub = _sc.unbill_stock_intake(_res['deleted_ids'])
+                except Exception:
+                    _ub = {}
             if _res['deleted']:
                 _text = (f"↩️ 입고 {_res['deleted']}건을 취소했습니다 — "
                          "그만큼 **배정 대기**로 돌아왔습니다.")
+                if _ub.get('removed'):
+                    _text += f" 입고 때 넣은 구매비용 청구 {_ub['removed']}건도 지웠습니다."
+                if _ub.get('kept_paid'):
+                    _text += (f" ⚠️ 입금완료된 청구에 들어간 입고 청구 {len(_ub['kept_paid'])}건은 "
+                              "남겨 두었습니다 — 환불·조정이 필요합니다.")
                 if _res['skipped']:
                     _text += f" (건너뜀 {len(_res['skipped'])}건)"
             else:

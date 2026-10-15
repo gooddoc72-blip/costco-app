@@ -753,8 +753,14 @@ def build_shopping_bridge(order_date, users=None):
 
 def allocate_dispatched_to_receipt(receipt_items, dispatch_date, users=None,
                                    shopping_date=None, exclude_orders=None,
-                                   stock_pool=None, defer_stock=False):
+                                   stock_pool=None, defer_stock=False,
+                                   settled_qty=None):
     """오늘 출고된 주문 × 오늘 영수증 × 그날 장보기 목록 — 3자 매칭.
+
+    settled_qty: {(사용자, 주문번호): (다른 날 정산된 수량, 금액)} — 주면, 이미
+      정산된 주문이라도 **주문 수량이 남아 있으면 남은 수량만큼** 다시 매칭한다.
+      한 주문을 여러 날에 나눠 보낸 경우다(2개 주문을 하루 한 상자씩). 안 주면
+      종전대로 정산된 주문은 통째로 건너뛴다.
 
     정산 대상은 '오늘 일괄발송(출고)한 주문'이다. 돈이 나가는 시점이 발송이고,
     수익계산도 dispatch_log 기준이라 기준이 일치한다. 결제일(order_date)로 잡으면
@@ -823,8 +829,15 @@ def allocate_dispatched_to_receipt(receipt_items, dispatch_date, users=None,
             _ono2cno = {}
         for o in disp:
             ono = _norm(o.get('order_no'))
+            _rem = 0          # 나눠 보낸 주문의 남은 수량(0 = 해당 없음)
             if _excl and (uname, ono) in _excl:
-                continue
+                # 다른 날 이미 정산된 주문. 오늘도 발송 기록이 있고 주문 수량이
+                # 남았으면 나눠 보낸 것이다 — 남은 수량만 다시 매칭한다.
+                # (온라인몰 지정 건은 settled_qty에 없으므로 그대로 건너뛴다)
+                _sq0 = (settled_qty or {}).get((uname, ono))
+                _rem = (int(o.get('qty') or 1) - int(_sq0[0] or 0)) if _sq0 else 0
+                if _rem <= 0:
+                    continue
             onv = _norm(o.get('product_no'))
             nm = _norm(o.get('product_name'))
             prod = nmap.get(onv)
@@ -858,7 +871,7 @@ def allocate_dispatched_to_receipt(receipt_items, dispatch_date, users=None,
                 if _b:
                     costco_no, via = _b['costco'], 'name'
 
-            qty = int(o.get('qty') or 1)
+            qty = _rem if _rem > 0 else int(o.get('qty') or 1)
             _sq, _pk = _split_pack(prod)
 
             # ④ 재고 이월 — 오늘 영수증에 없으면 과거 구매분에서 찾는다.

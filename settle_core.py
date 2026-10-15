@@ -158,7 +158,12 @@ def to_ledger_rows(alloc_rows, settle_date, receipt_date=''):
         # 관리자 영수증·재고에서 나간 것이다. 관리자 돈이 나갔으니 청구 대상이다
         # (db_settle.recompute_invoice가 직접구매 계정은 이 행만 청구한다).
         row['proxy'] = 1 if (row['source'] != 'self' and _is_self(row['username'])) else 0
-        (out if amt > 0 else dropped).append(row)
+        # 본인 재고(이미 낸 것)를 본인 주문으로 내보낸 행은 0원이 정상이다 —
+        # 버리면 재고 장부에서 차감되지 않고(consume_stock_rows가 원장 행을 본다)
+        # 그 주문이 '청구 안 된 발송건'으로 남는다.
+        _own_free = (amt <= 0 and row['stock_owner']
+                     and row['stock_owner'] == row['username'])
+        (out if (amt > 0 or _own_free) else dropped).append(row)
     return out, dropped
 
 
@@ -187,7 +192,25 @@ def finalize(settle_date, alloc_rows, created_by='', with_fees=False,
     # 각 사용자 주문의 구입가(cost_price)에 영수증 실단가를 반영 — 수익계산이 본다
     applied = 0
     if apply_cost and alloc_rows:
-        applied = _rs.apply_receipt_settlement(alloc_rows)
+        # 나눠 보낸 주문은 날짜마다 따로 정산된다. 주문 구입가는 주문 한 건의 값이라
+        # 오늘 금액만 쓰면 앞 날짜 몫이 지워진다(2개 주문이 1개 값이 된다) —
+        # 다른 날 정산된 금액을 더해 쓴다. 한 날에만 정산된 주문은 더할 것이 없다.
+        try:
+            _prior = _ds.settled_qty_map(exclude_date=str(settle_date))
+        except Exception:
+            _prior = {}
+        _cost_rows = []
+        for _r in alloc_rows:
+            _pa = (_prior.get((str(_r.get('username') or ''),
+                               str(_r.get('order_no') or ''))) or (0, 0))[1]
+            _rr = (dict(_r, amount=int(_r.get('amount') or 0) + int(_pa or 0))
+                   if _pa else _r)
+            # 본인 재고(결제됨) 출고는 청구액이 0이지만 물건값이 0인 것은 아니다 —
+            # 수익계산이 공짜로 보지 않게 그 재고의 구입가를 주문 구입가로 쓴다.
+            if _i(_rr.get('cost_basis')) and not _i(_rr.get('amount')):
+                _rr = dict(_rr, amount=_i(_rr.get('cost_basis')))
+            _cost_rows.append(_rr)
+        applied = _rs.apply_receipt_settlement(_cost_rows)
 
     # 네이버번호 ↔ 코스트코번호 매핑 학습 — 다음 정산부터 번호로 바로 붙는다
     learned = {'filled': 0, 'by_user': {}}
@@ -333,8 +356,92 @@ def _memo_tag(settle_date):
     return f"영수증정산 {settle_date}"
 
 
-def receive_leftovers(settle_date, picks):
+STOCKIN_PREFIX = 'STOCKIN-'
+
+
+def bill_stock_intake(settle_date, owner, items, created_by=''):
+    """재고 입고분의 구매비용을 보유자에게 청구한다 — '관리자가 대신 사서 재고로 보관'.
+
+    items: [{lot_id, costco_no, name, units, split_qty, pack_price}]
+    주문번호는 STOCKIN-<lot_id> — 입고 1건에 청구 1줄. 같은 lot을 다시 청구해도
+    덮어쓸 뿐 두 번 청구되지 않는다. 입고를 취소하면 unbill_stock_intake가 지운다.
+
+    product_no는 비워 둔다. 채우면 공용 재고 계산(build_stock_pool)이 이 행을
+    '배치된 수량'으로 한 번, 재고 lot으로 또 한 번 빼서 남은 영수증 품목이 사라진다.
+    상품번호는 메모에 남긴다.
+    반환: 청구액 합계
+    """
+    try:
+        import receipt_settle as _rs
+        _proxy = 1 if _rs.is_self_purchase(owner) else 0
+    except Exception:
+        _proxy = 0
+    rows, tot = [], 0
+    for it in (items or []):
+        lid = _i(it.get('lot_id'))
+        units = _i(it.get('units'))
+        sq = max(1, _i(it.get('split_qty')) or 1)
+        pp = _i(it.get('pack_price'))
+        if not (lid and units > 0 and pp > 0):
+            continue
+        amt = int(pp / sq * units)
+        tot += amt
+        _packs = units / sq
+        rows.append({
+            'order_no': f"{STOCKIN_PREFIX}{lid}", 'product_no': '',
+            'product_name': f"재고 구입 · {str(it.get('name') or '')[:40]}",
+            'qty': max(1, int(round(_packs))) if _packs >= 1 else 1,
+            'split_qty': sq, 'pack': 1, 'unit_price': pp, 'amount': amt,
+            'source': 'direct', 'receipt_date': str(settle_date),
+            'memo': f"재고 입고 청구 · {it.get('costco_no') or ''} · {units}개"
+                    + (f"({_packs:g}팩)" if sq > 1 else ''),
+            'proxy': _proxy})
+    if rows:
+        _ds.merge_items(str(settle_date), str(owner), rows, created_by=created_by)
+    return tot
+
+
+def unbill_stock_intake(lot_ids):
+    """입고를 취소했으면 그 입고 청구(STOCKIN-<lot_id>)도 지운다. 입금완료분은 남긴다.
+
+    반환: {'removed': n, 'kept_paid': [lot_id...]}
+    """
+    ids = [int(x) for x in (lot_ids or []) if str(x).strip()]
+    out = {'removed': 0, 'kept_paid': []}
+    if not ids:
+        return out
+    conn = _ds._conn()
+    _ds.ensure(conn)
+    touched = set()
+    try:
+        for lid in ids:
+            ono = f"{STOCKIN_PREFIX}{lid}"
+            for r in conn.execute("SELECT settle_date, username FROM settle_item "
+                                  "WHERE order_no=?", (ono,)).fetchall():
+                sd, u = str(r[0]), str(r[1])
+                inv = conn.execute("SELECT status FROM settle_invoice WHERE settle_date=? "
+                                   "AND username=?", (sd, u)).fetchone()
+                if inv and str(inv[0]) == 'paid':
+                    out['kept_paid'].append(lid)
+                    continue
+                conn.execute("DELETE FROM settle_item WHERE order_no=? AND settle_date=? "
+                             "AND username=?", (ono, sd, u))
+                out['removed'] += 1
+                touched.add((sd, u))
+        conn.commit()
+    finally:
+        conn.close()
+    for sd, u in touched:
+        _ds.recompute_invoice(sd, u)
+    return out
+
+
+def receive_leftovers(settle_date, picks, bill=False, created_by=''):
     """잔량을 각 사용자 재고로 입고한다.
+
+    bill=True: 입고와 함께 구매비용을 보유자에게 청구하고 재고를 '결제됨'으로 둔다
+      (관리자가 대신 사서 그 사람 재고로 보관 — 나중에 본인 주문으로 나갈 때는
+      다시 청구하지 않는다). False면 예전처럼 청구 없이 넣고 나갈 때 청구한다.
 
     picks: [{costco_no, name, unit_price, split_qty, units_left, owner}]
 
@@ -368,7 +475,8 @@ def receive_leftovers(settle_date, picks):
     except Exception:
         _have = {}
 
-    res = {'ok': 0, 'skipped': 0, 'failed': [], 'dupe': []}
+    res = {'ok': 0, 'skipped': 0, 'failed': [], 'dupe': [], 'billed': 0}
+    _to_bill = {}
     for p in (picks or []):
         cno = str(p.get('costco_no') or '')
         owner = str(p.get('owner') or '')
@@ -386,13 +494,26 @@ def receive_leftovers(settle_date, picks):
                 pack_unit_cost=_i(p.get('unit_price')), qty_units=units,
                 split_qty=max(1, _i(p.get('split_qty')) or 1),
                 received_at=str(settle_date),
-                memo=_memo_tag(settle_date) + " · 미배정 잔량",
+                memo=_memo_tag(settle_date) + " · 미배정 잔량"
+                     + (" · 입고 청구" if bill else ""),
                 # 정가(할인 전) — 얼마짜리를 얼마에 샀는지 재고에도 남긴다
-                pack_list_price=_i(p.get('list_price')))
+                pack_list_price=_i(p.get('list_price')),
+                paid=1 if bill else 0)
             if lid:
                 res['ok'] += 1
+                if bill:
+                    _to_bill.setdefault(owner, []).append({
+                        'lot_id': lid, 'costco_no': cno, 'name': p.get('name'),
+                        'units': units, 'split_qty': p.get('split_qty'),
+                        'pack_price': _i(p.get('unit_price'))})
             else:
                 res['failed'].append(f"{str(p.get('name'))[:20]} (수량 0)")
         except Exception as e:
             res['failed'].append(f"{str(p.get('name'))[:20]} — {str(e)[:60]}")
+    for _ow, _its in _to_bill.items():
+        try:
+            res['billed'] += bill_stock_intake(settle_date, _ow, _its,
+                                               created_by=created_by)
+        except Exception as e:
+            res['failed'].append(f"{_ow} 입고 청구 실패 — {str(e)[:60]}")
     return res

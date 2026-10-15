@@ -269,7 +269,10 @@ def replace_items(settle_date, username, rows, created_by=''):
     try:
         _old_stock = _stock_orders(conn, "settle_date=? AND username=?",
                                    [str(settle_date), str(username)])
-        conn.execute("DELETE FROM settle_item WHERE settle_date=? AND username=?",
+        # 재고 입고 청구(STOCKIN-)는 매칭 결과가 아니라 입고 때 생긴 청구다 —
+        # 그날 매칭을 통째로 다시 써도 남겨야 한다(지우면 재고는 결제됨인데 돈은 안 받음)
+        conn.execute("DELETE FROM settle_item WHERE settle_date=? AND username=? "
+                     "AND order_no NOT LIKE 'STOCKIN-%'",
                      (str(settle_date), str(username)))
         n = _write_items(conn, settle_date, username, rows, created_by, now)
         conn.commit()
@@ -496,18 +499,27 @@ def delete_settlement(settle_date, username=None, only_status=None):
                 continue      # 청구서가 없으니 '청구 전'으로만 볼 수 있다
             targets.append(_u)
         _old_stock = []
+        _keep_stockin = []
         for u in targets:
             _old_stock += _stock_orders(conn, "settle_date=? AND username=?",
                                         [str(settle_date), u])
-            conn.execute("DELETE FROM settle_item WHERE settle_date=? AND username=?",
-                         (str(settle_date), u))
+            # 재고 입고 청구(STOCKIN-)는 매칭 정산을 취소해도 남긴다 — 재고가
+            # 그대로 있고 '결제됨'으로 잡혀 있으므로 청구도 남아야 한다.
+            # 지우려면 재고 입고 자체를 되돌린다(입고 취소가 함께 지운다).
+            conn.execute("DELETE FROM settle_item WHERE settle_date=? AND username=? "
+                         "AND order_no NOT LIKE 'STOCKIN-%'", (str(settle_date), u))
             conn.execute("DELETE FROM settle_invoice WHERE settle_date=? AND username=?",
                          (str(settle_date), u))
+            if conn.execute("SELECT COUNT(*) FROM settle_item WHERE settle_date=? "
+                            "AND username=?", (str(settle_date), u)).fetchone()[0]:
+                _keep_stockin.append(u)
         conn.commit()
     finally:
         conn.close()
     # 정산을 취소하면 그 정산이 재고 장부에서 뺀 것도 돌려놓는다
     _revert_stock(_old_stock)
+    for u in _keep_stockin:
+        recompute_invoice(settle_date, u)
     return len(targets), sorted(paid)
 
 
@@ -797,6 +809,30 @@ def settled_order_keys(exclude_date=None):
             sql += " AND settle_date<>?"
             args.append(str(exclude_date))
         return {(str(r['username']), str(r['order_no'])) for r in conn.execute(sql, args)}
+    finally:
+        conn.close()
+
+
+def settled_qty_map(exclude_date=None):
+    """{(사용자, 주문번호): (정산된 수량, 정산된 금액)} — 나눠 발송한 주문의 남은 몫 계산용.
+
+    한 주문을 이틀에 나눠 보내면(2개 주문 → 10/12 한 상자, 10/13 한 상자) 첫날
+    1개만 정산된다. 둘째 날 그 주문은 '이미 정산됨'이라 매칭에서 통째로 빠져,
+    남은 1개를 손으로 직접청구해야 했다. 남은 수량을 알 수 있게 합계를 돌려준다.
+    exclude_date는 settled_order_keys와 같다(다시 돌리는 그날 자신은 뺀다).
+    """
+    conn = _conn()
+    ensure(conn)
+    try:
+        sql = ("SELECT username, order_no, SUM(qty) AS q, SUM(amount) AS a "
+               "FROM settle_item WHERE order_no<>''")
+        args = []
+        if exclude_date:
+            sql += " AND settle_date<>?"
+            args.append(str(exclude_date))
+        sql += " GROUP BY username, order_no"
+        return {(str(r['username']), str(r['order_no'])): (_i(r['q']), _i(r['a']))
+                for r in conn.execute(sql, args)}
     finally:
         conn.close()
 

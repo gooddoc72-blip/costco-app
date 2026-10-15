@@ -718,15 +718,36 @@ def _admin_stock():
             packs = c6.number_input("수량(팩)", min_value=1, step=1, value=1, key="ml_packs")
             sq = c7.number_input("소분수", min_value=1, step=1, value=1, key="ml_sq")
             rdate = st.date_input("입고일", value=datetime.now(), key="ml_date")
+            # 누가 돈을 냈나 — 본인 구매·대신 구매는 '결제됨' 재고가 되어 본인 주문으로
+            # 나갈 때 다시 청구하지 않는다. 대신 구매는 입고와 함께 구매비용을 청구한다.
+            _K_SELF, _K_BILL, _K_OLD = ("본인이 직접 구매 — 청구 없음",
+                                        "관리자가 대신 구매 — 구매비용 지금 청구",
+                                        "나갈 때 청구(예전 방식)")
+            _kind = st.radio("입고 종류", [_K_SELF, _K_BILL, _K_OLD], horizontal=True,
+                             key="ml_kind")
             if st.button("입고", type="primary", key="ml_add"):
                 if not (name.strip() and pno.strip() and owner):
                     st.error("상품명·상품번호·보유자를 채우세요.")
                 else:
-                    add_lot(pno.strip(), name.strip(), owner, int(cost), int(packs),
-                            split_qty=int(sq), received_at=rdate.strftime("%Y-%m-%d"),
-                            list_price=int(lprice or cost))
+                    _lid = add_lot(pno.strip(), name.strip(), owner, int(cost), int(packs),
+                                   split_qty=int(sq), received_at=rdate.strftime("%Y-%m-%d"),
+                                   list_price=int(lprice or cost),
+                                   paid=0 if _kind == _K_OLD else 1)
+                    _bill_txt = ""
+                    if _lid and _kind == _K_BILL:
+                        try:
+                            import settle_core as _scx
+                            _bt = _scx.bill_stock_intake(
+                                rdate.strftime("%Y-%m-%d"), owner, [{
+                                    'lot_id': _lid, 'costco_no': pno.strip(),
+                                    'name': name.strip(), 'units': int(packs) * int(sq),
+                                    'split_qty': int(sq), 'pack_price': int(cost)}],
+                                created_by=USERNAME)
+                            _bill_txt = f" · 💳 구매비용 {_bt:,}원 청구"
+                        except Exception as _be:
+                            _bill_txt = f" · ⚠️ 구매비용 청구 실패: {_be}"
                     st.session_state['_ml_msg'] = (f"✅ 입고 완료 — {name.strip()[:30]} "
-                                                   f"{int(packs)}팩 → {owner}")
+                                                   f"{int(packs)}팩 → {owner}{_bill_txt}")
                     st.rerun()
 
     # ── 잘못 들어간 재고를 고치는 두 길 ──────────────────────

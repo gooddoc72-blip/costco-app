@@ -82,6 +82,76 @@ def _set_cache_helpers(shared_fn, user_fn, merged_fn, invalidate_fn, **kwargs):
     invalidate_data_cache = invalidate_fn
 
 
+def _render_unused_users(USERNAME):
+    """🧹 사용하지 않는 사용자 정리 — 근거를 보고 골라서 지운다.
+
+    미사용 기준: 정한 기간 동안 로그인·주문 수집·발송이 모두 없음.
+    예치금 잔액이나 미입금 청구가 있는 계정은 고를 수 없다(돈이 걸려 있다).
+    지우면 사용자 DB는 data/deleted_users/로 옮겨 보관하고 세션·예약 작업을
+    치운다. 정산·예치금 기록은 남는다.
+    """
+    st.divider()
+    with st.expander("🧹 사용하지 않는 사용자 정리", expanded=False):
+        from db_user_cleanup import user_activity, safe_delete_user
+        _days = st.number_input("미사용 기준 (일) — 이 기간 동안 로그인·주문 수집·발송이 모두 없으면 미사용",
+                                min_value=7, max_value=730, value=60, step=7,
+                                key="adm_unused_days")
+        try:
+            _acts = user_activity(int(_days))
+        except Exception as _e:
+            st.error(f"사용자 활동 조회 실패: {_e}")
+            return
+        _only = st.checkbox("미사용 사용자만 보기", value=True, key="adm_unused_only")
+        _rows = [a for a in _acts if a['unused'] or not _only]
+        _n_unused = sum(1 for a in _acts if a['unused'])
+        st.caption(f"일반 사용자 {len(_acts)}명 중 미사용 **{_n_unused}명** "
+                   f"(최근 {int(_days)}일 활동 없음). 마지막 활동이 오래된 순입니다.")
+        if not _rows:
+            st.success("미사용 사용자가 없습니다.")
+            return
+        _sig = hashlib.md5(("|".join(a['username'] for a in _rows) + str(_days)).encode()
+                           ).hexdigest()[:8]
+        _ed = st.data_editor(
+            pd.DataFrame([{
+                '삭제': False,
+                '이름': a['display_name'], '아이디': a['username'],
+                '마지막 활동': a['last_any'],
+                '마지막 로그인': a['last_login'], '마지막 주문수집': a['last_order'],
+                '마지막 발송': a['last_dispatch'], '주문 수': a['orders'],
+                '가입일': a['created_at'], '예약작업': a['cron'],
+                'DB(MB)': a['db_mb'],
+                '삭제 불가 사유': a['block_reason'],
+            } for a in _rows]),
+            use_container_width=True, hide_index=True, key=f"adm_unused_ed_{_sig}",
+            disabled=['이름', '아이디', '마지막 활동', '마지막 로그인', '마지막 주문수집',
+                      '마지막 발송', '주문 수', '가입일', '예약작업', 'DB(MB)', '삭제 불가 사유'],
+            column_config={'삭제': st.column_config.CheckboxColumn('삭제')})
+        _by_id = {a['username']: a for a in _rows}
+        _pick = [r['아이디'] for r in _ed.to_dict('records') if r.get('삭제')]
+        _blocked = [p for p in _pick if not _by_id[p]['deletable']]
+        if _blocked:
+            st.warning("돈이 걸려 있어 지울 수 없는 사용자는 빼고 진행합니다: "
+                       + " · ".join(f"**{_by_id[p]['display_name']}** ({_by_id[p]['block_reason']})"
+                                    for p in _blocked))
+        _go = [p for p in _pick if _by_id[p]['deletable']]
+        st.caption("지우면 로그인할 수 없고, 사용자 DB(주문·제품·설정)는 `data/deleted_users/`로 "
+                   "옮겨 보관합니다(복구 가능). 그 사용자의 자동 작업(예약)도 함께 지웁니다. "
+                   "정산·예치금 기록은 남습니다.")
+        if not _go:
+            return
+        st.error(f"🗑 **{len(_go)}명**을 삭제합니다: "
+                 + " · ".join(_by_id[p]['display_name'] for p in _go))
+        _conf = st.text_input("확인을 위해 **삭제** 라고 입력하세요", key="adm_unused_conf")
+        if st.button(f"🗑 선택한 {len(_go)}명 삭제", type="primary",
+                     disabled=(_conf.strip() != "삭제"), key="adm_unused_go"):
+            _res = [(p, *safe_delete_user(p, by=USERNAME)) for p in _go]
+            for _p, _ok, _msg in _res:
+                (st.success if _ok else st.error)(("✅ " if _ok else "❌ ") + _msg)
+            st.session_state.pop("adm_unused_conf", None)
+            if any(_ok for _, _ok, _ in _res):
+                st.rerun()
+
+
 def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     """👑 관리자 탭 렌더링."""
     def _gs(k, default=""):
@@ -163,10 +233,18 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     if c1.button(f"✅ 승인", key=f"approve2_{u['username']}", use_container_width=True):
                         approve_user(u['username'])
                         st.rerun()
-                if c2.button(f"🗑 삭제", key=f"del_{u['username']}", use_container_width=True):
-                    delete_user(u['username'])
-                    st.success(f"✅ '{u['username']}' 삭제 완료!")
-                    st.rerun()
+                # 삭제는 한 번 더 확인한다 — 예전엔 한 번 누르면 사용자 DB가 바로
+                # 지워졌다. 이제 안전 삭제(돈 걸린 계정 차단·DB 보관·예약 작업 정리)를 쓴다.
+                _del_ok = c2.checkbox("삭제 확인", key=f"delchk_{u['username']}")
+                if c2.button(f"🗑 삭제", key=f"del_{u['username']}", use_container_width=True,
+                             disabled=not _del_ok):
+                    from db_user_cleanup import safe_delete_user
+                    _ok, _msg = safe_delete_user(u['username'], by=USERNAME)
+                    if _ok:
+                        st.success(f"✅ {_msg}")
+                        st.rerun()
+                    else:
+                        st.error(f"❌ {_msg}")
                 reset_pw = c3.text_input("새 비밀번호", key=f"reset_{u['username']}", type="password")
                 if c3.button("비밀번호 초기화", key=f"resetbtn_{u['username']}", use_container_width=True):
                     # 붙여넣기로 딸려온 앞뒤 공백은 제거한다. 눈에 안 보이는 공백 하나 때문에
@@ -368,6 +446,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     st.success(f"✅ {u['username']}: 택배비 {int(_ship_new):,}원 / "
                                f"박스비 {int(_box_new):,}원 저장")
                     st.rerun()
+
+    _render_unused_users(USERNAME)
 
     # ── 🛍 네이버 등록 집계 (사용자별) ────────────────────────────
     #   '누가 자기 토큰으로 몇 개 올렸나'를 한 화면에서 본다. 기록 지점은

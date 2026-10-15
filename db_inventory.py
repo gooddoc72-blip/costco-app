@@ -93,6 +93,13 @@ def _ensure_tables(conn):
         conn.execute("ALTER TABLE inventory_lots ADD COLUMN list_price INTEGER DEFAULT 0")
     except Exception:
         pass
+    # 결제됨(paid=1) — 이 재고의 구입비를 보유자가 이미 냈다(입고 때 청구했거나
+    # 본인이 직접 샀다). 그런 재고를 본인 주문으로 내보낼 때는 다시 청구하지 않는다.
+    # 0 = 예전 방식: 입고 때 청구하지 않았으므로 나갈 때 구입가로 청구한다.
+    try:
+        conn.execute("ALTER TABLE inventory_lots ADD COLUMN paid INTEGER DEFAULT 0")
+    except Exception:
+        pass
     conn.execute("CREATE INDEX IF NOT EXISTS idx_lot_pno ON inventory_lots(product_no, status)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_lot_owner ON inventory_lots(owner)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_lot_recv ON inventory_lots(received_at)")
@@ -324,8 +331,11 @@ def receive_deal_lots(deal_id: int, received_at: str = '', memo: str = '') -> in
 
 def add_lot(product_no: str, product_name: str, owner: str, unit_cost: int,
             qty_packs: int, split_qty: int = 1, received_at: str = '',
-            deal_id: int = 0, memo: str = '', list_price: int = 0) -> int:
-    """추천건 없이 재고를 직접 넣는 경로(관리자 수동 입고)."""
+            deal_id: int = 0, memo: str = '', list_price: int = 0,
+            paid: int = 0) -> int:
+    """추천건 없이 재고를 직접 넣는 경로(관리자 수동 입고).
+
+    paid=1: 보유자가 이미 낸 재고(입고 때 청구했거나 본인이 직접 삼)."""
     sq = max(1, int(split_qty or 1))
     units = int(qty_packs or 0) * sq
     if units <= 0:
@@ -334,12 +344,12 @@ def add_lot(product_no: str, product_name: str, owner: str, unit_cost: int,
     _ensure_tables(conn)
     cur = conn.execute("""INSERT INTO inventory_lots
         (deal_id, product_no, product_name, owner, unit_cost, split_qty,
-         qty_in, qty_left, received_at, status, memo, created_at, list_price)
-        VALUES (?,?,?,?,?,?,?,?,?, 'ACTIVE', ?, ?, ?)""",
+         qty_in, qty_left, received_at, status, memo, created_at, list_price, paid)
+        VALUES (?,?,?,?,?,?,?,?,?, 'ACTIVE', ?, ?, ?, ?)""",
         (int(deal_id or 0), str(product_no or ''), str(product_name or ''), str(owner),
          int(unit_cost or 0) // sq, sq, units, units,
          received_at or _today(), str(memo or ''), _now(),
-         int(list_price or 0) // sq))
+         int(list_price or 0) // sq, 1 if paid else 0))
     lot_id = cur.lastrowid
     conn.commit()
     conn.close()
@@ -349,7 +359,7 @@ def add_lot(product_no: str, product_name: str, owner: str, unit_cost: int,
 def add_lot_units(product_no: str, product_name: str, owner: str,
                   pack_unit_cost: int, qty_units: int, split_qty: int = 1,
                   received_at: str = '', memo: str = '',
-                  pack_list_price: int = 0) -> int:
+                  pack_list_price: int = 0, paid: int = 0) -> int:
     """소분 단위 수량으로 직접 입고 (영수증 정산의 '남은 재고'용).
 
     add_lot은 팩 수를 받아 units = 팩수 x split_qty로 환산하는데, 영수증에서
@@ -365,12 +375,12 @@ def add_lot_units(product_no: str, product_name: str, owner: str,
     _ensure_tables(conn)
     cur = conn.execute("""INSERT INTO inventory_lots
         (deal_id, product_no, product_name, owner, unit_cost, split_qty,
-         qty_in, qty_left, received_at, status, memo, created_at, list_price)
-        VALUES (?,?,?,?,?,?,?,?,?, 'ACTIVE', ?, ?, ?)""",
+         qty_in, qty_left, received_at, status, memo, created_at, list_price, paid)
+        VALUES (?,?,?,?,?,?,?,?,?, 'ACTIVE', ?, ?, ?, ?)""",
         (0, str(product_no or ''), str(product_name or ''), str(owner),
          int(pack_unit_cost or 0) // sq, sq, units, units,
          received_at or _today(), str(memo or ''), _now(),
-         int(pack_list_price or 0) // sq))
+         int(pack_list_price or 0) // sq, 1 if paid else 0))
     lot_id = cur.lastrowid
     conn.commit()
     conn.close()
@@ -379,7 +389,7 @@ def add_lot_units(product_no: str, product_name: str, owner: str,
 
 def adjust_stock(owner: str, product_no: str, units: int, reason: str,
                  by: str = '', product_name: str = '', unit_cost: int = 0,
-                 split_qty: int = 1) -> dict:
+                 split_qty: int = 1, paid: int = 0) -> dict:
     """관리자 수동 입출고 — 실물과 장부가 어긋났을 때 맞춘다.
 
     자동 경로(영수증 배정·판매 차감)만으로는 맞출 수 없는 일이 생긴다.
@@ -412,10 +422,12 @@ def adjust_stock(owner: str, product_no: str, units: int, reason: str,
             product_no=product_no, product_name=product_name, owner=owner,
             pack_unit_cost=int(unit_cost or 0), qty_units=units,
             split_qty=max(1, int(split_qty or 1)), received_at=_today(),
-            memo="관리자 수동 입고 · %s%s" % (note, (" (%s)" % by) if by else ''))
+            memo="관리자 수동 입고 · %s%s" % (note, (" (%s)" % by) if by else ''),
+            paid=paid)
         if not lot_id:
             return {'ok': False, 'msg': '입고에 실패했습니다.', 'units': 0, 'lots': 0}
-        return {'ok': True, 'msg': '입고 %d개' % units, 'units': units, 'lots': 1}
+        return {'ok': True, 'msg': '입고 %d개' % units, 'units': units, 'lots': 1,
+                'lot_id': int(lot_id)}
 
     need = -units
     conn = _conn()
@@ -497,6 +509,7 @@ def get_stock_summary(owner: str = None) -> list:
     _ensure_tables(conn)
     sql = """SELECT product_no, product_name, owner,
                     SUM(qty_left) AS qty_left, SUM(qty_in) AS qty_in,
+                    SUM(CASE WHEN COALESCE(paid,0)=1 THEN qty_left ELSE 0 END) AS paid_left,
                     MAX(unit_cost) AS unit_cost,
                     MAX(COALESCE(list_price, 0)) AS list_price,
                     MIN(received_at) AS oldest_at,
@@ -510,6 +523,78 @@ def get_stock_summary(owner: str = None) -> list:
     rows = conn.execute(sql, params).fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+def set_lot_paid(lot_id: int, paid: int) -> bool:
+    """재고 한 건의 결제됨 표시를 바꾼다(이미 따로 청구한 옛 재고를 바로잡을 때)."""
+    conn = _conn()
+    _ensure_tables(conn)
+    try:
+        cur = conn.execute("UPDATE inventory_lots SET paid=? WHERE id=?",
+                           (1 if paid else 0, int(lot_id)))
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def own_unpaid_units(owner: str, product_no: str, units: int, order_no: str = '') -> dict:
+    """보유자가 자기 재고에서 units개를 내보낼 때 그중 **아직 안 낸** 수량과 금액.
+
+    차감 순서는 consume_for_sale(owner=…)와 같다(오래된 입고부터). 결제된 재고
+    (입고 때 청구했거나 본인이 직접 산 것)는 다시 청구하지 않고, 예전 방식으로
+    들어온 미결제 재고만 그 구입가로 청구한다.
+    반환: {'unpaid_units', 'unpaid_amount', 'paid_units', 'have'}
+    """
+    out = {'unpaid_units': 0, 'unpaid_amount': 0, 'paid_units': 0, 'have': 0}
+    need = int(units or 0)
+    if need <= 0 or not str(owner or '').strip() or not str(product_no or '').strip():
+        return out
+    conn = _conn()
+    _ensure_tables(conn)
+    # 발송할 때 이미 그 재고에서 빠졌으면(일괄발송의 자동 차감) 남은 재고가 아니라
+    # **실제로 빠진 lot**으로 판단해야 한다 — 남은 재고를 보면 다음 lot을 보게 된다.
+    if str(order_no or '').strip():
+        try:
+            mv = conn.execute(
+                """SELECT m.qty, m.unit_cost, COALESCE(l.paid,0) AS paid
+                   FROM inventory_moves m LEFT JOIN inventory_lots l ON l.id=m.lot_id
+                   WHERE m.order_no=? AND m.owner=?""",
+                (str(order_no).strip(), str(owner).strip())).fetchall()
+        except Exception:
+            mv = []
+        if mv:
+            conn.close()
+            for m in mv:
+                q = int(m['qty'] or 0)
+                if int(m['paid'] or 0):
+                    out['paid_units'] += q
+                else:
+                    out['unpaid_units'] += q
+                    out['unpaid_amount'] += q * int(m['unit_cost'] or 0)
+            out['have'] = out['paid_units'] + out['unpaid_units']
+            return out
+    try:
+        lots = conn.execute(
+            """SELECT qty_left, unit_cost, COALESCE(paid,0) AS paid FROM inventory_lots
+               WHERE product_no=? AND owner=? AND status='ACTIVE' AND qty_left>0
+               ORDER BY received_at ASC, id ASC""",
+            (str(product_no).strip(), str(owner).strip())).fetchall()
+    finally:
+        conn.close()
+    for lot in lots:
+        out['have'] += int(lot['qty_left'] or 0)
+    for lot in lots:
+        if need <= 0:
+            break
+        take = min(need, int(lot['qty_left'] or 0))
+        if int(lot['paid'] or 0):
+            out['paid_units'] += take
+        else:
+            out['unpaid_units'] += take
+            out['unpaid_amount'] += take * int(lot['unit_cost'] or 0)
+        need -= take
+    return out
 
 
 # ── ④ 판매 차감 (핵심) ────────────────────────────────────
@@ -793,7 +878,7 @@ def delete_lots(lot_ids: list) -> dict:
         return {'deleted': 0, 'skipped': []}
     conn = _conn()
     _ensure_tables(conn)
-    out = {'deleted': 0, 'skipped': []}
+    out = {'deleted': 0, 'skipped': [], 'deleted_ids': []}
     try:
         for lid in ids:
             row = conn.execute(
@@ -811,6 +896,7 @@ def delete_lots(lot_ids: list) -> dict:
                 continue
             conn.execute("DELETE FROM inventory_lots WHERE id=?", (lid,))
             out['deleted'] += 1
+            out['deleted_ids'].append(lid)
         conn.commit()
     finally:
         conn.close()
