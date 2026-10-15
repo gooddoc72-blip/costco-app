@@ -1051,17 +1051,39 @@ def init_user_db(username):
 
 # ── 설정 ────────────────────────────────────────────────
 
+def _no_settings_table(e):
+    """사용자 DB에 settings 표가 없다 — 방금 삭제된(보관 폴더로 옮겨진) 사용자다.
+
+    여러 명을 한꺼번에 지우는 사이 다른 화면 실행이 옛 사용자 목록으로 그 사람
+    설정을 읽으면, 연결이 빈 DB 파일을 새로 만들고 'no such table'로 화면이
+    통째로 죽었다(10/15). 없는 사람의 설정은 빈 값으로 본다.
+    """
+    return "no such table" in str(e).lower()
+
+
 def get_all_settings(username):
     conn = get_user_db(username)
-    rows = conn.execute("SELECT key, value FROM settings").fetchall()
-    conn.close()
+    try:
+        rows = conn.execute("SELECT key, value FROM settings").fetchall()
+    except sqlite3.OperationalError as e:
+        if not _no_settings_table(e):
+            raise
+        rows = []
+    finally:
+        conn.close()
     return {r['key']: r['value'] for r in rows}
 
 
 def get_setting(username, key):
     conn = get_user_db(username)
-    row = conn.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
-    conn.close()
+    try:
+        row = conn.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+    except sqlite3.OperationalError as e:
+        if not _no_settings_table(e):
+            raise
+        row = None
+    finally:
+        conn.close()
     return row['value'] if row else ''
 
 
