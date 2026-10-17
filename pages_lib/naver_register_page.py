@@ -516,16 +516,17 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             _tr.append(
                 '<tr>'
                 '<th style="background:#f5f5f5;border:1px solid #ddd;padding:10px 12px;'
-                'text-align:center;width:28%;font-weight:700;color:#333;white-space:nowrap">'
+                'text-align:center;width:25%;font-weight:700;color:#333;word-break:keep-all">'
                 f'{_hm.escape(_lbl)}</th>'
                 '<td style="border:1px solid #ddd;padding:10px 12px;text-align:left;'
-                f'color:#333;line-height:1.6">{_cell(_v)}</td></tr>')
+                f'width:75%;color:#333;line-height:1.6;word-break:keep-all;overflow-wrap:anywhere">{_cell(_v)}</td></tr>')
         if not _tr:
             return ""
         return ('<div style="max-width:720px;margin:24px auto 8px;padding:0 12px">'
                 '<div style="font-size:20px;font-weight:800;text-align:center;'
                 'padding:12px 0;color:#222">제품 상세정보</div>'
-                '<table style="width:100%;border-collapse:collapse;font-size:15px">'
+                '<table style="width:100%;table-layout:fixed;border-collapse:collapse;font-size:15px">'
+                '<colgroup><col style="width:25%"><col style="width:75%"></colgroup>'
                 + ''.join(_tr) + '</table></div>')
 
     def _build_detail(name, imgs, desc="", food_html=""):

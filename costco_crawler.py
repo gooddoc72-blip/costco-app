@@ -1192,16 +1192,17 @@ def build_spec_table_html(spec: dict) -> str:
             continue
         rows.append(
             '<tr><th style="background:#f5f5f5;border:1px solid #ddd;padding:10px 12px;'
-            'text-align:center;width:32%;font-weight:700;color:#333;white-space:nowrap">'
+            'text-align:center;width:25%;font-weight:700;color:#333;word-break:keep-all">'
             + _h.escape(str(k)) + '</th>'
             '<td style="border:1px solid #ddd;padding:10px 12px;text-align:left;'
-            'color:#333;line-height:1.6">' + _cell(v) + '</td></tr>')
+            'width:75%;color:#333;line-height:1.6;word-break:keep-all;overflow-wrap:anywhere">' + _cell(v) + '</td></tr>')
     if not rows:
         return ""
     return ('<div style="max-width:720px;margin:28px auto 8px;padding:0 12px">'
             '<div style="font-size:20px;font-weight:800;text-align:center;'
             'padding:12px 0;color:#222">제품 상세정보</div>'
-            '<table style="width:100%;border-collapse:collapse;font-size:15px">'
+            '<table style="width:100%;table-layout:fixed;border-collapse:collapse;font-size:15px">'
+            '<colgroup><col style="width:25%"><col style="width:75%"></colgroup>'
             + "".join(rows) + "</table></div>")
 
 
