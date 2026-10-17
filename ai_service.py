@@ -515,6 +515,12 @@ def gemini_vision(api_key, image_bytes, media_type, system, user_text,
         # pro(영수증 판독)는 thinking이 부호·검산 정확도를 올리므로 켜둔다.
         if not thinking:
             body["generationConfig"]["thinkingConfig"] = {"thinkingBudget": 0}
+        else:
+            # 사고 토큰도 maxOutputTokens에서 깎인다. 본문 예산(4000)만 주면 사고가
+            # 다 먹고 JSON이 중간에 잘려, pro 판독이 매번 버려지고 flash로 넘어갔다
+            # (10/17 영수증: pro 출력 3996/4000 4회 연속 → 전부 flash 결과 채택).
+            # 본문 예산은 그대로 두고 사고 몫을 따로 얹는다.
+            body["generationConfig"]["maxOutputTokens"] = max_tokens + 12000
         return _gemini_post(api_key, model, body, timeout=180 if thinking else 90,
                            feature=feature)
     except Exception as e:

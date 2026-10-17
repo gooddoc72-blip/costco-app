@@ -1024,20 +1024,29 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 else:
                     st.warning(f"{_dsel} 영수증을 찾지 못했습니다.")
         _seed = st.session_state.get('rs_receipt_items') or []
+    # 영수증 날짜는 **줄마다** 들고 다닌다(표의 '영수증일' 칸).
+    # 예전엔 상품번호→날짜 사전으로 되붙였는데, 두 날 영수증을 같이 올리면
+    # 양쪽에 다 있는 상품은 나중 날짜 하나로 덮였다. 저장은 (날짜,번호,이름)이
+    # 키라 앞 날 줄이 통째로 사라졌다 — 10/15·10/16을 함께 올린 날 15일 다우니·
+    # 이디야골드·라페르미에 등 6줄이 16일로 옮겨지고 15일 수량은 없어졌다.
+    # 사전은 날짜 칸이 빈 줄(직접 추가한 줄)의 보조값으로만 쓴다.
     _rd_by_cno = {_n(p.get('상품번호')): (p.get('receipt_date', '') or '')
                   for p in _seed if _n(p.get('상품번호'))}
-    _list_by_cno = {_n(p.get('상품번호')): int(p.get('정가단가') or 0) for p in _seed}
-    _seed_rows = [{'상품번호': _n(p.get('상품번호')), '상품명': _n(p.get('상품명')),
+    _seed_rows = [{'영수증일': _n(p.get('receipt_date'))[:10],
+                   '상품번호': _n(p.get('상품번호')), '상품명': _n(p.get('상품명')),
                    '수량': int(p.get('수량') or 1),
                    '정가': int(p.get('정가단가') or p.get('단가') or 0),
                    '할인': int(p.get('할인') or 0),
                    '단가': int(float(p.get('단가') or 0))}
-                  for p in _seed] or [{'상품번호': '', '상품명': '', '수량': 1,
+                  for p in _seed] or [{'영수증일': '', '상품번호': '', '상품명': '', '수량': 1,
                                        '정가': 0, '할인': 0, '단가': 0}]
     edited = st.data_editor(
         pd.DataFrame(_seed_rows), num_rows='dynamic', use_container_width=True,
         key=f"rs_item_editor_{hashlib.md5(str(_seed_rows).encode()).hexdigest()[:8]}",
         column_config={
+            '영수증일': st.column_config.TextColumn(
+                '영수증일', help='이 줄이 찍힌 영수증 날짜(YYYY-MM-DD). 비우면 같이 올린 '
+                               '영수증 날짜나 정산 날짜로 채웁니다.'),
             '상품번호': st.column_config.TextColumn('코스트코 상품번호'),
             '상품명': st.column_config.TextColumn('상품명'),
             '수량': st.column_config.NumberColumn('수량', min_value=1, step=1),
@@ -1076,7 +1085,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             receipt_items.append({'상품번호': cno, '상품명': _n(r.get('상품명')),
                                   '수량': _qy, '단가': up,
                                   '정가단가': _lp or up, '할인': _dc,
-                                  'receipt_date': _rd_by_cno.get(cno, '')})
+                                  'receipt_date': _row_rd(r.get('영수증일'))
+                                                  or _rd_by_cno.get(cno, '')})
     # 날짜를 못 읽은 줄을 채운다. 긴 영수증을 여러 장으로 나눠 찍으면 날짜는
     # 맨 아래 한 장에만 찍혀 있어 나머지 사진의 품목은 날짜가 비고, 표에 직접
     # 넣은 줄도 날짜가 없다. 저장은 날짜 없는 줄을 버리므로(_persist_receipt)
@@ -4451,3 +4461,10 @@ def _render_reset_panel(dmap, USERNAME=''):
 
 def _n(s):
     return str(s or '').strip()
+
+
+def _row_rd(v):
+    """표 '영수증일' 칸 → 'YYYY-MM-DD'. 빈 칸·NaN·형식이 틀린 값은 ''(보조값으로 채움)."""
+    import re as _re
+    _m = _re.match(r'\s*(\d{4})[-./](\d{1,2})[-./](\d{1,2})', str(v or ''))
+    return f"{_m.group(1)}-{int(_m.group(2)):02d}-{int(_m.group(3)):02d}" if _m else ''
