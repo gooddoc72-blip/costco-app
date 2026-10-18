@@ -626,6 +626,56 @@ def match_product_to_db(username, store_product_name, product_no=None,
 #  '구매가 없는 항목 연결'에 뜬다 — 틀린 값을 조용히 쓰는 것보다 안전하다.
 NAME_MATCH_MIN_COMBINED = 0.30
 
+#: 영수증 영문 약칭 → 한글 뜻. 영수증은 'KS STRAWBERRIES'처럼 영어로 찍히고
+#  네이버 상품명은 '커클랜드 시그니처 냉동딸기'라 공통 낱말이 하나도 없어 점수가 0이다.
+#  그래서 영수증 가격(공유DB 692290 21,990원)이 사용자 제품에 닿지 못했다(10/18).
+#  영어를 한글로 **바꾼 이름을 따로** 만들어 원래 이름과 둘 중 높은 점수를 쓴다
+#  (name_score) — 원래 영어 이름으로 맞던 상품은 그대로 맞는다. 덧붙이면 영어
+#  낱말이 분모를 키워 오히려 안 맞는다.
+#  KS는 '커클랜드'(일반어라 점수에 안 들어감)로만 바꾼다. '시그니처'까지 넣으면
+#  KS 그래놀라 바가 '커클랜드 시그니처 아몬드'에 붙는 식의 오매칭이 생긴다.
+#  코스트코 영수증의 영문 과일·베리는 냉동 커클랜드 제품이라 '냉동○○'도 함께 단다.
+RECEIPT_EN_KO = {
+    'KS': '커클랜드', 'KIRKLAND': '커클랜드',
+    'STRAWBERRIES': '딸기 냉동딸기', 'STRAWBERRY': '딸기 냉동딸기',
+    'BLUEBERRIES': '블루베리 냉동블루베리', 'BLUEBERRY': '블루베리 냉동블루베리',
+    'RASPBERRIES': '라즈베리', 'CHERRIES': '체리', 'MANGO': '망고',
+    'BERRY': '베리', 'AVOCADO': '아보카도', 'SALMON': '연어', 'BACON': '베이컨',
+    'BUTTER': '버터', 'CHEESE': '치즈', 'ALMONDS': '아몬드', 'ALMOND': '아몬드',
+    'WALNUTS': '호두', 'CASHEWS': '캐슈넛', 'PECANS': '피칸', 'GRANOLA': '그래놀라',
+    'COFFEE': '커피', 'OLIVE': '올리브', 'HONEY': '꿀',
+}
+_EN_WORD_RE = re.compile(r'[A-Za-z]+')
+
+
+@lru_cache(maxsize=16384)
+def ko_alias(name: str) -> str:
+    """영문 약칭을 한글 뜻으로 바꾼 이름. 바꿀 낱말이 없으면 그대로."""
+    return _EN_WORD_RE.sub(lambda m: RECEIPT_EN_KO.get(m.group(0).upper(), m.group(0)),
+                           name or '')
+
+
+def name_score(order_name: str, ref_name: str):
+    """(토큰 점수, 비교에 쓴 이름) — 원래 이름과 한글로 바꾼 이름 중 높은 쪽."""
+    _s = _token_score(order_name, ref_name or '')
+    _ko = ko_alias(ref_name or '')
+    if _ko != (ref_name or ''):
+        _sk = _token_score(order_name, _ko)
+        if _sk > _s:
+            return _sk, _ko
+    return _s, (ref_name or '')
+
+
+#: 'x 162개' 같은 팔레트·대량 묶음. 온라인몰엔 낱개 상품과 이름이 거의 같은
+#  팔레트가 따로 있어(커클랜드 냉동딸기 2.72kg x 162개, 3,299,000원) 이름으로
+#  찾으면 그쪽이 붙어 구입가가 수백만 원이 됐다. 번호가 정확히 같을 때만 쓴다.
+_PALLET_RE = re.compile(r'x\s*(\d{3,})\s*개', re.IGNORECASE)
+
+
+def is_pallet_name(name: str) -> bool:
+    _m = _PALLET_RE.search(name or '')
+    return bool(_m and int(_m.group(1)) >= 100)
+
 
 def match_shared_product(product_name, product_no=None, return_score=False,
                          _shared_prods=None):
@@ -652,15 +702,16 @@ def match_shared_product(product_name, product_no=None, return_score=False,
             hit = idx['by_pno'].get(str(_cp))
             if hit:
                 return (hit, 1.0) if return_score else hit
-    best_score, best_p = 0.0, None
+    best_score, best_p, _cn = 0.0, None, ''
     for p in products:
+        if is_pallet_name(p.get('costco_name') or '') and not is_pallet_name(product_name):
+            continue                      # 팔레트는 이름으로 붙이지 않는다
         for field in ('match_keyword', 'costco_name'):
-            score = _token_score(product_name, p.get(field) or '')
+            score, _used = name_score(product_name, p.get(field) or '')
             if score > best_score:
-                best_score, best_p = score, p
+                best_score, best_p, _cn = score, p, _used
     if best_score >= 0.5 and best_p is not None:
         # 낱말이 겹친다고 같은 상품은 아니다 — 용량·브랜드까지 보는 종합 점수로 한 번 더 건다.
-        _cn = best_p.get('costco_name') or best_p.get('match_keyword') or ''
         if _combined_match_score(product_name, _cn)['total'] >= NAME_MATCH_MIN_COMBINED:
             return (best_p, best_score) if return_score else best_p
         return (None, best_score) if return_score else None

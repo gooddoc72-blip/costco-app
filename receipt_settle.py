@@ -15,7 +15,7 @@ from datetime import datetime, timedelta
 
 from db import get_user_db, get_all_users, get_all_products
 from services import (resolve_pack_factor, _token_score, is_costco_pno,
-                      _combined_match_score)
+                      _combined_match_score, name_score)
 
 #: 상품명 유사도 폴백 하한. 네이버 상품명은 SEO 키워드가 붙어 길고 영수증명은
 #  축약·영문이라 공통 토큰 비율이 구조적으로 낮다. 0.55에서는 명백히 같은 상품도
@@ -53,7 +53,8 @@ def best_name_match(order_name, candidates, name_key="name"):
         _rn = _norm((_c or {}).get(name_key))
         if not _rn:
             continue
-        _t = _token_score(_nm, _rn)
+        # 영수증 영문 약칭(KS STRAWBERRIES)은 한글로 바꾼 이름으로도 견준다.
+        _t, _rn = name_score(_nm, _rn)
         if _t < NAME_MATCH_MIN:
             continue
         _s = _combined_match_score(_nm, _rn)["total"]
