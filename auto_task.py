@@ -177,7 +177,19 @@ def auto_save_profit(username, date):
         _dc.commit(); _dc.close()
     except Exception:
         pass
-    _exist = _manual
+    _exist = set(_manual)
+    # 다른 날짜에 이미 저장된 주문은 건너뛴다. 8~9월에 같은 주문이 이틀 연속
+    # daily_orders에 들어가(주문수집 이월 중복, 9/28 수정) 여기서 날짜마다 다시
+    # 저장돼 월 매출·수익이 두 번 잡혔다(oxo 9월 701행 중 559행). 원인은 고쳤지만
+    # 같은 일이 다시 생겨도 수익이 부풀지 않게 막아 둔다.
+    try:
+        _dc = get_user_db(username)
+        _exist |= {str(r[0]) for r in _dc.execute(
+            "SELECT DISTINCT order_no FROM profit_settlements "
+            "WHERE settlement_date!=? AND COALESCE(order_no,'')!=''", (date,))}
+        _dc.close()
+    except Exception:
+        pass
     ps_rows = []
     for r in rows:
         _rec = str(r.get('recipient', '') or '')

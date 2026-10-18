@@ -218,6 +218,104 @@ def get_profit_history(username: str, date_from: str = '', date_to: str = '',
     return [dict(r) for r in rows]
 
 
+def calc_row_profit(r: dict) -> int:
+    """저장 행 → 수익. 일별 정산저장(save.py)·통계(db_stats)와 같은 공식.
+    수익 = (정산예정 + 고객배송비 전액) − (구입가 + 택배비 + 박스비)."""
+    return (int(r.get('settlement_amount') or 0) + int(r.get('shipping_fee') or 0)
+            - int(r.get('cost_price') or 0) - int(r.get('delivery_cost') or 0)
+            - int(r.get('box_cost') or 0))
+
+
+def get_month_settlements(username: str, year_month: str) -> list:
+    """한 달(YYYY-MM) 정산저장 행 전부 — 월별 분석·점검용."""
+    conn = get_user_db(username)
+    _ensure_tables(conn)
+    rows = conn.execute(
+        "SELECT * FROM profit_settlements WHERE substr(settlement_date,1,7)=? "
+        "ORDER BY settlement_date, product_name, recipient", (str(year_month),)
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_profit_months(username: str) -> list:
+    """정산저장 데이터가 있는 달(최신순)."""
+    conn = get_user_db(username)
+    _ensure_tables(conn)
+    rows = conn.execute(
+        "SELECT DISTINCT substr(settlement_date,1,7) m FROM profit_settlements "
+        "WHERE settlement_date!='' ORDER BY m DESC").fetchall()
+    conn.close()
+    return [r['m'] for r in rows]
+
+
+#: 월별 화면에서 고칠 수 있는 칸 — 주문 자체(주문번호·수량·매출)는 고치지 않는다.
+#  매출·수량은 네이버에서 온 사실이고, 틀렸다면 그날을 다시 수집해야 한다.
+EDITABLE_PS_FIELDS = ('cost_price', 'delivery_cost', 'box_cost', 'settlement_amount')
+
+
+def update_profit_rows(username: str, edits: dict) -> int:
+    """월별 화면 수정분 반영. edits: {id: {필드: 값}}. 수익은 다시 계산해 저장한다.
+
+    수익을 같이 고치지 않으면 저장값(profit)과 원가가 어긋난다 — 다른 화면은
+    재계산하지만 저장값을 읽는 곳도 있어 둘이 달라지면 화면마다 수익이 다르다.
+    """
+    if not edits:
+        return 0
+    conn = get_user_db(username)
+    _ensure_tables(conn)
+    n = 0
+    for _id, ch in edits.items():
+        ch = {k: max(0, int(v or 0)) for k, v in (ch or {}).items()
+              if k in EDITABLE_PS_FIELDS}
+        if not ch:
+            continue
+        row = conn.execute("SELECT * FROM profit_settlements WHERE id=?", (int(_id),)).fetchone()
+        if not row:
+            continue
+        r = dict(row)
+        r.update(ch)
+        _sets = ", ".join(f"{k}=?" for k in ch)
+        conn.execute(f"UPDATE profit_settlements SET {_sets}, profit=? WHERE id=?",
+                     list(ch.values()) + [calc_row_profit(r), int(_id)])
+        n += 1
+    conn.commit()
+    conn.close()
+    return n
+
+
+def get_settlements_by_order_nos(username: str, order_nos: list) -> list:
+    """주문번호들의 정산저장 행 전부(날짜 무관) — 달을 넘긴 중복(9/30·10/1)까지 보려고."""
+    order_nos = [str(o) for o in (order_nos or []) if str(o or '').strip()]
+    if not order_nos:
+        return []
+    conn = get_user_db(username)
+    _ensure_tables(conn)
+    out = []
+    for i in range(0, len(order_nos), 900):          # SQLite 변수 한도
+        ch = order_nos[i:i + 900]
+        out += [dict(r) for r in conn.execute(
+            "SELECT * FROM profit_settlements WHERE order_no IN (%s)" % ",".join("?" * len(ch)),
+            ch).fetchall()]
+    conn.close()
+    return out
+
+
+def delete_profit_rows(username: str, ids: list) -> int:
+    """정산저장 행을 id로 지운다 — 같은 주문이 두 날짜에 저장된 중복 정리용."""
+    ids = [int(i) for i in (ids or [])]
+    if not ids:
+        return 0
+    conn = get_user_db(username)
+    _ensure_tables(conn)
+    cur = conn.execute("DELETE FROM profit_settlements WHERE id IN (%s)"
+                       % ",".join("?" * len(ids)), ids)
+    n = cur.rowcount
+    conn.commit()
+    conn.close()
+    return n
+
+
 # ── settlement_overrides CRUD ──────────────────────────────
 
 def save_settlement_override(username: str, recipient: str, product_name: str,

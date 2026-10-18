@@ -107,6 +107,12 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             f'style="font-size:13px;color:#0f3460;text-decoration:none">'
             f'🆕 React 베타 버전 새 창으로 열기 — 같은 데이터·새 화면 (비교용)</a>',
             unsafe_allow_html=True)
+    # 📅 월별 분석·점검·수정 — 정산저장된 데이터만 다룬다. 일별 계산 흐름과 섞지 않는다.
+    if st.radio("보기", ["📆 일별 계산", "📅 월별 분석·점검"], horizontal=True,
+                key="profit_view_mode", label_visibility="collapsed") == "📅 월별 분석·점검":
+        from pages_lib.profit_calc.monthly import render_monthly
+        render_monthly(USERNAME, IS_ADMIN)
+        return
     _ship_default = int(_gs('shipping_cost') or 2000)
     _box_default  = int(_gs('box_cost') or 300)
     if _ship_default > 100000: _ship_default = 1800
