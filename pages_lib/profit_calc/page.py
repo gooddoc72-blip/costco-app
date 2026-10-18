@@ -141,6 +141,16 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     with col_date:
         calc_date = st.date_input("계산할 주문 날짜 선택", value=datetime.today() - timedelta(days=1))
         calc_date_str = calc_date.strftime("%Y-%m-%d")
+    try:
+        from pages_lib.home_page import _is_no_ship_day
+        _holiday = _is_no_ship_day(calc_date)
+    except Exception:
+        _holiday = False
+    if _holiday:
+        # 휴일 날짜로 저장하고 발송일에 또 저장해 한 주문이 두 번 잡혔다(10/9 한글날).
+        st.info("📅 **택배 휴무일(주말·공휴일)입니다.** 이날 주문은 다음 영업일에 발송되므로 "
+                "**발송한 날짜에서 정산저장**하세요. 홈 달력·월 합계는 휴무일 수익을 "
+                "넣지 않습니다.")
     with _col_refresh:
         st.write(""); st.write("")
         if st.button("📋 조회", key="profit_force_refresh",
@@ -228,6 +238,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     # 저장완료 토스트 (rerun 전에 큐에 저장된 메시지 표시)
     if '_profit_save_toast' in st.session_state:
         st.toast(st.session_state.pop('_profit_save_toast'), icon="✅")
+    if '_profit_dup_note' in st.session_state:
+        st.info(st.session_state.pop('_profit_dup_note'))
     # 영수증 picker 토스트
     if '_rcpt_pick_toast' in st.session_state:
         st.toast(st.session_state.pop('_rcpt_pick_toast'), icon="🧾")
@@ -648,6 +660,25 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 f"⚠️ **{_kw_match_n}건이 키워드만으로 매칭되었습니다** — 상품번호 매칭이 아니므로 정확하지 않을 수 있습니다. "
                 f"아래 표에서 🟠 표시된 행을 확인하고, 잘못된 경우 매칭키워드를 수정하거나 영수증 등록으로 상품번호를 채워주세요."
             )
+
+        # 다른 날짜에 이미 정산저장된 주문 — 저장 시 기본으로 건너뛴다(save._save_ps).
+        try:
+            from pages_lib.profit_calc.save import saved_elsewhere
+            _else = saved_elsewhere(USERNAME, calc_date_str, [str(i) for i in df.index])
+        except Exception:
+            _else = {}
+        if _else:
+            _bydate = {}
+            for _o, _d in _else.items():
+                _bydate[_d] = _bydate.get(_d, 0) + 1
+            st.warning(
+                f"⚠️ 이 날짜 주문 중 **{len(_else)}건은 다른 날짜에 이미 정산저장**돼 있습니다 ("
+                + ", ".join(f"{_d} {_n}건" for _d, _n in sorted(_bydate.items()))
+                + "). 다시 저장하면 두 번 집계되므로 **저장할 때 건너뜁니다.**")
+            st.checkbox("🔁 이 날짜로 옮기기 — 다른 날짜의 저장분을 지우고 이 날짜로 저장 "
+                        "(실제 발송일이 이 날짜일 때만)", key="profit_move_dup")
+        else:
+            st.session_state.pop('profit_move_dup', None)
 
         st.subheader("📊 일별 정산표")
         st.caption("🟢 영수증 | 🔵 DB-번호 (확실) | 🟠 DB-키워드 (확인 필요) | ⬜ 수동 | 🟡 미매칭")

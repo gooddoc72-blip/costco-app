@@ -11,6 +11,44 @@ from db import (
 )
 
 
+def saved_elsewhere(USERNAME, calc_date_str, order_nos):
+    """이 주문들 중 **다른 날짜**에 이미 정산저장된 것 — {order_no: 그 날짜}."""
+    from db_profit_calc import get_settlements_by_order_nos
+    _out = {}
+    for _r in get_settlements_by_order_nos(USERNAME, [str(o) for o in order_nos]):
+        if _r['settlement_date'] != calc_date_str:
+            _out.setdefault(str(_r['order_no']), _r['settlement_date'])
+    return _out
+
+
+def _save_ps(USERNAME, calc_date_str, rows):
+    """정산저장 — 다른 날짜에 이미 저장된 주문은 기본으로 건너뛴다.
+
+    휴일(10/9 한글날) 주문을 그날 날짜로 저장하고 발송일(10/12)에 또 저장해
+    한 주문이 두 날짜에 들어갔다. 달력은 휴일 수익을 숨겨 티가 안 났지만 월
+    합계·대시보드는 두 번 셌다. 화면의 '이 날짜로 옮기기'를 켠 경우에만
+    다른 날짜 행을 지우고 이 날짜로 저장한다(실제 발송일로 옮길 때).
+    """
+    from db_profit_calc import get_settlements_by_order_nos, delete_profit_rows
+    _nos = {str(r.get('order_no') or '') for r in rows}
+    _other = [r for r in get_settlements_by_order_nos(USERNAME, list(_nos))
+              if r['settlement_date'] != calc_date_str]
+    if _other and st.session_state.get('profit_move_dup'):
+        delete_profit_rows(USERNAME, [r['id'] for r in _other])
+        st.session_state['_profit_dup_note'] = (
+            f"🔁 다른 날짜에 있던 {len(_other)}건을 {calc_date_str}로 옮겼습니다.")
+        _other = []
+    _skip = {str(r['order_no']): r['settlement_date'] for r in _other}
+    if _skip:
+        st.session_state['_profit_dup_note'] = (
+            f"⏭ 다른 날짜에 이미 저장된 {len(_skip)}건은 건너뛰었습니다 — "
+            + ", ".join(f"{d}" for d in sorted(set(_skip.values())))
+            + ". 이 날짜로 옮기려면 '이 날짜로 옮기기'를 켜고 다시 저장하세요.")
+    return save_profit_settlements(
+        USERNAME, calc_date_str,
+        [r for r in rows if str(r.get('order_no') or '') not in _skip])
+
+
 def save_settlements(df, USERNAME, calc_date_str, shipping_cost, box_cost, _checked_rows):
     _ps_save_rows = []
     _cost_ov_s = st.session_state.get('cost_overrides', {}) or {}
@@ -62,7 +100,7 @@ def save_settlements(df, USERNAME, calc_date_str, shipping_cost, box_cost, _chec
                 keyword=_kw_s if _has_kw_ov_s else '',
                 cost=_cost if _has_cost_ov_s else 0,
             )
-    save_profit_settlements(USERNAME, calc_date_str, _ps_save_rows)
+    _save_ps(USERNAME, calc_date_str, _ps_save_rows)
     for _k in list(st.session_state.keys()):
         if _k.startswith('sel_p_'):
             st.session_state.pop(_k, None)
@@ -108,7 +146,7 @@ def save_price_db(df, USERNAME, calc_date_str, shipping_cost, box_cost, _preload
             'match_source': str(_rcr.get('매칭출처', '') or ''),
             'split_qty': int(_rcr.get('소분단위', 1) or 1), 'sell_factor': _sf_rc,
         })
-    save_profit_settlements(USERNAME, calc_date_str, _ps_rc_rows)
+    _save_ps(USERNAME, calc_date_str, _ps_rc_rows)
     from utils import extract_sell_factor as _sf_from_name
     _overrides = st.session_state.get('cost_overrides', {}) or {}
     for _idx_save, _r in df.iterrows():
@@ -197,7 +235,7 @@ def save_all(df, USERNAME, calc_date_str, shipping_cost, box_cost, _preload_user
             'match_source': str(_allr.get('매칭출처', '') or ''),
             'split_qty': int(_allr.get('소분단위', 1) or 1), 'sell_factor': _allsf,
         })
-    save_profit_settlements(USERNAME, calc_date_str, _ps_all_rows)
+    _save_ps(USERNAME, calc_date_str, _ps_all_rows)
     # Phase 1: upsert_product로 매칭 행 저장 — 사용자가 명시적으로 수정한 행만
     _overrides2 = st.session_state.get('cost_overrides', {}) or {}
     _pno_units = {}
