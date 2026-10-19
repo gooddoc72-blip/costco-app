@@ -4,7 +4,7 @@
  */
 import Header from '@/components/Header';
 import BottomNav from '@/components/BottomNav';
-import { Upload, Save, RefreshCw, Camera } from 'lucide-react';
+import { Upload, Save, RefreshCw, Camera, Image as ImageIcon } from 'lucide-react';
 import { won } from '@/lib/fmt';
 import { useReceipt } from '@/hooks/useReceipt';
 
@@ -15,17 +15,26 @@ export default function ReceiptPage() {
       <Header title="🧾 영수증" subtitle="사진 촬영 · PDF 업로드 → 매입가 갱신" />
       <main className="px-4 pt-4 pb-32 space-y-3">
 
-        {/* 📷 휴대폰 촬영 — capture 속성으로 카메라가 바로 열린다 */}
+        {/* 📷 촬영 / 🖼 갤러리를 나눈다 — capture가 붙은 칸 하나뿐이라 누르면 카메라만
+            열려, 이미 찍어 둔 사진을 올릴 수 없었다. 촬영 칸만 capture를 단다. */}
         <section className="bg-white rounded-xl p-3 border space-y-2">
           <div className="text-sm font-semibold flex items-center gap-1">
-            <Camera size={14} /> 영수증 사진 촬영 (AI 판독)
+            <Camera size={14} /> 영수증 사진 (AI 판독)
           </div>
-          <label className="block">
-            <span className="sr-only">영수증 촬영</span>
-            <input type="file" accept="image/*" capture="environment" multiple disabled={r.busy}
-              onChange={e => { if (e.target.files) { r.onUploadPhotos(e.target.files); e.target.value = ''; } }}
-              className="w-full text-xs border border-gray-200 rounded p-2 file:mr-2 file:py-1 file:px-2 file:rounded file:border-0 file:bg-emerald-50 file:text-emerald-700" />
-          </label>
+          <div className="grid grid-cols-2 gap-2">
+            <label className={`flex flex-col items-center justify-center gap-1 rounded-lg border-2 border-dashed p-3 text-xs font-medium
+              ${r.busy ? 'opacity-40' : 'cursor-pointer border-emerald-300 bg-emerald-50 text-emerald-800 active:bg-emerald-100'}`}>
+              <Camera size={20} /> 카메라로 촬영
+              <input type="file" accept="image/*" capture="environment" multiple disabled={r.busy} className="hidden"
+                onChange={e => { if (e.target.files) { r.onUploadPhotos(e.target.files); e.target.value = ''; } }} />
+            </label>
+            <label className={`flex flex-col items-center justify-center gap-1 rounded-lg border-2 border-dashed p-3 text-xs font-medium
+              ${r.busy ? 'opacity-40' : 'cursor-pointer border-blue-300 bg-blue-50 text-blue-800 active:bg-blue-100'}`}>
+              <ImageIcon size={20} /> 갤러리에서 선택
+              <input type="file" accept="image/*" multiple disabled={r.busy} className="hidden"
+                onChange={e => { if (e.target.files) { r.onUploadPhotos(e.target.files); e.target.value = ''; } }} />
+            </label>
+          </div>
           <p className="text-[11px] text-gray-500">
             영수증이 화면에 꽉 차게, 구겨짐 없이 찍어주세요. 여러 장 한번에 올릴 수 있습니다.
           </p>

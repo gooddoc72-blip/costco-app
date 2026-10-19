@@ -140,14 +140,20 @@ def render(USERNAME, IS_ADMIN, settings):
     st.subheader("1. 영수증 올리기")
     _pdfs = st.file_uploader("코스트코 영수증 PDF (여러 개 가능)", type=['pdf'],
                              key="sr_pdf", accept_multiple_files=True)
-    _photos = st.file_uploader("📷 또는 영수증 사진 (여러 장 가능)",
+    # 촬영과 갤러리를 나눈다 — 카메라만 열려 찍어 둔 사진을 올릴 수 없었다.
+    _src1, _src2 = st.columns(2)
+    _shots = _src1.file_uploader("📷 영수증 촬영 (누르면 카메라 · 여러 장)",
+                                 type=['jpg', 'jpeg', 'png', 'webp', 'heic', 'heif'],
+                                 key="sr_photo", accept_multiple_files=True)
+    _gal = _src2.file_uploader("🖼 갤러리·파일에서 선택",
                                type=['jpg', 'jpeg', 'png', 'webp', 'heic', 'heif'],
-                               key="sr_photo", accept_multiple_files=True)
+                               key="sr_photo_gal", accept_multiple_files=True)
     try:
         from pages_lib.receipt_page import inject_native_camera
-        inject_native_camera("영수증 사진")
+        inject_native_camera("영수증 촬영")
     except Exception:
         pass
+    _photos = list(_shots or []) + list(_gal or [])
     _fkey = (tuple(sorted((f.name, getattr(f, 'size', 0)) for f in (_pdfs or []))),
              tuple(sorted((f.name, getattr(f, 'size', 0)) for f in (_photos or []))))
     if (_pdfs or _photos) and st.session_state.get('_sr_fkey') != _fkey:

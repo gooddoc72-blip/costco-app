@@ -906,12 +906,20 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     # ── 1-b) 📱 영수증 사진 (휴대폰 촬영) — PDF가 없을 때 ──
     #   코스트코에서 장 본 직후 종이 영수증을 찍어 바로 정산할 수 있게 한다.
     #   판독 결과는 PDF와 같은 형태({상품번호,상품명,수량,단가})라 이후 배치 로직은 공용.
-    _ph = st.file_uploader(
-        "📷 또는 영수증 촬영 (누르면 카메라 · 여러 장 가능)",
+    # 촬영과 갤러리를 나눈다 — 업로더가 하나뿐이고 카메라를 강제해서, 이미 찍어 둔
+    # 사진(갤러리)을 올릴 길이 없었다. 왼쪽만 카메라, 오른쪽은 파일 선택.
+    _phc1, _phc2 = st.columns(2)
+    _ph_cam = _phc1.file_uploader(
+        "📷 영수증 촬영 (누르면 카메라 · 여러 장)",
         type=['jpg', 'jpeg', 'png', 'webp', 'heic', 'heif'],
         key="rs_photo", accept_multiple_files=True)
+    _ph_gal = _phc2.file_uploader(
+        "🖼 갤러리·파일에서 선택",
+        type=['jpg', 'jpeg', 'png', 'webp', 'heic', 'heif'],
+        key="rs_photo_gal", accept_multiple_files=True)
     from pages_lib.receipt_page import inject_native_camera as _inject_cam
-    _inject_cam("영수증 촬영")   # 탭 → 폰 기본 카메라 → 촬영 → 자동 업로드
+    _inject_cam("영수증 촬영")   # 왼쪽만: 탭 → 폰 기본 카메라 → 촬영 → 자동 업로드
+    _ph = list(_ph_cam or []) + list(_ph_gal or [])
     # 이미 읽은 사진은 다시 읽지 않는다. 폰 카메라는 사진이 **한 장씩** 추가되는데,
     # 예전엔 추가될 때마다 앞 사진까지 전부 다시 읽어 표에 또 더했다 — 4장을 찍으면
     # 첫 장 품목 수량이 4배가 됐다. 파일 이름도 폰에서는 전부 'image.jpg'라 못 쓴다.
