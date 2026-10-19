@@ -3803,7 +3803,7 @@ def _render_stock_status():
                 '수량(소분)', format='%d')})
 
         _sel = st.selectbox("보유자별 상세", sorted(_by_owner),
-                            format_func=lambda u: _dm.get(u, u), key="rs_stock_owner")
+                            format_func=lambda u: _name_id(_dm, u), key="rs_stock_owner")
         st.dataframe(pd.DataFrame([
             {'코스트코번호': r['product_no'], '상품명': str(r['product_name'])[:34],
              '입고': int(r['qty_in'] or 0), '남음': int(r['qty_left'] or 0),
@@ -3835,8 +3835,8 @@ def _render_manual_stock(lots, key_prefix="rs"):
     _opts = sorted(_dm.keys(), key=lambda u: _dm.get(u, u))
     if not _opts:
         return
-    _labels = [_dm.get(u, u) for u in _opts]
-    _l2u = {_dm.get(u, u): u for u in _opts}
+    _labels = [_name_id(_dm, u) for u in _opts]
+    _l2u = {_name_id(_dm, u): u for u in _opts}
 
     # expander는 입력할 때마다(rerun) 닫혔다 — 열림 상태를 세션에 두는 토글로 연다
     if not st.toggle("🛠 수동 입출고 (관리자)", key=f"{key_prefix}_adj_open"):
@@ -3968,8 +3968,8 @@ def _render_wait_assign(left_rows):
     if not _opts:
         st.caption("배정할 사용자가 없습니다.")
         return
-    _labels = [_dm.get(u, u) for u in _opts]
-    _l2u = {_dm.get(u, u): u for u in _opts}
+    _labels = [_name_id(_dm, u) for u in _opts]
+    _l2u = {_name_id(_dm, u): u for u in _opts}
     _owner = st.selectbox("배정할 사용자", _labels, key="rs_wait_owner")
 
     _rows = [{'배정': False,
@@ -4461,6 +4461,12 @@ def _render_reset_panel(dmap, USERNAME=''):
 
 def _n(s):
     return str(s or '').strip()
+
+
+def _name_id(dm, u):
+    """보유자 표시 — '김미진 (sandyjin)'. 이름만 보이면 동명이인·아이디 대조가 안 된다."""
+    _d = dm.get(u, u)
+    return f"{_d} ({u})" if _d != u else u
 
 
 def _row_rd(v):

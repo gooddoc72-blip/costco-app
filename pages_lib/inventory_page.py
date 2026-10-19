@@ -713,11 +713,11 @@ def _admin_stock():
             users = [u['username'] for u in _au]
             _disp = {u['username']: (u.get('display_name') or u['username']) for u in _au}
             owner = (c3.selectbox(
-                        "구매자 (재고 보유자)", users, index=None, key="ml_owner",
+                        "보유자 (구매자)", users, index=None, key="ml_owner",
                         placeholder="이름 입력 — 예: 김미진",
                         format_func=lambda u: (f"{_disp[u]} ({u})" if _disp.get(u, u) != u else u),
                         help="이 사람 앞으로 재고가 들어갑니다. 이름이나 아이디를 치면 찾아집니다.")
-                     if users else c3.text_input("구매자 (재고 보유자)", key="ml_owner_t"))
+                     if users else c3.text_input("보유자 (구매자)", key="ml_owner_t"))
             cost = c4.number_input("구입가(1팩)", min_value=0, step=100, value=_sp,
                                    key=f"ml_cost_{_sk}",
                                    help="상품을 고르면 매장가가 들어갑니다. 실제 결제가로 고치세요.")
@@ -736,7 +736,7 @@ def _admin_stock():
                              key="ml_kind")
             if st.button("입고", type="primary", key="ml_add"):
                 if not (name.strip() and pno.strip() and owner):
-                    st.error("상품명·상품번호·구매자를 채우세요.")
+                    st.error("상품명·상품번호·보유자를 채우세요.")
                 else:
                     _lid = add_lot(pno.strip(), name.strip(), owner, int(cost), int(packs),
                                    split_qty=int(sq), received_at=rdate.strftime("%Y-%m-%d"),
