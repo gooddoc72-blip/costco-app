@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from 'next';
 import { withBase } from '@/lib/basePath';
+import AppShell from '@/components/AppShell';
 import './globals.css';
 
 export const metadata: Metadata = {
@@ -28,9 +29,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <link rel="apple-touch-icon" href={withBase("/icons/icon-192.png")} />
       </head>
       <body className="min-h-screen bg-gray-100 safe-top safe-bottom">
-        <div className="mx-auto max-w-[480px] min-h-screen bg-gray-50 shadow-xl md:shadow-2xl relative">
-          {children}
-        </div>
+        <AppShell>{children}</AppShell>
       </body>
     </html>
   );

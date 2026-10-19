@@ -54,6 +54,12 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                "구매일 다음날 청구하고, 입금되면 체크하세요. "
                "**예치금이 있는 판매자는 입금을 기다리지 않고 그 자리에서 차감합니다.**")
 
+    # 새 화면(빠른 정산·청구) — 체크 하나에 화면 전체를 다시 그리지 않는다.
+    # 같은 로그인으로 넘어가도록 세션 토큰을 붙인다(새 화면은 Bearer로 쓴다).
+    _sid_now = str(st.session_state.get('_sid') or '')
+    st.link_button("🆕 새 화면에서 열기 (빠름 · 일별 청구·입금·예치금·미입금자)",
+                   "/m/billing" + (f"?sid={_sid_now}" if _sid_now else ""))
+
     dmap = _disp_map()
     # st.tabs는 안 보이는 탭까지 매번 전부 그린다. 체크 하나에도 5개 탭이 다시 돌아
     # 한 번에 4.6초 — 그중 월별 정리(31일 × 사용자 수만큼 택배·포장비 계산)가

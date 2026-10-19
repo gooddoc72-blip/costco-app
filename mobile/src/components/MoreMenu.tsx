@@ -22,6 +22,7 @@ const sections: Array<{
     links: [
       { href: '/settings', label: '설정', icon: Settings },
       { href: '/admin', label: '관리자', icon: Crown, desc: '장보기 제출 + DB 정리' },
+      { href: '/billing', label: '정산·청구', icon: CreditCard, desc: '청구·입금·예치금 (관리자)' },
     ],
   },
 ];

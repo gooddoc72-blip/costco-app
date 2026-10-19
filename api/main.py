@@ -421,3 +421,7 @@ def admin_rank_ingest(req: AdminRankIngestRequest, admin: dict = Depends(require
             total[k] += res.get(k, 0)
     total["users"] = len(grouped)
     return total
+
+# ── 정산·청구 (새 화면 /m/billing 백엔드) ─────────────────────
+from api.billing import router as _billing_router  # noqa: E402
+app.include_router(_billing_router)
