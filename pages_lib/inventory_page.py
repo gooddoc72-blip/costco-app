@@ -706,9 +706,18 @@ def _admin_stock():
                 st.caption("⚠️ 이 상품은 영수증에서 코스트코 상품번호를 못 읽어 번호 없이 "
                            "저장돼 있습니다 — 영수증(또는 상품 라벨)의 번호를 직접 넣어 주세요.")
             c3, c4, c5, c6, c7 = st.columns(5)
-            users = [u['username'] for u in get_all_users() if u.get('status', 'active') == 'active']
-            owner = (c3.selectbox("보유자", users, key="ml_owner") if users
-                     else c3.text_input("보유자", key="ml_owner_t"))
+            # 구매자 앞으로 입고 — 이름(표시 이름)을 쳐서 찾는다. 아이디 목록에서 고르는
+            # 방식은 누가 누군지 알아보기 어려웠고, 첫 항목(admin)이 기본으로 잡혀
+            # 구매자를 안 바꾸고 누르면 관리자 재고로 들어갔다. 그래서 기본값을 비운다.
+            _au = [u for u in get_all_users() if u.get('status', 'active') == 'active']
+            users = [u['username'] for u in _au]
+            _disp = {u['username']: (u.get('display_name') or u['username']) for u in _au}
+            owner = (c3.selectbox(
+                        "구매자 (재고 보유자)", users, index=None, key="ml_owner",
+                        placeholder="이름 입력 — 예: 김미진",
+                        format_func=lambda u: (f"{_disp[u]} ({u})" if _disp.get(u, u) != u else u),
+                        help="이 사람 앞으로 재고가 들어갑니다. 이름이나 아이디를 치면 찾아집니다.")
+                     if users else c3.text_input("구매자 (재고 보유자)", key="ml_owner_t"))
             cost = c4.number_input("구입가(1팩)", min_value=0, step=100, value=_sp,
                                    key=f"ml_cost_{_sk}",
                                    help="상품을 고르면 매장가가 들어갑니다. 실제 결제가로 고치세요.")
@@ -727,7 +736,7 @@ def _admin_stock():
                              key="ml_kind")
             if st.button("입고", type="primary", key="ml_add"):
                 if not (name.strip() and pno.strip() and owner):
-                    st.error("상품명·상품번호·보유자를 채우세요.")
+                    st.error("상품명·상품번호·구매자를 채우세요.")
                 else:
                     _lid = add_lot(pno.strip(), name.strip(), owner, int(cost), int(packs),
                                    split_qty=int(sq), received_at=rdate.strftime("%Y-%m-%d"),
@@ -747,7 +756,8 @@ def _admin_stock():
                         except Exception as _be:
                             _bill_txt = f" · ⚠️ 구매비용 청구 실패: {_be}"
                     st.session_state['_ml_msg'] = (f"✅ 입고 완료 — {name.strip()[:30]} "
-                                                   f"{int(packs)}팩 → {owner}{_bill_txt}")
+                                                   f"{int(packs)}팩 → {_disp.get(owner, owner)}"
+                                                   f"{_bill_txt}")
                     st.rerun()
 
     # ── 잘못 들어간 재고를 고치는 두 길 ──────────────────────
