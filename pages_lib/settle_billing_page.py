@@ -55,9 +55,14 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                "**예치금이 있는 판매자는 입금을 기다리지 않고 그 자리에서 차감합니다.**")
 
     dmap = _disp_map()
-    t_day, t_dep, t_unpaid, t_month, t_hist = st.tabs(
-        ["📋 일별 정산·청구", "💳 예치금", "🔴 미입금자", "📆 월별 정리", "📚 정산 이력"])
-    with t_hist:
+    # st.tabs는 안 보이는 탭까지 매번 전부 그린다. 체크 하나에도 5개 탭이 다시 돌아
+    # 한 번에 4.6초 — 그중 월별 정리(31일 × 사용자 수만큼 택배·포장비 계산)가
+    # 3.3초였다(10/19 실측). 그 사이 '입금완료 저장 (0일)' 버튼이 아직 안 바뀌어
+    # 눌러도 저장되지 않았다. 고른 탭 하나만 그린다.
+    _TABS = ["📋 일별 정산·청구", "💳 예치금", "🔴 미입금자", "📆 월별 정리", "📚 정산 이력"]
+    _tab = st.segmented_control("화면", _TABS, default=_TABS[0], key="sb_tab",
+                                label_visibility="collapsed") or _TABS[0]
+    if _tab == _TABS[4]:
         # 영수증 정산 화면 하단에 있던 정산 이력·정산 취소·전체 초기화를 옮겨 왔다
         # (영수증 정산은 그날 매칭·정산만, 돈의 이력·취소는 여기서).
         try:
@@ -65,14 +70,14 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             _rsp._render_history(dmap, USERNAME)
         except Exception as _e:
             st.error(f"정산 이력을 열지 못했습니다: {_e}")
-    with t_day:
-        _tab_day(USERNAME, dmap)
-    with t_dep:
+    elif _tab == _TABS[1]:
         _tab_deposit(USERNAME, dmap)
-    with t_unpaid:
+    elif _tab == _TABS[2]:
         _tab_unpaid(USERNAME, dmap)
-    with t_month:
+    elif _tab == _TABS[3]:
         _tab_month(dmap)
+    else:
+        _tab_day(USERNAME, dmap)
 
 
 # ── ⑤⑦ 일별 정산리스트 → 청구 → 입금완료 ─────────────────────
