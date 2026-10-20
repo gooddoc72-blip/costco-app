@@ -1495,10 +1495,14 @@ def link_costco_to_naver(username, naver_no, costco_no):
     conn = get_user_db(username)
     _ensure_products_columns(conn)
     try:
+        # 번호 칸에 자기 네이버번호가 잘못 들어간 경우도 빈 것으로 본다
+        # (receipt_settle.learn_costco_mappings와 같은 규칙)
         cur = conn.execute(
             "UPDATE products SET product_no=? "
             "WHERE (naver_channel_pno=? OR naver_origin_pno=?) "
-            "AND (product_no IS NULL OR product_no='')",
+            "AND (product_no IS NULL OR TRIM(product_no)='' "
+            "     OR TRIM(product_no)=TRIM(COALESCE(naver_channel_pno,'')) "
+            "     OR TRIM(product_no)=TRIM(COALESCE(naver_origin_pno,'')))",
             (costco_no, naver_no, naver_no))
         n = cur.rowcount
         conn.commit()

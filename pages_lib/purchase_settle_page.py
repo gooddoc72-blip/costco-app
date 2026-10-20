@@ -20,6 +20,7 @@ from db import (get_all_users, get_shared_products,
                 resolve_costco_conflict, clear_costco_mapping)
 from db_purchase_settle import (
     compute_daily_purchase, suggest_shared_matches, link_product_mapping,
+    unlinked_sold_products, LINK_SOURCE_LABEL,
 )
 from utils import fmt
 
@@ -390,6 +391,98 @@ def _render_link_panel(per_user, dmap, ds, USERNAME):
             st.rerun()
 
 
+def _render_global_link(dmap, USERNAME):
+    """🌐 전 사용자 가격 연결 정리 — 관리자 가격DB 한 벌을 모두가 쓰게 한다.
+
+    가격은 공유DB(관리자 가격DB)에 코스트코번호로 한 벌만 있다. 사용자 상품은
+    네이버에서 번호 없이 들어와, 이어지지 않으면 관리자가 영수증으로 올린 가격을
+    못 받고 0원이 된다(10/20: 최근 30일 판매상품 496개 중 250개 미연결 — 알미토
+    체리페퍼는 공유DB에 19,990원으로 있는데 조춘옥 상품은 0원).
+    아래 '구매가 없는 항목 연결'은 고른 날짜의 발송건만 봐서 전체를 볼 수 없었다.
+    """
+    _key = '_ps_glink'
+    _data = st.session_state.get(_key)
+    _title = (f"🌐 전 사용자 가격 연결 정리 — 최근 판매상품 중 관리자 가격DB와 끊긴 "
+              f"{len(_data)}개" if _data is not None else
+              "🌐 전 사용자 가격 연결 정리 — 관리자 가격DB와 끊긴 판매상품 찾기")
+    with st.expander(_title, expanded=_data is not None):
+        st.caption("관리자 가격DB(영수증으로 갱신되는 공유 가격)를 **모든 사용자가 같은 값으로** "
+                   "쓰려면 사용자 상품마다 코스트코 상품번호가 이어져 있어야 합니다. "
+                   "최근 팔린 상품 중 끊긴 것을 모아 후보를 붙입니다 — **정산 이력·공유 매핑**은 "
+                   "확실해서 기본 체크, **이름 추정**은 보고 체크하세요.")
+        c1, c2 = st.columns([1, 3])
+        _days = c1.selectbox("기간", [14, 30, 60, 90], index=1, key="ps_gl_days",
+                             format_func=lambda d: f"최근 {d}일 판매")
+        if c2.button("🔍 끊긴 상품 찾기", key="ps_gl_find"):
+            with st.spinner("전 사용자 판매상품을 관리자 가격DB와 대조하는 중..."):
+                st.session_state[_key] = unlinked_sold_products(days=int(_days))
+            st.rerun()
+        if _data is None:
+            return
+        if not _data:
+            st.success("✅ 최근 판매상품이 모두 관리자 가격DB와 이어져 있습니다.")
+            return
+
+        _by_src = {}
+        for r in _data:
+            _by_src[r['source'] or 'none'] = _by_src.get(r['source'] or 'none', 0) + 1
+        st.caption(" · ".join(f"{LINK_SOURCE_LABEL.get(k, '후보 없음')} {v}개"
+                              for k, v in _by_src.items()))
+        # 기본 체크 = 근거가 확실(정산 이력·공유 매핑)하고 상품명도 어느 정도 맞는 것.
+        # 이력에도 예전 오매칭이 남아 있어(ARLA 고다 → 닭가슴살슬라이스) 근거만 믿지 않는다.
+        _SURE_SIM = 0.30
+        _rows = [{
+            '연결': r['source'] in ('history', 'map') and r.get('sim', 0) >= _SURE_SIM,
+            '사용자': dmap.get(r['username'], r['username']),
+            '상품명': r['product_name'][:40],
+            '판매': r['orders'],
+            '근거': LINK_SOURCE_LABEL.get(r['source'], '후보 없음'),
+            '코스트코번호': r['cand_no'],
+            '관리자 가격DB 상품': r['cand_name'][:30],
+            '가격': r['cand_price'],
+            '이름 유사도': r.get('sim', 0) if r['cand_no'] else None,
+            '현재 번호칸': r['cur_no'],
+        } for r in _data]
+        _ed = st.data_editor(
+            pd.DataFrame(_rows), use_container_width=True, hide_index=True,
+            key=f"ps_gl_ed_{len(_data)}",
+            disabled=['사용자', '상품명', '판매', '근거', '관리자 가격DB 상품', '가격',
+                      '이름 유사도', '현재 번호칸'],
+            column_config={
+                '연결': st.column_config.CheckboxColumn('연결'),
+                '코스트코번호': st.column_config.TextColumn(
+                    '코스트코번호', help='후보가 틀리면 맞는 번호를 직접 넣으세요'),
+                '가격': st.column_config.NumberColumn('가격', format='%d'),
+                '이름 유사도': st.column_config.NumberColumn(
+                    '이름 유사도', format='%.2f',
+                    help='0~1. 근거가 정산 이력·공유 매핑이라도 0.30 미만이면 예전 오매칭일 '
+                         '수 있어 기본 체크하지 않습니다.'),
+            })
+        _recs = _ed.to_dict('records')
+        _pick = [i for i, r in enumerate(_recs)
+                 if r.get('연결') and str(r.get('코스트코번호') or '').strip()]
+        st.caption(f"선택 {len(_pick)}개 — 저장하면 그 사용자 상품에 코스트코번호가 들어가고, "
+                   "그때부터 관리자 가격DB 가격을 그대로 씁니다(공유 매핑에도 남겨 다음 "
+                   "정산부터 번호로 바로 붙습니다).")
+        if st.button(f"🔗 선택한 {len(_pick)}개 연결 저장", type="primary",
+                     key="ps_gl_save", disabled=not _pick):
+            _ok, _fail = 0, []
+            for i in _pick:
+                _src, r = _data[i], _recs[i]
+                _res = link_product_mapping(
+                    _src['username'], _src['naver_no'], _src['product_name'],
+                    str(r.get('코스트코번호')).strip(), int(_src.get('split_qty') or 1))
+                if _res:
+                    _ok += 1
+                else:
+                    _fail.append(f"{_src['product_name'][:16]}({r.get('코스트코번호')})")
+            st.session_state.pop(_key, None)
+            st.session_state['_ps_link_msg'] = (
+                f"✅ 가격 연결 {_ok}개 저장" + (f" · 실패 {len(_fail)}개: "
+                                            + ", ".join(_fail[:5]) if _fail else ""))
+            st.rerun()
+
+
 def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     """구매가 도구 — 청구액을 만드는 화면이 아니다.
 
@@ -465,6 +558,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     else:
         st.info(f"{_d_from} ~ {_d_to} 발송처리된 주문이 없습니다.")
 
+    _render_global_link(dmap, USERNAME)
     _render_billing_scope(dmap, USERNAME)
     _render_costco_map(dmap, USERNAME)
     _render_price_log(dmap)

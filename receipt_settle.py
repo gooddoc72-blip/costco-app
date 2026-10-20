@@ -1761,12 +1761,19 @@ def learn_costco_mappings(rows):
             if not key_cols or 'product_no' not in cols:
                 continue
             _where = " OR ".join("TRIM(COALESCE(%s,''))=?" % c for c in key_cols)
+            # 번호 칸이 비었거나, 그 칸에 **자기 네이버번호가 잘못 들어가 있으면**
+            # 빈 것으로 본다. 예전엔 빈 칸만 채워서 네이버번호가 들어간 상품(10/20
+            # 실측 107개 — 이수진 세제·김미진 냉동딸기)은 영원히 못 이었다.
+            # 다른 값(쿠팡 번호 등)은 그 사람이 넣은 값이라 건드리지 않는다.
+            _empty = ("(TRIM(COALESCE(product_no,''))='' OR "
+                      + " OR ".join("TRIM(product_no)=TRIM(COALESCE(%s,''))" % c
+                                    for c in key_cols) + ")")
             n = 0
             _now = datetime.now().strftime("%Y-%m-%d %H:%M")
             for nv, (cno, pname) in m.items():
                 cur = conn.execute(
                     "UPDATE products SET product_no=? "
-                    "WHERE TRIM(COALESCE(product_no,''))='' AND (%s)" % _where,
+                    "WHERE %s AND (%s)" % (_empty, _where),
                     [cno] + [nv] * len(key_cols))
                 # 공유맵에도 남긴다 — 코스트코번호는 상품 고유값이라 한 사람이
                 # 이으면 전원이 쓸 수 있다. 각자 제품DB에만 두면 같은 상품을

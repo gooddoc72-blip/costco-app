@@ -5,6 +5,8 @@
 청구의 정본은 db_settle 하나고, 이 모듈은 '지금 제품DB 기준으로 얼마짜리인가'를
 답해 매핑이 빈 상품을 찾는 데만 쓴다.
 """
+from datetime import datetime
+
 from db_core import get_user_db
 
 
@@ -129,7 +131,7 @@ def suggest_shared_matches(product_name, shared_prods=None, top=5):
     3,891개를 전부 종합 점수로 재면 화면이 눈에 띄게 느려진다.
     반환: [{'product_no','costco_name','unit_price','split_qty','score'}]
     """
-    from services import _token_score, _combined_match_score
+    from services import _combined_match_score, name_score
     from db import get_shared_products
     _nm = str(product_name or '').strip()
     if not _nm:
@@ -140,13 +142,14 @@ def suggest_shared_matches(product_name, shared_prods=None, top=5):
         _cn = str(_p.get('costco_name') or '')
         if not _cn:
             continue
-        _t = _token_score(_nm, _cn)
+        # 영수증 영문 약칭(KS STRAWBERRIES)은 한글로 바꾼 이름으로도 견준다
+        _t, _used = name_score(_nm, _cn)
         if _t > 0:
-            _pre.append((_t, _p))
+            _pre.append((_t, _p, _used))
     _pre.sort(key=lambda x: -x[0])
     _out = []
-    for _t, _p in _pre[:40]:
-        _sc = _combined_match_score(_nm, str(_p.get('costco_name') or ''))['total']
+    for _t, _p, _used in _pre[:40]:
+        _sc = _combined_match_score(_nm, _used)['total']
         _out.append({'product_no': str(_p.get('product_no') or ''),
                      'costco_name': str(_p.get('costco_name') or ''),
                      'unit_price': int(_p.get('unit_price') or 0),
@@ -222,3 +225,146 @@ def link_product_mapping(username, naver_no, product_name, costco_no, split_qty=
             conn.close()
         except Exception:
             pass
+
+
+# ── 전 사용자 가격 연결 정리 ─────────────────────────────────
+#: 연결 후보의 근거 — 위일수록 확실하다. 확실한 것만 화면에서 기본 체크한다.
+LINK_SOURCE_LABEL = {
+    'history': '정산 이력',      # 영수증·재고로 실제 정산된 번호
+    'map':     '공유 매핑',      # 공유 네이버↔코스트코 맵(영수증·관리자 확정)
+    'name':    '이름 추정',      # 상품명 유사도 — 사람이 봐야 한다
+}
+
+
+def unlinked_sold_products(days=30, users=None):
+    """최근 팔렸는데 관리자 가격DB(공유DB)와 **연결이 안 된** 사용자 상품 + 연결 후보.
+
+    가격은 공유DB에 코스트코번호로 한 벌만 둔다. 사용자 상품은 네이버에서
+    번호 없이 들어와 이 번호가 비면 관리자 영수증 가격을 영영 못 받는다
+    (10/20 실측: 최근 30일 판매상품 496개 중 250개 미연결).
+    팔린 적 없는 상품까지 정리하면 수천 개라, 실제로 팔린 것만 본다.
+
+    후보 근거: 정산 이력 > 공유 매핑 > 이름 추정(사람 확인 필요).
+    반환: [{username, naver_no, product_name, orders, cur_no, split_qty,
+            cand_no, cand_name, cand_price, source, score}]
+    """
+    import sqlite3
+    from datetime import date, timedelta
+    from db import get_shared_products, get_all_users
+    from db_core import AUTH_DB
+    _since = str(date.today() - timedelta(days=int(days)))
+    shared = get_shared_products() or []
+    by_no = {str(p.get('product_no') or '').strip(): p for p in shared
+             if str(p.get('product_no') or '').strip()}
+    kw_set = {str(p.get('match_keyword') or '') for p in shared}
+    id_set = {int(p['id']) for p in shared if p.get('id') is not None}
+
+    # 정산 이력·공유 매핑 — (사용자, 네이버번호) → 코스트코번호
+    hist, smap = {}, {}
+    a = sqlite3.connect(AUTH_DB)
+    a.row_factory = sqlite3.Row
+    try:
+        for r in a.execute(
+                "SELECT username, naver_no, product_no, COUNT(*) n FROM settle_item "
+                "WHERE COALESCE(naver_no,'')!='' AND COALESCE(product_no,'')!='' "
+                "GROUP BY 1,2,3"):
+            hist.setdefault((r['username'], str(r['naver_no'])), {})[str(r['product_no'])] = r['n']
+        try:
+            for r in a.execute("SELECT * FROM shared_naver_map"):
+                for k in ('naver_pno', 'naver_origin_pno'):
+                    if r[k]:
+                        smap[(r['username'], str(r[k]))] = (str(r['costco_pno'] or ''),
+                                                            str(r['source'] or ''))
+        except Exception:
+            pass
+    finally:
+        a.close()
+
+    _users = users or [u['username'] for u in get_all_users()
+                       if (u.get('status') or 'active') == 'active']
+    import os
+    from db_core import DATA_DIR
+    out = []
+    for u in _users:
+        # DB가 없는 계정을 열면 빈 파일이 새로 생긴다 — 있는 것만 본다
+        if not os.path.exists(os.path.join(DATA_DIR, f"{u}.db")):
+            continue
+        try:
+            c = get_user_db(u)
+        except Exception:
+            continue
+        try:
+            tabs = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            if 'daily_orders' not in tabs or 'products' not in tabs:
+                continue
+            sold = {}
+            for r in c.execute(
+                    "SELECT product_no, product_name, COUNT(*) n FROM daily_orders "
+                    "WHERE order_date>=? AND COALESCE(product_no,'')!='' "
+                    "GROUP BY product_no", (_since,)):
+                sold[str(r['product_no'])] = (str(r['product_name'] or ''), int(r['n']))
+            prods = [dict(r) for r in c.execute("SELECT * FROM products")]
+        finally:
+            c.close()
+        idx = {}
+        for p in prods:
+            for k in ('naver_channel_pno', 'naver_origin_pno', 'product_no'):
+                v = str(p.get(k) or '').strip()
+                if v:
+                    idx.setdefault(v, p)
+        for nv, (pname, n) in sold.items():
+            p = idx.get(nv) or {}
+            cur = str(p.get('product_no') or '').strip()
+            if p and ((cur and cur in by_no)
+                      or str(p.get('match_keyword') or '') in kw_set
+                      or (p.get('linked_shared_id') is not None
+                          and int(p['linked_shared_id']) in id_set)):
+                continue                            # 이미 공유DB와 이어져 있다
+            keys = [nv] + [str(p.get(k) or '') for k in ('naver_channel_pno', 'naver_origin_pno')
+                           if str(p.get(k) or '') and str(p.get(k)) != nv]
+            cand, src, score = '', '', 0.0
+            _h = {}
+            for k in keys:
+                for cn, cnt in (hist.get((u, k)) or {}).items():
+                    if cn in by_no:
+                        _h[cn] = _h.get(cn, 0) + cnt
+            if _h:
+                cand = max(_h, key=_h.get)
+                src, score = 'history', 1.0
+            if not cand:
+                for k in keys:
+                    cn, _s = smap.get((u, k), ('', ''))
+                    if cn in by_no:
+                        cand, src, score = cn, 'map', 0.9
+                        break
+            if not cand:
+                _nm = str(p.get('costco_name') or '') or pname
+                _sg = suggest_shared_matches(_nm, shared_prods=shared, top=1)
+                if _sg and _sg[0].get('product_no'):
+                    cand, src, score = _sg[0]['product_no'], 'name', float(_sg[0]['score'])
+            sp = by_no.get(cand) or {}
+            # 이력·매핑도 틀릴 수 있다 — 예전 오매칭이 이력으로 남는다
+            # (ARLA 고다 슬라이스 → 닭가슴살슬라이스, 길리안 템테이션 → MERCI).
+            # 상품명 유사도를 함께 보여 주고, 화면은 유사도가 낮으면 기본 체크하지 않는다.
+            _sim = 0.0
+            if sp:
+                try:
+                    from services import name_score, _combined_match_score
+                    _nm2 = str(p.get('costco_name') or '') or pname
+                    _, _used = name_score(_nm2, str(sp.get('costco_name') or ''))
+                    _sim = float(_combined_match_score(_nm2, _used)['total'])
+                except Exception:
+                    _sim = 0.0
+            out.append({
+                'sim': round(_sim, 2),
+                'username': u, 'naver_no': nv,
+                'product_name': str(p.get('costco_name') or '') or pname,
+                'orders': n, 'cur_no': cur, 'in_db': bool(p),
+                'split_qty': max(1, int(p.get('split_qty') or 1)) if p else 1,
+                'cand_no': cand, 'cand_name': str(sp.get('costco_name') or ''),
+                'cand_price': int(sp.get('store_price') or 0) or int(sp.get('unit_price') or 0),
+                'source': src, 'score': round(score, 2),
+            })
+    out.sort(key=lambda r: ({'history': 0, 'map': 1, 'name': 2}.get(r['source'], 3),
+                            -r['orders']))
+    return out
