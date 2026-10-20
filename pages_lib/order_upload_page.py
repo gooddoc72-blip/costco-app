@@ -441,7 +441,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         #   주문까지 섞여 건수가 안 맞았다. 이제 결제일이 기간 안인 것만 수집한다.
         #   기간 이전에 결제돼 아직 안 보낸 주문은 따로 세어 알려 주고, 체크하면 포함한다.
         _incl_prev = st.checkbox(
-            "📦 기간 이전에 결제된 미발송 주문도 포함 (최근 7일)", value=False,
+            "📦 기간 이전에 결제된 미발송 주문도 포함 (최근 7일)", value=True,
             key="ou_incl_prev",
             help="시작일보다 앞서 결제됐는데 아직 발송하지 않은 주문입니다. "
                  "품절 등으로 밀린 주문을 오늘 장보기에 넣으려면 체크하세요.")

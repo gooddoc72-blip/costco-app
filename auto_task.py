@@ -481,8 +481,11 @@ def run_shopping_task(username="admin"):
 
         # 장보기 대상 = 결제완료(신규) + 발송대기(READY) 모두. 발주확인 전(PAYED) 주문도 사야 하므로 포함.
         log("📋 네이버 주문 조회 중 (결제완료 + 발송대기)...")
+        # 최근 7일 반 — 48시간만 보면 이틀 넘게 밀린 미발송 주문이 장보기에서 빠졌다
+        # (Task 5와 같은 범위, run_fetch_orders_task 주석 참고).
         for _stt in ("READY", "PAYED"):
-            _o, _e = naver_api.get_new_orders(api_id, api_secret, hours_back=48, status_type=_stt)
+            _o, _e = naver_api.get_new_orders(api_id, api_secret, hours_back=7 * 24 + 12,
+                                              status_type=_stt)
             if _o:
                 for _od in _o:
                     _ono = str(_od.get("상품주문번호", ""))
@@ -962,16 +965,22 @@ def run_fetch_orders_task(username="admin"):
     api_id     = settings.get("api_client_id", "")
     api_secret = settings.get("api_client_secret", "")
     if api_id and api_secret:
-        # 마지막 동기화 시점 → 증분 hours_back 계산. 자동 수집은 48시간 고정.
+        # 조회 범위 — 최근 7일 반. 네이버 API는 '상태 변경시각' 기준이라 48시간만
+        # 보면, 이틀 넘게 상태 변화 없이 밀린 미발송 주문(품절로 못 산 것 등)이
+        # 수집에도 관리자 장보기 제출에도 빠졌다(10/20: oxo 미발송 23건 중 12건,
+        # coconow·parkjini1005 5건씩). 결제도 상태 변경이라 7일 안에 결제된 주문은
+        # 현재 상태와 함께 다시 들어오고, 이미 보낸 건은 상태로 걸러진다.
+        # 수동 수집 화면의 '기간 이전 미발송 포함(최근 7일)'과 같은 범위다.
+        _MIN_H = 7 * 24 + 12
         _last_iso = settings.get('last_order_sync', '')
         if _last_iso:
             try:
                 _delta = (datetime.now() - datetime.fromisoformat(_last_iso)).total_seconds() / 3600
-                _hours = max(48, int(_delta) + 6)
+                _hours = max(_MIN_H, int(_delta) + 6)
             except Exception:
-                _hours = 48
+                _hours = _MIN_H
         else:
-            _hours = 48  # 첫 실행
+            _hours = _MIN_H  # 첫 실행
         log(f"📋 네이버 주문 조회 중... ({_hours}h 범위)")
         try:
             orders, err = naver_api.get_new_orders(api_id, api_secret,
