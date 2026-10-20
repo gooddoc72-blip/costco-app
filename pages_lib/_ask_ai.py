@@ -15,6 +15,7 @@
     _ask_ai.render({'표': rows, '메모': '...'}, key="rs_ov", settings=settings)
 """
 import json
+import threading
 
 import streamlit as st
 
@@ -22,8 +23,10 @@ import streamlit as st
 #  실제 계산식을 같이 적어 둬야 "왜 5개인가"에 근거를 대고 답할 수 있다.
 _SYSTEM = (
     "너는 코스트코 구매대행 정산 시스템(코코비즈)의 운영 도우미다. "
-    "관리자가 지금 보고 있는 화면 데이터를 JSON으로 받고, 그 데이터만 근거로 "
-    "한국어로 답한다.\n\n"
+    "사용자(관리자 또는 판매자)가 지금 보고 있는 메뉴 화면의 데이터(표·지표·"
+    "안내 문구)를 JSON으로 받고, 그 데이터만 근거로 한국어로 답한다. "
+    "'왜 이 값이 나왔나'를 묻는 질문이 대부분이니, 화면의 다른 값들과의 관계로 "
+    "설명하라.\n\n"
     "이 시스템의 계산 규칙:\n"
     "- 수량 단위는 **소분 단위**(1팩을 N개로 나눠 파는 상품은 낱개 기준)다.\n"
     "- 구입 수량(units_in) = 영수증 수량(팩) × 소분수(split_qty)\n"
@@ -84,7 +87,21 @@ def render(context, *, key, settings=None, username='',
 
     context: 화면에 떠 있는 값(dict/list). 그대로 JSON으로 보낸다.
     key:     위젯 키 접두사. 화면마다 달라야 한다.
+
+    메뉴 상단 질문 칸(render_top)이 켜져 있으면 여기서 그리지 않고, 이 화면이
+    골라 둔 데이터를 상단 질문 칸에 넘기기만 한다 — 같은 패널이 화면 중간에
+    또 뜨지 않게.
     """
+    if _top_active():
+        add_context(context, hint=hint)
+        return
+    _draw(context, key=key, settings=settings, username=username, title=title,
+          hint=hint, expanded=expanded)
+
+
+def _draw(context, *, key, settings=None, username='',
+          title="🤖 AI에게 물어보기 — 이 화면 데이터로 답합니다",
+          hint='', expanded=False):
     with st.expander(title, expanded=expanded):
         _ctx, _cut = _pack(context)
         st.caption("지금 화면에 보이는 값만 AI에게 보냅니다 — DB를 따로 뒤지지 "
@@ -137,3 +154,132 @@ def render(context, *, key, settings=None, username='',
                 st.rerun()
             st.caption("⚠️ AI 답변은 **화면 데이터만 보고 쓴 설명**입니다. "
                        "금액을 바꾸기 전에 실제 화면·원장으로 확인하세요.")
+
+
+# ── 메뉴 상단 질문 칸 — 모든 메뉴에서 '이 결과가 왜 나왔나'를 묻는다 ─────────
+#   메뉴마다 따로 붙이면 빠지는 메뉴가 생기고 넘길 데이터도 제각각이 된다.
+#   그래서 메뉴를 그리는 동안 화면에 나간 **표·지표·안내 문구**를 자동으로 모아
+#   (start_capture/stop_capture), 메뉴 맨 위에 미리 비워 둔 자리에 질문 칸을
+#   넣는다(render_top). 화면에 이미 떠 있는 것만 보내는 원칙은 그대로다.
+#   화면이 따로 골라 둔 데이터(render 호출)가 있으면 그것을 앞에 둔다.
+
+_tl = threading.local()       # 세션마다 스크립트가 자기 스레드에서 돈다
+_ROWS = 30                    # 표 하나에서 보낼 최대 행
+_COLS = 14                    # 표 하나에서 보낼 최대 열
+_TXT = 300                    # 안내 문구 하나 최대 글자
+
+
+def _top_active():
+    return bool(getattr(_tl, 'cap', None) is not None
+                or st.session_state.get('_ask_top_on'))
+
+
+def add_context(context, hint=''):
+    """화면이 골라 둔 데이터를 상단 질문 칸에 넘긴다(그리지 않는다)."""
+    _page = st.session_state.get('_ask_top_page') or ''
+    _store = st.session_state.setdefault('_ask_top_picked', {})
+    _lst = _store.setdefault(_page, [])
+    _item = {'데이터': context}
+    if hint:
+        _item['힌트'] = hint
+    # 같은 화면 묶음이 rerun마다 쌓이지 않게 '화면' 이름으로 덮어쓴다
+    _name = (context or {}).get('화면') if isinstance(context, dict) else None
+    _lst[:] = [x for x in _lst
+               if not (_name and isinstance(x['데이터'], dict)
+                       and x['데이터'].get('화면') == _name)]
+    _lst.append(_item)
+    del _lst[:-6]
+
+
+def _rec(kind, payload):
+    cap = getattr(_tl, 'cap', None)
+    if cap is None:
+        return
+    if len(cap) < 120:
+        cap.append({'종류': kind, **payload})
+
+
+def _table(data):
+    """표 데이터 → {'행수', '열', '행'} (앞부분만)."""
+    try:
+        import pandas as pd
+        if data is None:
+            return None
+        if hasattr(data, 'data') and hasattr(data, 'to_html'):   # Styler
+            data = data.data
+        df = data if isinstance(data, pd.DataFrame) else pd.DataFrame(data)
+        df = df.iloc[:, :_COLS]
+        return {'행수': int(len(df)), '열': [str(c) for c in df.columns],
+                '행': json.loads(df.head(_ROWS).to_json(orient='records',
+                                                       force_ascii=False,
+                                                       default_handler=str))}
+    except Exception:
+        return None
+
+
+def _wrap(name, fn):
+    def inner(*a, **kw):
+        try:
+            if getattr(_tl, 'cap', None) is not None:
+                if name in ('dataframe', 'table', 'data_editor'):
+                    _d = kw.get('data', a[0] if a else None)
+                    _t = _table(_d)
+                    if _t:
+                        _rec('표', _t)
+                elif name == 'metric':
+                    _rec('지표', {'이름': str(kw.get('label', a[0] if a else ''))[:60],
+                                 '값': str(kw.get('value', a[1] if len(a) > 1 else ''))[:60],
+                                 **({'변화': str(kw.get('delta', a[2] if len(a) > 2 else ''))[:60]}
+                                    if (kw.get('delta') or len(a) > 2) else {})})
+                elif name in ('success', 'info', 'warning', 'error'):
+                    _rec('안내', {'유형': name,
+                                 '내용': str(kw.get('body', a[0] if a else ''))[:_TXT]})
+                elif name in ('header', 'subheader'):
+                    _rec('제목', {'내용': str(kw.get('body', a[0] if a else ''))[:80]})
+        except Exception:
+            pass
+        return fn(*a, **kw)
+    inner._ask_wrapped = True
+    return inner
+
+
+def _install():
+    """st.* 와 컨테이너(columns·expander) 양쪽의 출력 함수를 감싼다. 한 번만."""
+    if getattr(st, '_ask_installed', False):
+        return
+    from streamlit.delta_generator import DeltaGenerator
+    for _n in ('dataframe', 'table', 'data_editor', 'metric', 'success', 'info',
+               'warning', 'error', 'header', 'subheader'):
+        _f = getattr(DeltaGenerator, _n, None)
+        if _f is not None and not getattr(_f, '_ask_wrapped', False):
+            setattr(DeltaGenerator, _n, _wrap(_n, _f))
+        _g = getattr(st, _n, None)          # st.x는 import 때 묶인 메서드라 따로 감싼다
+        if _g is not None and not getattr(_g, '_ask_wrapped', False):
+            setattr(st, _n, _wrap(_n, _g))
+    st._ask_installed = True
+
+
+def start_capture(page_title):
+    _install()
+    _tl.cap = []
+    st.session_state['_ask_top_on'] = True
+    st.session_state['_ask_top_page'] = str(page_title or '')
+
+
+def stop_capture():
+    cap = getattr(_tl, 'cap', None) or []
+    _tl.cap = None
+    return cap
+
+
+def render_top(page_title, captured, *, settings=None, username=''):
+    """메뉴 맨 위 질문 칸 — 그 메뉴 화면 데이터로 '왜 이 값인가'에 답한다."""
+    _picked = (st.session_state.get('_ask_top_picked') or {}).get(str(page_title or '')) or []
+    ctx = {'메뉴': str(page_title or '')}
+    if _picked:
+        ctx['화면이 골라 둔 데이터'] = [x for x in _picked]
+    if captured:
+        ctx['화면에 보이는 표·지표·안내'] = captured
+    _draw(ctx, key=f"top_{page_title}", settings=settings, username=username,
+          title=f"🤖 AI에게 물어보기 — '{page_title}' 결과가 왜 이렇게 나왔는지",
+          hint="표·숫자·안내 문구를 근거로 답합니다.")

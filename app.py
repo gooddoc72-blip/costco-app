@@ -659,4 +659,43 @@ with st.expander(f"☰ 메뉴 · 현재: {getattr(pg, 'title', '')}", expanded=F
             except Exception:
                 pass
 
-pg.run()
+# ── 🤖 메뉴 상단 AI 질문 칸 ──
+#   메뉴 맨 위 자리를 먼저 비워 두고, 메뉴를 그리는 동안 화면에 나간 표·지표·안내
+#   문구를 모은 뒤 그 자리에 질문 칸을 넣는다. 메뉴마다 따로 붙이지 않아도 모든
+#   메뉴에서 '이 결과가 왜 나왔나'를 물을 수 있다. 설정 메뉴는 API 키 같은 민감
+#   정보가 있어 뺀다.
+_page_title = getattr(pg, 'title', '') or ''
+_ask_on = _page_title not in ('설정',)
+_ask_slot = st.container() if _ask_on else None
+if _ask_on:
+    try:
+        from pages_lib import _ask_ai as _ask_top
+        _ask_top.start_capture(_page_title)
+    except Exception:
+        _ask_on = False
+
+
+def _draw_ask_top():
+    try:
+        _cap = _ask_top.stop_capture()
+        with _ask_slot:
+            _ask_top.render_top(_page_title, _cap, settings=settings, username=USERNAME)
+    except Exception as _ae:
+        try:
+            _ask_slot.caption(f"AI 질문 칸을 열지 못했습니다: {_ae}")
+        except Exception:
+            pass
+
+
+try:
+    pg.run()
+except Exception as _pe:
+    # st.stop()으로 일찍 끝난 메뉴도 질문 칸은 보여 준다(재실행 요청은 그대로 넘긴다)
+    if _ask_on and type(_pe).__name__ == 'StopException':
+        _draw_ask_top()
+    elif _ask_on:
+        _ask_top.stop_capture()
+    raise
+else:
+    if _ask_on:
+        _draw_ask_top()
