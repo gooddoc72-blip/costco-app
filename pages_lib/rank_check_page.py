@@ -797,61 +797,72 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         st.dataframe(_disp, use_container_width=True, hide_index=True)
 
 
-    # ── 자동 체크 시간 설정 ──────────────────────────────
+    # ── 🕒 순위 수집 현황 ──────────────────────────────
+    #   예전엔 여기서 '자동 체크 시간'을 받아 Windows 작업 스케줄러(schtasks)에
+    #   등록했다. 그런데 이 프로그램은 리눅스 서버에서 돌아 schtasks가 없고,
+    #   켜도 아무것도 등록되지 않았다(oxo·더블루샾·dltmddlf999가 켜 두었지만
+    #   자동 실행 기록 0건). 서버 직접 수집도 네이버 IP 제한으로 8/30부터 중단.
+    #   실제 수집은 PC의 로컬 수집기(Crawler Pro, 크롬 확장)가 해서 올린다
+    #   (/api/ranks/ingest, source='chrome_extension'). 동작하지 않는 설정 대신
+    #   '언제 마지막으로 수집됐나'를 보여 준다.
     st.divider()
-    with st.expander("⏰ 자동 체크 시간 설정", expanded=False):
-        st.caption("매일 지정된 시간에 Windows 작업 스케줄러가 순위 체크를 자동 실행합니다.")
+    st.markdown("##### 🕒 순위 수집 현황")
+    st.caption("순위는 **PC의 로컬 수집기(Crawler Pro · 크롬 확장)** 가 네이버에서 확인해 "
+               "올립니다. **PC가 켜져 있고 크롬이 열려 있을 때만** 수집되며, 절전·종료 "
+               "중에는 수집되지 않습니다. (서버 자동 체크는 네이버 IP 제한으로 중단)")
 
-        _rank_en = _gs('auto_rank_enabled') == '1'
-        _rank_time_str = _gs('auto_rank_time') or '12:00'
-        _rth, _rtm = [int(x) for x in _rank_time_str.split(':')]
-        _PYTHON_PATH = sys.executable
-        _SCRIPT_PATH = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)), '..', 'auto_task.py'
-        )
-        _TASK4_NAME = f"CostcoRank_{USERNAME}"
+    from db_core import DATA_DIR
 
-        def _rk_sc_run(args):
+    def _last_collect(_u):
+        """그 사용자의 마지막 순위 수집 — (시각, 출처, 오늘 건수)."""
+        _p = os.path.join(DATA_DIR, f"{_u}.db")
+        if not os.path.exists(_p):
+            return None
+        try:
+            _c = sqlite3.connect(f"file:{_p}?mode=ro", uri=True)
             try:
-                r = subprocess.run(
-                    ['schtasks'] + args, capture_output=True,
-                    text=True, encoding='cp949', errors='replace'
-                )
-                return r.returncode == 0, (r.stdout + r.stderr).strip()
-            except Exception as _e:
-                return False, str(_e)
+                _cols = {r[1] for r in _c.execute("PRAGMA table_info(rank_history)")}
+                if not _cols:
+                    return None
+                _src = "COALESCE(source,'')" if 'source' in _cols else "''"
+                _r = _c.execute(f"SELECT checked_at, {_src} FROM rank_history "
+                                "ORDER BY checked_at DESC LIMIT 1").fetchone()
+                _n = _c.execute("SELECT COUNT(*) FROM rank_history WHERE checked_at LIKE ?",
+                                (datetime.now().strftime('%Y-%m-%d') + '%',)).fetchone()[0]
+            finally:
+                _c.close()
+            return (_r[0], _r[1], int(_n)) if _r else None
+        except Exception:
+            return None
 
-        _c1, _c2 = st.columns([1, 2])
-        _new_en = _c1.checkbox("자동 체크 활성화", value=_rank_en, key="rk_auto_en")
-        _new_time = _c2.time_input(
-            "실행 시간",
-            value=datetime.strptime(_rank_time_str, '%H:%M').time(),
-            key="rk_auto_time"
-        )
-
-        _rc1, _rc2 = st.columns([2, 3])
-        if _rc1.button("💾 저장 & 등록", key="rk_save_auto", type="primary", use_container_width=True):
-            _t_str = _new_time.strftime('%H:%M')
-            set_setting(USERNAME, 'auto_rank_enabled', '1' if _new_en else '0')
-            set_setting(USERNAME, 'auto_rank_time', _t_str)
-            if _new_en:
-                _cmd4 = f'"{_PYTHON_PATH}" "{_SCRIPT_PATH}" --task rank --user {USERNAME}'
-                _ok, _out = _rk_sc_run(['/create', '/tn', _TASK4_NAME, '/tr', _cmd4,
-                                        '/sc', 'daily', '/st', _t_str, '/f'])
-                if _ok:
-                    st.success(f"✅ 매일 {_t_str}에 자동 순위 체크 등록 완료")
-                else:
-                    st.error(f"❌ 등록 실패 (관리자 권한으로 실행 필요)\n{_out}")
-            else:
-                _rk_sc_run(['/delete', '/tn', _TASK4_NAME, '/f'])
-                st.info("자동 체크 비활성화 — 스케줄 삭제됨")
-            st.rerun()
-
-        # 현재 등록 상태 표시
-        _t4_ok, _t4_out = _rk_sc_run(['/query', '/tn', _TASK4_NAME, '/fo', 'LIST'])
-        if _t4_ok:
-            st.success(f"✅ 현재 등록됨 — 매일 {_rank_time_str} 자동 실행")
+    _SRC = {'chrome_extension': '크롬 확장', 'crawler': '서버', 'manual': '직접 체크', '': '직접 체크'}
+    _me = _last_collect(USERNAME)
+    if _me:
+        _age_h = (datetime.now() - datetime.strptime(str(_me[0])[:16], '%Y-%m-%d %H:%M')
+                  ).total_seconds() / 3600
+        _msg = (f"마지막 수집: **{str(_me[0])[:16]}** ({_SRC.get(_me[1], _me[1])}) · "
+                f"오늘 {_me[2]}건")
+        if _age_h > 26:
+            st.warning("⚠️ " + _msg + f" — **{int(_age_h // 24)}일 넘게 수집되지 않았습니다.** "
+                       "수집기 PC가 켜져 있고 크롬이 열려 있는지 확인하세요.")
         else:
-            st.warning("⚠️ 미등록 — 저장 & 등록 버튼을 눌러 활성화하세요")
+            st.success("✅ " + _msg)
+    else:
+        st.info("아직 수집된 순위가 없습니다. PC에서 로컬 수집기(크롬 확장)를 실행하세요.")
+
+    if IS_ADMIN:
+        _rows = []
+        for _u in get_all_users():
+            _lc = _last_collect(_u['username'])
+            if not _lc:
+                continue
+            _rows.append({'사용자': f"{_u.get('display_name') or _u['username']} ({_u['username']})",
+                          '마지막 수집': str(_lc[0])[:16],
+                          '출처': _SRC.get(_lc[1], _lc[1]), '오늘 건수': _lc[2]})
+        if _rows:
+            with st.expander(f"👥 전체 사용자 수집 현황 ({len(_rows)}명)", expanded=False):
+                st.dataframe(pd.DataFrame(sorted(_rows, key=lambda r: r['마지막 수집'],
+                                                 reverse=True)),
+                             use_container_width=True, hide_index=True)
 
     # ═══════════════════════════════════════
