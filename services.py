@@ -1691,6 +1691,7 @@ def sync_active_order_status(username, client_id, client_secret):
                 except Exception:
                     pass
             if pending_ok:
+                _cp_log = []
                 for r in coupang_active:
                     _full = str(r['order_no'])
                     _base = _full.split('-')[0]
@@ -1699,6 +1700,25 @@ def sync_active_order_status(username, client_id, client_secret):
                         # 더 이상 대기상태가 아님 = 출고/배송 처리됨 → 미발송에서 제외
                         status_map[_full] = {'status': 'DEPARTURE', 'tracking_no': ''}
                         cleared += 1
+                        # 오래전에 끝났는데 상태만 대기로 남은 주문(김혜림 8월 ACCEPT 등)은
+                        # 오늘 발송으로 적으면 오늘 수익·재고 차감에 섞인다 — 최근 14일만.
+                        if str(r.get('order_date') or '')[:10] < (
+                                _dt.now() - _td(days=14)).strftime("%Y-%m-%d"):
+                            continue
+                        _cp_log.append({
+                            'order_no': _full, 'recipient': r.get('recipient', '') or '',
+                            'product_name': r.get('product_name', '') or '',
+                            'tracking_no': r.get('tracking_no', '') or '', 'courier': ''})
+                # 쿠팡에서 직접 보낸 건도 발송기록에 남긴다(발견한 날을 발송일로).
+                # 네이버 직접 발송은 위에서 남기는데 쿠팡은 상태만 바꿔서, 수익 자동
+                # 저장(발송 기준)과 정산 역추적에서 쿠팡 직접 발송분이 빠졌다
+                # (김혜림 10월 쿠팡 92행 — 송장 있는데 발송기록 없음). log는 idempotent.
+                if _cp_log:
+                    try:
+                        from db import log_dispatch_success as _lds2, business_dispatch_date as _bdd2
+                        _lds2(username, _cp_log, _bdd2(), platform='coupang')
+                    except Exception:
+                        pass
 
     updated = update_order_status_bulk(username, status_map)
     return {'checked': checked, 'updated': updated, 'cleared': cleared, 'error': err}

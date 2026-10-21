@@ -24,6 +24,12 @@ from pages_lib.profit_calc.enrich import (
 AUTO_SOURCE = '자동'
 
 
+def is_cancelled_status(status):
+    """취소·반품으로 끝난 주문 상태 — 수익에서 빠져야 한다(네이버 한글·영문, 쿠팡)."""
+    s = str(status or '').strip().upper()
+    return any(k in s for k in ('취소', '반품', 'CANCEL', 'RETURN'))
+
+
 def _int(v, d=0):
     try:
         return int(v)
@@ -160,8 +166,22 @@ def save_dispatch_profit(username, date):
         cur = {str(r['order_no']): r for r in conn.execute(
             "SELECT order_no, match_source FROM profit_settlements WHERE settlement_date=?",
             (str(date),)).fetchall()}
-        # 이 날짜의 자동 행 중 그날 발송되지 않은 주문 — 수집일 기준 옛 자동 저장
-        _stale = [o for o, r in cur.items() if r['match_source'] == AUTO_SOURCE and o not in disp]
+        # 이 날짜의 자동 행 중 그날 발송되지 않은 주문 — 수집일 기준 옛 자동 저장.
+        # 지우는 건 **다른 날 발송 기록이 있거나(그날 저장으로 옮겨진다) 취소·반품된
+        # 주문뿐**이다. 발송 기록이 없다고 안 보낸 것은 아니다 — 쿠팡·스마트스토어에서
+        # 직접 보내 앱 발송 기록에 없는 주문이 있다(김혜림 쿠팡 92행, 송장 있음).
+        _cand = [o for o, r in cur.items() if r['match_source'] == AUTO_SOURCE and o not in disp]
+        _stale = []
+        for o in _cand:
+            _dl = conn.execute("SELECT 1 FROM dispatch_log WHERE order_no=? LIMIT 1",
+                               (o,)).fetchone()
+            try:
+                _st = conn.execute("SELECT status FROM order_history WHERE order_no=?",
+                                   (o,)).fetchone()
+            except Exception:
+                _st = None
+            if _dl or (_st and is_cancelled_status(_st[0])):
+                _stale.append(o)
         if _stale:
             conn.executemany("DELETE FROM profit_settlements WHERE settlement_date=? "
                              "AND order_no=? AND match_source=?",
