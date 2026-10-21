@@ -157,101 +157,22 @@ def get_profit(date: str, user: dict = Depends(require_user)):
     그 외 소스: DB매칭 구입가 + 설정 기본 택배/박스비로 수입 추정.
     """
     username = user["username"]
-    df, src_label, _kind = build_settlement_df(username, date)
-    saved = (_kind == 'ps')
-    empty_summary = ProfitSummary(settlement=0, settled_shipping=0, cost=0, delivery=0, box=0, profit=0)
-    if df is None or df.empty:
-        return ProfitResponse(date=date, source=src_label, count=0, rows=[],
-                              summary=empty_summary, saved=saved)
-
-    def_ship, def_box = _settings_defaults(username)
-
-    preload_user = get_all_products(username)
-    preload_shared = get_shared_products()
-    _memo: dict = {}
-
-    def match_fn(nm, pno):
-        if pno:
-            return match_product_to_db(username, nm, product_no=pno,
-                                       _user_prods=preload_user, _shared_prods=preload_shared)
-        if nm not in _memo:
-            _memo[nm] = match_product_to_db(username, nm, product_no='',
-                                            _user_prods=preload_user, _shared_prods=preload_shared)
-        return _memo[nm]
-
-    has_pno = 'product_no' in df.columns
-    has_cost = '구입가격' in df.columns
-    has_deliv = '택배원가' in df.columns
-    has_box = '박스원가' in df.columns
-    records = df.to_dict('records')
-    rows_in = []
-    for rec in records:
-        rows_in.append({
-            'idx': str(rec.get('_sk', '')),
-            '수취인명': rec.get('수취인명', ''),
-            '상품명': rec.get('상품명', ''),
-            'product_no': (str(rec.get('product_no', '') or '') if has_pno else ''),
-            '수량': rec.get('수량', 1),
-            '구입가격': (rec.get('구입가격', 0) if has_cost else 0),
-        })
-
-    # ⚓ 영수증 매칭·수동 오버라이드·타인재고 웃돈을 DB에서 재구성 → compute_rows(순수)에 주입.
-    #   page.py가 세션에서 만들던 값을 세션 없이 DB로 동일하게 복원(pages_lib.profit_calc.enrich).
-    #   → 구입가(cost)가 Streamlit(신규 세션)과 일치. receipt_pick(라이브 수동선택)은 세션 한정이라 제외.
-    unique_products = list(dict.fromkeys(str(r['상품명'] or '') for r in rows_in))
-    receipt_by_pno, receipt_matches = build_receipt_maps(username, unique_products, match_fn)
-    kw_overrides = build_kw_overrides(username, rows_in, date)
-    surcharge_map = load_surcharge_map(username, [r['idx'] for r in rows_in])
-    results, _links = compute_rows(
-        rows_in, match_fn=match_fn,
-        receipt_by_pno=receipt_by_pno, receipt_matches=receipt_matches,
-        kw_overrides=kw_overrides, surcharge_map=surcharge_map, calc_date_str=date)
-
-    out = []
-    t_settle = t_sship = t_cost = t_deliv = t_box = t_profit = 0
-    for rec, res in zip(records, results):
-        settlement = _int(rec.get('정산예정금액', 0))
-        shipping = _int(rec.get('배송비 합계', 0))
-        _src = str(res.get('source', ''))
-        # ps 저장 소스면 저장된 구입가·택배·박스 그대로(대시보드 일치), 아니면 매칭+기본값.
-        if saved and has_cost:
-            cost = _int(rec.get('구입가격', 0))
-        else:
-            # 타인재고 웃돈(+원가) 가산 — page.py 후처리(costs += surcharge)와 동일.
-            _sur = _int(surcharge_map.get(str(rec.get('_sk', '')), 0))
-            cost = _int(res.get('cost', 0)) + _sur
-            if _sur and '타인재고' not in _src:
-                _src = f"{_src}+타인재고"
-        deliv = _int(rec.get('택배원가', def_ship)) if (saved and has_deliv) else def_ship
-        box = _int(rec.get('박스원가', def_box)) if (saved and has_box) else def_box
-        sship = settled_shipping(shipping)
-        profit = compute_profit(settlement, shipping, cost, deliv, box)
-        t_settle += settlement; t_sship += sship; t_cost += cost
-        t_deliv += deliv; t_box += box; t_profit += profit
-        out.append(ProfitRow(
-            order_no=str(rec.get('_sk', '')),
-            recipient=str(rec.get('수취인명', '') or ''),
-            product_name=str(rec.get('상품명', '') or ''),
-            product_no=str(rec.get('product_no', '') or ''),
-            option_info=str(rec.get('옵션정보', '') or ''),
-            qty=_int(rec.get('수량', 1), 1),
-            order_amount=_int(rec.get('최종 상품별 총 주문금액', 0)),
-            settlement_amount=settlement,
-            shipping_fee=shipping,
-            extra_shipping=_int(rec.get('제주/도서 추가배송비', 0)),
-            settled_shipping=sship,
-            cost_price=cost,
-            delivery_cost=deliv,
-            box_cost=box,
-            profit=profit,
-            match_source=_src,
-            matched_name=str(res.get('matched_name', '')),
-            matched_pno=str(res.get('matched_pno', '')),
-            matched_keyword=str(res.get('matched_name', '') or ''),
-            split_qty=_int(res.get('sqty', 1), 1),
-        ))
-    summary = ProfitSummary(settlement=t_settle, settled_shipping=t_sship, cost=t_cost,
-                            delivery=t_deliv, box=t_box, profit=t_profit)
+    # 계산은 자동 저장과 같은 함수(pages_lib.profit_calc.dispatch_profit)를 쓴다
+    from pages_lib.profit_calc.dispatch_profit import compute_dispatch_rows
+    rows, src_label, _kind, saved = compute_dispatch_rows(username, date, use_saved=True)
+    out = [ProfitRow(**{k: r[k] for k in (
+        'order_no', 'recipient', 'product_name', 'product_no', 'option_info', 'qty',
+        'order_amount', 'settlement_amount', 'shipping_fee', 'extra_shipping',
+        'settled_shipping', 'cost_price', 'delivery_cost', 'box_cost', 'profit',
+        'match_source', 'matched_name', 'matched_pno', 'split_qty')},
+        matched_keyword=r.get('matched_name', '') or '') for r in rows]
+    summary = ProfitSummary(
+        settlement=sum(r['settlement_amount'] for r in rows),
+        settled_shipping=sum(r['settled_shipping'] for r in rows),
+        cost=sum(r['cost_price'] for r in rows),
+        delivery=sum(r['delivery_cost'] for r in rows),
+        box=sum(r['box_cost'] for r in rows),
+        profit=sum(r['profit'] for r in rows))
     return ProfitResponse(date=date, source=src_label, count=len(out), rows=out,
                           summary=summary, saved=saved)
 
@@ -421,6 +342,7 @@ def admin_rank_ingest(req: AdminRankIngestRequest, admin: dict = Depends(require
             total[k] += res.get(k, 0)
     total["users"] = len(grouped)
     return total
+
 
 # ── 정산·청구 (새 화면 /m/billing 백엔드) ─────────────────────
 from api.billing import router as _billing_router  # noqa: E402

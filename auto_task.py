@@ -143,7 +143,29 @@ def save_daily_orders(username, orders, settings):
     )
 
 
+def save_recent_dispatch_profit(username, days=3):
+    """최근 N일 발송일마다 발송 기준 수익을 저장한다. 반환: 요약 문자열(없으면 '')."""
+    from pages_lib.profit_calc.dispatch_profit import save_dispatch_profit
+    from db_dispatch_log import get_dispatch_counts
+    _to = datetime.now()
+    _from = (_to - timedelta(days=int(days))).strftime("%Y-%m-%d")
+    _parts = []
+    for _d in sorted(get_dispatch_counts(username, _from, _to.strftime("%Y-%m-%d"))):
+        _r = save_dispatch_profit(username, str(_d)[:10])
+        if any(_r.values()):
+            _parts.append(f"{str(_d)[5:10]} 저장 {_r['saved']}"
+                          + (f"·이동 {_r['moved']}" if _r['moved'] else "")
+                          + (f"·정리 {_r['removed']}" if _r['removed'] else "")
+                          + (f"·수동유지 {_r['kept_manual']}" if _r['kept_manual'] else ""))
+    return " / ".join(_parts)
+
+
 def auto_save_profit(username, date):
+    """(옛 방식 — 주문 수집일 기준. 더 이상 호출하지 않는다: save_recent_dispatch_profit)"""
+    return _auto_save_profit_legacy(username, date)
+
+
+def _auto_save_profit_legacy(username, date):
     """daily_orders(profit 계산 포함) → profit_settlements 자동 저장(order_no 기준) → 홈달력/통계·수익계산 반영.
     · '자동' 저장분은 매번 daily에서 재생성(삭제 후 재삽입) → 옛 데이터 누적 방지
     · 수동 편집/저장분(match_source != '자동')은 order_no로 보존
@@ -552,10 +574,14 @@ def run_shopping_task(username="admin"):
     try:
         save_daily_orders(username, orders, settings)
         # 수익계산 자동 저장 (profit_settlements) → 홈달력/통계 수익 반영
+        #   **발송일 기준** — 최근 3일 발송일마다 그날 발송한 주문을 저장한다.
+        #   예전엔 주문 수집일(daily_orders) 기준(auto_save_profit)이라 화면(발송
+        #   기준)과 통계가 어긋났다(10월 저장 784행 중 발송일 일치 221행).
+        #   오후에 발송한 건은 다음 수집(9시·12시) 때 저장된다.
         try:
-            _pn = auto_save_profit(username, datetime.now().strftime("%Y-%m-%d"))
+            _pn = save_recent_dispatch_profit(username, days=3)
             if _pn:
-                log(f"💰 수익계산 자동 저장: {_pn}건 (신규)")
+                log(f"💰 수익 자동 저장(발송 기준): {_pn}")
         except Exception as _pe:
             log(f"⚠️ 수익계산 자동 저장 실패(계속): {_pe}")
     except Exception as e:
@@ -1146,10 +1172,14 @@ def run_fetch_orders_task(username="admin"):
         log(f"💾 daily_orders 자동 저장: {len(_daily) - _carried}건 (처리대상)"
             + (f" · 이월 {_carried}건은 이전 날짜에 있어 건너뜀" if _carried else ""))
         # 수익계산 자동 저장 (profit_settlements) → 홈달력/통계 수익 반영
+        #   **발송일 기준** — 최근 3일 발송일마다 그날 발송한 주문을 저장한다.
+        #   예전엔 주문 수집일(daily_orders) 기준(auto_save_profit)이라 화면(발송
+        #   기준)과 통계가 어긋났다(10월 저장 784행 중 발송일 일치 221행).
+        #   오후에 발송한 건은 다음 수집(9시·12시) 때 저장된다.
         try:
-            _pn = auto_save_profit(username, datetime.now().strftime("%Y-%m-%d"))
+            _pn = save_recent_dispatch_profit(username, days=3)
             if _pn:
-                log(f"💰 수익계산 자동 저장: {_pn}건 (신규)")
+                log(f"💰 수익 자동 저장(발송 기준): {_pn}")
         except Exception as _pe:
             log(f"⚠️ 수익계산 자동 저장 실패(계속): {_pe}")
     except Exception as e:
