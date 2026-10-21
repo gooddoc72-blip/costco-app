@@ -38,6 +38,7 @@ CHECKS = [
     ('costhigh', f'구입가가 판매가의 {COST_HIGH_RATIO:g}배 초과 — 묶음/소분 오류 의심', 'high'),
     ('costlow',  f'구입가가 판매가의 {int(COST_LOW_RATIO * 100)}% 미만 — 수량 반영 누락 의심', 'mid'),
     ('nosettle', '정산예정 0원',                                    'mid'),
+    ('nodisp',   '발송 기록 없음 — 취소·미발송이면 빼야 함(앱 밖 발송이면 정상)', 'mid'),
     ('stale',    '저장 수익 ≠ 현재 값으로 계산한 수익',             'mid'),
     ('kw',       '키워드로 매칭됨 — 맞는 상품인지 확인',            'low'),
     ('noship',   '택배비 0원',                                     'low'),
@@ -51,7 +52,7 @@ def row_profit(r):
     return calc_row_profit(r) if int(r.get('cost_price') or 0) > 0 else 0
 
 
-def audit_rows(rows, other=()):
+def audit_rows(rows, other=(), dispatched=None):
     """행마다 걸린 점검 코드 목록. 반환: {id: [코드, ...]} (문제 없는 행은 빠짐).
     other: 같은 주문번호의 **다른 달** 행 — 달을 넘긴 중복(9/30·10/1)도 잡는다."""
     by_order = defaultdict(set)
@@ -79,6 +80,9 @@ def audit_rows(rows, other=()):
                 f.append('stale')
         if int(r.get('settlement_amount') or 0) <= 0:
             f.append('nosettle')
+        _ono = str(r.get('order_no') or '')
+        if dispatched is not None and _ono not in dispatched and not _ono.startswith('_r'):
+            f.append('nodisp')
         if '키워드' in str(r.get('match_source') or ''):
             f.append('kw')
         if int(r.get('delivery_cost') or 0) <= 0:
@@ -147,7 +151,14 @@ def render_monthly(USERNAME, IS_ADMIN):
     other = [r for r in get_settlements_by_order_nos(
                  target, {str(r.get('order_no') or '') for r in rows})
              if str(r.get('settlement_date') or '')[:7] != ym]
-    issues = audit_rows(rows, other)
+    try:
+        from db import get_user_db as _gud
+        _c = _gud(target)
+        _dispatched = {str(r[0]) for r in _c.execute('SELECT order_no FROM dispatch_log')}
+        _c.close()
+    except Exception:
+        _dispatched = None
+    issues = audit_rows(rows, other, dispatched=_dispatched)
 
     # ── 1) 월 합계 ────────────────────────────────────────────
     st.subheader(f"📊 {ym} 합계" + (f" — {target}" if target != USERNAME else ""))
