@@ -790,6 +790,64 @@ def get_moves(seller: str = None, owner: str = None, only_cross: bool = False,
 
 
 # ── ⑤ 500원 정산 장부 (관리자 중개) ───────────────────────
+def record_loan_sale(seller: str, owner: str, product_no: str, product_name: str,
+                     qty: int, amount: int, order_no: str, dispatched_at: str = '') -> int:
+    """재고 장부에 없던 남의 물건을 빌려 보낸 건 — 정산 장부(타인 재고 판매)에 올린다.
+
+    빌려준 사람(owner)이 재고를 장부에 안 올려 둔 채 판매자(seller)에게 빌려준
+    경우다. 장부에 없으니 차감할 입고가 없고, 그래서 정산 장부에도 안 떠 빌려준
+    사람에게 줄 돈이 어디에도 남지 않았다. 관리자가 정한 금액(amount)으로
+    · 빌려준 사람 앞으로 '빌려줌(LOAN)' 입고 1건(남은 수량 0 — 재고 목록엔 안 보임)
+    · 그 입고를 가리키는 타인 재고 차감 1건(is_cross=1, platform='settle')
+    을 남긴다. 정산을 취소하면 revert_settle_moves가 차감을 지운다.
+    금액은 판매자에게 청구한 금액 그대로 빌려준 사람에게 준다(웃돈 포함 총액).
+    반환: 차감 기록 id (실패 0)
+    """
+    seller, owner = str(seller or '').strip(), str(owner or '').strip()
+    order_no = str(order_no or '').strip()
+    qty = max(1, int(qty or 1))
+    amount = max(0, int(amount or 0))
+    if not (seller and owner and order_no and amount) or seller == owner:
+        return 0
+    conn = _conn()
+    _ensure_tables(conn)
+    try:
+        _old = conn.execute(
+            "SELECT m.id FROM inventory_moves m JOIN inventory_lots l ON l.id=m.lot_id "
+            "WHERE m.order_no=? AND l.status='LOAN'", (order_no,)).fetchone()
+        if _old:
+            return int(_old['id'])                  # 같은 주문을 다시 정산 요청해도 한 번만
+        _now_s = _now()
+        _day = str(dispatched_at or '')[:10] or _now_s[:10]
+        unit = amount // qty
+        _memo = f"빌려줌 → {seller} · 주문 {order_no} (재고 장부에 없던 물건)"
+        # 정산을 취소했다가 다시 하면 그 주문의 '빌려줌' 입고가 남아 있다 — 다시 쓴다
+        _lot = conn.execute("SELECT id FROM inventory_lots WHERE status='LOAN' AND memo=?",
+                            (_memo,)).fetchone()
+        if _lot:
+            lot_id = int(_lot['id'])
+            conn.execute("UPDATE inventory_lots SET owner=?, unit_cost=?, qty_in=?, qty_left=0,"
+                         " list_price=? WHERE id=?", (owner, unit, qty, unit, lot_id))
+        else:
+            cur = conn.execute(
+                "INSERT INTO inventory_lots (product_no, product_name, owner, unit_cost,"
+                " split_qty, qty_in, qty_left, received_at, status, memo, created_at,"
+                " list_price, paid) VALUES (?,?,?,?,1,?,0,?,'LOAN',?,?,?,1)",
+                (str(product_no or ''), str(product_name or ''), owner, unit, qty, _day,
+                 _memo, _now_s, unit))
+            lot_id = cur.lastrowid
+        cur = conn.execute(
+            "INSERT INTO inventory_moves (lot_id, product_no, owner, seller, qty, unit_cost,"
+            " is_cross, surcharge, order_no, dispatched_at, platform, created_at)"
+            " VALUES (?,?,?,?,?,?,1,?,?,?,'settle',?)",
+            (lot_id, str(product_no or ''), owner, seller, qty, unit,
+             amount - unit * qty, order_no, _day, _now_s))
+        conn.commit()
+        return int(cur.lastrowid or 0)
+    finally:
+        conn.close()
+
+
 def get_cross_settlement_summary(settle_status: str = 'PENDING') -> list:
     """관리자 정산 장부 — 보유자별/판매자별 주고받을 금액.
 
@@ -816,7 +874,8 @@ def get_cross_moves(owner: str, seller: str, product_no: str = None,
     lot을 붙여 상품명·입고일을 함께 낸다. 금액 = 구입가 × 수량 + 웃돈."""
     conn = _conn()
     _ensure_tables(conn)
-    sql = """SELECT m.*, l.product_name AS product_name, l.received_at AS lot_received_at
+    sql = """SELECT m.*, l.product_name AS product_name, l.received_at AS lot_received_at,
+                    l.status AS lot_status
              FROM inventory_moves m LEFT JOIN inventory_lots l ON l.id = m.lot_id
              WHERE m.is_cross=1 AND m.settle_status=? AND m.owner=? AND m.seller=?"""
     params = [str(settle_status), str(owner), str(seller)]

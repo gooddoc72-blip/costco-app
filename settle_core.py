@@ -227,6 +227,22 @@ def finalize(settle_date, alloc_rows, created_by='', with_fees=False,
     totals = _ds.save_settlement(settle_date, rows, fees_by_user=fees,
                                  created_by=created_by, replace=replace)
     stock = consume_stock_rows(rows, settle_date)
+    # 재고 장부에 없던 남의 물건을 빌려 보낸 건 — 빌려준 사람에게 줄 돈을 정산 장부에
+    stock['loan'] = 0
+    for _r in (alloc_rows or []):
+        _lo = str(_r.get('loan_owner') or '').strip()
+        if not _lo or _i(_r.get('amount')) <= 0:
+            continue
+        try:
+            from db_inventory import record_loan_sale
+            if record_loan_sale(str(_r.get('username') or ''), _lo,
+                                str(_r.get('costco_no') or ''),
+                                str(_r.get('product_name') or ''),
+                                _i(_r.get('qty')) or 1, _i(_r.get('amount')),
+                                str(_r.get('order_no') or ''), str(settle_date)):
+                stock['loan'] += 1
+        except Exception:
+            pass
     return {'saved': len(rows), 'applied': applied, 'dropped': dropped,
             'totals': totals, 'learned': learned, 'fees': fees, 'stock': stock}
 

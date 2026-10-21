@@ -823,10 +823,16 @@ def _admin_settlement(sur):
     from db_inventory import get_cross_moves
     total = sum(int(r['payable'] or 0) for r in rows)
     st.metric("정산 대기 총액", f"{fmt(total)}원")
+    _nm = _name_map()
+
+    def _who(u):
+        """'이수진 (6117sj)' — 아이디만으로는 누군지 알아보기 어렵다."""
+        _d = str(_nm.get(u, u) or u).strip()     # ' 김혜림'처럼 앞 공백이 있으면 굵게가 깨진다
+        return f"{_d} ({u})" if _d != u else u
     for r in rows:
         with st.container(border=True):
             c1, c2, c3 = st.columns([3, 1.4, 1])
-            c1.markdown(f"**{r['seller']}** 님이 판매 → **{r['owner']}** 님 재고")
+            c1.markdown(f"**{_who(r['seller'])}** 님이 판매 → **{_who(r['owner'])}** 님 재고")
             c1.caption(f"상품번호 {r['product_no']} · {r['qty']}개 "
                        f"(웃돈 {fmt(int(r['surcharge']))}원 포함)")
             c2.markdown(f"### {fmt(int(r['payable']))}원")
@@ -836,13 +842,16 @@ def _admin_settlement(sur):
                 st.rerun()
             # 합계만으로는 '어느 주문이 얼마'인지 모른다 — 펼치면 차감 건별 내역
             _mv = get_cross_moves(r['owner'], r['seller'], r['product_no'])
-            _nm = next((m['product_name'] for m in _mv if m.get('product_name')), '')
-            with st.expander(f"🔍 내역 보기 — {_nm[:30] or r['product_no']} · {len(_mv)}건",
+            _pnm = next((m['product_name'] for m in _mv if m.get('product_name')), '')
+            with st.expander(f"🔍 내역 보기 — {_pnm[:30] or r['product_no']} · {len(_mv)}건",
                              expanded=False):
                 if not _mv:
                     st.caption("내역이 없습니다.")
                 else:
                     st.dataframe(pd.DataFrame([{
+                        # 빌린 재고 = 장부에 없던 물건을 빌려 보내 영수증 정산에서 금액을 정한 건
+                        "구분": ("🤝 빌린 재고" if m.get('lot_status') == 'LOAN'
+                                 else "📦 장부 재고"),
                         "발송일": str(m['dispatched_at'] or '')[:16],
                         "주문번호": m['order_no'],
                         "상품명": str(m.get('product_name') or '')[:34],

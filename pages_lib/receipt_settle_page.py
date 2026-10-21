@@ -2800,8 +2800,20 @@ def _render_unmatched_panel(alloc, dmap, d_day, USERNAME, receipt_items):
                     "없습니다.** 📦 재고 출고로 처리하려면 **금액 칸에 직접 적으세요** "
                     "— 원장에 없어도 그 금액으로 청구됩니다.")
         _OWN_AUTO = '(자동: 재고 많은 사람)'
-        _own_opts = [_OWN_AUTO] + [dmap.get(o, o) for o in _owners]
-        _own_l2u = {dmap.get(o, o): o for o in _owners}
+        # 재고 장부에 없는 사람도 고른다 — 장부에 안 올린 물건을 빌려 보낸 경우다.
+        # 그 사람을 고르고 금액을 적으면 정산 요청 때 '타인 재고 판매 정산'(재고 관리 ›
+        # 정산 장부)에 그 사람에게 줄 돈으로 올라간다(db_inventory.record_loan_sale).
+        try:
+            _all_u = [u['username'] for u in get_all_users()
+                      if (u.get('status') or 'active') == 'active']
+        except Exception:
+            _all_u = []
+        _others = sorted([u for u in _all_u if u not in _owners],
+                         key=lambda u: dmap.get(u, u))
+        _own_opts = ([_OWN_AUTO] + [_name_id(dmap, o) for o in _owners]
+                     + [_name_id(dmap, o) + ' · 장부에 재고 없음' for o in _others])
+        _own_l2u = {_name_id(dmap, o): o for o in _owners}
+        _own_l2u.update({_name_id(dmap, o) + ' · 장부에 재고 없음': o for o in _others})
 
         _price_by = {}
         for _it in (receipt_items or []):
@@ -2853,7 +2865,10 @@ def _render_unmatched_panel(alloc, dmap, d_day, USERNAME, receipt_items):
                 '재고 보유자': st.column_config.SelectboxColumn(
                     '재고 보유자', options=_own_opts,
                     help='📦 재고 출고일 때만 씁니다. 남의 재고를 빌려 보냈으면 '
-                         f'그 사람을 고르세요 — 웃돈 {_surch:,}원이 붙습니다.'),
+                         f'그 사람을 고르세요 — 웃돈 {_surch:,}원이 붙습니다. '
+                         "'장부에 재고 없음'인 사람을 고르면 **금액을 직접 적어야** "
+                         '하고, 그 금액이 재고 관리 › 정산 장부에 그 사람에게 줄 돈으로 '
+                         '올라갑니다.'),
                 '참고·영수증가': st.column_config.NumberColumn('참고·영수증가',
                                                         format='%d'),
                 '메모': st.column_config.TextColumn('메모'),
@@ -2880,6 +2895,7 @@ def _render_unmatched_panel(alloc, dmap, d_day, USERNAME, receipt_items):
                     _own = max(_have, key=lambda k: _have[k]['qty']) if _have else ''
                 _cost = int((_have.get(_own) or {}).get('cost') or 0)
                 _cross = bool(_own and _own != _me)
+                _in_ledger = bool(_own and _own in _have)
                 _cost_basis = 0
                 _own_paid = False
                 if not _amt:
@@ -2895,13 +2911,20 @@ def _render_unmatched_panel(alloc, dmap, d_day, USERNAME, receipt_items):
                         _amt = int(_ou.get('unpaid_amount') or 0)
                         _cost_basis = _cost * _qty
                         _own_paid = int(_ou.get('paid_units') or 0) > 0
-                    else:
-                        # 원장에 그 재고가 없으면 자동으로 채울 값이 없다. 사람이 적은
-                        # 금액이 있으면 그걸 쓰고, 둘 다 없을 때만 뺀다.
+                    elif _in_ledger or not _own:
                         _amt = (_cost + (_surch if _cross else 0)) * _qty
+                    else:
+                        # 장부에 그 사람 재고가 없다 — 자동으로 채울 구입가가 없다.
+                        # 웃돈만 청구되지 않게 0으로 두고 금액을 적게 한다.
+                        _amt = 0
                 if _amt <= 0 and not _own_paid:
                     _zero += 1
                     continue
+                # 장부에 없는 남의 물건을 빌려 보냄 — 정산 장부에 그 사람 몫으로 올린다
+                _loan = bool(_cross and not _in_ledger and _amt > 0)
+                if not _memo and _loan:
+                    _memo = (f"빌린 재고 · {_name_id(dmap, _own)} — 재고 관리 › 정산 장부에서 "
+                             f"{dmap.get(_own, _own)}에게 {_amt:,}원 지급")
                 if not _memo:
                     _memo = ('재고 출고'
                              + (f" · {dmap.get(_own, _own)} 재고" if _own else "")
@@ -2914,7 +2937,7 @@ def _render_unmatched_panel(alloc, dmap, d_day, USERNAME, receipt_items):
                 # 발송 때 이미 그 재고에서 빠져 남은 수량이 0이어도(장부 요약에 안 보여도)
                 # 본인 결제됨 재고였으면 그 보유자로 기록한다 — 0원 행이 원장에 남아야 한다
                 _stk_owner = _own if (_own and (_own in _have or _own_paid)) else ''
-                if not _stk_owner:
+                if not _stk_owner and not _loan:
                     _no_ledger.append(str(_o.get('product_name') or '')[:20])
             else:
                 if _amt <= 0:
@@ -2923,6 +2946,7 @@ def _render_unmatched_panel(alloc, dmap, d_day, USERNAME, receipt_items):
                 _via = 'manual'
                 _stk_owner = ''
                 _cost_basis = 0
+                _loan = False
 
             _row_idx.append(_i)
             _rows_new.append({
@@ -2941,6 +2965,8 @@ def _render_unmatched_panel(alloc, dmap, d_day, USERNAME, receipt_items):
                 'prev_cost': int(_o.get('prev_cost') or 0),
                 'via': _via, 'split_qty': 1, 'pack': 1, 'memo': _memo,
                 'stock_owner': _stk_owner,
+                # 장부에 없던 남의 물건을 빌려 보낸 건 — 정산 요청 때 정산 장부에 올린다
+                'loan_owner': (_own if _loan else ''),
                 # 본인 재고(결제됨) 출고는 청구 0원이어도 주문 구입가는 재고 구입가다
                 'cost_basis': _cost_basis})
 
@@ -2957,6 +2983,11 @@ def _render_unmatched_panel(alloc, dmap, d_day, USERNAME, receipt_items):
             if _n_led:
                 st.caption(f"📦 {_n_led}건은 **정산 요청 때 그 보유자의 재고 장부(📊 전체 재고)"
                            "에서 실제로 차감**됩니다. 정산을 취소하면 되돌아옵니다.")
+        _n_loan = sum(1 for r in _rows_new if r.get('loan_owner'))
+        if _n_loan:
+            st.caption(f"🤝 {_n_loan}건은 **장부에 없던 남의 물건을 빌려 보낸 건**입니다 — "
+                       "판매자에게 그 금액을 청구하고, 정산 요청 때 재고 관리 › **정산 장부**에 "
+                       "빌려준 사람에게 줄 돈으로 올라갑니다.")
         if _no_ledger:
             st.warning("⚠️ 재고 장부에 그 보유자 재고가 없어 **청구만 되고 재고는 차감되지 "
                        "않는** 재고 출고: " + " · ".join(_no_ledger[:6])
@@ -4473,7 +4504,7 @@ def _n(s):
 
 def _name_id(dm, u):
     """보유자 표시 — '김미진 (sandyjin)'. 이름만 보이면 동명이인·아이디 대조가 안 된다."""
-    _d = dm.get(u, u)
+    _d = str(dm.get(u, u) or u).strip()
     return f"{_d} ({u})" if _d != u else u
 
 
