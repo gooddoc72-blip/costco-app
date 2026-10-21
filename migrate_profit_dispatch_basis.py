@@ -14,6 +14,8 @@ import sys, os, glob, sqlite3, shutil
 from datetime import datetime
 ROOT = sys.argv[1]
 APPLY = '--apply' in sys.argv
+if not APPLY and os.path.realpath(ROOT) == '/opt/costco-app':
+    sys.exit("운영 경로는 --apply(백업 포함)로만 실행합니다. 미리보기는 DB 복사본 경로로 돌리세요.")
 os.chdir(ROOT); sys.path.insert(0, ROOT)
 from pages_lib.profit_calc.dispatch_profit import save_dispatch_profit, AUTO_SOURCE
 DATA = os.path.join(ROOT, 'data')
