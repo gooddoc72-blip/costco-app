@@ -34,8 +34,24 @@ COLUMN_HINTS = {
     'courier':     ('택배사', 'courier', '배송사명'),
     # 택배사 파일은 '접수일자'(집화일)를 쓴다. 이 열을 못 읽으면 발송일이 오늘로
     # 잡혀 그날 택배비가 통째로 어긋난다.
-    'dispatched_at': ('발송일', '출고일', '발송처리일', '접수일자', '집화일자', '배송일'),
+    'dispatched_at': ('발송일', '출고일', '발송처리일', '접수일자', '집화일자', '배송일',
+                      'dispatched_at'),
+    # 누가 보낸 택배인가 — CJ 기업고객 파일의 '발송고객코드'(B301210319)·'송화인'.
+    # 주문번호가 없거나 코코비즈 밖 업체 건을 가르는 데 쓴다(sender map).
+    'sender_code': ('발송고객코드', '고객코드', 'sender_code'),
+    'sender_name': ('발송고객명', '송화인', 'sender_name'),
 }
+
+#: 발송고객코드 → 누구인가. 한 번 정하면 기억한다(app_settings에 JSON).
+#   {code: {'kind': 'user'|'external'|'shared', 'username': .., 'name': ..}}
+#   user     = 그 코코비즈 사용자의 택배(주문번호로 맞은 행에서 자동으로 배운다)
+#   external = 코코비즈 사용자가 아닌 업체 — 발송 기록·영수증 매칭에서 뺀다
+#   shared   = 여러 사용자가 같은 코드를 쓴다('코코마트') — 주문번호로만 가른다
+SENDER_MAP_KEY = 'dispatch_sender_map'
+
+#: 쿠팡 주문번호 앞부분 → 전체 번호들. 코코비즈에는 '주문번호-옵션번호'로 저장되는데
+#   택배사 파일에는 앞부분만 있다. build_order_owner_index가 채운다.
+_BASE_FULL = {}
 
 #: 날짜로 읽을 값의 형태 — '2026-09-01', '2026/09/01', '2026-09-01 14:00:29'
 _DATE_RE = re.compile(r'(20\d{2})[-/.](\d{1,2})[-/.](\d{1,2})')
@@ -84,8 +100,80 @@ def build_order_owner_index():
                 seen.setdefault(o, set()).add(u)
                 idx[o] = u
         conn.close()
+    # 쿠팡 '주문번호-옵션번호' — 택배사 파일에는 앞부분만 있다. 앞부분으로도 찾게 한다.
+    _BASE_FULL.clear()
+    for o, us in list(seen.items()):
+        if '-' not in o or len(us) != 1:
+            continue
+        b = o.split('-')[0]
+        if not b or b in seen:
+            continue
+        _BASE_FULL.setdefault(b, set()).add(o)
+        idx.setdefault(b, next(iter(us)))
     dup = {o: sorted(us) for o, us in seen.items() if len(us) > 1}
     return idx, dup
+
+
+def load_sender_map():
+    import json
+    try:
+        from db_auth import get_global_setting
+        return json.loads(get_global_setting(SENDER_MAP_KEY, '') or '{}') or {}
+    except Exception:
+        return {}
+
+
+def save_sender_map(m):
+    import json
+    from db_auth import set_global_setting
+    set_global_setting(SENDER_MAP_KEY, json.dumps(m or {}, ensure_ascii=False))
+
+
+def learn_sender_map(by_user, smap):
+    """주문번호로 맞은 행에서 '발송고객코드 → 사용자'를 배운다. 반환: 바뀐 수.
+
+    관리자가 정한 값(external, fixed user)은 덮지 않는다. 한 코드가 두 사용자에
+    걸리면 'shared'로 남겨 주문번호로만 가르게 한다(코코마트처럼 여럿이 같은 이름).
+    """
+    seen = {}
+    for u, rows in (by_user or {}).items():
+        for r in rows:
+            c = str(r.get('sender_code') or '').strip()
+            if c:
+                seen.setdefault(c, {}).setdefault(u, str(r.get('sender_name') or ''))
+    n = 0
+    for c, us in seen.items():
+        cur = smap.get(c) or {}
+        if cur.get('kind') == 'external' or cur.get('fixed'):
+            continue
+        name = next(iter(us.values()), '')
+        if len(us) == 1:
+            u = next(iter(us))
+            if cur.get('kind') == 'user' and cur.get('username') == u:
+                continue
+            if cur.get('kind') in ('user', 'shared'):
+                if cur.get('kind') == 'shared':
+                    continue
+                smap[c] = {'kind': 'shared', 'name': name}
+            else:
+                smap[c] = {'kind': 'user', 'username': u, 'name': name}
+            n += 1
+        elif cur.get('kind') != 'shared':
+            smap[c] = {'kind': 'shared', 'name': name}
+            n += 1
+    return n
+
+
+def split_external(unknown, smap):
+    """미분류 행 → (외부 업체 행, 남은 미분류). 외부 업체는 기록·매칭에서 뺀다."""
+    ext, rest = [], []
+    for r in (unknown or []):
+        c = str(r.get('sender_code') or '').strip()
+        if c and (smap.get(c) or {}).get('kind') == 'external':
+            ext.append(r)
+        else:
+            rest.append(r)
+    return ext, rest
 
 
 def guess_columns(headers):
@@ -186,6 +274,8 @@ def classify_rows(records, colmap, owner_index):
             # 집화일자 — 택배사가 물건을 받아 간 날. 발송일의 진짜 근거다.
             'dispatched_at': ('%s-%02d-%02d' % (_dm.group(1), int(_dm.group(2)),
                                                 int(_dm.group(3))) if _dm else ''),
+            'sender_code': str(_g('sender_code') or '').strip(),
+            'sender_name': str(_g('sender_name') or '').strip(),
             '_row': i + 1,
         }
         try:
@@ -193,7 +283,11 @@ def classify_rows(records, colmap, owner_index):
         except (TypeError, ValueError):
             item['qty'] = 1
         u = owner_index.get(ono) if ono else None
-        if u:
+        if u and ono in _BASE_FULL:
+            # 쿠팡 주문번호 앞부분 — 그 주문의 옵션 줄마다 같은 송장으로 기록한다
+            for _full in sorted(_BASE_FULL[ono]):
+                by_user.setdefault(u, []).append(dict(item, order_no=_full))
+        elif u:
             by_user.setdefault(u, []).append(item)
         else:
             item['_why'] = '주문번호 없음' if not ono else '어느 사용자에도 없는 주문번호'
@@ -311,6 +405,77 @@ def save_dispatch(by_user, dispatched_at, platform='upload', skip_existing=True,
             if n:
                 saved[uname] = saved.get(uname, 0) + n
     return saved, skipped, moved
+
+
+
+def _render_sender_panel(st, pd, dmap, smap, unknown, external):
+    """🏢 보낸 업체 구분 — 코코비즈 사용자가 아닌 업체 건을 빼고, 처음 보는 코드를 정한다."""
+    if external:
+        _by = {}
+        for r in external:
+            _k = r.get('sender_name') or r.get('sender_code')
+            _by[_k] = _by.get(_k, 0) + 1
+        st.info(f"🏢 **코코비즈 밖 업체 {len(external)}건은 제외합니다** — "
+                + " · ".join(f"{k} {v}건" for k, v in
+                             sorted(_by.items(), key=lambda kv: -kv[1]))
+                + ". 발송 기록·영수증 매칭에 들어가지 않습니다.")
+    # 처음 보는 코드 — 미분류 행 중 구분이 정해지지 않은 코드
+    _new = {}
+    for r in (unknown or []):
+        c = str(r.get('sender_code') or '').strip()
+        if c and c not in smap:
+            _e = _new.setdefault(c, {'name': r.get('sender_name') or '', 'n': 0})
+            _e['n'] += 1
+    with st.expander(f"🏢 보낸 업체 구분 — 코드 {len(smap)}개 기억 중"
+                     + (f" · 처음 보는 코드 {len(_new)}개" if _new else ""),
+                     expanded=bool(_new)):
+        st.caption("CJ 파일의 **발송고객코드**로 보낸 업체를 구분합니다. 주문번호로 맞은 "
+                   "행에서 '코드 → 사용자'를 자동으로 배우고, 처음 보는 코드는 여기서 한 번 "
+                   "정하면 다음부터 자동 분류됩니다. **외부 업체**로 정한 코드는 발송 "
+                   "기록과 영수증 매칭에서 빠집니다. 여러 사용자가 함께 쓰는 코드는 "
+                   "미지정으로 두세요 — 주문번호로만 가릅니다.")
+        _EXT, _NONE = '🏢 외부 업체(제외)', '— 미지정(주문번호로만) —'
+        _l2u = {f"👤 {dmap.get(u, u)} ({u})": u for u in dmap}
+        _opts = [_NONE, _EXT] + sorted(_l2u)
+
+        def _lab(m):
+            if (m or {}).get('kind') == 'external':
+                return _EXT
+            if (m or {}).get('kind') == 'user' and m.get('username') in dmap:
+                return f"👤 {dmap.get(m['username'], m['username'])} ({m['username']})"
+            return _NONE
+        _rows = [{'코드': c, '송화인': v['name'], '이번 파일': v['n'], '구분': _NONE}
+                 for c, v in sorted(_new.items(), key=lambda kv: -kv[1]['n'])]
+        _rows += [{'코드': c, '송화인': m.get('name', ''), '이번 파일': 0, '구분': _lab(m)}
+                  for c, m in sorted(smap.items())]
+        if not _rows:
+            st.caption("아직 기억한 코드가 없습니다.")
+            return
+        _ed = st.data_editor(
+            pd.DataFrame(_rows), use_container_width=True, hide_index=True,
+            key="du_sender_ed", disabled=['코드', '송화인', '이번 파일'],
+            column_config={'구분': st.column_config.SelectboxColumn(
+                '구분', options=_opts, required=True)})
+        _new_map, _chg = dict(smap), 0
+        for r in _ed.to_dict('records'):
+            c, v = str(r['코드']), str(r['구분'])
+            cur = smap.get(c) or {}
+            if v == _lab(cur) and (c in smap or v == _NONE):
+                continue
+            if v == _EXT:
+                _new_map[c] = {'kind': 'external', 'name': r['송화인']}
+            elif v in _l2u:
+                _new_map[c] = {'kind': 'user', 'username': _l2u[v], 'name': r['송화인'],
+                               'fixed': True}
+            else:
+                _new_map[c] = {'kind': 'shared', 'name': r['송화인'], 'fixed': True}
+            _chg += 1
+        if st.button(f"💾 업체 구분 저장 ({_chg}건 변경)", key="du_sender_save",
+                     disabled=not _chg):
+            save_sender_map(_new_map)
+            st.session_state['_du_msg'] = (f"🏢 보낸 업체 구분 {_chg}건 저장 — "
+                                           "다시 분류했습니다.")
+            st.rerun()
 
 
 # ── 화면 (Streamlit) ───────────────────────
@@ -450,7 +615,8 @@ def render_panel(dmap, USERNAME):
                       if len(_frames) > 1 else "")
                    + ("" if _same else "  ·  ⚠️ 파일마다 열이 달라 각각 자동 인식합니다"))
 
-        _STD = ('order_no', 'tracking_no', 'recipient', 'product_name', 'qty', 'courier')
+        _STD = ('order_no', 'tracking_no', 'recipient', 'product_name', 'qty', 'courier',
+                'dispatched_at', 'sender_code', 'sender_name')
         if _same:
             _df = pd.concat([_d for _, _d in _frames], ignore_index=True)
         else:
@@ -516,6 +682,9 @@ def render_panel(dmap, USERNAME):
                 'product_name': _pick(_m1, "상품명", 'product_name'),
                 'qty':          _pick(_m2, "수량", 'qty'),
                 'courier':      _pick(_m3, "택배사", 'courier'),
+                'dispatched_at': _guess.get('dispatched_at'),
+                'sender_code':  _pick(_m1, "발송고객코드", 'sender_code'),
+                'sender_name':  _pick(_m2, "송화인(보낸 업체)", 'sender_name'),
                 'order_no_alt': _alt,      # 스토어가 섞였을 때 함께 볼 열
             }
         if not _cm.get('order_no'):
@@ -554,6 +723,16 @@ def render_panel(dmap, USERNAME):
             st.warning(f"⚠️ 두 사용자에 걸친 주문번호 {len(_dup)}건이 있습니다 — "
                        "그 건은 분류가 부정확할 수 있습니다.")
         _by_user, _unknown = classify_rows(_recs0, _cm, _idx)
+        # 보낸 업체(발송고객코드)로 코코비즈 밖 업체 건을 가른다 — 기록·매칭에서 뺀다
+        _smap = load_sender_map() if _cm.get('sender_code') else {}
+        if _cm.get('sender_code'):
+            if learn_sender_map(_by_user, _smap):
+                try:
+                    save_sender_map(_smap)
+                except Exception:
+                    pass
+            _external, _unknown = split_external(_unknown, _smap)
+            _render_sender_panel(st, pd, dmap, _smap, _unknown, _external)
 
         _tot = sum(len(v) for v in _by_user.values())
         st.markdown(f"### 분류 결과 — {_tot}건 매칭 · {len(_unknown)}건 미분류")
@@ -598,8 +777,14 @@ def render_panel(dmap, USERNAME):
                 _NOU = '— 지정 안 함 —'
                 _uopts = [_NOU] + [dmap.get(_u, _u) for _u in sorted(dmap)]
                 _ul2u = {dmap.get(_u, _u): _u for _u in dmap}
+                def _pre(u):
+                    _m = _smap.get(str(u.get('sender_code') or '')) or {}
+                    if _m.get('kind') == 'user' and _m.get('username') in dmap:
+                        return dmap.get(_m['username'], _m['username'])
+                    return _NOU
                 _urows = [{
-                    '사용자 지정': _NOU,
+                    '사용자 지정': _pre(u),
+                    '보낸 업체': u.get('sender_name', ''),
                     '행': u['_row'], '주문번호': u['order_no'],
                     '수취인': u['recipient'], '상품명': u['product_name'][:34],
                     '수량': int(u.get('qty') or 1),
@@ -610,7 +795,7 @@ def render_panel(dmap, USERNAME):
                 _ued = st.data_editor(
                     pd.DataFrame(_urows), use_container_width=True, hide_index=True,
                     key=f"du_unknown_{_dd}",
-                    disabled=['행', '주문번호', '수취인', '상품명', '송장번호',
+                    disabled=['행', '보낸 업체', '주문번호', '수취인', '상품명', '송장번호',
                               '집화일자', '사유'],
                     column_config={
                         '사용자 지정': st.column_config.SelectboxColumn(
