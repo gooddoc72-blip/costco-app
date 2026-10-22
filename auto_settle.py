@@ -129,6 +129,11 @@ def match_day(day, username):
     alloc = _rs.allocate_dispatched_to_receipt(
         receipt_items, day, stock_pool=pool, exclude_orders=settled, defer_stock=True,
         settled_qty=_ds.settled_qty_map(exclude_date=day))
+    # 이전 날짜에 발송됐는데 아직 정산 안 된 건 — 화면과 같이 오늘 미매칭에 올린다
+    have = {(r.get('username'), r.get('order_no'))
+            for r in (alloc.get('rows') or []) + (alloc.get('unmatched_orders') or [])}
+    carried = _rs.carryover_unsettled(day, days=14, exclude=have)
+    alloc['unmatched_orders'] = list(alloc.get('unmatched_orders') or []) + carried
     draft = _ds.get_draft(day) or []
     edited = {(r.get('username'), r.get('order_no')): r for r in draft if r.get('_edited')}
     for r in alloc['rows']:
@@ -160,7 +165,7 @@ def match_day(day, username):
     rows = alloc['rows']
     n = _ds.save_draft(day, rows, created_by=f'{username}(자동)')
     return {'status': 'saved', 'rows': n, 'ship_count': ship_n, 'ai': ai_n,
-            'ai_error': ai_err or '', 'stock_carry': carry or 0,
+            'ai_error': ai_err or '', 'stock_carry': carry or 0, 'carried': len(carried),
             'amount': sum(_rs._int(r.get('amount')) for r in rows),
             'users': {u: s['amount'] for u, s in (alloc.get('user_summary') or {}).items()},
             'unmatched_orders': len(alloc.get('unmatched_orders') or []),
