@@ -57,73 +57,6 @@ def _i(v):
         return 0
 
 
-# ── 1) 판독 ─────────────────────────────────────────────────
-def _parse_uploads(pdfs, photos, settings):
-    """PDF·사진 → 영수증 줄 목록. 반환: (items, fails)
-
-    관리자 화면과 같은 판독 경로다. 글자 없는 스캔 PDF는 그림으로 바꿔 AI로 읽는다.
-    """
-    from services import parse_costco_receipt_pdf, render_pdf_to_images
-    import ai_service as _ais
-    from pages_lib.receipt_page import _image_for_ai
-
-    _ak, _gk = _ais.get_ai_keys(settings)
-    items, fails = [], []
-
-    def _from_ai(data):
-        _rd = data.get('purchase_date', '') or ''
-        for _it in (data.get('items') or []):
-            if not _n(_it.get('상품명')):
-                continue
-            items.append({'상품번호': _n(_it.get('상품번호')), '상품명': _it.get('상품명', ''),
-                          '수량': _i(_it.get('수량')) or 1, '단가': _i(_it.get('단가')),
-                          '금액': _i(_it.get('금액')), '할인': _i(_it.get('할인')),
-                          'receipt_date': _rd})
-
-    for f in (pdfs or []):
-        try:
-            _got, err = parse_costco_receipt_pdf(f)
-        except Exception as e:
-            _got, err = None, f"파싱 예외: {e}"
-        if _got:
-            items.extend(_got)
-            continue
-        if not (_ak or _gk):
-            fails.append((f.name, (err or '인식 실패') + " · AI 키가 없어 이미지 판독 불가"))
-            continue
-        _imgs, _rerr = render_pdf_to_images(f)
-        if _rerr or not _imgs:
-            fails.append((f.name, f"{err or '인식 실패'} · 이미지 변환 실패({_rerr})"))
-            continue
-        for _ib, _mt in _imgs:
-            _d, _de = _ais.parse_receipt_photo(_ak, _ib, _mt, gemini_key=_gk)
-            if _d and not _de:
-                _from_ai(_d)
-                if not _d.get('_verified', True):
-                    fails.append((f.name, "금액·수량 자가검증 불일치 — 표에서 값을 확인하세요"))
-
-    if photos and not (_ak or _gk):
-        fails.append(('사진', 'AI 키가 없어 사진 판독을 할 수 없습니다 — 관리자에게 문의하세요'))
-    elif photos:
-        for _pf in photos:
-            _img, _ierr = _image_for_ai(_pf)
-            if _ierr:
-                fails.append((_pf.name, _ierr))
-                continue
-            _d, _de = _ais.parse_receipt_photo(_ak, _img[0], _img[1], gemini_key=_gk)
-            if _de or not _d:
-                fails.append((_pf.name, _de or '판독 실패'))
-                continue
-            _from_ai(_d)
-            if not _d.get('_verified', True):
-                fails.append((_pf.name, "금액·수량 자가검증 불일치 — 표에서 값을 확인하세요"))
-
-    items, _snap = _rs.snap_items_to_catalog(items)
-    # 같은 상품이 두 줄로 찍히는 일이 흔하다 — 관리자 화면과 같은 규칙으로 합친다
-    from pages_lib.receipt_settle_page import _merge_receipt_lines
-    return list(_merge_receipt_lines(items).values()), fails
-
-
 # ── 화면 ────────────────────────────────────────────────────
 def render(USERNAME, IS_ADMIN, settings):
     st.title("🧾 내 영수증 정산")
@@ -158,7 +91,7 @@ def render(USERNAME, IS_ADMIN, settings):
              tuple(sorted((f.name, getattr(f, 'size', 0)) for f in (_photos or []))))
     if (_pdfs or _photos) and st.session_state.get('_sr_fkey') != _fkey:
         with st.spinner("영수증 판독 중..."):
-            _items, _fails = _parse_uploads(_pdfs, _photos, settings)
+            _items, _fails = _rs.parse_receipt_uploads(_pdfs, _photos, settings)
         st.session_state['sr_items'] = _items
         st.session_state['_sr_fails'] = _fails
         st.session_state['_sr_fkey'] = _fkey
@@ -237,8 +170,7 @@ def render(USERNAME, IS_ADMIN, settings):
         st.info("표에 **코스트코 상품번호 + 실단가(>0)** 가 있는 줄이 1개 이상 있어야 합니다.")
         return
 
-    from pages_lib.receipt_settle_page import _receipt_outliers
-    _odd = _receipt_outliers(items)
+    _odd = _rs.receipt_outliers(items)
     if _odd:
         st.error("🚨 판독이 의심스러운 줄 — 저장 전에 확인하세요.\n\n" + "\n".join(
             f"- **{o['상품명']}** 수량 {o['수량']} · {fmt(o['단가'])}원 ({o['이유']})"

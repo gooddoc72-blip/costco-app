@@ -13,7 +13,8 @@
 import sqlite3
 from datetime import datetime, timedelta
 
-from db import get_user_db, get_all_users, get_all_products
+from db import (get_user_db, get_all_users, get_all_products,
+                save_receipt_items, upsert_shared_store_price)
 from services import (resolve_pack_factor, _token_score, is_costco_pno,
                       _combined_match_score, name_score)
 
@@ -1451,6 +1452,286 @@ def _summarize(rows):
     return user_summary
 
 
+# ── 영수증 판독·정리 (관리자 영수증 정산 · 직접구매 · 자동정산 공용) ──
+def _s(v):
+    return str(v or '').strip()
+
+
+def _int(v, default=0):
+    """칸 값 → int. 빈 칸이 NaN으로 들어와도 default로 받는다."""
+    try:
+        f = float(v or 0)
+    except (TypeError, ValueError):
+        return default
+    return default if f != f else int(f)
+
+
+def merge_receipt_lines(parsed):
+    """영수증 줄들을 (상품번호, 날짜)로 합친다. 반환: {키: 품목}
+
+    같은 상품이 영수증에 **따로 두 줄**로 찍히는 일이 흔하다
+    (2026-09-07: 995554 초콜릿아몬드 1개짜리 두 줄, 617031 유연제 두 줄,
+     660569 피타브레드 두 줄, 741114 버터 두 줄).
+    예전에는 나중 줄이 앞 줄을 덮어써서 절반이 사라졌다 — 2개 산 물건이
+    1개로 청구됐다. 수량·금액·할인을 더한다.
+
+    단가는 **실제 지불한 단가**로 다시 계산한다((금액-할인)/수량).
+    청구는 실제 낸 돈으로 해야 한다. 영수증에 찍힌 정가는 '정가단가'로 남겨
+    가격DB에 쓴다 — 일회성 쿠폰가를 상품 표준가로 굳히면 안 된다.
+    """
+    out = {}
+    for p in (parsed or []):
+        k = (_s(p.get('상품번호')) or _s(p.get('상품명')), _s(p.get('receipt_date')))
+        _q = max(1, int(p.get('수량') or 1))
+        _u = int(p.get('단가') or 0)
+        _a = int(p.get('금액') or 0) or _u * _q
+        _d = int(p.get('할인') or 0)
+        e = out.get(k)
+        if e is None:
+            out[k] = {'상품번호': p.get('상품번호', ''), '상품명': p.get('상품명', ''),
+                      '수량': _q, '금액': _a, '할인': _d, '정가단가': _u,
+                      'receipt_date': p.get('receipt_date', '')}
+        else:
+            e['수량'] += _q
+            e['금액'] += _a
+            e['할인'] += _d
+            e['정가단가'] = e['정가단가'] or _u
+    for e in out.values():
+        _q = max(1, int(e['수량']))
+        e['단가'] = max(0, int(e['금액']) - int(e['할인'])) // _q
+    return out
+
+
+#: 영수증 한 줄이 이만큼을 넘으면 사람이 다시 본다. 코스트코 한 품목을
+#  이 금액어치 사는 일은 거의 없고, 있더라도 확인 한 번이 손해는 아니다.
+RECEIPT_LINE_WARN = 300_000
+#: 한 줄 수량 상한 — 같은 물건을 이보다 많이 담는 일은 드물다.
+RECEIPT_QTY_WARN = 12
+
+
+def receipt_outliers(items):
+    """판독이 의심스러운 줄 — 저장 전에 사람이 볼 것.
+
+    AI·PDF 판독은 수량 칸을 곧잘 틀린다(상품번호 일부나 옆 칸 숫자를 수량으로
+    읽는다). 예전에는 올리는 즉시 저장돼서 그 값이 그대로 재고가 되고 공유DB
+    매장가까지 바꿨다 — 9/8 KS그릭요거트가 수량 64로 들어와 한 줄이 895,360원,
+    그날 영수증 총액의 63%를 차지했다.
+
+    금액이 큰 줄과 수량이 많은 줄만 짚는다. 규칙을 더 얹으면 멀쩡한 줄까지
+    걸려 경고가 무시된다.
+    """
+    out = []
+    for it in (items or []):
+        try:
+            qty = int(it.get('수량') or 1)
+            unit = int(float(it.get('단가') or 0))
+        except (TypeError, ValueError):
+            continue
+        amt = qty * unit
+        why = []
+        if qty >= RECEIPT_QTY_WARN:
+            why.append(f"수량 {qty}개 — 같은 물건을 이렇게 많이 담았는지 확인")
+        if amt >= RECEIPT_LINE_WARN:
+            why.append(f"한 줄 {amt:,}원")
+        if why:
+            out.append({'상품번호': str(it.get('상품번호') or ''),
+                        '상품명': str(it.get('상품명') or '')[:24],
+                        '수량': qty, '단가': unit, '금액': amt,
+                        '이유': ' · '.join(why)})
+    out.sort(key=lambda r: -r['금액'])
+    return out
+
+
+def persist_receipt(username, items):
+    """영수증 품목을 DB에 남긴다 — receipt_items + 공유DB 매장 매입가.
+
+    영수증 정산 화면에서 올린 영수증이 그동안 어디에도 저장되지 않았다. 그래서
+      · 재고 이월(build_stock_pool)이 늘 비어 있었고
+      · 구매내역 정산의 단가가 영수증 실단가로 갱신되지 않았다
+    (admin의 receipt_items는 8/19에서 멈춰 있었다).
+    별도 '영수증' 페이지에서만 저장하고 있었는데, 정산은 이 화면에서 하니
+    실제로는 저장 없이 정산만 돌아간 셈이다.
+    저장 실패가 화면 흐름을 끊지는 않는다.
+    저장은 **날짜 통째 교체**다 — 재업로드가 곧 그날 영수증을 다시 쓰는 일이라,
+    이번에 안 올라온 옛 품목은 지운다(save_receipt_items 주석 참고).
+    반환: (신규, 갱신, 지운 옛 행, 매입가반영, {'rows': 품목별 가격DB 결과, 'skip': 못 넣은 품목, 'error': 저장 오류})
+    """
+    _rows = [it for it in (items or [])
+             if str(it.get('상품명', '') or '').strip()
+             and str(it.get('receipt_date', '') or '').strip()]
+    if not _rows:
+        return 0, 0, 0, 0, {'rows': [], 'skip': [], 'error': ''}
+    _saved = _updated = _removed = _pn = 0
+    _detail, _skip, _err = [], [], ''
+    try:
+        _saved, _updated, _removed = save_receipt_items(username, _rows)
+    except Exception as _e:
+        _err = str(_e)
+    for _it in _rows:
+        _pno = str(_it.get('상품번호', '') or '').strip()
+        _nm = str(_it.get('상품명', '') or '')
+        try:
+            _pr = int(float(_it.get('단가') or 0))
+        except (TypeError, ValueError):
+            _pr = 0
+        # 상품번호나 단가가 없으면 가격DB에 넣을 수 없다. 조용히 건너뛰면
+        # '왜 저장이 안 되지'가 되므로 이유를 남긴다.
+        if not _pno:
+            _skip.append((_nm, '코스트코 상품번호를 못 읽음'))
+            continue
+        if _pr <= 0:
+            _skip.append((_nm, '단가를 못 읽음'))
+            continue
+        try:
+            # 가격DB에는 **정가**를 넣는다. 쿠폰으로 싸게 산 값을 상품 표준가로
+            # 굳히면, 쿠폰이 끝난 뒤의 예상 구매가가 실제보다 낮게 잡힌다.
+            _list = int(_it.get('정가단가') or 0) or _pr
+            _r = upsert_shared_store_price(
+                costco_name=_nm, keyword=_nm,
+                price=_list, product_no=_pno, updated_by=username,
+                receipt_date=str(_it.get('receipt_date', '') or ''), force_store=True,
+                source='receipt-settle')
+            _pn += 1
+            _detail.append({'상품번호': _pno, '상품명': _nm,
+                            '이전가': int((_r or {}).get('prev') or 0),
+                            '저장가': _pr,
+                            '결과': {'new': '신규 등록', 'changed': '가격 변경',
+                                     'same': '동일(확인)'}.get(
+                                         str((_r or {}).get('status')), '저장')})
+        except Exception as _e:
+            _skip.append((_nm, f'저장 실패: {str(_e)[:40]}'))
+    return _saved, _updated, _removed, _pn, {'rows': _detail, 'skip': _skip, 'error': _err}
+
+
+def parse_receipt_uploads(pdfs, photos, settings):
+    """PDF·사진 → 영수증 줄 목록. 반환: (items, fails)
+
+    관리자 화면과 같은 판독 경로다. 글자 없는 스캔 PDF는 그림으로 바꿔 AI로 읽는다.
+    """
+    from services import parse_costco_receipt_pdf, render_pdf_to_images
+    import ai_service as _ais
+    from pages_lib.receipt_page import _image_for_ai
+
+    _ak, _gk = _ais.get_ai_keys(settings)
+    items, fails = [], []
+
+    def _from_ai(data):
+        _rd = data.get('purchase_date', '') or ''
+        for _it in (data.get('items') or []):
+            if not _s(_it.get('상품명')):
+                continue
+            items.append({'상품번호': _s(_it.get('상품번호')), '상품명': _it.get('상품명', ''),
+                          '수량': _int(_it.get('수량')) or 1, '단가': _int(_it.get('단가')),
+                          '금액': _int(_it.get('금액')), '할인': _int(_it.get('할인')),
+                          'receipt_date': _rd})
+
+    for f in (pdfs or []):
+        try:
+            _got, err = parse_costco_receipt_pdf(f)
+        except Exception as e:
+            _got, err = None, f"파싱 예외: {e}"
+        if _got:
+            items.extend(_got)
+            continue
+        if not (_ak or _gk):
+            fails.append((f.name, (err or '인식 실패') + " · AI 키가 없어 이미지 판독 불가"))
+            continue
+        _imgs, _rerr = render_pdf_to_images(f)
+        if _rerr or not _imgs:
+            fails.append((f.name, f"{err or '인식 실패'} · 이미지 변환 실패({_rerr})"))
+            continue
+        for _ib, _mt in _imgs:
+            _d, _de = _ais.parse_receipt_photo(_ak, _ib, _mt, gemini_key=_gk)
+            if _d and not _de:
+                _from_ai(_d)
+                if not _d.get('_verified', True):
+                    fails.append((f.name, "금액·수량 자가검증 불일치 — 표에서 값을 확인하세요"))
+
+    if photos and not (_ak or _gk):
+        fails.append(('사진', 'AI 키가 없어 사진 판독을 할 수 없습니다 — 관리자에게 문의하세요'))
+    elif photos:
+        for _pf in photos:
+            _img, _ierr = _image_for_ai(_pf)
+            if _ierr:
+                fails.append((_pf.name, _ierr))
+                continue
+            _d, _de = _ais.parse_receipt_photo(_ak, _img[0], _img[1], gemini_key=_gk)
+            if _de or not _d:
+                fails.append((_pf.name, _de or '판독 실패'))
+                continue
+            _from_ai(_d)
+            if not _d.get('_verified', True):
+                fails.append((_pf.name, "금액·수량 자가검증 불일치 — 표에서 값을 확인하세요"))
+
+    items, _snap = snap_items_to_catalog(items)
+    # 같은 상품이 두 줄로 찍히는 일이 흔하다 — 관리자 화면과 같은 규칙으로 합친다
+    return list(merge_receipt_lines(items).values()), fails
+
+
+def merge_matches(alloc, new_rows, matched_order_indices):
+    """매칭 결과를 alloc에 얹는다. 반환: 실제로 새로 얹은 행(겹친 행은 수량·금액에 합쳤다)."""
+    # 같은 사용자에게 같은 품목을 두 번 배정하면 order_no가 겹친다(MEMO-날짜-번호-사용자).
+    # 그대로 두 줄로 쌓으면 정산 저장에서 충돌하므로 수량·금액을 합쳐 한 줄로 만든다.
+    if new_rows:
+        _idx = {(r.get('username'), r.get('order_no')): r for r in alloc.get('rows', [])}
+        _fresh = []
+        for _r in new_rows:
+            _k = (_r.get('username'), _r.get('order_no'))
+            _ex = _idx.get(_k)
+            if _ex is not None:
+                _ex['qty'] = int(_ex.get('qty') or 0) + _int(_r.get('qty'), 0)
+                _ex['amount'] = int(_ex.get('amount') or 0) + _int(_r.get('amount'), 0)
+            else:
+                _fresh.append(_r)
+                _idx[_k] = _r
+        new_rows = _fresh
+    alloc['rows'].extend(new_rows)
+    idxset = set(matched_order_indices)
+    # **배치에 있는 주문은 미매칭일 수 없다.** 인덱스만으로 빼면 인덱스를 안 주고
+    # 부르는 경로(sticky 복원·온라인몰 복원)에서 같은 주문이 양쪽에 남는다.
+    #   실측: 미리보기를 두 번 누르면 AI로 붙었던 건이 배치에도 있고 '영수증에
+    #   없는 발송건'에도 그대로 떠, 거기서 또 처리하면 금액이 두 배가 됐다.
+    #   (1차 미리보기에서 AI가 붙인 행은 sticky로 보관됐다가, 2차 미리보기에서
+    #    alloc이 새로 만들어질 때 인덱스 없이 다시 얹히기 때문이다.)
+    # 키로도 빼면 부르는 쪽이 인덱스를 잊어도 이 불변식이 유지된다.
+    _in_rows = {(r.get('username'), r.get('order_no')) for r in alloc['rows']}
+    alloc['unmatched_orders'] = [
+        o for i, o in enumerate(alloc.get('unmatched_orders', []))
+        if i not in idxset
+        and (o.get('username'), o.get('order_no')) not in _in_rows]
+    # 주문에 붙은 품목은 목록에서 뺀다. 다만 '사용자에게 직접 배정(memo)'한 것은
+    # 수량이 남아 있을 수 있다 — 2개 중 1개를 A에게 줬으면 1개는 B 몫이다.
+    # 전에는 배정하는 순간 통째로 사라져 나머지를 줄 방법이 없었다.
+    _by_order, _memo_qty = set(), {}
+    for r in alloc['rows']:
+        _c = str(r.get('costco_no') or '')
+        if not _c:
+            continue
+        # 온라인몰 직배송분은 이 영수증을 먹지 않았다 — 같은 상품을 매장에서도 산
+        # 날에 이 줄을 세면 매장 영수증 품목이 통째로 목록에서 사라진다.
+        if str(r.get('via') or '') == 'online':
+            continue
+        if str(r.get('via') or '') == 'memo':
+            _memo_qty[_c] = _memo_qty.get(_c, 0) + int(r.get('qty') or 0)
+        else:
+            _by_order.add(_c)
+    _keep = []
+    for u in alloc.get('unmatched_receipt', []):
+        _c = str(u['상품번호'])
+        if _c in _by_order:
+            continue
+        _tot = int(u.get('영수증수량') or 1)
+        _left = _tot - _memo_qty.get(_c, 0)
+        if _left <= 0:
+            continue
+        u = dict(u)
+        u['남은수량'] = _left
+        _keep.append(u)
+    alloc['unmatched_receipt'] = _keep
+    alloc['user_summary'] = _summarize(alloc['rows'])
+    return new_rows
+
+
 def build_manual_rows(pairs):
     """수동/AI 매칭 결과 → 배치행. pairs: [{order(dict), costco_no, unit_price, costco_name}].
     order dict은 unmatched_orders 항목."""
@@ -1882,3 +2163,90 @@ def apply_receipt_settlement(rows):
         conn.commit()
         conn.close()
     return updated
+
+
+# ── 📌 이전 날짜 미정산 발송건 이월 ─────────────────────────────
+CARRY_DISMISS_KEY = 'settle_carry_dismissed'
+
+
+def carry_dismissed():
+    """'청구 안 함'으로 정리한 이월 건 {"user|order": 메모}."""
+    import json
+    try:
+        from db_auth import get_global_setting
+        return json.loads(get_global_setting(CARRY_DISMISS_KEY, '') or '{}') or {}
+    except Exception:
+        return {}
+
+
+def dismiss_carry(keys, note=''):
+    """이월 건을 '청구 안 함'으로 정리한다(취소·반품·무상 재발송 등)."""
+    import json
+    from db_auth import set_global_setting
+    d = carry_dismissed()
+    for u, o in (keys or []):
+        d['%s|%s' % (u, o)] = str(note or '청구 안 함')
+    set_global_setting(CARRY_DISMISS_KEY, json.dumps(d, ensure_ascii=False))
+
+
+def carryover_unsettled(before_date, days=14, exclude=None):
+    """before_date 이전 N일 동안 **발송됐는데 아직 어느 날짜에도 정산되지 않은** 주문.
+
+    정산은 발송일 기준이라, 그날 '영수증에 없는 발송건'을 미처리로 두고 정산 요청을
+    누르면 그 주문은 날짜가 지나 다시는 화면에 나오지 않았다 — 영구 누락
+    (10/22 검증: 10/13~10/20 정산 7일에서 44건, 정산 뒤 발송기록 5건).
+    오늘 정산 화면의 '영수증에 없는 발송건'에 이 건들을 함께 올려 처리하게 한다.
+    직접구매 계정·'청구 안 함'으로 정리한 건·이미 정산된 건은 뺀다.
+    반환: unmatched_orders와 같은 모양 + 'carried_from'(원래 발송일).
+    """
+    from db_settle import settled_order_keys
+    from db import get_dispatched_orders_with_details
+    _end = str(before_date)[:10]
+    _start = (datetime.strptime(_end, '%Y-%m-%d') - timedelta(days=int(days))).strftime('%Y-%m-%d')
+    settled = settled_order_keys()
+    dismissed = carry_dismissed()
+    excl = set(exclude or ())
+    out = []
+    for uname in settle_users(_end):
+        try:
+            conn = get_user_db(uname)
+            cand = {}
+            for r in conn.execute(
+                    "SELECT order_no, substr(dispatched_at,1,10) AS d FROM dispatch_log "
+                    "WHERE dispatched_at >= ? AND dispatched_at < ? AND COALESCE(order_no,'')<>''",
+                    (_start, _end)):
+                o = str(r['order_no'])
+                if ((uname, o) in settled or (uname, o) in excl
+                        or ('%s|%s' % (uname, o)) in dismissed or o.startswith('STOCKIN-')):
+                    continue
+                cand.setdefault(r['d'], set()).add(o)
+            conn.close()
+        except Exception:
+            continue
+        nmap = _naver_to_product_map(uname) if cand else {}
+        for d, onos in sorted(cand.items()):
+            try:
+                det = get_dispatched_orders_with_details(uname, d) or []
+            except Exception:
+                det = []
+            for o in det:
+                ono = _norm(o.get('order_no'))
+                if ono not in onos:
+                    continue
+                onv = _norm(o.get('product_no'))
+                prod = nmap.get(onv) or {}
+                try:
+                    qty = max(1, int(o.get('qty') or 1))
+                except (TypeError, ValueError):
+                    qty = 1
+                out.append({
+                    'username': uname, 'order_no': ono, 'order_date': d,
+                    'recipient': _norm(o.get('recipient')), 'naver_no': onv,
+                    'product_name': _norm(o.get('product_name')), 'qty': qty,
+                    'prev_cost': int(o.get('cost_price') or 0),
+                    'split_qty': max(1, int((prod or {}).get('split_qty') or 1)),
+                    'costco_no': (_norm((prod or {}).get('product_no'))
+                                  or _norm(o.get('costco_no'))),
+                    'carried_from': d,
+                })
+    return out

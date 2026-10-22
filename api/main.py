@@ -347,3 +347,7 @@ def admin_rank_ingest(req: AdminRankIngestRequest, admin: dict = Depends(require
 # ── 정산·청구 (새 화면 /m/billing 백엔드) ─────────────────────
 from api.billing import router as _billing_router  # noqa: E402
 app.include_router(_billing_router)
+
+# ── 매일 자동 정산 (PC 예약 작업 → 발송 파일·영수증 업로드·매칭 초안) ──
+from api.auto_settle import router as _auto_settle_router  # noqa: E402
+app.include_router(_auto_settle_router)

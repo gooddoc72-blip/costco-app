@@ -21,7 +21,7 @@ from receipt_settle import (
 from db import (
     get_all_users, get_all_settings,
     get_receipt_items_by_date, receipt_dates_with_items, delete_receipt_items_by_date,
-    set_global_setting, save_receipt_items, upsert_shared_store_price,
+    set_global_setting,
 )
 from utils import fmt
 
@@ -31,144 +31,6 @@ invalidate_data_cache = None
 def _set_cache_helpers(shared_fn=None, user_fn=None, merged_fn=None, invalidate_fn=None, **kwargs):
     global invalidate_data_cache
     invalidate_data_cache = invalidate_fn
-
-
-def _merge_receipt_lines(parsed):
-    """영수증 줄들을 (상품번호, 날짜)로 합친다. 반환: {키: 품목}
-
-    같은 상품이 영수증에 **따로 두 줄**로 찍히는 일이 흔하다
-    (2026-09-07: 995554 초콜릿아몬드 1개짜리 두 줄, 617031 유연제 두 줄,
-     660569 피타브레드 두 줄, 741114 버터 두 줄).
-    예전에는 나중 줄이 앞 줄을 덮어써서 절반이 사라졌다 — 2개 산 물건이
-    1개로 청구됐다. 수량·금액·할인을 더한다.
-
-    단가는 **실제 지불한 단가**로 다시 계산한다((금액-할인)/수량).
-    청구는 실제 낸 돈으로 해야 한다. 영수증에 찍힌 정가는 '정가단가'로 남겨
-    가격DB에 쓴다 — 일회성 쿠폰가를 상품 표준가로 굳히면 안 된다.
-    """
-    out = {}
-    for p in (parsed or []):
-        k = (_n(p.get('상품번호')) or _n(p.get('상품명')), _n(p.get('receipt_date')))
-        _q = max(1, int(p.get('수량') or 1))
-        _u = int(p.get('단가') or 0)
-        _a = int(p.get('금액') or 0) or _u * _q
-        _d = int(p.get('할인') or 0)
-        e = out.get(k)
-        if e is None:
-            out[k] = {'상품번호': p.get('상품번호', ''), '상품명': p.get('상품명', ''),
-                      '수량': _q, '금액': _a, '할인': _d, '정가단가': _u,
-                      'receipt_date': p.get('receipt_date', '')}
-        else:
-            e['수량'] += _q
-            e['금액'] += _a
-            e['할인'] += _d
-            e['정가단가'] = e['정가단가'] or _u
-    for e in out.values():
-        _q = max(1, int(e['수량']))
-        e['단가'] = max(0, int(e['금액']) - int(e['할인'])) // _q
-    return out
-
-
-#: 영수증 한 줄이 이만큼을 넘으면 사람이 다시 본다. 코스트코 한 품목을
-#  이 금액어치 사는 일은 거의 없고, 있더라도 확인 한 번이 손해는 아니다.
-RECEIPT_LINE_WARN = 300_000
-#: 한 줄 수량 상한 — 같은 물건을 이보다 많이 담는 일은 드물다.
-RECEIPT_QTY_WARN = 12
-
-
-def _receipt_outliers(items):
-    """판독이 의심스러운 줄 — 저장 전에 사람이 볼 것.
-
-    AI·PDF 판독은 수량 칸을 곧잘 틀린다(상품번호 일부나 옆 칸 숫자를 수량으로
-    읽는다). 예전에는 올리는 즉시 저장돼서 그 값이 그대로 재고가 되고 공유DB
-    매장가까지 바꿨다 — 9/8 KS그릭요거트가 수량 64로 들어와 한 줄이 895,360원,
-    그날 영수증 총액의 63%를 차지했다.
-
-    금액이 큰 줄과 수량이 많은 줄만 짚는다. 규칙을 더 얹으면 멀쩡한 줄까지
-    걸려 경고가 무시된다.
-    """
-    out = []
-    for it in (items or []):
-        try:
-            qty = int(it.get('수량') or 1)
-            unit = int(float(it.get('단가') or 0))
-        except (TypeError, ValueError):
-            continue
-        amt = qty * unit
-        why = []
-        if qty >= RECEIPT_QTY_WARN:
-            why.append(f"수량 {qty}개 — 같은 물건을 이렇게 많이 담았는지 확인")
-        if amt >= RECEIPT_LINE_WARN:
-            why.append(f"한 줄 {fmt(amt)}원")
-        if why:
-            out.append({'상품번호': str(it.get('상품번호') or ''),
-                        '상품명': str(it.get('상품명') or '')[:24],
-                        '수량': qty, '단가': unit, '금액': amt,
-                        '이유': ' · '.join(why)})
-    out.sort(key=lambda r: -r['금액'])
-    return out
-
-
-def _persist_receipt(username, items):
-    """영수증 품목을 DB에 남긴다 — receipt_items + 공유DB 매장 매입가.
-
-    영수증 정산 화면에서 올린 영수증이 그동안 어디에도 저장되지 않았다. 그래서
-      · 재고 이월(build_stock_pool)이 늘 비어 있었고
-      · 구매내역 정산의 단가가 영수증 실단가로 갱신되지 않았다
-    (admin의 receipt_items는 8/19에서 멈춰 있었다).
-    별도 '영수증' 페이지에서만 저장하고 있었는데, 정산은 이 화면에서 하니
-    실제로는 저장 없이 정산만 돌아간 셈이다.
-    저장 실패가 화면 흐름을 끊지는 않는다.
-    저장은 **날짜 통째 교체**다 — 재업로드가 곧 그날 영수증을 다시 쓰는 일이라,
-    이번에 안 올라온 옛 품목은 지운다(save_receipt_items 주석 참고).
-    반환: (신규, 갱신, 지운 옛 행, 매입가반영)
-    """
-    _rows = [it for it in (items or [])
-             if str(it.get('상품명', '') or '').strip()
-             and str(it.get('receipt_date', '') or '').strip()]
-    if not _rows:
-        return 0, 0, 0, 0
-    _saved = _updated = _removed = _pn = 0
-    _detail, _skip = [], []
-    try:
-        _saved, _updated, _removed = save_receipt_items(username, _rows)
-    except Exception as _e:
-        st.caption(f"⚠️ 영수증 DB 저장 실패: {_e}")
-    for _it in _rows:
-        _pno = str(_it.get('상품번호', '') or '').strip()
-        _nm = str(_it.get('상품명', '') or '')
-        try:
-            _pr = int(float(_it.get('단가') or 0))
-        except (TypeError, ValueError):
-            _pr = 0
-        # 상품번호나 단가가 없으면 가격DB에 넣을 수 없다. 조용히 건너뛰면
-        # '왜 저장이 안 되지'가 되므로 이유를 남긴다.
-        if not _pno:
-            _skip.append((_nm, '코스트코 상품번호를 못 읽음'))
-            continue
-        if _pr <= 0:
-            _skip.append((_nm, '단가를 못 읽음'))
-            continue
-        try:
-            # 가격DB에는 **정가**를 넣는다. 쿠폰으로 싸게 산 값을 상품 표준가로
-            # 굳히면, 쿠폰이 끝난 뒤의 예상 구매가가 실제보다 낮게 잡힌다.
-            _list = int(_it.get('정가단가') or 0) or _pr
-            _r = upsert_shared_store_price(
-                costco_name=_nm, keyword=_nm,
-                price=_list, product_no=_pno, updated_by=username,
-                receipt_date=str(_it.get('receipt_date', '') or ''), force_store=True,
-                source='receipt-settle')
-            _pn += 1
-            _detail.append({'상품번호': _pno, '상품명': _nm,
-                            '이전가': int((_r or {}).get('prev') or 0),
-                            '저장가': _pr,
-                            '결과': {'new': '신규 등록', 'changed': '가격 변경',
-                                     'same': '동일(확인)'}.get(
-                                         str((_r or {}).get('status')), '저장')})
-        except Exception as _e:
-            _skip.append((_nm, f'저장 실패: {str(_e)[:40]}'))
-    st.session_state['_rs_price_detail'] = {'rows': _detail, 'skip': _skip}
-    return _saved, _updated, _removed, _pn
 
 
 def _render_price_result():
@@ -887,7 +749,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             with st.expander(f"🔧 상품번호 자동 교정 {len(_snap0)}건", expanded=False):
                 for _l in _snap0:
                     st.caption("· " + _l)
-        merged = _merge_receipt_lines(parsed)
+        merged = _rs.merge_receipt_lines(parsed)
         st.session_state['rs_receipt_items'] = list(merged.values())
         # 읽은 것과 저장한 것은 다르다. 예전에는 PDF를 올리는 순간
         # 바로 DB에 썼다 — 판독이 틀려도 사람이 보기 전에 재고와 공유DB 매장가까지
@@ -989,9 +851,9 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             if _pparsed:
                 # 이미 올린 것(PDF 등)과 합친다. 키 규칙이 다르면 같은 품목이
                 # 두 번 들어가므로 양쪽 다 _merge_receipt_lines로 만든다.
-                _prev = _merge_receipt_lines(
+                _prev = _rs.merge_receipt_lines(
                     (st.session_state.get('rs_receipt_items') or []) + _pparsed)
-                _merged_p = _merge_receipt_lines(_pparsed)
+                _merged_p = _rs.merge_receipt_lines(_pparsed)
                 st.session_state['rs_receipt_items'] = list(_prev.values())
                 st.session_state['_rs_unsaved'] = True   # 저장은 사람이 확인한 뒤에
                 st.session_state.pop('rs_alloc', None)
@@ -1114,7 +976,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     if receipt_items:
         # 판독이 이상한 줄을 저장 전에 잡는다. 예전엔 올리는 즉시 저장돼서
         # 수량 오독(9/8 KS그릭요거트 64개 = 895,360원)이 그대로 재고가 됐다.
-        _odd = _receipt_outliers(receipt_items)
+        _odd = _rs.receipt_outliers(receipt_items)
         if _odd:
             st.error(
                 f"🚨 **판독이 의심스러운 줄 {len(_odd)}건** — 저장 전에 표에서 확인하세요.\n\n"
@@ -1132,7 +994,10 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         if _ec1.button("💾 영수증 저장", key="rs_items_save", use_container_width=True,
                        type="primary" if _unsaved else "secondary"):
             st.session_state['rs_receipt_items'] = list(receipt_items)
-            _s2, _u2, _rm2, _p2 = _persist_receipt(USERNAME, list(receipt_items))
+            _s2, _u2, _rm2, _p2, _pd2 = _rs.persist_receipt(USERNAME, list(receipt_items))
+            if _pd2['error']:
+                st.caption(f"⚠️ 영수증 DB 저장 실패: {_pd2['error']}")
+            st.session_state['_rs_price_detail'] = _pd2
             st.session_state.pop('rs_alloc', None)
             st.session_state['_rs_unsaved'] = False
             _msg = (f"💾 영수증 {len(receipt_items)}종 저장 — 신규 {_s2} · 갱신 {_u2} · "
@@ -2341,21 +2206,7 @@ def _merge_matches(alloc, new_rows, matched_order_indices, sticky=True):
     alloc을 새로 만들어도 다시 얹는다. 사람이 판단해서 넣은 배정이
     기계 재계산으로 사라지면 안 된다.
     """
-    # 같은 사용자에게 같은 품목을 두 번 배정하면 order_no가 겹친다(MEMO-날짜-번호-사용자).
-    # 그대로 두 줄로 쌓으면 정산 저장에서 충돌하므로 수량·금액을 합쳐 한 줄로 만든다.
-    if new_rows:
-        _idx = {(r.get('username'), r.get('order_no')): r for r in alloc.get('rows', [])}
-        _fresh = []
-        for _r in new_rows:
-            _k = (_r.get('username'), _r.get('order_no'))
-            _ex = _idx.get(_k)
-            if _ex is not None:
-                _ex['qty'] = int(_ex.get('qty') or 0) + _cell_int(_r.get('qty'), 0)
-                _ex['amount'] = int(_ex.get('amount') or 0) + _cell_int(_r.get('amount'), 0)
-            else:
-                _fresh.append(_r)
-                _idx[_k] = _r
-        new_rows = _fresh
+    new_rows = _rs.merge_matches(alloc, new_rows, matched_order_indices)
     if sticky and new_rows:
         _st = st.session_state.get('rs_sticky') or {}
         _d = str(st.session_state.get('rs_sticky_date') or '')
@@ -2363,50 +2214,6 @@ def _merge_matches(alloc, new_rows, matched_order_indices, sticky=True):
         _st[_d] = (_st.get(_d) or []) + [
             r for r in new_rows if (r.get('username'), r.get('order_no')) not in _keys]
         st.session_state['rs_sticky'] = _st
-    alloc['rows'].extend(new_rows)
-    idxset = set(matched_order_indices)
-    # **배치에 있는 주문은 미매칭일 수 없다.** 인덱스만으로 빼면 인덱스를 안 주고
-    # 부르는 경로(sticky 복원·온라인몰 복원)에서 같은 주문이 양쪽에 남는다.
-    #   실측: 미리보기를 두 번 누르면 AI로 붙었던 건이 배치에도 있고 '영수증에
-    #   없는 발송건'에도 그대로 떠, 거기서 또 처리하면 금액이 두 배가 됐다.
-    #   (1차 미리보기에서 AI가 붙인 행은 sticky로 보관됐다가, 2차 미리보기에서
-    #    alloc이 새로 만들어질 때 인덱스 없이 다시 얹히기 때문이다.)
-    # 키로도 빼면 부르는 쪽이 인덱스를 잊어도 이 불변식이 유지된다.
-    _in_rows = {(r.get('username'), r.get('order_no')) for r in alloc['rows']}
-    alloc['unmatched_orders'] = [
-        o for i, o in enumerate(alloc.get('unmatched_orders', []))
-        if i not in idxset
-        and (o.get('username'), o.get('order_no')) not in _in_rows]
-    # 주문에 붙은 품목은 목록에서 뺀다. 다만 '사용자에게 직접 배정(memo)'한 것은
-    # 수량이 남아 있을 수 있다 — 2개 중 1개를 A에게 줬으면 1개는 B 몫이다.
-    # 전에는 배정하는 순간 통째로 사라져 나머지를 줄 방법이 없었다.
-    _by_order, _memo_qty = set(), {}
-    for r in alloc['rows']:
-        _c = str(r.get('costco_no') or '')
-        if not _c:
-            continue
-        # 온라인몰 직배송분은 이 영수증을 먹지 않았다 — 같은 상품을 매장에서도 산
-        # 날에 이 줄을 세면 매장 영수증 품목이 통째로 목록에서 사라진다.
-        if str(r.get('via') or '') == 'online':
-            continue
-        if str(r.get('via') or '') == 'memo':
-            _memo_qty[_c] = _memo_qty.get(_c, 0) + int(r.get('qty') or 0)
-        else:
-            _by_order.add(_c)
-    _keep = []
-    for u in alloc.get('unmatched_receipt', []):
-        _c = str(u['상품번호'])
-        if _c in _by_order:
-            continue
-        _tot = int(u.get('영수증수량') or 1)
-        _left = _tot - _memo_qty.get(_c, 0)
-        if _left <= 0:
-            continue
-        u = dict(u)
-        u['남은수량'] = _left
-        _keep.append(u)
-    alloc['unmatched_receipt'] = _keep
-    alloc['user_summary'] = _summarize(alloc['rows'])
     st.session_state['rs_alloc'] = alloc
 
 
