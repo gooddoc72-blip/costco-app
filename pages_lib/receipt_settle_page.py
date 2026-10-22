@@ -1427,7 +1427,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         with st.expander(f"🔍 배치 상세 ({len(rows)}건) — 주문별 구입가 반영 내역"
                          + (f"  ·  ⚠️ 확인 필요 {len(_ov_left)}건" if _ov_left else ""),
                          expanded=bool(_ov_left)):
-            _KEEP, _OKV, _TOSTK, _CUT = ('', '✅ 영수증가로 청구', '📦 재고에서 나감',
+            # 빈 값('')은 표에서 None으로 보여 무슨 뜻인지 몰랐다 — 글자로 둔다
+            _KEEP, _OKV, _TOSTK, _CUT = ('— 그대로 —', '✅ 영수증가로 청구', '📦 재고에서 나감',
                                          '✂️ 끊기(이번 청구 제외)')
             if _ov_keys:
                 st.warning(

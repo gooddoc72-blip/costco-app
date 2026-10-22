@@ -808,6 +808,24 @@ def allocate_dispatched_to_receipt(receipt_items, dispatch_date, users=None,
     _excl = exclude_orders if exclude_orders is not None else set()
 
     rows, matched_costco, unmatched_orders = [], set(), []
+    # 발송할 때 **본인 재고에서 이미 빠진** 주문 — 영수증에 붙이면 안 된다.
+    #   붙이면 재고도 빠지고 영수증가로도 청구돼 이중이 된다. 또 그날 영수증 수량을
+    #   먹어 '영수증보다 많이 나간 주문'으로 잘못 잡혔다(10/22 이수진 그릭요거트).
+    #   본인이 낸 재고(결제됨)면 0원, 미결제 재고면 그 구입가로 청구한다.
+    _own_out = {}
+    try:
+        from db_inventory import _conn as _iconn
+        _ic = _iconn()
+        for _m in _ic.execute(
+                "SELECT seller, order_no, product_no, SUM(qty) q, MAX(unit_cost) c "
+                "FROM inventory_moves WHERE is_cross=0 AND owner=seller "
+                "AND COALESCE(platform,'') NOT IN ('settle') AND order_no NOT LIKE 'ADJ-%' "
+                "GROUP BY seller, order_no, product_no"):
+            _own_out[(str(_m['seller']), _norm(_m['order_no']))] = (
+                _norm(_m['product_no']), int(_m['q'] or 0), int(_m['c'] or 0))
+        _ic.close()
+    except Exception:
+        _own_out = {}
     for uname in users:
         try:
             disp = get_dispatched_orders_with_details(uname, str(dispatch_date)) or []
@@ -844,6 +862,31 @@ def allocate_dispatched_to_receipt(receipt_items, dispatch_date, users=None,
             nm = _norm(o.get('product_name'))
             prod = nmap.get(onv)
             costco_no, via = '', ''
+
+            _own = _own_out.get((uname, ono))
+            if _own and _own[1] > 0:
+                _pn9, _u9, _c9 = _own
+                try:
+                    from db_inventory import own_unpaid_units as _ouu
+                    _ou = _ouu(uname, _pn9, _u9, order_no=ono)
+                    _amt9 = int(_ou.get('unpaid_amount') or 0)
+                    _paid9 = int(_ou.get('paid_units') or 0)
+                except Exception:
+                    _amt9, _paid9 = _c9 * _u9, 0
+                _sq9, _pk9 = _split_pack(prod)
+                rows.append({
+                    'username': uname, 'order_no': ono, 'order_date': str(dispatch_date),
+                    'costco_no': _pn9, 'naver_no': onv, 'product_name': nm,
+                    'qty': int(o.get('qty') or 1), 'unit_price': _c9, 'amount': _amt9,
+                    'prev_cost': int(o.get('cost_price') or 0), 'via': 'stock',
+                    'split_qty': _sq9, 'pack': _pk9,
+                    # 0원이어도 원장에 남게(본인 재고는 to_ledger_rows가 받아 준다).
+                    # 이미 차감됐으니 정산 확정 때 다시 빼지 않는다(멱등).
+                    'stock_owner': uname,
+                    'memo': ('본인 재고 출고(발송 때 차감)'
+                             + (' · 본인이 낸 재고 — 청구 없음' if _paid9 and not _amt9 else '')),
+                })
+                continue
 
             # ⓪ 주문 행에 굳어 있는 코스트코번호 — 수집 때 한 번 확정한 값
             _c0v = _norm(_ono2cno.get(ono))
