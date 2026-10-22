@@ -267,7 +267,9 @@ def get_all_users():
         "SELECT username, display_name, is_admin, created_at, status FROM users ORDER BY created_at"
     ).fetchall()
     conn.close()
-    return [{"username": r[0], "display_name": r[1], "is_admin": r[2],
+    # 이름 앞뒤 공백은 지워서 준다 — ' 김혜림'처럼 공백이 붙어 있으면 화면 선택칸이
+    # 공백 없이 돌려줘 이름→아이디 찾기가 어긋났다(미분류 발송건 지정이 빠짐).
+    return [{"username": r[0], "display_name": (r[1] or '').strip() or r[1], "is_admin": r[2],
              "created_at": r[3], "status": r[4] or 'active'} for r in rows]
 
 

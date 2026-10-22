@@ -768,7 +768,7 @@ def render_panel(dmap, USERNAME):
                 "주문번호를 넣으면 영수증 매칭까지 되고, 없으면 발송건수·택배비에만 "
                 "잡힙니다.")
             _mu_opts = [dmap.get(_u, _u) for _u in sorted(dmap)]
-            _mu_l2u = {dmap.get(_u, _u): _u for _u in dmap}
+            _mu_l2u = {str(dmap.get(_u, _u)).strip(): _u for _u in dmap}
             if not _mu_opts:
                 st.caption("사용자가 없습니다.")
             else:
@@ -802,7 +802,7 @@ def render_panel(dmap, USERNAME):
                     _rc = str(_r.get('수취인') or '').strip()
                     if not (_ono or _trk or _nm or _rc):
                         continue                      # 빈 줄은 넘어간다
-                    _u2 = _mu_l2u.get(str(_r.get('사용자') or ''), '')
+                    _u2 = _mu_l2u.get(str(_r.get('사용자') or '').strip(), '')
                     if not _u2 or not (_ono or _trk):
                         _mbad += 1                    # 주문번호도 송장도 없으면 못 넣는다
                         continue
@@ -1027,7 +1027,7 @@ def render_panel(dmap, USERNAME):
                     "청구에 잡히지 않습니다.")
                 _NOU = '— 지정 안 함 —'
                 _uopts = [_NOU] + [dmap.get(_u, _u) for _u in sorted(dmap)]
-                _ul2u = {dmap.get(_u, _u): _u for _u in dmap}
+                _ul2u = {str(dmap.get(_u, _u)).strip(): _u for _u in dmap}
                 def _pre(u):
                     _m = _smap.get(str(u.get('sender_code') or '')) or {}
                     if _m.get('kind') == 'user' and _m.get('username') in dmap:
@@ -1057,7 +1057,7 @@ def render_panel(dmap, USERNAME):
                     })
                 _upick = {}
                 for _i, _r in enumerate(_ued.to_dict('records')):
-                    _un2 = _ul2u.get(str(_r.get('사용자 지정') or ''), '')
+                    _un2 = _ul2u.get(str(_r.get('사용자 지정') or '').strip(), '')
                     if not _un2:
                         continue
                     _src = dict(_unknown[_i])

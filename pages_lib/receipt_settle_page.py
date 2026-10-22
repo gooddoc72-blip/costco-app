@@ -325,7 +325,10 @@ def _cell_int(v, default=0):
 
 
 def _disp_map():
-    return {u['username']: (u.get('display_name') or u['username']) for u in get_all_users()}
+    # 이름 앞뒤 공백을 지운다 — ' 김혜림'처럼 공백이 붙은 이름은 표의 선택칸이
+    # 공백 없이 돌려줘서 사용자로 못 찾았다(미분류 지정이 조용히 빠졌다).
+    return {u['username']: (str(u.get('display_name') or '').strip() or u['username'])
+            for u in get_all_users()}
 
 
 def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
