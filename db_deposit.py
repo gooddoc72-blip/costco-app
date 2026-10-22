@@ -21,6 +21,8 @@
   spend_void  되돌려진 차감 (합계에서 제외)      0으로 취급하지 않고 refund와 짝
   refund      차감 되돌림                       +
   adjust      관리자 수동 조정 (사유 필수)       ±
+  stock_credit 내 재고를 다른 사용자가 써서 받은 돈 (주문 1건 = 1줄) ±
+               정산 확정 때 보유자에게 적립, 정산 취소 때 같은 종류 (−) 행으로 되돌림.
   return_credit 매장반품 환불 적립 (반품 1건 = 1줄) +
                메모에 반품번호·상품·구입가·환불액을 남기고, 반품 원장
                (customer_return.deposit_id)이 이 행을 가리킨다.
@@ -42,6 +44,7 @@ KIND_LABEL = {
     'refund':     '차감 되돌림',
     'adjust':     '관리자 조정',
     'return_credit': '매장반품 적립',
+    'stock_credit': '재고 판매 적립',
 }
 
 #: 되돌려진 차감 — 금액은 원장에 그대로 남고, 짝이 되는 refund 행이 상쇄한다.
@@ -159,7 +162,7 @@ def summaries():
                 "FROM deposit_ledger GROUP BY username, kind"):
             e = out.setdefault(str(r['username']), {
                 'balance': 0, 'charged': 0, 'spent': 0, 'adjusted': 0,
-                'returned': 0, 'last_charge': ''})
+                'returned': 0, 'stock_sold': 0, 'last_charge': ''})
             e['balance'] += _i(r['s'])
             if str(r['kind']) == 'charge':
                 e['charged'] = _i(r['s'])
@@ -174,6 +177,8 @@ def summaries():
                 e['adjusted'] = _i(r['s'])
             elif str(r['kind']) == 'return_credit':
                 e['returned'] = _i(r['s'])
+            elif str(r['kind']) == 'stock_credit':
+                e['stock_sold'] = _i(r['s'])
         return out
     finally:
         conn.close()
@@ -459,3 +464,52 @@ def delete_entry(entry_id):
         return True, "삭제했습니다."
     finally:
         conn.close()
+
+
+def _stock_credit_net(conn, owner, order_no):
+    r = conn.execute("SELECT COALESCE(SUM(amount),0) s FROM deposit_ledger WHERE username=? "
+                     "AND kind='stock_credit' AND memo LIKE ?",
+                     (str(owner), f"%[주문 {order_no}]%")).fetchone()
+    return _i(r['s'])
+
+
+def stock_credit(owner, amount, order_no, memo, settle_date='', by=''):
+    """내 재고를 다른 사용자가 써서 받은 돈을 예치금에 적립 — 주문 1건당 한 번.
+
+    이미 적립돼 있으면(취소 후 남은 합이 0이 아니면) 다시 넣지 않는다.
+    반환: 새 행 id (넣지 않았으면 0).
+    """
+    amt = _i(amount)
+    if amt <= 0 or not str(order_no or '').strip():
+        return 0
+    conn = _conn()
+    ensure(conn)
+    try:
+        if _stock_credit_net(conn, owner, order_no) > 0:
+            return 0
+        _id = _insert(conn, owner, _today(), 'stock_credit', amt, settle_date=settle_date,
+                      memo=f"{str(memo or '').strip()} [주문 {order_no}]", by=by)
+        conn.commit()
+        return _id
+    finally:
+        conn.close()
+
+
+def stock_credit_cancel_orders(order_nos, by=''):
+    """정산 취소 — 그 주문들로 적립한 재고 판매 적립을 (−) 행으로 되돌린다. 반환: 되돌린 수."""
+    n = 0
+    conn = _conn()
+    ensure(conn)
+    try:
+        for o in sorted({str(x) for x in (order_nos or []) if str(x).strip()}):
+            for r in conn.execute("SELECT username FROM deposit_ledger WHERE kind='stock_credit' "
+                                  "AND memo LIKE ? GROUP BY username", (f"%[주문 {o}]%",)).fetchall():
+                _net = _stock_credit_net(conn, r['username'], o)
+                if _net > 0:
+                    _insert(conn, r['username'], _today(), 'stock_credit', -_net,
+                            memo=f"재고 판매 적립 취소(정산 취소) [주문 {o}]", by=by)
+                    n += 1
+        conn.commit()
+    finally:
+        conn.close()
+    return n

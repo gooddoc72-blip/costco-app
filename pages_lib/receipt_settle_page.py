@@ -2165,6 +2165,9 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                          + (f" · ⚠️ 재고 부족 {len(_stk['short'])}건("
                             + ", ".join(f"{s['name']} {s['short']}개" for s in _stk['short'][:3])
                             + ")" if _stk.get('short') else ""), icon="📦")
+            if _stk.get('credited'):
+                st.toast(f"💰 남의 재고를 쓴 {_stk['credited']}건 — 보유자 예치금에 적립했습니다",
+                         icon="💰")
             st.rerun()
 
     # ── 🔧 고급 — 매칭을 사람이 고치는 도구(자주 안 씀) ──

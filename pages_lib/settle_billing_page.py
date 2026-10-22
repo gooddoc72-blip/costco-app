@@ -546,8 +546,9 @@ def _user_deposit_section(_u, _name, _f, _t):
     d1, d2, d3, d4 = st.columns(4)
     d1.metric("기간 예치 입금", f"{fmt(_sum('charge'))}원")
     d2.metric("기간 구매 차감", f"{fmt(-_sum('spend'))}원")
-    d3.metric("기간 적립·조정", f"{fmt(_sum('return_credit') + _sum('adjust'))}원",
-              help="매장반품 적립 + 관리자 조정(±)")
+    d3.metric("기간 적립·조정",
+              f"{fmt(_sum('return_credit') + _sum('adjust') + _sum('stock_credit'))}원",
+              help="매장반품 적립 + 재고 판매 적립 + 관리자 조정(±)")
     d4.metric("현재 잔액", f"{fmt(_run)}원")
     if not _in:
         st.caption(f"{_f} ~ {_t} 기간에 예치금 움직임이 없습니다.")
@@ -916,6 +917,8 @@ def _tab_deposit(USERNAME, dmap):
               # 표만 보면 장부가 틀린 것으로 읽힌다(실제로 그 질문이 나왔다).
               '관리자 조정': int((_sm.get(u) or {}).get('adjusted') or 0),
               '매장반품 적립': int((_sm.get(u) or {}).get('returned') or 0),
+              # 내 재고를 다른 사용자가 써서 받은 돈 — 이 열이 없으면 잔액이 안 맞아 보인다
+              '재고 판매 적립': int((_sm.get(u) or {}).get('stock_sold') or 0),
               '잔액': int(_bal.get(u, 0)),
               '청구 합계': int((_inv.get(u) or {}).get('billed') or 0),
               '예치금 외 결제': (int((_inv.get(u) or {}).get('billed') or 0)
@@ -945,6 +948,9 @@ def _tab_deposit(USERNAME, dmap):
                 f"관리자 조정 **{fmt(abs(_tt['adjusted']))}원**")
     if _tt.get('returned'):
         _eq += f" + 매장반품 적립 **{fmt(_tt['returned'])}원**"
+    _sold = int((_tt.get('by_kind') or {}).get('stock_credit') or 0)
+    if _sold:
+        _eq += f" + 재고 판매 적립 **{fmt(_sold)}원**"
     _eq += f" = 잔액 **{fmt(_tt['net'])}원**"
     st.caption(_eq + f"  (예치 없는 사람 {len([r for r in _rows if r['잔액'] == 0])}명)")
     if _tt.get('refunded'):
@@ -968,7 +974,7 @@ def _tab_deposit(USERNAME, dmap):
         on_select="rerun", selection_mode="single-row", key="sb_dep_bal_tbl",
         column_config={k: st.column_config.NumberColumn(k, format='%d')
                        for k in ('누적 입금', '예치금 차감', '관리자 조정',
-                                 '매장반품 적립', '잔액', '청구 합계',
+                                 '매장반품 적립', '재고 판매 적립', '잔액', '청구 합계',
                                  '예치금 외 결제')})
     st.caption("👆 판매자 행을 누르면 그 사람의 **예치금 내역**(입금·차감·조정과 "
                "그때그때 잔액)이 바로 아래에 펼쳐집니다.")
@@ -1093,7 +1099,7 @@ def _render_user_deposit_pick(rows, sel, dmap):
     보인다. 기본은 전체 기간 — 잔액은 처음부터 쌓인 값이라 일부만 보면 안 맞아 보인다.
     """
     _opts = [r['_u'] for r in rows if r['누적 입금'] or r['예치금 차감'] or r['잔액']
-             or r['관리자 조정'] or r['매장반품 적립']]
+             or r['관리자 조정'] or r['매장반품 적립'] or r.get('재고 판매 적립')]
     if not _opts:
         return
     # 표에서 누른 행이 있으면 그 사람으로 맞춘다(누를 때마다 한 번만 — 그 뒤엔

@@ -243,8 +243,44 @@ def finalize(settle_date, alloc_rows, created_by='', with_fees=False,
                 stock['loan'] += 1
         except Exception:
             pass
+    # 남의 재고를 쓴 건 — 판매자에게 청구한 그 금액을 **보유자 예치금으로 적립**한다.
+    #   예전엔 재고 관리 › 정산 장부에 쌓아 두고 관리자가 따로 정산했다.
+    #   적립하면 그 주문의 정산 장부 건은 '정산완료'로 닫는다(두 번 주지 않게).
+    stock['credited'] = credit_stock_owners(alloc_rows, settle_date, created_by)
     return {'saved': len(rows), 'applied': applied, 'dropped': dropped,
             'totals': totals, 'learned': learned, 'fees': fees, 'stock': stock}
+
+
+def credit_stock_owners(alloc_rows, settle_date, by=''):
+    """남의 재고 출고·빌린 재고 행 → 보유자 예치금 적립. 반환: 적립 건수."""
+    from datetime import datetime
+    n = 0
+    try:
+        import db_deposit as _dep
+        from db_inventory import _conn as _iconn
+    except Exception:
+        return 0
+    for r in (alloc_rows or []):
+        _u = str(r.get('username') or '')
+        _ow = str(r.get('stock_owner') or r.get('loan_owner') or '').strip()
+        _amt = _i(r.get('amount'))
+        _ono = str(r.get('order_no') or '').strip()
+        if not _ow or _ow == _u or _amt <= 0 or not _ono:
+            continue
+        _memo = (f"재고 판매 적립 · {str(r.get('product_name') or '')[:30]} "
+                 f"{_i(r.get('qty')) or 1}개 · 판매자 {_u} · {settle_date} 정산")
+        try:
+            if _dep.stock_credit(_ow, _amt, _ono, _memo, settle_date=str(settle_date), by=by):
+                n += 1
+                _c = _iconn()
+                _c.execute("UPDATE inventory_moves SET settle_status='SETTLED', settled_at=? "
+                           "WHERE order_no=? AND owner=? AND is_cross=1 AND settle_status='PENDING'",
+                           (datetime.now().strftime('%Y-%m-%d %H:%M:%S'), _ono, _ow))
+                _c.commit()
+                _c.close()
+        except Exception:
+            continue
+    return n
 
 
 def consume_stock_rows(rows, settle_date):

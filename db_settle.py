@@ -178,6 +178,12 @@ def _revert_stock(order_nos):
     if not order_nos:
         return 0
     try:
+        # 남의 재고로 적립했던 예치금도 되돌린다 — 정산이 없어졌는데 돈만 남으면 안 된다
+        import db_deposit as _dep
+        _dep.stock_credit_cancel_orders(order_nos)
+    except Exception:
+        pass
+    try:
         from db_inventory import revert_settle_moves
         return revert_settle_moves(sorted(set(order_nos)))
     except Exception:
