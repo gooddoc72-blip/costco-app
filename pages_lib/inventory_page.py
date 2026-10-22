@@ -691,10 +691,12 @@ def _manual_stock_in(USERNAME):
             if _hits:
                 _lbls = ["(직접 입력)"] + [
                     f"{h['product_no'] or '번호없음'} · {h['name'][:40]} · "
-                    + (f"🧾 최근구매 {h['receipt_date']} {fmt(h['paid'])}원"
-                       if h['paid'] else f"매장가 {fmt(h['store'])}원")
+                    + (f"🧾 최근구매 {h['receipt_date']} {fmt(h['paid'])}원" if h['paid'] else
+                       f"📦 {h['owner']} 제품DB {fmt(h['store'])}원" if h.get('owner') else
+                       f"🌐 온라인가 {fmt(h['store'])}원" if h.get('online') else
+                       f"🏷 가격DB {fmt(h['store'])}원")
                     for h in _hits]
-                _pk = st.selectbox(f"찾은 상품 {len(_hits)}개 (🧾 = 영수증 구매이력)",
+                _pk = st.selectbox(f"찾은 상품 {len(_hits)}개 (🧾 영수증 · 🏷 가격DB · 📦 사용자 제품DB · 🌐 온라인몰)",
                                    _lbls, index=1, key="ml_pick")
                 if _pk != "(직접 입력)":
                     _sel = _hits[_lbls.index(_pk) - 1]

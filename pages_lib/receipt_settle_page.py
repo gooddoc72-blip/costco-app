@@ -3841,9 +3841,11 @@ def _render_manual_stock(lots, key_prefix="rs"):
             if _hits:
                 _hl = ["(직접 입력)"] + [
                     f"{h['product_no'] or '번호없음'} · {h['name'][:40]} · "
-                    + (f"🧾 최근구매 {h['receipt_date']} {h['paid']:,}원" if h['paid']
-                       else f"매장가 {h['store']:,}원") for h in _hits]
-                _hp = st.selectbox(f"찾은 상품 {len(_hits)}개 (🧾 = 영수증 구매이력)", _hl,
+                    + (f"🧾 최근구매 {h['receipt_date']} {h['paid']:,}원" if h['paid'] else
+                       f"📦 {h['owner']} 제품DB {h['store']:,}원" if h.get('owner') else
+                       f"🌐 온라인가 {h['store']:,}원" if h.get('online') else
+                       f"🏷 가격DB {h['store']:,}원") for h in _hits]
+                _hp = st.selectbox(f"찾은 상품 {len(_hits)}개 (🧾 영수증 · 🏷 가격DB · 📦 사용자 제품DB · 🌐 온라인몰)", _hl,
                                    index=1, key=f"{key_prefix}_adj_hit")
                 if _hp != "(직접 입력)":
                     _hs = _hits[_hl.index(_hp) - 1]

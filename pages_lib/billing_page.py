@@ -49,6 +49,28 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
 
 
 # ── 탭0: 택배·부자재비 청구 (월별) ──
+
+@st.cache_data(ttl=120, show_spinner=False)
+def _month_ship_agg(ym, last, sellers):
+    """사용자별 한 달 발송건수·택배비 — {u: (건수, 택배비, 단가, 온라인직배송 제외수)}.
+
+    사용자 × 날짜마다 DB를 여러 번 열어(한 달 775번) 화면이 3.5초씩 걸렸고,
+    부자재비 칸을 고칠 때마다 다시 돌았다. 2분 동안은 계산해 둔 값을 쓴다.
+    """
+    import settle_core as _sc
+    out = {}
+    for u in sellers:
+        _cnt = _ship = _unit = _onl = 0
+        for _d in range(1, int(last) + 1):
+            _f = _sc.daily_fees(u, '%s-%02d' % (ym, _d))
+            _cnt += int(_f.get('ship_count') or 0)
+            _ship += int(_f.get('ship_fee') or 0)
+            _unit = int(_f.get('ship_unit') or 0) or _unit
+            _onl += len(_f.get('online_skipped') or [])
+        out[u] = (_cnt, _ship, _unit, _onl)
+    return out
+
+
 def _tab_fee_billing(USERNAME):
     """물건값과 따로 청구하는 택배비·포장부자재비를 월 단위로 모아 본다.
 
@@ -88,15 +110,10 @@ def _tab_fee_billing(USERNAME):
     with st.spinner(f"{_ym} 발송 기록을 모으는 중..."):
         _rows = []
         _onl_tot = 0
+        _agg = _month_ship_agg(_ym, _last, tuple(_sellers()))
         for u in _sellers():
-            _cnt = _ship = 0
-            _unit = 0
-            for _d in range(1, _last + 1):
-                _f = _sc.daily_fees(u, '%s-%02d' % (_ym, _d))
-                _cnt += int(_f.get('ship_count') or 0)
-                _ship += int(_f.get('ship_fee') or 0)
-                _unit = int(_f.get('ship_unit') or 0) or _unit
-                _onl_tot += len(_f.get('online_skipped') or [])
+            _cnt, _ship, _unit, _onl = _agg.get(u, (0, 0, 0, 0))
+            _onl_tot += _onl
             _pf = _saved.get(u) or {}
             # AI 실비 — 관리자 공용 키로 그 사용자가 쓴 만큼(Claude+Gemini 합산)
             try:

@@ -134,11 +134,19 @@ def _split_editor(key_prefix: str, sq_val: int, pack_price: int, product_no: str
     return n
 
 
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _pack_ambiguous(username):
+    """묶음배수 미지정 상품 — 상품마다 이름을 분석해 1.6초 걸린다. 저장 때 비운다."""
+    from db import get_pack_ambiguous_products
+    return get_pack_ambiguous_products(username, only_unset=True)
+
+
 def _render_pack_multiplier(USERNAME: str):
     """묶음배수 분류 — 상품명 "x N개"가 상품마다 뜻이 달라 명시 지정이 필요한 상품 목록."""
-    from db import get_pack_ambiguous_products, set_pack_multiplier
+    from db import set_pack_multiplier
     try:
-        rows = get_pack_ambiguous_products(USERNAME, only_unset=True)
+        rows = _pack_ambiguous(USERNAME)
     except Exception:
         return
     risky = [r for r in rows if r.get('risky')]
@@ -182,6 +190,7 @@ def _render_pack_multiplier(USERNAME: str):
                              type="primary"):
                     val = 1 if pick.startswith("내용물") else max(2, int(r['name_factor']))
                     set_pack_multiplier(USERNAME, r['id'], val)
+                    _pack_ambiguous.clear()
                     if callable(invalidate_data_cache):
                         invalidate_data_cache()
                     st.session_state.pop('_pcalc_match_cache', None)  # 수익계산 캐시 무효화

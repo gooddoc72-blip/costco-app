@@ -112,10 +112,52 @@ def search_products(q, limit=50):
                 continue
             if _hit(s.get('costco_name'), _pn):
                 out[_key] = {'product_no': _pn, 'name': str(s.get('costco_name') or ''),
-                            'paid': 0, 'list': 0, 'receipt_date': '', 'store': _sp}
+                            'paid': 0, 'list': 0, 'receipt_date': '', 'store': _sp,
+                            # 온라인몰에서 긁어 온 것뿐인 상품 — 매장 상품 뒤로 보낸다
+                            'online': (not int(s.get('store_price') or 0)
+                                       and str(s.get('price_type') or '') == '온라인')}
+    except Exception:
+        pass
+    # ③ 사용자별 제품 가격 DB — 매장에서 사서 네이버에 올린 상품은 온라인몰
+    #   카탈로그(공용 DB)에 없어 여기서만 찾힌다(그릭요거트 907g 2개 등).
+    #   코스트코번호 칸에 네이버번호가 잘못 들어간 행은 번호를 비워서 낸다.
+    try:
+        import glob as _glob, os as _os, sqlite3 as _sq
+        from db_core import DATA_DIR
+        for _f in sorted(_glob.glob(_os.path.join(DATA_DIR, '*.db'))):
+            _u = _os.path.basename(_f)[:-3]
+            if _u == 'auth' or '.bak' in _u or '.' in _u:
+                continue
+            try:
+                _c = _sq.connect(f'file:{_f}?mode=ro', uri=True)
+                _rows = _c.execute(
+                    "SELECT product_no, store_product_name, costco_name, unit_price, "
+                    "naver_origin_pno, naver_channel_pno FROM products "
+                    "WHERE COALESCE(status,'SALE')!='DELETED'").fetchall()
+                _c.close()
+            except Exception:
+                continue
+            for _pn, _snm, _cnm, _up, _org, _ch in _rows:
+                _nm = str(_snm or _cnm or '')
+                _pn = str(_pn or '').strip()
+                if _pn in (str(_org or '').strip(), str(_ch or '').strip()) or len(_pn) > 8:
+                    _pn = ''
+                if not (_pn or _up) or not _hit(_nm, _pn):
+                    continue          # 번호도 가격도 없는 행은 골라도 쓸 게 없다
+                _key = _pn or ('name:' + name_key(_nm))
+                if _key in out:
+                    if not out[_key]['store'] and _up:
+                        out[_key]['store'] = int(_up or 0)
+                    continue
+                out[_key] = {'product_no': _pn, 'name': _nm, 'paid': 0, 'list': 0,
+                             'receipt_date': '', 'store': int(_up or 0), 'owner': _u}
     except Exception:
         pass
     # 영수증 건은 최근 구매순으로 이미 들어 있다 — 그 뒤에 공용 DB 건
-    _res = ([h for h in out.values() if h['receipt_date']]
-            + [h for h in out.values() if not h['receipt_date']])
+    #   순서: 🧾 실제 산 것 → 🏷 가격DB(매장) → 📦 사용자 제품DB → 🌐 온라인몰만
+    _v = list(out.values())
+    _res = ([h for h in _v if h['receipt_date']]
+            + [h for h in _v if not h['receipt_date'] and not h.get('owner') and not h.get('online')]
+            + [h for h in _v if h.get('owner')]
+            + [h for h in _v if h.get('online') and not h['receipt_date']])
     return _res[:limit]

@@ -10,12 +10,35 @@ from db_core import AUTH_DB, DATA_DIR, get_user_db, get_auth_db
 
 # ── 공유 제품 (auth.db/shared_products) ──────────────────
 
+#: 공유 제품 목록 메모리 캐시 — 6천 행에 상세 HTML까지 실려 한 번 읽는 데 0.3초.
+#  화면 하나가 이걸 여러 번 부르고, 클릭할 때마다 화면 전체가 다시 돌아서
+#  느려졌다. auth.db(와 WAL) 파일이 바뀌지 않았으면 읽어 둔 것을 쓴다 —
+#  어디서 무엇을 고치든 파일이 바뀌므로 오래된 값이 남지 않는다.
+_SHARED_CACHE = {'sig': None, 'rows': None}
+
+
+def _auth_sig():
+    _s = []
+    for _p in (AUTH_DB, AUTH_DB + '-wal'):
+        try:
+            _st = os.stat(_p)
+            _s.append((_st.st_mtime_ns, _st.st_size))
+        except OSError:
+            _s.append(None)
+    return tuple(_s)
+
+
 def get_shared_products():
-    conn = get_auth_db()
-    conn.row_factory = sqlite3.Row
-    rows = conn.execute("SELECT * FROM shared_products ORDER BY costco_name").fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
+    _sig = _auth_sig()
+    if _SHARED_CACHE['sig'] != _sig or _SHARED_CACHE['rows'] is None:
+        conn = get_auth_db()
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute("SELECT * FROM shared_products ORDER BY costco_name").fetchall()
+        conn.close()
+        _SHARED_CACHE['rows'] = [dict(r) for r in rows]
+        _SHARED_CACHE['sig'] = _sig
+    # 호출하는 쪽이 행을 고쳐 쓰는 곳이 있어 복사본을 준다
+    return [dict(r) for r in _SHARED_CACHE['rows']]
 
 
 #: 가격 변경 이력 — 값이 이상할 때 어디서 들어온 건지 추적하려면 필요하다.

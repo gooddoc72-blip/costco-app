@@ -152,6 +152,46 @@ def _render_unused_users(USERNAME):
                 st.rerun()
 
 
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _pnofix_cands(qs):
+    """코스트코 번호 찾기 후보 — 공유 가격DB + 영수증 구매이력(번호가 확실한 정답).
+
+    영수증 품목(예: KS그릭요거트 599369)은 공유 DB에 번호 없이 있거나 아예 없어서
+    공유 DB만 보면 매장 상품은 못 찾았다.
+    """
+    _pool = {}
+    try:
+        from db_stats import _receipt_conn
+        _c = _receipt_conn()
+        for _pn, _nm, _up in _c.execute(
+                "SELECT product_no, product_name, unit_price FROM receipt_items "
+                "WHERE TRIM(COALESCE(product_no,''))!='' ORDER BY receipt_date DESC"):
+            _pool.setdefault(str(_pn).strip(), {'product_no': str(_pn).strip(),
+                                               'costco_name': '🧾 ' + str(_nm or ''),
+                                               'match_keyword': str(_nm or ''),
+                                               'unit_price': int(_up or 0)})
+        _c.close()
+    except Exception:
+        pass
+    for p in (get_shared_products() or []):
+        _pn = str(p.get('product_no') or '').strip()
+        if not _pn:
+            continue
+        _pool[_pn] = {'product_no': _pn, 'costco_name': str(p.get('costco_name') or ''),
+                      'match_keyword': str(p.get('match_keyword') or ''),
+                      'unit_price': int(p.get('unit_price') or 0)}
+    if qs.isdigit() and qs in _pool:
+        return [_pool[qs]]
+    _scored = []
+    for p in _pool.values():
+        _sc = max(_token_score(qs, p['match_keyword']), _token_score(qs, p['costco_name']))
+        if _sc > 0:
+            _scored.append((_sc, p))
+    _scored.sort(key=lambda x: -x[0])
+    return [p for _sc, p in _scored[:10]]
+
+
 def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     """👑 관리자 탭 렌더링."""
     def _gs(k, default=""):
@@ -908,7 +948,6 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 st.caption("✅ 모든 항목에 코스트코 상품번호가 있습니다.")
             return
 
-        _shared = cached_shared_products() or []
         _nmap = get_shared_naver_costco_map() or {}
 
         with st.expander(f"🔗 코스트코 번호 미확보 {len(_miss)}개 — 공유DB 상품에 연결",
@@ -934,18 +973,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 _qs = (_q or _nm).strip()
 
                 # 번호를 그대로 입력하면 정확 일치 우선, 아니면 이름 유사도 상위 10개
-                _cands = []
-                if _qs.isdigit():
-                    _cands = [p for p in _shared if str(p.get('product_no') or '') == _qs]
-                if not _cands:
-                    _scored = []
-                    for p in _shared:
-                        _sc = max(_token_score(_qs, p.get('match_keyword') or ''),
-                                  _token_score(_qs, p.get('costco_name') or ''))
-                        if _sc > 0:
-                            _scored.append((_sc, p))
-                    _scored.sort(key=lambda x: -x[0])
-                    _cands = [p for _sc, p in _scored[:10]]
+                #   (계산은 캐시 — 항목마다 6천 개와 비교해 클릭마다 1초씩 걸렸다)
+                _cands = _pnofix_cands(_qs)
 
                 if not _cands:
                     st.caption("검색 결과 없음 — 검색어를 바꿔보세요.")
