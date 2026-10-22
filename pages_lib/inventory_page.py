@@ -41,9 +41,11 @@ def render(USERNAME, IS_ADMIN, settings):
 
     if IS_ADMIN:
         tabs = st.tabs(["📢 공지사항", "🏷 할인제품 등록", "✅ 요청 승인·입고",
-                        "📊 전체 재고", "💳 정산 장부", "↩️ 반품 대상",
+                        "➕ 수동 입고", "📊 전체 재고", "💳 정산 장부", "↩️ 반품 대상",
                         "📥 고객 반품", "📖 구매 가이드", "⏳ 배정 대기"])
-        with tabs[8]:
+        with tabs[3]:
+            _manual_stock_in(USERNAME)
+        with tabs[9]:
             # 영수증으로 샀는데 아직 누구 재고로도 안 넘긴 물건 — 영수증 정산 화면
             # 하단에서 옮겨 왔다(영수증 정산은 그날 매칭·정산만).
             st.subheader("⏳ 배정 대기 — 영수증 남은 물건")
@@ -58,15 +60,15 @@ def render(USERNAME, IS_ADMIN, settings):
             _admin_deals(USERNAME)
         with tabs[2]:
             _admin_requests(USERNAME)
-        with tabs[3]:
-            _admin_stock()
         with tabs[4]:
-            _admin_settlement(sur)
+            _admin_stock()
         with tabs[5]:
-            _return_due(None)
+            _admin_settlement(sur)
         with tabs[6]:
-            _customer_returns(USERNAME)
+            _return_due(None)
         with tabs[7]:
+            _customer_returns(USERNAME)
+        with tabs[8]:
             _guide(sur, IS_ADMIN=True)
     else:
         tabs = st.tabs(["📢 대량구매 공지", "📥 내 요청", "📦 내 재고", "↩️ 내 반품",
@@ -660,14 +662,21 @@ def _admin_stock():
         _stock_store_return(rows)
 
     _admin_self_purchase_view()
+    st.caption("재고를 손으로 넣으려면 **➕ 수동 입고** 탭을 쓰세요.")
+    _stock_fix_panel(rows)
 
-    st.divider()
+
+def _manual_stock_in(USERNAME):
+    """추천건 없이 재고를 손으로 넣는다 — 전체 재고 맨 아래 토글에 숨어 있어 못 찾았다."""
+    st.subheader("➕ 수동 재고 입고")
+    st.caption("대량구매 추천건 없이 산 물건·예전 재고·남에게 받은 물건을 보유자 앞으로 넣습니다. "
+               "입고일부터 반품 기한이 계산됩니다.")
     # 폼을 쓰지 않는다 — 폼 안에서 엔터를 치면 '입고'가 눌려 검증 오류와 함께
     # 처음으로 돌아갔다. 접기 박스도 rerun마다 닫혀 토글(세션 유지)로 연다.
     _ml_msg = st.session_state.pop('_ml_msg', None)
     if _ml_msg:
         st.success(_ml_msg)
-    if st.toggle("➕ 재고 직접 입고 (추천건 없이)", key="inv_manual_open"):
+    if True:
         with st.container(border=True):
             # 🔍 상품명·번호로 공용 DB를 찾아 고르면 번호·매장가가 채워진다
             _q = st.text_input("🔍 상품명·상품번호로 찾기", key="ml_q",
@@ -760,6 +769,8 @@ def _admin_stock():
                                                    f"{_bill_txt}")
                     st.rerun()
 
+
+def _stock_fix_panel(rows):
     # ── 잘못 들어간 재고를 고치는 두 길 ──────────────────────
     #   재고를 보는 화면과 고치는 화면이 갈라져 있어, 틀린 걸 발견해도 영수증
     #   정산으로 건너가야 했다. 보는 자리에서 고칠 수 있어야 한다.

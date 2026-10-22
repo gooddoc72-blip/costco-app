@@ -2795,6 +2795,7 @@ def _render_unmatched_panel(alloc, dmap, d_day, USERNAME, receipt_items):
                 _lr = _rs.build_manual_rows([{'order': _o9, 'costco_no': _cc,
                                               'unit_price': _price_by[_cc], 'via': 'name'}])[0]
                 _lr['memo'] = str(_r.get('메모') or '').strip() or f"후보 연결 · {_cands[_i][2]}"
+                _lr['confirmed'] = True
                 _row_idx.append(_i)
                 _rows_new.append(_lr)
                 continue
@@ -3323,7 +3324,9 @@ def _render_manual_match_panel(alloc, dmap, d_day, receipt_items):
                 'qty': _q, 'unit_price': _m[1], 'amount': _amt,
                 'prev_cost': int(o.get('prev_cost') or 0), 'via': 'manual',
                 'split_qty': max(1, _split), 'pack': max(1, _pack),
-                'memo': f"수동 매칭 → {_m[2][:20]}", '_edited': True})
+                'memo': f"수동 매칭 → {_m[2][:20]}", '_edited': True,
+                # 사람이 확인한 짝 — 정산 때 제품DB의 틀린 코스트코번호도 이걸로 고친다
+                'confirmed': True})
             _idx.append(i)
         if _new:
             st.markdown(f"**{len(_new)}건 · 청구액 {fmt(sum(r['amount'] for r in _new))}원**")

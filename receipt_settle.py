@@ -2028,7 +2028,11 @@ def learn_costco_mappings(rows):
         cno = _norm(r.get('costco_no'))
         if not (u and nv and is_costco_pno(cno)):
             continue
-        pairs.setdefault(u, {}).setdefault(nv, (cno, _norm(r.get('product_name'))))
+        if r.get('confirmed'):
+            # 사람이 '같은 물건'이라고 확인한 짝은 다른 추정보다 앞선다
+            pairs.setdefault(u, {})[nv] = (cno, _norm(r.get('product_name')), True)
+        else:
+            pairs.setdefault(u, {}).setdefault(nv, (cno, _norm(r.get('product_name')), False))
 
     filled, by_user = 0, {}
     for uname, m in pairs.items():
@@ -2051,10 +2055,13 @@ def learn_costco_mappings(rows):
                                     for c in key_cols) + ")")
             n = 0
             _now = datetime.now().strftime("%Y-%m-%d %H:%M")
-            for nv, (cno, pname) in m.items():
+            for nv, (cno, pname, _conf) in m.items():
+                # 사람이 확인한 짝(🔗 후보로 연결·수동 매칭)은 이미 들어 있는 번호가
+                # 틀렸어도 고친다 — 조춘옥 Arla 하바티 스낵치즈가 엉뚱한 1100690으로
+                # 잡혀 있어 영수증 고다슬라이스(643373)와 끝내 안 붙었다(10/21).
                 cur = conn.execute(
                     "UPDATE products SET product_no=? "
-                    "WHERE %s AND (%s)" % (_empty, _where),
+                    "WHERE %s AND (%s)" % ("1=1" if _conf else _empty, _where),
                     [cno] + [nv] * len(key_cols))
                 # 공유맵에도 남긴다 — 코스트코번호는 상품 고유값이라 한 사람이
                 # 이으면 전원이 쓸 수 있다. 각자 제품DB에만 두면 같은 상품을
@@ -2115,7 +2122,7 @@ def learn_costco_mappings(rows):
                 conn.close()
                 continue
             _w = " OR ".join("TRIM(COALESCE(%s,''))=?" % c for c in _keys)
-            for nv, (cno, _pn) in m.items():
+            for nv, (cno, _pn, _c) in m.items():
                 cur = conn.execute(
                     "UPDATE daily_orders SET costco_no=? "
                     "WHERE TRIM(COALESCE(costco_no,''))='' AND (%s)" % _w,
