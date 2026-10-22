@@ -408,6 +408,257 @@ def save_dispatch(by_user, dispatched_at, platform='upload', skip_existing=True,
 
 
 
+
+# ── 관리자 대신 스토어 발송처리 ─────────────────────────────
+#   사용자가 발송처리를 늦게 해서 관리자가 17시에 CJ 파일로 정리한다. 기록만
+#   넣으면 네이버·쿠팡 주문은 '발송 대기'로 남아 사용자가 또 처리해야 했다.
+#   각 사용자 설정의 스토어 API 키로 관리자가 골라서 대신 송장을 등록한다.
+_NV_COURIER = {"CJ대한통운": "CJGLS", "롯데택배": "HYUNDAI", "한진택배": "HANJIN",
+               "우체국택배": "EPOST", "로젠택배": "KGB"}
+_CP_COURIER = {"CJ대한통운": "CJGLS", "롯데택배": "HDEXP", "한진택배": "HANJIN",
+               "우체국택배": "EPOST", "로젠택배": "KGB", "경동택배": "KDEXP",
+               "대신택배": "DAESIN"}
+
+
+def _store_keys(username):
+    try:
+        from db import get_all_settings
+        s = get_all_settings(username) or {}
+    except Exception:
+        s = {}
+    nv = (s.get('api_client_id') or '', s.get('api_client_secret') or '')
+    cp = (s.get('coupang_access_key') or '', s.get('coupang_secret_key') or '',
+          s.get('coupang_vendor_id') or '')
+    return (nv if all(nv) else None), (cp if all(cp) else None)
+
+
+def store_dispatched(username, order_nos):
+    """이미 스토어(네이버·쿠팡)로 발송처리된 주문번호. 관리자 업로드 기록(upload)은 아니다."""
+    from db import get_user_db
+    out = set()
+    _nos = [str(o) for o in order_nos if str(o)]
+    if not _nos:
+        return out
+    try:
+        conn = get_user_db(username)
+        for i in range(0, len(_nos), 900):
+            _ch = _nos[i:i + 900]
+            for (o,) in conn.execute(
+                    "SELECT order_no FROM dispatch_log WHERE platform IN ('naver','coupang') "
+                    "AND order_no IN (%s)" % ",".join("?" * len(_ch)), _ch):
+                out.add(str(o))
+        conn.close()
+    except Exception:
+        pass
+    return out
+
+
+def ship_plan(by_user):
+    """사용자별 스토어 발송 대상 — {username: {'naver': [...], 'coupang': [...],
+    'done': n, 'no_trk': n, 'keys': (네이버키?, 쿠팡키?)}}"""
+    plan = {}
+    for u, rows in (by_user or {}).items():
+        _done = store_dispatched(u, [r.get('order_no') for r in rows])
+        nv, cp, done, no_trk, seen = [], [], 0, 0, set()
+        for r in rows:
+            o = str(r.get('order_no') or '').strip()
+            if not o or o.startswith(('NO-', 'STOCKIN-')) or o in seen:
+                continue
+            seen.add(o)
+            if o in _done:
+                done += 1
+                continue
+            if not str(r.get('tracking_no') or '').strip():
+                no_trk += 1
+                continue
+            (cp if '-' in o else nv).append(r)
+        _k = _store_keys(u)
+        plan[u] = {'naver': nv, 'coupang': cp, 'done': done, 'no_trk': no_trk,
+                   'keys': (bool(_k[0]), bool(_k[1]))}
+    return plan
+
+
+def _fill_settlement(username, rows):
+    """dispatch_log에 정산예정금액·배송비를 채운다 — 수익계산이 이걸 읽는다."""
+    from db import get_user_db
+    try:
+        conn = get_user_db(username)
+        for r in rows:
+            h = conn.execute("SELECT settlement, shipping_fee, recipient, product_name "
+                             "FROM order_history WHERE order_no=?", (r['order_no'],)).fetchone()
+            if h:
+                r['expected_settlement'] = int(h[0] or 0)
+                r['customer_shipping_fee'] = int(h[1] or 0)
+                r['recipient'] = r.get('recipient') or h[2] or ''
+                r['product_name'] = r.get('product_name') or h[3] or ''
+        conn.close()
+    except Exception:
+        pass
+    return rows
+
+
+def ship_for_user(username, plan_u, courier, dispatched_at):
+    """한 사용자의 대상건을 그 사람 스토어에 발송처리하고 dispatch_log에 남긴다.
+    반환: {'naver': (성공, 실패), 'coupang': (...), 'errors': [...], 'fails': [...]}"""
+    from db import log_dispatch_success
+    out = {'naver': (0, 0), 'coupang': (0, 0), 'errors': [], 'fails': []}
+    nvk, cpk = _store_keys(username)
+    try:
+        from pages_lib.tracking_page import _log_dispatch_attempt as _logatt
+    except Exception:
+        _logatt = None
+
+    def _log_rows(src, ok_ids, plat):
+        ok = {str(x).strip() for x in ok_ids or []}
+        rows = []
+        for r in src:
+            if str(r['order_no']) in ok:
+                rows.append({'order_no': r['order_no'], 'recipient': r.get('recipient', ''),
+                             'product_name': r.get('product_name', ''),
+                             'tracking_no': str(r.get('tracking_no') or '').replace('-', ''),
+                             'courier': r.get('courier') or courier,
+                             '_d': str(r.get('dispatched_at') or '') or str(dispatched_at)})
+        _fill_settlement(username, rows)
+        by_d = {}
+        for r in rows:
+            by_d.setdefault(r.pop('_d'), []).append(r)
+        for d, rs in by_d.items():
+            log_dispatch_success(username, rs, d, platform=plat)
+
+    # 네이버
+    if plan_u.get('naver'):
+        if not nvk:
+            out['errors'].append(f"네이버 API 키 없음 — {len(plan_u['naver'])}건 못 보냄")
+        else:
+            try:
+                import naver_api
+                _raw = plan_u['naver']
+                # 파일에 '주문번호'가 들어온 경우 상품주문번호로 바꾼다(송장 등록 화면과 같다)
+                _map, _unres, _rerr = naver_api.resolve_product_order_ids(
+                    nvk[0], nvk[1], [r['order_no'] for r in _raw])
+                if _rerr and not _map:
+                    _map, _unres = {r['order_no']: [r['order_no']] for r in _raw}, []
+                _src = [dict(r, order_no=po) for r in _raw for po in _map.get(r['order_no'], [])]
+                if _unres:
+                    out['errors'].append(f"네이버 이 스토어 주문 아님 {len(_unres)}건: "
+                                         + ", ".join(_unres[:3]))
+                if _src:
+                    _code = _NV_COURIER.get(courier, courier)
+                    _items = [{"productOrderId": r['order_no'], "택배사": _code,
+                               "trackingNumber": str(r.get('tracking_no') or '').replace('-', '')}
+                              for r in _src]
+                    res, err = naver_api.ship_orders(nvk[0], nvk[1], _items)
+                    if _logatt:
+                        _logatt(username, 'naver', len(_items), res, err, excluded=_unres,
+                                note='관리자 대신 발송')
+                    if err:
+                        out['errors'].append(f"네이버: {err}")
+                    res = res or {}
+                    out['naver'] = (int(res.get('success') or 0), int(res.get('fail') or 0))
+                    out['fails'] += [dict(f, 스토어='네이버') for f in res.get('fail_items') or []]
+                    _ok = res.get('success_order_ids') or []
+                    if _ok:
+                        try:   # 수익계산이 order_history를 읽는다 — 상세를 먼저 채운다
+                            from db import save_order_history
+                            import pandas as _pd
+                            _det, _ = naver_api.fetch_order_details_by_ids(nvk[0], nvk[1], list(_ok))
+                            if _det:
+                                save_order_history(username, _pd.DataFrame(_det))
+                        except Exception:
+                            pass
+                        _log_rows(_src, _ok, 'naver')
+            except Exception as e:
+                out['errors'].append(f"네이버 처리 오류: {e}")
+    # 쿠팡
+    if plan_u.get('coupang'):
+        if not cpk:
+            out['errors'].append(f"쿠팡 API 키 없음 — {len(plan_u['coupang'])}건 못 보냄")
+        else:
+            try:
+                import coupang_api
+                _src = plan_u['coupang']
+                _code = _CP_COURIER.get(courier, courier)
+                _items = [{"productOrderId": r['order_no'], "courierCode": _code,
+                           "trackingNumber": str(r.get('tracking_no') or '').replace('-', '')}
+                          for r in _src]
+                res, err = coupang_api.dispatch_orders(cpk[0], cpk[1], cpk[2], _items)
+                if _logatt:
+                    _logatt(username, 'coupang', len(_items), res, err, note='관리자 대신 발송')
+                if err:
+                    out['errors'].append(f"쿠팡: {err}")
+                res = res or {}
+                out['coupang'] = (int(res.get('success') or 0), int(res.get('fail') or 0))
+                out['fails'] += [dict(f, 스토어='쿠팡') for f in res.get('fail_items') or []]
+                if res.get('success_order_ids'):
+                    _log_rows(_src, res['success_order_ids'], 'coupang')
+            except Exception as e:
+                out['errors'].append(f"쿠팡 처리 오류: {e}")
+    return out
+
+
+def _render_store_ship(st, pd, dmap, by_user, d_day):
+    """사용자를 골라 그 사람 스토어에 대신 발송처리."""
+    st.markdown("#### 🚀 스토어 발송처리 — 관리자가 대신")
+    st.caption("파일의 송장번호를 **각 사용자의 네이버·쿠팡 스토어에 등록**합니다. "
+               "사용자가 따로 발송처리하지 않아도 됩니다. 이미 스토어로 발송처리된 주문은 "
+               "빼고 보냅니다. **고른 사용자만** 처리됩니다.")
+    _res = st.session_state.pop('_du_ship_res', None)
+    if _res:
+        _rt = [{'사용자': dmap.get(u, u),
+                '네이버 성공': r['naver'][0], '네이버 실패': r['naver'][1],
+                '쿠팡 성공': r['coupang'][0], '쿠팡 실패': r['coupang'][1],
+                '메모': ' / '.join(r['errors'])[:200]} for u, r in _res.items()]
+        _okn = sum(x['네이버 성공'] + x['쿠팡 성공'] for x in _rt)
+        _ngn = sum(x['네이버 실패'] + x['쿠팡 실패'] for x in _rt)
+        (st.success if _okn and not _ngn else st.warning)(
+            f"🚀 발송처리 결과 — 성공 {_okn}건 · 실패 {_ngn}건")
+        st.dataframe(pd.DataFrame(_rt), use_container_width=True, hide_index=True)
+        _fl = [dict(f, 사용자=dmap.get(u, u)) for u, r in _res.items() for f in r['fails']]
+        if _fl:
+            with st.expander(f"📋 실패 {len(_fl)}건 상세", expanded=True):
+                st.dataframe(pd.DataFrame(_fl), use_container_width=True, hide_index=True)
+    plan = ship_plan(by_user)
+    if not plan:
+        return
+    _us = sorted(plan, key=lambda u: -(len(plan[u]['naver']) + len(plan[u]['coupang'])))
+
+    def _state(p):
+        _m = []
+        if p['naver'] and not p['keys'][0]:
+            _m.append('⚠️ 네이버 키 없음')
+        if p['coupang'] and not p['keys'][1]:
+            _m.append('⚠️ 쿠팡 키 없음')
+        return ' · '.join(_m) or ('✅ 보낼 수 있음' if (p['naver'] or p['coupang'])
+                                  else '보낼 건 없음')
+    _rows = [{'선택': False,
+              '사용자': (f"{dmap.get(u, u)} ({u})" if dmap.get(u, u) != u else u),
+              '네이버': len(plan[u]['naver']), '쿠팡': len(plan[u]['coupang']),
+              '이미 발송처리됨': plan[u]['done'], '송장 없음': plan[u]['no_trk'],
+              '상태': _state(plan[u])} for u in _us]
+    _ed = st.data_editor(pd.DataFrame(_rows), use_container_width=True, hide_index=True,
+                         key=f"du_ship_pick_{d_day}",
+                         disabled=['사용자', '네이버', '쿠팡', '이미 발송처리됨', '송장 없음', '상태'],
+                         column_config={'선택': st.column_config.CheckboxColumn('선택')})
+    _pick = [_us[i] for i, r in enumerate(_ed.to_dict('records')) if r.get('선택')]
+    _n = sum(len(plan[u]['naver']) * plan[u]['keys'][0]
+             + len(plan[u]['coupang']) * plan[u]['keys'][1] for u in _pick)
+    _c1, _c2 = st.columns([1, 2])
+    _cour = _c1.selectbox("택배사", list(_CP_COURIER), index=0, key="du_ship_courier")
+    _agree = _c2.checkbox("스토어 주문이 **배송중으로 바뀌고 고객에게 발송 알림**이 갑니다 — "
+                          "되돌릴 수 없음을 확인했습니다", key="du_ship_ok")
+    if st.button(f"🚀 선택한 {len(_pick)}명 · {_n}건 스토어 발송처리", type="primary",
+                 key="du_ship_go", disabled=not (_pick and _n and _agree)):
+        _out = {}
+        _bar = st.progress(0.0)
+        for i, u in enumerate(_pick):
+            _bar.progress(i / len(_pick), text=f"{dmap.get(u, u)} 발송처리 중…")
+            _out[u] = ship_for_user(u, plan[u], _cour, str(d_day))
+        _bar.empty()
+        st.session_state['_du_ship_res'] = _out
+        st.session_state.pop('du_ship_ok', None)
+        st.rerun()
+
+
 def _render_sender_panel(st, pd, dmap, smap, unknown, external):
     """🏢 보낸 업체 구분 — 코코비즈 사용자가 아닌 업체 건을 빼고, 처음 보는 코드를 정한다."""
     if external:
@@ -839,6 +1090,9 @@ def render_panel(dmap, USERNAME):
                         if _n2 else "ℹ️ 저장된 건이 없습니다(이미 기록돼 있습니다).")
                     st.rerun()
 
+        if _by_user:
+            with st.container(border=True):
+                _render_store_ship(st, pd, dmap, _by_user, _dd)
         # 집화일자 = 택배사가 물건을 받아 간 날. 발송일의 진짜 근거다.
         #   앱의 일괄발송은 '버튼 누른 시각'을 쓰므로 자정을 넘기면 다음 날로
         #   기록된다(실측: 9/11 발송 8건이 9/12 00:20 처리 → 9/12로 저장).
