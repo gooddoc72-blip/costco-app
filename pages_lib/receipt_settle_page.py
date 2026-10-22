@@ -1401,14 +1401,45 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             st.caption(f"↩️ 미정산 이월: {_cy['date_from']} 이후 미정산 주문 "
                        f"{_cy['scanned']}건을 훑어 **{_cy['matched']}건**을 번호 일치로 붙였습니다.")
 
-        with st.expander(f"🔍 배치 상세 ({len(rows)}건) — 주문별 구입가 반영 내역", expanded=False):
-            drows = []
+        # 영수증에 산 것보다 많이 붙은 주문 — 관리자가 하나씩 정해야 정산된다.
+        #   (예: 고영부 메르시 영수증 1개인데 주문 2개 출고) 남는 분량은 그날 산 게
+        #   아니라 누군가의 재고에서 나갔거나 빌린 것이다. 이전엔 체크 하나로
+        #   통째로 넘어가 영수증가로 청구됐고, 누구 재고인지는 남지 않았다.
+        _ov_keys = {}
+        try:
+            for _o in _rs.receipt_overflow(receipt_items, rows):
+                for _r in _o['orders']:
+                    _ov_keys[(_r.get('username'), _r.get('order_no'))] = (
+                        f"⚠️ 영수증 {_o['units_in']} · 주문 {_o['units_used']}")
+        except Exception:
+            pass
+        _ok_set = st.session_state.setdefault('rs_ov_ok', set())
+        _ov_left = [k for k in _ov_keys if k not in _ok_set]
+        alloc['_ov_left'] = len(_ov_left)
+        with st.expander(f"🔍 배치 상세 ({len(rows)}건) — 주문별 구입가 반영 내역"
+                         + (f"  ·  ⚠️ 확인 필요 {len(_ov_left)}건" if _ov_left else ""),
+                         expanded=bool(_ov_left)):
+            _KEEP, _OKV, _TOSTK, _CUT = ('', '✅ 영수증가로 청구', '📦 재고에서 나감',
+                                         '✂️ 끊기(이번 청구 제외)')
+            if _ov_keys:
+                st.warning(
+                    f"⚠️ **영수증에 산 것보다 많이 나간 주문 {len(_ov_keys)}건** — `확인` 칸 표시. "
+                    "**처리** 칸에서 하나씩 정하세요. 정하기 전에는 정산 요청이 안 됩니다.\n\n"
+                    "- ✅ **영수증가로 청구** — 그날 산 물건이 맞다\n"
+                    "- 📦 **재고에서 나감** — 본인·다른 사용자 재고에서 나갔다. 아래 "
+                    "**영수증에 없는 발송건**으로 옮겨지고 거기서 **재고 보유자**를 고른다\n"
+                    "- ✂️ **끊기** — 이번 청구에서 뺀다(다음 정산에 다시 뜬다)")
+            drows, _dkeys = [], []
             for r in rows:
                 _lu = _list_by.get(_n(r.get('costco_no')), 0)
                 _sp = max(1, int(r.get('split_qty') or 1))
                 _full = (_lu // _sp) * int(r.get('qty') or 1) if _lu else 0
                 _d = max(0, _full - int(r.get('amount') or 0)) if _lu else 0
+                _key = (r.get('username'), r.get('order_no'))
+                _dkeys.append(_key)
                 drows.append({
+                    '처리': (_OKV if _key in _ok_set else _KEEP),
+                    '확인': _ov_keys.get(_key, ''),
                     '사용자': dmap.get(r['username'], r['username']),
                     '주문번호': r['order_no'], '주문일': r['order_date'],
                     '상품명': r['product_name'], '수량': r['qty'],
@@ -1419,11 +1450,46 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     '기존구입가': fmt(r['prev_cost']), '→ 새구입가': fmt(r['amount']),
                     '근거': _via_lbl.get(str(r.get('via') or ''), r.get('via') or ''),
                     '메모': str(r.get('memo') or '')})
-            st.dataframe(pd.DataFrame(drows), use_container_width=True, hide_index=True)
+            # 확인 필요한 줄을 맨 위로
+            _ord = sorted(range(len(drows)), key=lambda i: (drows[i]['확인'] == '',))
+            drows = [drows[i] for i in _ord]
+            _dkeys = [_dkeys[i] for i in _ord]
+            _ded = st.data_editor(
+                pd.DataFrame(drows), use_container_width=True, hide_index=True,
+                key=f"rs_batch_ed_{d_day}_{len(rows)}_{len(_ov_keys)}",
+                disabled=[c for c in drows[0] if c != '처리'] if drows else [],
+                column_config={'처리': st.column_config.SelectboxColumn(
+                    '처리', options=[_KEEP, _OKV, _TOSTK, _CUT],
+                    help='영수증보다 많이 나간 줄은 꼭 정하세요. 다른 줄도 끊거나 '
+                         '재고 출고로 바꿀 수 있습니다.')})
+            _acts = {}
+            for _i, _r in enumerate(_ded.to_dict('records')):
+                _h = str(_r.get('처리') or '')
+                _was = _OKV if _dkeys[_i] in _ok_set else _KEEP
+                if _h != _was:
+                    _acts[_dkeys[_i]] = _h
+            if _acts and st.button(f"✔ 처리 {len(_acts)}건 적용", type="primary",
+                                   key=f"rs_batch_apply_{d_day}"):
+                _to_cut = {k for k, h in _acts.items() if h in (_TOSTK, _CUT)}
+                for k, h in _acts.items():
+                    if h == _OKV:
+                        _ok_set.add(k)
+                    else:
+                        _ok_set.discard(k)
+                if _to_cut:
+                    _unmatch_rows(alloc, _to_cut, receipt_items)
+                    # 재고에서 나간 건은 아래 표에서 '📦 재고 출고'가 미리 골라져 있게
+                    _pre = st.session_state.setdefault('rs_um_pre', {})
+                    for k, h in _acts.items():
+                        if h == _TOSTK:
+                            _pre[k] = 'stock'
+                st.session_state['rs_ov_ok'] = _ok_set
+                st.session_state['rs_alloc'] = alloc
+                st.rerun()
 
-    # ── 3.25) 수량이 안 맞는 품목 — 산 것보다 많이 붙었다 ──
-    _render_overflow_panel(alloc, dmap, receipt_items, d_day,
-                           settings=settings, USERNAME=USERNAME)
+    # ── 3.25) 수량이 안 맞는 품목 — 이제 🔍 배치 상세에서 줄마다 표시·처리한다.
+    #   (따로 있던 '구입 수량이 모자란 품목' 패널은 같은 내용을 두 곳에서 다뤄
+    #    헷갈렸다 — 화면에서 뺐다. _render_overflow_panel은 남겨 둔다)
 
     # ── 3.3) 배정 — 주문 못 찾은 품목 + 팔고 남은 품목을 한 곳에서 ──
     #   예전엔 '주문 못 찾은 품목'(청구)과 '남은 재고 확인'(입고)이 따로 있었다.
@@ -1938,16 +2004,15 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 + " · ".join(f"{str(o['name'])[:16]} {o['units_over']}개"
                              for o in _ov2[:4])
                 + ("" if len(_ov2) <= 4 else f" 외 {len(_ov2) - 4}종")
-                + "\n\n모자란 분량은 그날 영수증으로 산 물건이 아닙니다. 위 "
-                  "**⚠️ 구입 수량이 모자란 품목**에서 끊어 **📦 재고 출고**로 "
-                  "돌리거나(재고에서 빌린 경우), 이번 청구에서 빼고 나중에 사서 "
-                  "보낸 날 붙이세요(덜 산 경우).")
-            _blocked = (not st.checkbox(
-                "재고에서 나간 것이 맞습니다 — 이대로 청구합니다",
-                key=f"rs_ov_ok_{d_day}_{_ov_amt}",
-                help="같은 상품을 그날 재고로도 내보냈다면 정상입니다. "
-                     "'📦 재고 출고'로 처리하지 않고 영수증 단가로 청구하게 됩니다.")
-            ) or _blocked
+                + "\n\n모자란 분량은 그날 영수증으로 산 물건이 아닙니다 — 누구 재고에서 "
+                  "나갔는지 관리자가 정해야 합니다.")
+            _ok_set2 = st.session_state.get('rs_ov_ok') or set()
+            _left2 = sorted({(r.get('username'), r.get('order_no'))
+                             for o in _ov2 for r in o['orders']} - set(_ok_set2))
+            if _left2:
+                st.caption(f"👉 위 **🔍 배치 상세**의 `처리` 칸에서 {len(_left2)}건을 정하세요 "
+                           "(✅ 영수증가로 청구 / 📦 재고에서 나감 / ✂️ 끊기).")
+                _blocked = True
 
         # ── 이미 입금완료된 날짜에 얹으려는 경우 ──────────────────
         #   recompute_invoice는 paid 청구서의 금액을 건드리지 않는다(받은 돈과
@@ -2725,7 +2790,8 @@ def _render_unmatched_panel(alloc, dmap, d_day, USERNAME, receipt_items):
             _pn_of.append(_cno)
             _have = _stock.get(_cno) or {}
             _rows.append({
-                '처리': _NONE,
+                '처리': (_STK if (st.session_state.get('rs_um_pre') or {}).get(
+                    (_o.get('username'), _o.get('order_no'))) == 'stock' else _NONE),
                 '판매자': dmap.get(str(_o.get('username') or ''),
                                 str(_o.get('username') or '')),
                 '발송일': ('📌 ' + str(_o.get('carried_from'))[5:]

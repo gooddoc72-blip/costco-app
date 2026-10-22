@@ -602,8 +602,9 @@ def consume_for_sale(seller: str, product_no: str, units: int, order_no: str,
                      dispatched_at: str = '', platform: str = '', owner: str = '') -> dict:
     """발송된 주문 1건만큼 재고를 차감한다.
 
-    차감 순서: 판매자 본인 재고 우선 → 없으면 보유자 중 오래된 입고분(FIFO).
-    타인 재고에서 빠지면 보유자에게 구입가+500원(소분 1개당)이 붙는다.
+    차감 대상: owner를 주면 그 보유자 재고, 안 주면 **판매자 본인 재고만**
+    (오래된 입고분부터). 타인 재고는 관리자가 보유자를 고른 경우에만 빠지고,
+    그때 보유자에게 구입가+500원(소분 1개당)이 붙는다.
 
     멱등성: 같은 order_no로 이미 차감했으면 아무것도 하지 않는다.
     log_dispatch_success가 INSERT OR REPLACE라 재실행이 가능하기 때문.
@@ -634,23 +635,21 @@ def consume_for_sale(seller: str, product_no: str, units: int, order_no: str,
         out['skipped'] = True
         return out
 
-    if str(owner or '').strip():
-        lots = conn.execute(
-            """SELECT * FROM inventory_lots
-               WHERE product_no=? AND owner=? AND status='ACTIVE' AND qty_left>0
-               ORDER BY received_at ASC, id ASC""",
-            (product_no, str(owner).strip())).fetchall()
-    else:
-        lots = conn.execute(
-            """SELECT * FROM inventory_lots
-               WHERE product_no=? AND status='ACTIVE' AND qty_left>0
-               ORDER BY (owner<>?) ASC, received_at ASC, id ASC""",
-            (product_no, str(seller))).fetchall()
+    # 보유자를 안 정했으면 **판매자 본인 재고에서만** 뺀다. 예전엔 본인 재고가
+    # 없으면 남의 재고(오래된 입고분)에서 자동으로 뺐는데, 그 물건을 실제로 누구
+    # 것에서 가져왔는지는 아무도 확인하지 않았다 — 10/22 이수진이 직접 사서 넣은
+    # 그릭요거트 6개가 더블루샾·고영부 발송으로 전부 빠졌다. 남의 재고는 관리자가
+    # 영수증 정산 '📦 재고 출고'에서 보유자를 골라야만 뺀다(owner 지정).
+    lots = conn.execute(
+        """SELECT * FROM inventory_lots
+           WHERE product_no=? AND owner=? AND status='ACTIVE' AND qty_left>0
+           ORDER BY received_at ASC, id ASC""",
+        (product_no, str(owner or seller).strip())).fetchall()
     if not lots:
         if str(owner or '').strip():
             out['shortage'] = units   # 고른 보유자에게 재고가 없다 — 부르는 쪽이 알린다
         conn.close()
-        return out   # 재고 관리 대상 아님 — 정상
+        return out   # 본인 재고 없음 — 남의 것이면 정산에서 관리자가 보유자를 고른다
 
     surcharge_unit = get_cross_surcharge()
     remain = units
