@@ -2188,9 +2188,12 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     # ── 🔧 고급 — 매칭을 사람이 고치는 도구(자주 안 씀) ──
     #   화면이 복잡해 기본 흐름(한눈에 → 처리 → 정산 요청)에서 뺐다. 켜면 그대로 쓴다.
     st.divider()
-    if st.toggle("🔧 고급 — 매칭 수정 · 수동 매칭", key=f"rs_adv_{d_day}",
-                 help="잘못 붙은 매칭을 고치거나 끊기, 못 붙은 주문에 영수증 품목을 직접 잇기"):
+    # ✏️ 매칭 수정(끊기)은 토글 밖에 둔다 — 토글 안에 숨겨 두니 '끊는 기능이 없어졌다'로
+    #   보였다(10/22). 잘못 붙은 매칭을 끊는 일은 매일 생긴다. 접힌 상자라 화면은 그대로다.
+    if rows:
         _render_unmatch_panel(alloc, dmap, receipt_items)
+    if st.toggle("🔧 고급 — 수동 매칭", key=f"rs_adv_{d_day}",
+                 help="못 붙은 주문에 영수증 품목을 직접 잇기"):
         _render_manual_match_panel(alloc, dmap, d_day, receipt_items)
     _moved_note()
 
