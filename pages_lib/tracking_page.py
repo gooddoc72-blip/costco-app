@@ -590,6 +590,29 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     _raw = [(str(r['상품주문번호']).split('.')[0].strip(),
                              str(r['송장번호']).replace('-','').strip())
                             for _, r in result_df.iterrows()]
+                    # 합배송 — 송장 하나에 담겨 나간 다른 주문(같은 주문번호, 또는 수취인·
+                    #   연락처·주소가 같은 미발송 주문)도 같은 송장으로 함께 발송처리한다.
+                    #   택배 파일엔 상자마다 대표 주문 하나만 찍혀 나머지가 발송 대기로 남았다.
+                    try:
+                        from dispatch_upload import combined_siblings as _cmb
+                        _sib = _cmb(USERNAME, [o for o, _ in _raw])
+                    except Exception:
+                        _sib = {}
+                    if _sib:
+                        _add_rows = []
+                        for _, r in result_df.iterrows():
+                            _po0 = str(r['상품주문번호']).split('.')[0].strip()
+                            for _a in _sib.get(_po0, []):
+                                _nr = r.copy()
+                                _nr['상품주문번호'] = str(_a['order_no'])
+                                _add_rows.append(_nr)
+                                _raw.append((str(_a['order_no']),
+                                             str(r['송장번호']).replace('-', '').strip()))
+                        result_df = pd.concat([result_df, pd.DataFrame(_add_rows)],
+                                              ignore_index=True)
+                        _dc3.info(f"📦 합배송 {len(_add_rows)}건을 같은 송장으로 함께 보냅니다 — "
+                                  + ", ".join(str(x['상품주문번호']) for x in _add_rows[:4])
+                                  + (" …" if len(_add_rows) > 4 else ""))
                     # 택배사 파일 고객주문번호에 '주문번호'가 들어온 경우 → 상품주문번호로 자동 변환.
                     #   (둘 다 16자리·끝자리 1이라 육안 구분이 안 되고, 주문번호를 보내면
                     #    네이버가 '처리 권한이 없는 상품 주문 번호'로 배치 전량을 거부한다)

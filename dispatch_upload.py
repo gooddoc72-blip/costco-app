@@ -676,6 +676,99 @@ def _render_store_ship(st, pd, dmap, by_user, d_day):
         st.rerun()
 
 
+
+# ── 합배송 ────────────────────────────────────────────────
+#   한 상자에 여러 주문을 담아 보내면 택배 송장은 하나라 CJ 파일에는 주문번호가
+#   한 줄(대표 주문)만 찍힌다. 그대로 보내면 네이버에는 대표 주문만 발송처리되고
+#   같이 나간 나머지 주문은 '발송 대기'로 남는다. 같은 상자로 나간 주문을 찾아
+#   같은 송장으로 함께 넣는다.
+#   같은 상자 = 같은 주문번호(order_group_no)이거나, 수취인·연락처·주소가 모두 같은
+#   **아직 발송 안 된** 네이버 주문. 이름만 같은 건 붙이지 않는다(동명이인).
+def _addr_key(raw):
+    import json as _json, re as _re
+    try:
+        d = _json.loads(raw or '{}')
+    except Exception:
+        return None
+    _nm = str(d.get('수취인명') or '').strip()
+    _ph = _re.sub(r'\D', '', str(d.get('수취인연락처1') or ''))
+    _ad = _re.sub(r'\s', '', str(d.get('통합배송지') or d.get('기본배송지') or ''))
+    if not (_nm and _ph and _ad):
+        return None
+    return (_nm, _ph, _ad)
+
+
+def combined_siblings(username, order_nos):
+    """{대표 주문번호: [같은 상자로 나간 다른 주문 dict, ...]} — 네이버 주문만."""
+    from db import get_user_db
+    from db_orders import ACTIVE_ORDER_STATUSES
+    _nos = [str(o) for o in order_nos if str(o) and '-' not in str(o)
+            and not str(o).startswith(('NO-', 'STOCKIN-'))]
+    if not _nos:
+        return {}
+    try:
+        conn = get_user_db(username)
+        conn.row_factory = __import__('sqlite3').Row
+        _ph = ",".join("?" * len(ACTIVE_ORDER_STATUSES))
+        _active = [dict(r) for r in conn.execute(
+            f"SELECT order_no, order_group_no, recipient, product_name, qty, raw_json "
+            f"FROM order_history WHERE status IN ({_ph}) AND COALESCE(tracking_no,'')=''",
+            ACTIVE_ORDER_STATUSES)]
+        _done = {str(r[0]) for r in conn.execute("SELECT order_no FROM dispatch_log")}
+        _src = {}
+        for i in range(0, len(_nos), 900):
+            _ch = _nos[i:i + 900]
+            for r in conn.execute(
+                    "SELECT order_no, order_group_no, raw_json FROM order_history "
+                    "WHERE order_no IN (%s)" % ",".join("?" * len(_ch)), _ch):
+                _src[str(r['order_no'])] = (str(r['order_group_no'] or ''),
+                                            _addr_key(r['raw_json']))
+        conn.close()
+    except Exception:
+        return {}
+    _in = set(_nos)
+    _by_grp, _by_addr = {}, {}
+    for a in _active:
+        _o = str(a['order_no'])
+        if _o in _in or _o in _done:
+            continue
+        if a.get('order_group_no'):
+            _by_grp.setdefault(str(a['order_group_no']), []).append(a)
+        _k = _addr_key(a.get('raw_json'))
+        if _k:
+            _by_addr.setdefault(_k, []).append(a)
+    out, _used = {}, set()
+    for o in _nos:
+        _g, _k = _src.get(o, ('', None))
+        for a in (_by_grp.get(_g, []) if _g else []) + (_by_addr.get(_k, []) if _k else []):
+            _ao = str(a['order_no'])
+            if _ao in _used:
+                continue
+            _used.add(_ao)
+            out.setdefault(o, []).append(a)
+    return out
+
+
+def expand_combined(by_user):
+    """분류 결과에 합배송 주문을 같은 송장으로 덧붙인다. 반환: (by_user, 추가 목록)."""
+    added = []
+    for u, rows in (by_user or {}).items():
+        _sib = combined_siblings(u, [r.get('order_no') for r in rows if r.get('tracking_no')])
+        if not _sib:
+            continue
+        _extra = []
+        for r in rows:
+            for a in _sib.get(str(r.get('order_no')), []):
+                _x = dict(r, order_no=str(a['order_no']),
+                          recipient=str(a.get('recipient') or r.get('recipient') or ''),
+                          product_name=str(a.get('product_name') or ''),
+                          qty=int(a.get('qty') or 1), _combined_with=str(r.get('order_no')))
+                _extra.append(_x)
+                added.append(dict(_x, username=u))
+        rows.extend(_extra)
+    return by_user, added
+
+
 def _render_sender_panel(st, pd, dmap, smap, unknown, external):
     """🏢 보낸 업체 구분 — 코코비즈 사용자가 아닌 업체 건을 빼고, 처음 보는 코드를 정한다."""
     if external:
@@ -1017,6 +1110,19 @@ def render_panel(dmap, USERNAME):
             _external, _unknown = split_external(_unknown, _smap)
             _render_sender_panel(st, pd, dmap, _smap, _unknown, _external)
 
+        # 합배송 — 송장 하나에 담겨 나간 다른 주문도 같은 송장으로 함께 넣는다
+        _by_user, _comb = expand_combined(_by_user)
+        if _comb:
+            with st.expander(f"📦 합배송 {len(_comb)}건 추가 — 대표 주문과 같은 송장으로 "
+                             "함께 기록·발송처리합니다", expanded=False):
+                st.caption("CJ 파일에는 상자마다 대표 주문 하나만 찍힙니다. 같은 주문번호이거나 "
+                           "**수취인·연락처·주소가 모두 같은 미발송 주문**을 찾아 붙였습니다.")
+                st.dataframe(pd.DataFrame([{
+                    '사용자': dmap.get(x['username'], x['username']),
+                    '대표 주문': x['_combined_with'], '함께 나간 주문': x['order_no'],
+                    '수취인': x.get('recipient', ''), '상품명': str(x.get('product_name') or '')[:30],
+                    '송장번호': x.get('tracking_no', '')} for x in _comb]),
+                    use_container_width=True, hide_index=True)
         _tot = sum(len(v) for v in _by_user.values())
         st.markdown(f"### 분류 결과 — {_tot}건 매칭 · {len(_unknown)}건 미분류")
         _new_total, _other_dates = 0, {}
