@@ -644,6 +644,15 @@ RECEIPT_EN_KO = {
     'BUTTER': '버터', 'CHEESE': '치즈', 'ALMONDS': '아몬드', 'ALMOND': '아몬드',
     'WALNUTS': '호두', 'CASHEWS': '캐슈넛', 'PECANS': '피칸', 'GRANOLA': '그래놀라',
     'COFFEE': '커피', 'OLIVE': '올리브', 'HONEY': '꿀',
+    # 브랜드 — 영수증·주문 한쪽은 영문, 한쪽은 한글로 적는 일이 잦다
+    # (10/21 Aveeno 주문 ↔ 아비노바디로션1L, 길리안 ↔ GUYLIAN이 서로 못 붙음)
+    'AVEENO': '아비노', 'GUYLIAN': '길리안', 'RITTER': '리터', 'LINDT': '린트',
+    'FERRERO': '페레로', 'NUTELLA': '누텔라', 'HERSHEY': '허쉬', "HERSHEY'S": '허쉬',
+    'DOWNY': '다우니', 'TIDE': '타이드', 'ARLA': '알라', 'QUAKER': '퀘이커',
+    'CADINA': '카디나', 'JACKSON': '잭슨', "JACKSON'S": '잭슨', 'WALKERS': '워커스',
+    'BUNDABERG': '분다버그', 'SAPUTO': '사푸토', 'ALMITO': '알미토', 'ISIGNY': '이즈니',
+    'PHILADELPHIA': '필라델피아', 'MERCI': '메르시', 'BOURBON': '부르봉', 'CETAPHIL': '세타필',
+    'NIVEA': '니베아', 'DALBA': '달바', 'NIKE': '나이키', 'MOYES': '모예스',
 }
 _EN_WORD_RE = re.compile(r'[A-Za-z]+')
 
@@ -656,14 +665,24 @@ def ko_alias(name: str) -> str:
 
 
 def name_score(order_name: str, ref_name: str):
-    """(토큰 점수, 비교에 쓴 이름) — 원래 이름과 한글로 바꾼 이름 중 높은 쪽."""
-    _s = _token_score(order_name, ref_name or '')
-    _ko = ko_alias(ref_name or '')
-    if _ko != (ref_name or ''):
-        _sk = _token_score(order_name, _ko)
+    """(토큰 점수, 비교에 쓴 이름) — 원래 이름과 한글로 바꾼 이름 중 높은 쪽.
+
+    양쪽을 다 바꿔 본다 — 영수증이 한글('아비노바디로션')이고 주문이 영문('Aveeno')인
+    경우도 있다.
+    """
+    _ref = ref_name or ''
+    _s, _used = _token_score(order_name, _ref), _ref
+    _ko = ko_alias(_ref)
+    _oko = ko_alias(order_name or '')
+    for _o, _r in ((order_name, _ko), (_oko, _ref), (_oko, _ko)):
+        if (_o, _r) == (order_name, _ref):
+            continue
+        if _o == order_name and _r == _ref:
+            continue
+        _sk = _token_score(_o, _r)
         if _sk > _s:
-            return _sk, _ko
-    return _s, (ref_name or '')
+            _s, _used = _sk, _r
+    return _s, _used
 
 
 #: 'x 162개' 같은 팔레트·대량 묶음. 온라인몰엔 낱개 상품과 이름이 거의 같은

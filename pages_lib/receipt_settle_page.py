@@ -2693,6 +2693,26 @@ def _render_unmatched_panel(alloc, dmap, d_day, USERNAME, receipt_items):
                     pass
         _NONE, _STK, _AMT = '— 미처리 —', '📦 재고 출고', '✍️ 금액 지정'
         _SKIP = '🚫 청구 안 함'
+        _LINK = '🔗 후보로 연결'
+        # 같은 물건 후보 — 그날 영수증에 남은(배정 안 된) 품목 중 이름이 비슷한 것.
+        #   영문·한글 표기가 달라 자동으로 못 붙은 경우가 있다(GUYLIAN↔길리안,
+        #   아비노↔Aveeno). 자동으로 붙이지 않고 사람이 보고 고르게 한다 —
+        #   브랜드만 같고 다른 상품(템테이션 vs 씨쉘)일 수 있어서다.
+        from services import name_score as _nsc
+        _left_r = [(_n(x.get('상품번호')), str(x.get('상품명') or ''))
+                   for x in (alloc.get('unmatched_receipt') or []) if _n(x.get('상품번호'))]
+
+        def _cand(order):
+            _best = (0.0, '', '')
+            for _c9, _nm9 in _left_r:
+                try:
+                    _sc9 = _nsc(str(order.get('product_name') or ''), _nm9)[0]
+                except Exception:
+                    _sc9 = 0.0
+                if _sc9 > _best[0]:
+                    _best = (_sc9, _c9, _nm9)
+            return _best if _best[0] >= 0.3 else (0.0, '', '')
+        _cands = [_cand(_o) for _o in _un]
         _n_carry = sum(1 for o in _un if o.get('carried_from'))
         if _n_carry:
             st.info(f"📌 **이전 날짜에 발송됐는데 아직 정산 안 된 {_n_carry}건**이 함께 있습니다 "
@@ -2721,16 +2741,19 @@ def _render_unmatched_panel(alloc, dmap, d_day, USERNAME, receipt_items):
                     for _ow, _v in sorted(_have.items(), key=lambda kv: -kv[1]['qty']))
                     or '없음'),
                 '참고·영수증가': _price_by.get(_n(_o.get('costco_no')), 0),
+                '같은 물건 후보': ((f"{_cands[len(_rows)][2][:16]} "
+                                   f"{_price_by.get(_cands[len(_rows)][1], 0):,}원")
+                                  if _cands[len(_rows)][1] else ''),
                 '메모': '',
             })
         _ed = st.data_editor(
             pd.DataFrame(_rows), use_container_width=True, hide_index=True,
             key=f"rs_um2_ed_{d_day}",
             disabled=['판매자', '발송일', '주문번호', '수취인', '상품명', '재고 현황',
-                      '참고·영수증가'],
+                      '참고·영수증가', '같은 물건 후보'],
             column_config={
                 '처리': st.column_config.SelectboxColumn(
-                    '처리', options=[_NONE, _STK, _AMT, _SKIP], required=True,
+                    '처리', options=[_NONE, _LINK, _STK, _AMT, _SKIP], required=True,
                     help='이 발송건이 무엇이었는지 고르세요 — 코스트코가 직접 보낸 '
                          '온라인몰 건은 발송 기록에 없으므로 여기 나오지 않습니다'),
                 '수량': st.column_config.NumberColumn('수량', format='%d',
@@ -2761,6 +2784,19 @@ def _render_unmatched_panel(alloc, dmap, d_day, USERNAME, receipt_items):
             if _how == _SKIP:
                 _skip_keys.append((str(_un[_i].get('username') or ''),
                                    str(_un[_i].get('order_no') or '')))
+                continue
+            if _how == _LINK:
+                _cc = _cands[_i][1] if _i < len(_cands) else ''
+                if not _cc or not _price_by.get(_cc):
+                    _zero += 1
+                    continue
+                _o9 = dict(_un[_i])
+                _o9['qty'] = max(1, _cell_int(_r.get('수량'), 1))
+                _lr = _rs.build_manual_rows([{'order': _o9, 'costco_no': _cc,
+                                              'unit_price': _price_by[_cc], 'via': 'name'}])[0]
+                _lr['memo'] = str(_r.get('메모') or '').strip() or f"후보 연결 · {_cands[_i][2]}"
+                _row_idx.append(_i)
+                _rows_new.append(_lr)
                 continue
             _o = dict(_un[_i])
             _qty = max(1, _cell_int(_r.get('수량'), 1))
