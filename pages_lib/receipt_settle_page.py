@@ -1180,7 +1180,12 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         help="영수증 상품명(축약어)과 네이버 상품명(검색용 긴 이름)은 겹치는 단어가 "
              "거의 없어 규칙만으로는 안 붙습니다. 한 번 이어 두면 다음부터는 "
              "번호로 바로 붙으므로 AI 비용은 상품마다 한 번만 듭니다.")
-    if st.button("🔎 당일 자동배치 미리보기", type="primary", key="rs_preview_btn"):
+    # 발송 파일·미분류 지정으로 발송건을 저장했으면 매칭을 바로 다시 돌린다 —
+    #   저장만 하고 미리보기를 다시 안 누르면 새 발송건이 정산에서 빠졌다.
+    _rematch = bool(st.session_state.pop('_rs_rematch', False))
+    if _rematch:
+        st.info("🔄 발송건이 새로 저장돼 **매칭을 다시 돌렸습니다** — 아래 정산표에 반영됐습니다.")
+    if st.button("🔎 당일 자동배치 미리보기", type="primary", key="rs_preview_btn") or _rematch:
         with st.spinner("주문을 조회해 배치 중..."):
             # 재고 이월 — 당일 영수증에 없는 주문을 과거 구매분(가용 재고)에서 찾는다.
             #   실측(8/15~19): 미매칭 159건 → 100건으로 59건 감소.

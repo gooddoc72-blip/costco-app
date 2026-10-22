@@ -369,7 +369,7 @@ def _cell_int(v, default=0):
 
 
 def save_dispatch(by_user, dispatched_at, platform='upload', skip_existing=True,
-                  use_row_date=False, move_wrong_date=False):
+                  use_row_date=False, move_wrong_date=False, detail=None):
     """분류 결과를 dispatch_log에 기록. 반환: {username: 저장건수}, 건너뛴 수.
 
     건너뛰기는 **같은 날짜**에 이미 있는 주문만 뺀다. 다른 날짜에 기록이 있다고
@@ -391,17 +391,32 @@ def save_dispatch(by_user, dispatched_at, platform='upload', skip_existing=True,
             _rows = _grp
             if move_wrong_date:
                 moved += _move_wrong_date(uname, _grp, _d)
+            _same = set()
             if skip_existing:
                 _ex = existing_dispatch(uname, [r['order_no'] for r in _grp])
                 _same = {o for o, dd in _ex.items() if str(dd) == str(_d)}
                 _rows = [r for r in _grp if r['order_no'] not in _same]
                 skipped += len(_grp) - len(_rows)
+            n = 0
+            if _rows:
+                try:
+                    n = log_dispatch_success(uname, _rows, str(_d), platform=platform)
+                except Exception:
+                    n = 0
+            # 몇 건인지만 알려 주면 어느 건인지 알 수 없다 — 줄마다 결과를 남긴다
+            if detail is not None:
+                for r in _grp:
+                    _o = str(r.get('order_no') or '')
+                    detail.append({
+                        '결과': ('⏭ 이미 있음' if _o in _same
+                                 else ('✅ 저장' if n else '❌ 저장 실패')),
+                        '사용자': uname, '발송일': str(_d),
+                        '주문번호': '' if _o.startswith('NO-') else _o,
+                        '수취인': str(r.get('recipient') or ''),
+                        '상품명': str(r.get('product_name') or '')[:30],
+                        '송장번호': str(r.get('tracking_no') or '')})
             if not _rows:
                 continue
-            try:
-                n = log_dispatch_success(uname, _rows, str(_d), platform=platform)
-            except Exception:
-                n = 0
             if n:
                 saved[uname] = saved.get(uname, 0) + n
     return saved, skipped, moved
@@ -655,6 +670,8 @@ def _render_store_ship(st, pd, dmap, by_user, d_day):
             _out[u] = ship_for_user(u, plan[u], _cour, str(d_day))
         _bar.empty()
         st.session_state['_du_ship_res'] = _out
+        st.session_state['_rs_rematch'] = True
+        st.session_state.pop('rs_alloc', None)
         st.session_state.pop('du_ship_ok', None)
         st.rerun()
 
@@ -747,10 +764,21 @@ def render_panel(dmap, USERNAME):
     관리자가 전체 발송 파일 하나를 올려 분류하면 그 의존이 사라진다.
     """
 
-    with st.expander("🚚 발송 파일 업로드 — 주문번호로 사용자 분류", expanded=False):
+    # 저장하고 나면 결과를 봐야 한다 — 접혀 있으면 무엇이 저장됐는지 안 보였다
+    with st.expander("🚚 발송 파일 업로드 — 주문번호로 사용자 분류",
+                     expanded=bool(st.session_state.get('_du_msg')
+                                   or st.session_state.get('_du_ship_res'))):
         _msg = st.session_state.pop('_du_msg', None)
         if _msg:
             st.success(_msg)
+            _det = st.session_state.pop('_du_detail', None)
+            if _det:
+                for _x in _det:
+                    _x['사용자'] = dmap.get(_x['사용자'], _x['사용자'])
+                _det.sort(key=lambda x: (x['결과'] != '✅ 저장', x['사용자']))
+                st.caption("어떤 건이 저장·건너뛰기 됐는지 — 같은 날짜에 이미 있던 건은 "
+                           "**⏭ 이미 있음**(다시 넣지 않음)")
+                st.dataframe(pd.DataFrame(_det), use_container_width=True, hide_index=True)
         st.caption(
             "전체 발송내역 파일(엑셀·CSV)을 올리면 **주문번호**로 각 사용자에게 나눠 "
             "발송 기록에 넣습니다. 이후 영수증 정산이 그 발송건에 매입가를 채웁니다. "
@@ -822,9 +850,13 @@ def render_panel(dmap, USERNAME):
                         f"{dmap.get(_u, _u)} {len(_v)}건" for _u, _v in _mpick.items()))
                 if st.button(f"💾 {_mn}건 발송 기록 저장", key="du_man_save",
                              type="primary", disabled=not _mn):
-                    _ms, _mk, _mm = save_dispatch(_mpick, str(_mdate),
+                    _det = []
+                    st.session_state['_du_detail'] = _det
+                    _ms, _mk, _mm = save_dispatch(_mpick, str(_mdate), detail=_det,
                                                   skip_existing=True)
                     _mtot = sum(_ms.values())
+                    st.session_state['_rs_rematch'] = True   # 발송건이 늘었다 — 매칭을 다시 돌린다
+                    st.session_state.pop('rs_alloc', None)
                     st.session_state['_du_msg'] = (
                         (f"✍️ 발송 기록 {_mtot}건 직접 입력 ({_mdate}) — "
                          + " · ".join(f"{dmap.get(u, u)} {c}건" for u, c in _ms.items()))
@@ -1076,14 +1108,18 @@ def render_panel(dmap, USERNAME):
                              key=f"du_unknown_save_{_dd}", disabled=not _un_n):
                     # 아래 옵션 체크박스는 이 블록보다 뒤에 그려지므로, 첫 렌더에는
                     # session_state에 없다. 그때는 체크박스와 같은 기본값을 쓴다.
+                    _det = []
+                    st.session_state['_du_detail'] = _det
                     _s2, _k2, _m2 = save_dispatch(
-                        _upick, str(_dd),
+                        _upick, str(_dd), detail=_det,
                         skip_existing=bool(st.session_state.get('du_skip', True)),
                         use_row_date=bool(st.session_state.get('du_rowdate',
                                                               bool(_dates))),
                         move_wrong_date=bool(st.session_state.get('du_fixdate',
                                                                  bool(_dates))))
                     _n2 = sum(_s2.values())
+                    st.session_state['_rs_rematch'] = True   # 발송건이 늘었다 — 매칭을 다시 돌린다
+                    st.session_state.pop('rs_alloc', None)
                     st.session_state['_du_msg'] = (
                         f"👤 미분류 {_n2}건을 지정한 사용자로 저장 — "
                         + " · ".join(f"{dmap.get(u, u)} {c}건" for u, c in _s2.items())
@@ -1118,11 +1154,15 @@ def render_panel(dmap, USERNAME):
                       f"  ·  날짜는 **{_dd}** 하나로 저장합니다"))
         if st.button(f"💾 {_will}건 발송 기록 저장", key="du_save", type="primary",
                      disabled=not _by_user or _will <= 0):
+            _det = []
+            st.session_state['_du_detail'] = _det
             _saved, _skipped, _moved = save_dispatch(
-                _by_user, str(_dd), skip_existing=bool(_skip),
+                _by_user, str(_dd), detail=_det, skip_existing=bool(_skip),
                 use_row_date=bool(_use_row and _dates),
                 move_wrong_date=bool(_fix))
             _n = sum(_saved.values())
+            st.session_state['_rs_rematch'] = True   # 발송건이 늘었다 — 매칭을 다시 돌린다
+            st.session_state.pop('rs_alloc', None)
             st.session_state['_du_msg'] = (
                 (f"✅ 발송 기록 {_n}건 저장 — "
                  + " · ".join(f"{dmap.get(u, u)} {c}건" for u, c in _saved.items()))
