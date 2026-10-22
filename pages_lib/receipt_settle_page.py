@@ -1284,6 +1284,23 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         if str(r.get('via') or '') == 'stock')
             if _sc_n:
                 alloc['_stock_carry'] = _sc_n
+        # 📌 이전 날짜에 발송됐는데 아직 정산 안 된 주문 — 미처리로 두고 정산하면 날짜가
+        #   지나 영영 안 보였다(10/13~10/20 44건 누락). 오늘 '영수증에 없는 발송건'에 올린다.
+        if _by_dispatch:
+            try:
+                _have = {(r.get('username'), r.get('order_no')) for r in alloc.get('rows') or []}
+                _have |= {(o.get('username'), o.get('order_no'))
+                          for o in alloc.get('unmatched_orders') or []}
+                _carry = _rs.carryover_unsettled(
+                    str(d_day), days=int(st.session_state.get('rs_carry_days', 14)),
+                    exclude=_have)
+                if _carry:
+                    alloc['unmatched_orders'] = list(alloc.get('unmatched_orders') or []) + _carry
+                    alloc['_carried'] = len(_carry)
+            except Exception as _e:
+                st.caption(f"⚠️ 이전 미정산 발송건 조회 실패: {_e}")
+        # 매칭을 돌린 시점의 그날 발송건 — 정산 요청 때 '그 뒤에 새로 발송된 건'을 찾는다
+        alloc['_disp_keys'] = sorted(_dispatched_keys(d_day))
         st.session_state['rs_alloc'] = alloc
 
     st.session_state['rs_sticky_date'] = str(d_day)
@@ -2002,6 +2019,26 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 st.caption("교체해도 없어지는 품목이 없습니다 — 이번 배치가 "
                            "그 날짜 품목을 모두 덮습니다.")
 
+        # 정산 요청 전 점검 — 미처리 발송건, 매칭 뒤 새로 발송된 건
+        _in_rows = {(r.get('username'), r.get('order_no')) for r in rows}
+        _left = [o for o in (alloc.get('unmatched_orders') or [])
+                 if (o.get('username'), o.get('order_no')) not in _in_rows]
+        if _left:
+            _lc = sum(1 for o in _left if o.get('carried_from'))
+            st.warning(f"⚠️ **처리 안 한 발송건 {len(_left)}건**은 이번 청구에서 빠집니다"
+                       + (f"(이전 날짜 이월 {_lc}건 포함)" if _lc else "")
+                       + ". 사라지지 않고 다음 정산 때 **📌 이전 날짜 미정산**으로 다시 뜹니다. "
+                         "청구할 게 아니면 위 표에서 **🚫 청구 안 함**으로 정리하세요.")
+        try:
+            _late = sorted(set(_dispatched_keys(d_day)) - set(map(tuple, alloc.get('_disp_keys') or [])))
+        except Exception:
+            _late = []
+        if _late:
+            st.error(f"🚚 **매칭한 뒤에 새로 발송된 주문 {len(_late)}건**이 있습니다 — "
+                     + " · ".join(f"{dmap.get(u, u)} {o}" for u, o in _late[:4])
+                     + (" …" if len(_late) > 4 else "")
+                     + ". 위에서 **미리보기(매칭)를 다시 돌린 뒤** 정산 요청하세요. "
+                       "그대로 정산하면 이 건들은 다음 정산의 이전 날짜 미정산으로 넘어갑니다.")
         if st.button(f"✅ 정산 요청 ({len(_goods)}명 · {fmt(_total)}원)"
                      + (" · ♻️ 통째 교체" if _replace else ""),
                      type="primary", key="rs_apply_btn", disabled=_blocked):
@@ -2197,6 +2234,27 @@ def _resolve_ai_key(name, settings=None):
     except Exception:
         pass
     return ''
+
+
+
+def _dispatched_keys(d_day):
+    """그날 발송된 (사용자, 주문번호) — 정산 대상 계정만. 매칭 뒤 새로 발송된 건을 찾는다."""
+    out = set()
+    try:
+        _us = _rs.settle_users(str(d_day))
+    except Exception:
+        return out
+    from db_core import get_user_db as _gud
+    for _u in _us:
+        try:
+            _c = _gud(_u)
+            for (_o,) in _c.execute("SELECT order_no FROM dispatch_log WHERE dispatched_at LIKE ?",
+                                    (str(d_day)[:10] + '%',)):
+                out.add((_u, str(_o)))
+            _c.close()
+        except Exception:
+            continue
+    return out
 
 
 def _merge_matches(alloc, new_rows, matched_order_indices, sticky=True):
@@ -2634,6 +2692,13 @@ def _render_unmatched_panel(alloc, dmap, d_day, USERNAME, receipt_items):
                 except (TypeError, ValueError):
                     pass
         _NONE, _STK, _AMT = '— 미처리 —', '📦 재고 출고', '✍️ 금액 지정'
+        _SKIP = '🚫 청구 안 함'
+        _n_carry = sum(1 for o in _un if o.get('carried_from'))
+        if _n_carry:
+            st.info(f"📌 **이전 날짜에 발송됐는데 아직 정산 안 된 {_n_carry}건**이 함께 있습니다 "
+                    "(발송일 칸에 날짜 표시). 여기서 처리하면 **오늘 정산**으로 청구됩니다. "
+                    "취소·무상 재발송처럼 청구할 게 아니면 **🚫 청구 안 함**으로 정리하세요 — "
+                    "다시 뜨지 않습니다.")
         _rows, _pn_of = [], []
         for _o in _un:
             _cno = _find_stock_pn(_o)
@@ -2643,6 +2708,8 @@ def _render_unmatched_panel(alloc, dmap, d_day, USERNAME, receipt_items):
                 '처리': _NONE,
                 '판매자': dmap.get(str(_o.get('username') or ''),
                                 str(_o.get('username') or '')),
+                '발송일': ('📌 ' + str(_o.get('carried_from'))[5:]
+                         if _o.get('carried_from') else ''),
                 '주문번호': str(_o.get('order_no') or ''),
                 '수취인': str(_o.get('recipient') or ''),
                 '상품명': str(_o.get('product_name') or '')[:38],
@@ -2659,11 +2726,11 @@ def _render_unmatched_panel(alloc, dmap, d_day, USERNAME, receipt_items):
         _ed = st.data_editor(
             pd.DataFrame(_rows), use_container_width=True, hide_index=True,
             key=f"rs_um2_ed_{d_day}",
-            disabled=['판매자', '주문번호', '수취인', '상품명', '재고 현황',
+            disabled=['판매자', '발송일', '주문번호', '수취인', '상품명', '재고 현황',
                       '참고·영수증가'],
             column_config={
                 '처리': st.column_config.SelectboxColumn(
-                    '처리', options=[_NONE, _STK, _AMT], required=True,
+                    '처리', options=[_NONE, _STK, _AMT, _SKIP], required=True,
                     help='이 발송건이 무엇이었는지 고르세요 — 코스트코가 직접 보낸 '
                          '온라인몰 건은 발송 기록에 없으므로 여기 나오지 않습니다'),
                 '수량': st.column_config.NumberColumn('수량', format='%d',
@@ -2686,9 +2753,14 @@ def _render_unmatched_panel(alloc, dmap, d_day, USERNAME, receipt_items):
 
         _recs = _ed.to_dict('records')
         _rows_new, _row_idx, _zero, _no_ledger = [], [], 0, []
+        _skip_keys = []
         for _i, _r in enumerate(_recs):
             _how = str(_r.get('처리') or _NONE)
             if _how == _NONE:
+                continue
+            if _how == _SKIP:
+                _skip_keys.append((str(_un[_i].get('username') or ''),
+                                   str(_un[_i].get('order_no') or '')))
                 continue
             _o = dict(_un[_i])
             _qty = max(1, _cell_int(_r.get('수량'), 1))
@@ -2803,10 +2875,21 @@ def _render_unmatched_panel(alloc, dmap, d_day, USERNAME, receipt_items):
                        "않는** 재고 출고: " + " · ".join(_no_ledger[:6])
                        + " — 보유자를 재고 현황에 있는 사람으로 고르거나, 먼저 그 사람 "
                          "재고로 입고하세요.")
-        if st.button(f"✅ {_tot_n}건 처리해서 청구에 넣기",
+        if _skip_keys:
+            st.caption(f"🚫 {len(_skip_keys)}건은 **청구 안 함**으로 정리합니다 — 다음부터 "
+                       "이월 목록에 뜨지 않습니다.")
+        if st.button(f"✅ {_tot_n}건 처리해서 청구에 넣기"
+                     + (f" · 🚫 {len(_skip_keys)}건 정리" if _skip_keys else ""),
                      key=f"rs_um2_apply_{d_day}", type="primary",
-                     disabled=not _tot_n, use_container_width=True):
+                     disabled=not (_tot_n or _skip_keys), use_container_width=True):
             _done = 0
+            if _skip_keys:
+                _rs.dismiss_carry(_skip_keys, note=f'{d_day} 영수증 정산에서 청구 안 함')
+                _sk = set(_skip_keys)
+                alloc['unmatched_orders'] = [
+                    o for o in alloc.get('unmatched_orders') or []
+                    if (str(o.get('username') or ''), str(o.get('order_no') or '')) not in _sk]
+                st.session_state['rs_alloc'] = alloc
             if _rows_new:
                 _merge_matches(alloc, _rows_new, _row_idx)
                 _done += len(_rows_new)
