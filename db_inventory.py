@@ -128,6 +128,20 @@ def _ensure_tables(conn):
     conn.execute("CREATE INDEX IF NOT EXISTS idx_mv_owner ON inventory_moves(owner, settle_status)")
 
 
+#: 남의 재고를 빌려 쓸 때 — 할인가로 산 재고면 할인가 + 1,000원, 정상가로 산
+#  재고면 산 값 그대로. 할인 덕에 싸게 산 몫을 보유자와 나누는 셈이다.
+DISCOUNT_CROSS_SURCHARGE = 1000
+
+
+def cross_surcharge_for(unit_cost, list_price) -> int:
+    """남의 재고 1개(팩)에 붙는 웃돈. 정가(list_price)가 산 값보다 크면 할인 구매."""
+    try:
+        _c, _l = int(unit_cost or 0), int(list_price or 0)
+    except (TypeError, ValueError):
+        return 0
+    return DISCOUNT_CROSS_SURCHARGE if (_c > 0 and _l > _c) else 0
+
+
 def get_cross_surcharge() -> int:
     """타인 재고 판매 시 웃돈 — 전역 설정으로 조정 가능."""
     try:
@@ -651,7 +665,6 @@ def consume_for_sale(seller: str, product_no: str, units: int, order_no: str,
         conn.close()
         return out   # 본인 재고 없음 — 남의 것이면 정산에서 관리자가 보유자를 고른다
 
-    surcharge_unit = get_cross_surcharge()
     remain = units
     now = _now()
     for lot in lots:
@@ -661,7 +674,11 @@ def consume_for_sale(seller: str, product_no: str, units: int, order_no: str,
         if take <= 0:
             continue
         is_cross = 1 if str(lot['owner']) != str(seller) else 0
-        sur = surcharge_unit * take if is_cross else 0
+        try:
+            _lp = lot['list_price']
+        except (IndexError, KeyError):
+            _lp = 0
+        sur = cross_surcharge_for(lot['unit_cost'], _lp) * take if is_cross else 0
         conn.execute("""INSERT OR IGNORE INTO inventory_moves
             (lot_id, product_no, owner, seller, qty, unit_cost, is_cross, surcharge,
              order_no, dispatched_at, platform, settle_status, created_at)

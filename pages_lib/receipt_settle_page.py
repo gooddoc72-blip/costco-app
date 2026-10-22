@@ -2719,28 +2719,71 @@ def _render_unmatched_panel(alloc, dmap, d_day, USERNAME, receipt_items):
                 continue
             _stock.setdefault(_pn, {})[str(_sr.get('owner') or '')] = {
                 'qty': int(_sr.get('qty_left') or 0),
-                'cost': int(_sr.get('unit_cost') or 0)}
+                'cost': int(_sr.get('unit_cost') or 0),
+                'list': int(_sr.get('list_price') or 0)}
+        # 이름 찾기 후보는 **다 쓴 입고분까지** 본다. 같은 상품이 입고마다 다른 이름
+        #   ('JN 남성양말 7PR' / 'JACK NICKLAUS 남성 정장양말7족')으로 들어와, 남은
+        #   입고분 이름만 보면 못 찾았다(김혜림 양말 — 재고 8개인데 '없음').
         _stock_names = [{'_pn': _pn, 'name': (_sr.get('product_name') or '')}
                         for _sr in _stock_rows
                         for _pn in [_n(_sr.get('product_no'))] if _pn]
+        try:
+            _lc = _inv._conn()
+            _stock_names += [{'_pn': _n(r['product_no']), 'name': str(r['product_name'] or ''),
+                              'owner': str(r['owner'] or '')}
+                             for r in _lc.execute(
+                                 "SELECT DISTINCT product_no, product_name, owner FROM inventory_lots "
+                                 "WHERE status='ACTIVE' AND TRIM(COALESCE(product_no,''))<>''")]
+            _lc.close()
+        except Exception:
+            pass
         _seen_pn = set()
         _stock_cands = []
         for _c2 in _stock_names:
-            if _c2['_pn'] not in _seen_pn:
-                _seen_pn.add(_c2['_pn'])
+            if (_c2['_pn'], _c2['name']) not in _seen_pn:
+                _seen_pn.add((_c2['_pn'], _c2['name']))
                 _stock_cands.append(_c2)
 
         def _find_stock_pn(order):
-            """이 주문이 쓸 재고의 상품번호. 번호가 없으면 상품명으로 찾는다."""
+            """이 주문이 쓸 재고의 상품번호. 번호가 없으면 상품명으로 찾는다.
+            판매자 **본인이 넣은 입고분 이름**을 먼저 본다 — 자기 물건을 보냈을 가능성이 크다."""
             _c3 = _n(order.get('costco_no'))
             if _c3 and _c3 in _stock:
                 return _c3
-            try:
-                _b, _ = _rs.best_name_match(
-                    str(order.get('product_name') or ''), _stock_cands)
-            except Exception:
-                _b = None
-            return _b['_pn'] if _b else _c3
+            _nm3 = str(order.get('product_name') or '')
+            _me3 = str(order.get('username') or '')
+            for _pool3 in ([c for c in _stock_cands if c.get('owner') == _me3], _stock_cands):
+                if not _pool3:
+                    continue
+                try:
+                    _b, _ = _rs.best_name_match(_nm3, _pool3)
+                except Exception:
+                    _b = None
+                if _b:
+                    return _b['_pn']
+            return _c3
+
+        def _auto_owner(cno, me):
+            """자동 보유자 — 판매자 본인 재고가 있으면 본인, 없으면 가장 많이 가진 사람."""
+            _h = _stock.get(cno) or {}
+            if (_h.get(me) or {}).get('qty', 0) > 0:
+                return me
+            return max(_h, key=lambda k: _h[k]['qty']) if _h else ''
+
+        def _auto_amount(order, cno, owner, qty):
+            """재고 출고 자동 금액 — 본인 재고: 아직 안 낸 몫만(낸 재고는 0원),
+            남의 재고: 할인가로 산 것이면 +1,000원, 정상가면 산 값."""
+            _v = (_stock.get(cno) or {}).get(owner) or {}
+            _c = int(_v.get('cost') or 0)
+            if not owner or not _c:
+                return 0
+            if owner == str(order.get('username') or ''):
+                try:
+                    return int(_inv.own_unpaid_units(owner, cno, qty, order_no=str(
+                        order.get('order_no') or '')).get('unpaid_amount') or 0)
+                except Exception:
+                    return _c * qty
+            return (_c + _inv.cross_surcharge_for(_c, _v.get('list'))) * qty
 
         _owners = sorted({o for v in _stock.values() for o in v})
         if not _owners:
@@ -2816,6 +2859,8 @@ def _render_unmatched_panel(alloc, dmap, d_day, USERNAME, receipt_items):
                 '상품명': str(_o.get('product_name') or '')[:38],
                 '수량': int(_o.get('qty') or 1),
                 '금액': 0,
+                '자동 금액': _auto_amount(_o, _cno, _auto_owner(_cno, str(_o.get('username') or '')),
+                                       int(_o.get('qty') or 1)),
                 '재고 보유자': _OWN_AUTO,
                 '재고 현황': (" · ".join(
                     f"{dmap.get(_ow, _ow)} {_v['qty']}"
@@ -2831,7 +2876,7 @@ def _render_unmatched_panel(alloc, dmap, d_day, USERNAME, receipt_items):
             pd.DataFrame(_rows), use_container_width=True, hide_index=True,
             key=f"rs_um2_ed_{d_day}",
             disabled=['판매자', '발송일', '주문번호', '수취인', '상품명', '재고 현황',
-                      '참고·영수증가', '같은 물건 후보'],
+                      '참고·영수증가', '같은 물건 후보', '자동 금액'],
             column_config={
                 '처리': st.column_config.SelectboxColumn(
                     '처리', options=[_NONE, _LINK, _STK, _AMT, _SKIP], required=True,
@@ -2839,6 +2884,11 @@ def _render_unmatched_panel(alloc, dmap, d_day, USERNAME, receipt_items):
                          '온라인몰 건은 발송 기록에 없으므로 여기 나오지 않습니다'),
                 '수량': st.column_config.NumberColumn('수량', format='%d',
                                                     min_value=1, step=1),
+                '자동 금액': st.column_config.NumberColumn(
+                    '자동 금액', format='%d',
+                    help='📦 재고 출고를 고르고 금액을 0으로 두면 이 값으로 청구합니다. '
+                         '본인 재고: 아직 안 낸 몫(이미 낸 재고는 0원) · 남의 재고: 할인가로 '
+                         '산 재고면 할인가+1,000원, 정상가로 산 재고면 산 값'),
                 '금액': st.column_config.NumberColumn(
                     '금액', format='%d', min_value=0, step=100,
                     help='0으로 두면 재고 출고는 그 재고의 구입가(남의 재고면 웃돈 '
@@ -2846,7 +2896,7 @@ def _render_unmatched_panel(alloc, dmap, d_day, USERNAME, receipt_items):
                 '재고 보유자': st.column_config.SelectboxColumn(
                     '재고 보유자', options=_own_opts,
                     help='📦 재고 출고일 때만 씁니다. 남의 재고를 빌려 보냈으면 '
-                         f'그 사람을 고르세요 — 웃돈 {_surch:,}원이 붙습니다. '
+                         '그 사람을 고르세요 — 할인가로 산 재고면 +1,000원, 정상가면 산 값입니다. '
                          "'장부에 재고 없음'인 사람을 고르면 **금액을 직접 적어야** "
                          '하고, 그 금액이 재고 관리 › 정산 장부에 그 사람에게 줄 돈으로 '
                          '올라갑니다.'),
@@ -2892,7 +2942,7 @@ def _render_unmatched_panel(alloc, dmap, d_day, USERNAME, receipt_items):
                 _own = _own_l2u.get(str(_r.get('재고 보유자') or ''), '')
                 _have = _stock.get(_cno) or {}
                 if not _own:
-                    _own = max(_have, key=lambda k: _have[k]['qty']) if _have else ''
+                    _own = _auto_owner(_cno, _me)
                 _cost = int((_have.get(_own) or {}).get('cost') or 0)
                 _cross = bool(_own and _own != _me)
                 _in_ledger = bool(_own and _own in _have)
@@ -2912,7 +2962,7 @@ def _render_unmatched_panel(alloc, dmap, d_day, USERNAME, receipt_items):
                         _cost_basis = _cost * _qty
                         _own_paid = int(_ou.get('paid_units') or 0) > 0
                     elif _in_ledger or not _own:
-                        _amt = (_cost + (_surch if _cross else 0)) * _qty
+                        _amt = _auto_amount(_o, _cno, _own, _qty) if _own else 0
                     else:
                         # 장부에 그 사람 재고가 없다 — 자동으로 채울 구입가가 없다.
                         # 웃돈만 청구되지 않게 0으로 두고 금액을 적게 한다.
@@ -2928,7 +2978,9 @@ def _render_unmatched_panel(alloc, dmap, d_day, USERNAME, receipt_items):
                 if not _memo:
                     _memo = ('재고 출고'
                              + (f" · {dmap.get(_own, _own)} 재고" if _own else "")
-                             + (f" · 웃돈 {_surch:,}원" if _cross else "")
+                             + ((lambda _x: f" · 할인 재고 +{_x:,}원" if _x else " · 정상가 재고")(
+                                 _inv.cross_surcharge_for(_cost, ((_have.get(_own) or {}).get('list'))))
+                                if _cross else "")
                              + (" · 본인 재고(결제됨) — 청구 없음" if _own_paid and not _amt
                                 else (" · 본인 재고 일부 결제됨" if _own_paid else "")))
                 _via = 'stock'
