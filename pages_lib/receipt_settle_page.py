@@ -1175,6 +1175,12 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
               "'🏪 직접구매 계정' 체크를 끄세요.")
 
 
+    # 이전 날짜 미정산 발송건은 기본으로 끈다 — 정산은 그날 발송건만 본다.
+    #   (켜면 지난 14일 동안 정산 안 된 발송건이 '영수증에 없는 발송건'에 함께 뜬다)
+    st.checkbox("📌 이전 날짜 미정산 발송건도 함께 불러오기", value=False, key="rs_show_carry",
+                help="끄면 이 날짜에 발송된 건만 정산합니다. 켜면 지난 14일 동안 발송됐는데 "
+                     "정산이 안 된 건도 '영수증에 없는 발송건'에 함께 올라옵니다. "
+                     "바꾼 뒤 미리보기를 다시 누르세요.")
     _auto_ai = st.checkbox(
         "🤖 남은 미매칭은 AI가 바로 매칭", value=True, key="rs_auto_ai",
         help="영수증 상품명(축약어)과 네이버 상품명(검색용 긴 이름)은 겹치는 단어가 "
@@ -1294,7 +1300,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 alloc['_stock_carry'] = _sc_n
         # 📌 이전 날짜에 발송됐는데 아직 정산 안 된 주문 — 미처리로 두고 정산하면 날짜가
         #   지나 영영 안 보였다(10/13~10/20 44건 누락). 오늘 '영수증에 없는 발송건'에 올린다.
-        if _by_dispatch:
+        if _by_dispatch and st.session_state.get('rs_show_carry', False):
             try:
                 _have = {(r.get('username'), r.get('order_no')) for r in alloc.get('rows') or []}
                 _have |= {(o.get('username'), o.get('order_no'))
@@ -2101,7 +2107,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             _lc = sum(1 for o in _left if o.get('carried_from'))
             st.warning(f"⚠️ **처리 안 한 발송건 {len(_left)}건**은 이번 청구에서 빠집니다"
                        + (f"(이전 날짜 이월 {_lc}건 포함)" if _lc else "")
-                       + ". 사라지지 않고 다음 정산 때 **📌 이전 날짜 미정산**으로 다시 뜹니다. "
+                       + ". 나중에 정산하려면 미리보기 위 **📌 이전 날짜 미정산 발송건도 함께 불러오기**를 켜세요. "
                          "청구할 게 아니면 위 표에서 **🚫 청구 안 함**으로 정리하세요.")
         try:
             _late = sorted(set(_dispatched_keys(d_day)) - set(map(tuple, alloc.get('_disp_keys') or [])))
