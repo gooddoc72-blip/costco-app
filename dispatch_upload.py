@@ -26,7 +26,7 @@ COLUMN_HINTS = {
     'order_no':    ('상품주문번호', '주문번호', '주문 번호', 'order_no', 'orderid', 'order id'),
     'tracking_no': ('송장번호', '운송장번호', '운송장', 'tracking', 'invoice_no'),
     'recipient':   ('수취인명', '수취인', '받는분', '수령인', 'recipient'),
-    'product_name': ('상품명', '제품명', 'product', 'item'),
+    'product_name': ('상품명', '제품명', '품명', 'product', 'item'),
     'qty':         ('수량', 'qty', 'quantity'),
     # '배송사'를 후보에서 뺐다 — CJ 파일의 '배송사업담당'(담당 조직)에 부분일치해
     # 택배사 칸에 사람 조직명이 들어갔다. 택배사 열이 없는 파일이 대부분이고,
@@ -34,12 +34,12 @@ COLUMN_HINTS = {
     'courier':     ('택배사', 'courier', '배송사명'),
     # 택배사 파일은 '접수일자'(집화일)를 쓴다. 이 열을 못 읽으면 발송일이 오늘로
     # 잡혀 그날 택배비가 통째로 어긋난다.
-    'dispatched_at': ('발송일', '출고일', '발송처리일', '접수일자', '집화일자', '배송일',
+    'dispatched_at': ('발송일', '출고일', '발송처리일', '접수일자', '집화일자', '접수일', '집화일', '배송일',
                       'dispatched_at'),
     # 누가 보낸 택배인가 — CJ 기업고객 파일의 '발송고객코드'(B301210319)·'송화인'.
     # 주문번호가 없거나 코코비즈 밖 업체 건을 가르는 데 쓴다(sender map).
     'sender_code': ('발송고객코드', '고객코드', 'sender_code'),
-    'sender_name': ('발송고객명', '송화인', 'sender_name'),
+    'sender_name': ('송하인', '송화인', '보내는분', '발송고객명', 'sender_name'),
 }
 
 #: 발송고객코드 → 누구인가. 한 번 정하면 기억한다(app_settings에 JSON).
@@ -444,16 +444,16 @@ def _render_sender_panel(st, pd, dmap, smap, unknown, external):
             if (m or {}).get('kind') == 'user' and m.get('username') in dmap:
                 return f"👤 {dmap.get(m['username'], m['username'])} ({m['username']})"
             return _NONE
-        _rows = [{'코드': c, '송화인': v['name'], '이번 파일': v['n'], '구분': _NONE}
+        _rows = [{'코드': c, '송하인': v['name'], '이번 파일': v['n'], '구분': _NONE}
                  for c, v in sorted(_new.items(), key=lambda kv: -kv[1]['n'])]
-        _rows += [{'코드': c, '송화인': m.get('name', ''), '이번 파일': 0, '구분': _lab(m)}
+        _rows += [{'코드': c, '송하인': m.get('name', ''), '이번 파일': 0, '구분': _lab(m)}
                   for c, m in sorted(smap.items())]
         if not _rows:
             st.caption("아직 기억한 코드가 없습니다.")
             return
         _ed = st.data_editor(
             pd.DataFrame(_rows), use_container_width=True, hide_index=True,
-            key="du_sender_ed", disabled=['코드', '송화인', '이번 파일'],
+            key="du_sender_ed", disabled=['코드', '송하인', '이번 파일'],
             column_config={'구분': st.column_config.SelectboxColumn(
                 '구분', options=_opts, required=True)})
         _new_map, _chg = dict(smap), 0
@@ -463,12 +463,12 @@ def _render_sender_panel(st, pd, dmap, smap, unknown, external):
             if v == _lab(cur) and (c in smap or v == _NONE):
                 continue
             if v == _EXT:
-                _new_map[c] = {'kind': 'external', 'name': r['송화인']}
+                _new_map[c] = {'kind': 'external', 'name': r['송하인']}
             elif v in _l2u:
-                _new_map[c] = {'kind': 'user', 'username': _l2u[v], 'name': r['송화인'],
+                _new_map[c] = {'kind': 'user', 'username': _l2u[v], 'name': r['송하인'],
                                'fixed': True}
             else:
-                _new_map[c] = {'kind': 'shared', 'name': r['송화인'], 'fixed': True}
+                _new_map[c] = {'kind': 'shared', 'name': r['송하인'], 'fixed': True}
             _chg += 1
         if st.button(f"💾 업체 구분 저장 ({_chg}건 변경)", key="du_sender_save",
                      disabled=not _chg):
@@ -684,7 +684,7 @@ def render_panel(dmap, USERNAME):
                 'courier':      _pick(_m3, "택배사", 'courier'),
                 'dispatched_at': _guess.get('dispatched_at'),
                 'sender_code':  _pick(_m1, "발송고객코드", 'sender_code'),
-                'sender_name':  _pick(_m2, "송화인(보낸 업체)", 'sender_name'),
+                'sender_name':  _pick(_m2, "송하인(보낸 업체)", 'sender_name'),
                 'order_no_alt': _alt,      # 스토어가 섞였을 때 함께 볼 열
             }
         if not _cm.get('order_no'):
@@ -784,7 +784,7 @@ def render_panel(dmap, USERNAME):
                     return _NOU
                 _urows = [{
                     '사용자 지정': _pre(u),
-                    '보낸 업체': u.get('sender_name', ''),
+                    '송하인': u.get('sender_name', ''),
                     '행': u['_row'], '주문번호': u['order_no'],
                     '수취인': u['recipient'], '상품명': u['product_name'][:34],
                     '수량': int(u.get('qty') or 1),
@@ -795,7 +795,7 @@ def render_panel(dmap, USERNAME):
                 _ued = st.data_editor(
                     pd.DataFrame(_urows), use_container_width=True, hide_index=True,
                     key=f"du_unknown_{_dd}",
-                    disabled=['행', '보낸 업체', '주문번호', '수취인', '상품명', '송장번호',
+                    disabled=['행', '송하인', '주문번호', '수취인', '상품명', '송장번호',
                               '집화일자', '사유'],
                     column_config={
                         '사용자 지정': st.column_config.SelectboxColumn(
