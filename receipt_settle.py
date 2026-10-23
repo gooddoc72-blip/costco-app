@@ -1403,9 +1403,13 @@ def receipt_overflow(receipt_items, rows):
         c = _norm(r.get('costco_no'))
         if not c or str(r.get('via') or '') in _EXCL:
             continue
-        used_by[c] = used_by.get(c, 0) + int(r.get('qty') or 0) * int(r.get('pack') or 1)
         split_by[c] = max(split_by.get(c, 1), int(r.get('split_qty') or 1))
         rows_by.setdefault(c, []).append(r)
+    # 기준 소분 단위로 환산(compute_leftovers와 같은 셈)
+    for c, _rr in rows_by.items():
+        used_by[c] = int(round(sum(
+            int(r.get('qty') or 0) * int(r.get('pack') or 1) * split_by[c]
+            / max(1, int(r.get('split_qty') or 1)) for r in _rr)))
 
     in_by, name_by, price_by, qty_by = {}, {}, {}, {}
     for it in (receipt_items or []):
@@ -1440,7 +1444,8 @@ def receipt_overflow(receipt_items, rows):
         for r in reversed(rows_by.get(c, [])):
             if _left <= 0:
                 break
-            _u = int(r.get('qty') or 0) * int(r.get('pack') or 1)
+            _u = int(round(int(r.get('qty') or 0) * int(r.get('pack') or 1) * _sq
+                           / max(1, int(r.get('split_qty') or 1))))
             _amt += int(r.get('amount') or 0) if _u <= _left else int(
                 int(r.get('amount') or 0) / max(1, _u) * _left)
             _hit.append(r)
@@ -1469,7 +1474,8 @@ def compute_leftovers(receipt_items, rows, extra_used=None):
     반환: [{costco_no, name, unit_price, qty_receipt, split_qty,
             units_in, units_used, units_left, packs_left}]  (남은 게 있는 품목만)
     """
-    used_by, split_by = {}, {}
+    split_by = {}
+    _use = []
     for r in rows or []:
         c = _norm(r.get('costco_no'))
         if not c:
@@ -1477,12 +1483,21 @@ def compute_leftovers(receipt_items, rows, extra_used=None):
         # 코스트코 온라인몰 직배송분은 이 영수증으로 산 물건이 아니다. 같은 상품을
         # 그날 매장에서도 샀으면 번호가 겹쳐, 온라인으로 나간 수량만큼 매장 잔량이
         # 사라진다 — 실물은 창고에 그대로 남아 있는데 장부에서만 없어진다.
-        if str(r.get('via') or '') == 'online':
+        # 재고 출고(본인·남의 재고·과거 구매분)도 이 영수증 물건이 아니다(10/23 이수진).
+        if str(r.get('via') or '') in ('online', 'stock'):
             continue
-        used_by[c] = used_by.get(c, 0) + int(r.get('qty') or 0) * int(r.get('pack') or 1)
+        _use.append((c, r))
         # 같은 상품인데 사용자마다 소분 수가 다르면 큰 값을 기준으로 잡는다.
         # 작게 잡으면 입고량이 과소계산돼 있지도 않은 부족분이 생긴다.
         split_by[c] = max(split_by.get(c, 1), int(r.get('split_qty') or 1))
+    # 소비량은 **기준 소분 단위로 환산**한다. 소분 2로 파는 주문이 하나 섞이면 기준이
+    #   2가 되는데, 통째로 파는 주문(소분 1)을 1개로 세면 잔량이 부풀었다
+    #   (10/23 KS그릭요거트 6개 중 5개 나갔는데 '남은 3개').
+    used_by = {}
+    for c, r in _use:
+        _rs_ = max(1, int(r.get('split_qty') or 1))
+        _u = int(r.get('qty') or 0) * int(r.get('pack') or 1)
+        used_by[c] = used_by.get(c, 0) + _u * split_by[c] / _rs_
     # 발송은 했는데 정산에 못 붙은 건도 실물은 나간 것이다 — 재고에서 뺀다.
     for c, u in (extra_used or {}).items():
         c = _norm(c)
@@ -1514,7 +1529,7 @@ def compute_leftovers(receipt_items, rows, extra_used=None):
     for c, a in agg.items():
         sq = split_by.get(c, 1)
         units_in = a['qty'] * sq
-        units_used = used_by.get(c, 0)
+        units_used = int(round(used_by.get(c, 0)))
         units_left = units_in - units_used
         if units_left <= 0:
             continue
