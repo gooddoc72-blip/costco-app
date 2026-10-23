@@ -64,6 +64,8 @@ def render(USERNAME, IS_ADMIN, settings):
             _admin_stock()
         with tabs[5]:
             _admin_settlement(sur)
+            st.divider()
+            _stock_transfer(USERNAME)
         with tabs[6]:
             _return_due(None)
         with tabs[7]:
@@ -825,9 +827,104 @@ def _stock_fix_panel(rows):
 
 
 # ── 관리자: 500원 정산 장부 ───────────────────────────────
+
+def _stock_transfer(USERNAME):
+    """🔁 재고 넘기기 — 내 재고를 다른 판매자가 가져가 보냈을 때 돈까지 한 번에 정리.
+
+    영수증 정산을 거치지 않는 경우가 있다 — 직접구매 계정(더블루샾)은 정산 대상이
+    아니고, 이미 정산에서 '빌린 재고'로 청구만 된 건(10/22 고영부)은 보유자 장부·
+    예치금이 그대로였다. 여기서 보유자 재고를 빼고, 보유자 예치금에 적립하고,
+    필요하면 가져간 판매자 예치금에서 뺀다.
+    금액 = 할인가로 산 재고면 할인가 + 1,000원, 정상가로 산 재고면 산 값(정산과 같은 규칙).
+    """
+    import pandas as pd
+    import db_inventory as _inv
+    import db_deposit as _dep
+    st.subheader("🔁 재고 넘기기 — 다른 판매자에게 준 재고를 예치금으로 정산")
+    st.caption("보유자 재고가 줄고, 그 금액이 **보유자 예치금에 '재고 판매 적립'**으로 들어갑니다. "
+               "가져간 판매자는 예치금에서 빼거나(직접구매 계정 등), 이미 영수증 정산에서 "
+               "청구됐으면 빼지 않습니다.")
+    _msg = st.session_state.pop('_xfer_msg', None)
+    if _msg:
+        (st.success if _msg.get('ok') else st.error)(_msg['text'])
+    _nm = _name_map()
+
+    def _who(u):
+        _d = str(_nm.get(u, u) or u).strip()
+        return f"{_d} ({u})" if _d != u else u
+    _rows = [r for r in (get_stock_summary() or []) if int(r.get('qty_left') or 0) > 0]
+    if not _rows:
+        st.info("남아 있는 재고가 없습니다.")
+        return
+    _owners = sorted({r['owner'] for r in _rows}, key=lambda u: _who(u))
+    c1, c2 = st.columns(2)
+    _own = c1.selectbox("보유자 (재고 주인)", _owners, index=None, key="xf_owner",
+                        format_func=_who, placeholder="이름 입력 — 예: 이수진")
+    if not _own:
+        return
+    _mine = [r for r in _rows if r['owner'] == _own]
+    _lab = [f"{r['product_no']} · {str(r['product_name'] or '')[:36]} · 남은 {int(r['qty_left'])}개"
+            for r in _mine]
+    _pk = c2.selectbox("상품", _lab, key=f"xf_prod_{_own}")
+    _p = _mine[_lab.index(_pk)]
+    _cost = int(_p.get('unit_cost') or 0)
+    _list = int(_p.get('list_price') or 0)
+    _xs = _inv.cross_surcharge_for(_cost, _list)
+    _users = [u['username'] for u in get_all_users()
+              if (u.get('status') or 'active') == 'active' and u['username'] != _own]
+    c3, c4, c5 = st.columns([2, 1, 1.4])
+    _to = c3.selectbox("가져간 판매자", _users, index=None, key="xf_to", format_func=_who,
+                       placeholder="이름 입력 — 예: 더블루샾")
+    _qty = c4.number_input("수량", min_value=1, max_value=max(1, int(_p['qty_left'])),
+                           value=1, step=1, key=f"xf_qty_{_own}_{_p['product_no']}")
+    _unit = c5.number_input("1개 금액", min_value=0, step=100, value=_cost + _xs,
+                            key=f"xf_unit_{_own}_{_p['product_no']}",
+                            help=("할인가로 산 재고 — 할인가 + 1,000원" if _xs
+                                  else "정상가로 산 재고 — 산 값 그대로") +
+                                 f" (구입가 {_cost:,}원 · 정가 {_list or _cost:,}원)")
+    _ono = st.text_input("주문번호 (선택)", key="xf_order",
+                         placeholder="가져간 판매자의 주문번호 — 적어 두면 나중에 찾기 쉽습니다")
+    _how = st.radio("가져간 판매자 쪽", ["예치금에서 빼기", "빼지 않음 — 이미 정산에서 청구됨"],
+                    horizontal=True, key="xf_how",
+                    help="직접구매 계정처럼 영수증 정산을 안 거치는 판매자는 '예치금에서 빼기'. "
+                         "영수증 정산에서 이미 빌린 재고로 청구됐으면 '빼지 않음'.")
+    _amt = int(_unit) * int(_qty)
+    st.markdown(f"**{_who(_own)}** 재고 {int(_qty)}개 → **{_who(_to) if _to else '?'}** · "
+                f"보유자 예치금 **+{_amt:,}원**"
+                + (f" · 판매자 예치금 **−{_amt:,}원**" if _how.startswith("예치금") and _to else ""))
+    if st.button("🔁 넘기기", type="primary", key="xf_go", disabled=not (_to and _amt > 0)):
+        _key = f"XFER-{datetime.now().strftime('%Y%m%d%H%M%S')}"
+        _r = _inv.consume_for_sale(_to, str(_p['product_no']), int(_qty), _key,
+                                   dispatched_at=datetime.now().strftime('%Y-%m-%d'),
+                                   platform='transfer', owner=_own)
+        if not _r.get('consumed'):
+            st.session_state['_xfer_msg'] = {'ok': False, 'text': "재고를 빼지 못했습니다 — 남은 수량을 확인하세요."}
+            st.rerun()
+        try:
+            _c = _inv._conn()
+            _c.execute("UPDATE inventory_moves SET settle_status='SETTLED', settled_at=? "
+                       "WHERE order_no=?", (datetime.now().strftime('%Y-%m-%d %H:%M:%S'), _key))
+            _c.commit()
+            _c.close()
+        except Exception:
+            pass
+        _pname = str(_p.get('product_name') or '')[:30]
+        _ref = str(_ono or '').strip()
+        _memo = (f"재고 넘기기 · {_pname} {int(_qty)}개 → {_who(_to)}"
+                 + (f" · 주문 {_ref}" if _ref else ""))
+        _dep.stock_credit(_own, _amt, _key, _memo, by=USERNAME)
+        _txt = f"✅ {_who(_own)} 재고 {int(_qty)}개를 {_who(_to)}에게 — 보유자 예치금 +{_amt:,}원"
+        if _how.startswith("예치금"):
+            _d = _dep.adjust(_to, -_amt, f"재고 넘겨받음 · {_pname} {int(_qty)}개 ← {_who(_own)}"
+                             + (f" · 주문 {_ref}" if _ref else "") + f" [{_key}]", by=USERNAME)
+            _txt += f" · 판매자 예치금 −{_amt:,}원" if _d.get('ok') else " · ⚠️ 판매자 예치금 차감 실패"
+        st.session_state['_xfer_msg'] = {'ok': True, 'text': _txt}
+        st.rerun()
+
+
 def _admin_settlement(sur):
     st.subheader("💳 타인 재고 판매 정산")
-    st.caption(f"판매자에게 받아 재고 보유자에게 줍니다. 금액 = (구입가 + {fmt(sur)}원) × 수량")
+    st.caption("판매자에게 받아 재고 보유자에게 줍니다. 금액 = 구입가 × 수량 + 웃돈(할인가로 산 재고는 개당 1,000원, 예전 건은 기록된 웃돈). 영수증 정산에서 확정된 건은 보유자 예치금에 자동 적립되고 여기서 닫힙니다.")
     rows = get_cross_settlement_summary('PENDING')
     if not rows:
         st.success("정산할 건이 없습니다.")
