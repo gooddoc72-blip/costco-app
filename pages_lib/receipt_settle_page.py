@@ -1833,16 +1833,42 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
 
         # 사용자별 발송 리스트 — '이 금액이 어느 발송건에서 나왔나'에 답한다.
         # 숫자만 보이면 맞는지 확인할 방법이 없어 매번 DB를 뒤져야 했다.
-        if _prev:
-            _plbl = [f"{r['판매자']} — 발송 {r['발송건수']}건 · "
-                     f"{fmt(r['청구액(물건값)'])}원" for r in _prev]
-            with st.expander("📦 사용자별 발송 리스트 — 이 금액이 어느 건에서 나왔나",
+        # 그날 발송했는데 아직 처리 안 한 건(영수증에 없는 발송건)도 이 목록에 보인다 —
+        #   배치된 건만 보여 주니 '발송건이 없다'로 보였다(10/23 배성진). 이전 날짜 이월은 뺀다.
+        _um_by_u = {}
+        for _o5 in (alloc.get('unmatched_orders') or []):
+            if not _o5.get('carried_from'):
+                _um_by_u.setdefault(str(_o5.get('username') or ''), []).append(_o5)
+        _plist = [dict(r, _um=len(_um_by_u.get(r['_u'], []))) for r in _prev]
+        _plist += [{'판매자': dmap.get(_u5, _u5), '발송건수': 0, '청구액(물건값)': 0,
+                    '_u': _u5, '_um': len(_v5)}
+                   for _u5, _v5 in sorted(_um_by_u.items(), key=lambda kv: dmap.get(kv[0], kv[0]))
+                   if _u5 not in {r['_u'] for r in _prev}]
+        if _plist:
+            _plbl = [f"{r['판매자']} — 발송 {r['발송건수'] or r['_um']}건 · "
+                     f"{fmt(r['청구액(물건값)'])}원"
+                     + (f" · ⚠️ 미처리 {r['_um']}건" if r['_um'] else "") for r in _plist]
+            with st.expander("📦 사용자별 발송 리스트 — 이 금액이 어느 건에서 나왔나"
+                             + (f" · ⚠️ 미처리 {sum(r['_um'] for r in _plist)}건"
+                                if any(r['_um'] for r in _plist) else ""),
                              expanded=False):
                 _pick = st.selectbox("사용자", _plbl, key=f"rs_prev_u_{d_day}")
-                _pu = _prev[_plbl.index(_pick)]['_u']
+                _pu = _plist[_plbl.index(_pick)]['_u']
                 _mine = [r for r in rows if str(r.get('username') or '') == _pu]
+                _um5 = _um_by_u.get(_pu, [])
+                if _um5:
+                    st.warning(f"⚠️ **아직 처리 안 한 발송건 {len(_um5)}건** — 영수증에서 못 찾은 건입니다. "
+                               "아래 **📋 영수증에 없는 발송건** 표에서 재고 출고·금액 지정 등으로 "
+                               "처리하세요(처리 전에는 청구되지 않습니다).")
+                    st.dataframe(pd.DataFrame([{
+                        '주문번호': str(o.get('order_no') or ''),
+                        '수취인': str(o.get('recipient') or ''),
+                        '상품명': str(o.get('product_name') or '')[:40],
+                        '수량': int(o.get('qty') or 1)} for o in _um5]),
+                        use_container_width=True, hide_index=True)
                 if not _mine:
-                    st.caption("이 사용자의 배치 건이 없습니다.")
+                    if not _um5:
+                        st.caption("이 사용자의 배치 건이 없습니다.")
                 else:
                     # 금액을 여기서 고칠 수 있어야 한다. 남의 재고로 나간 건은
                     # 웃돈이 자동으로 얹히는데 실제로 합의한 값이 다를 수 있고,
