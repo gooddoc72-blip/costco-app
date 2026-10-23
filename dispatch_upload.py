@@ -769,6 +769,34 @@ def expand_combined(by_user):
     return by_user, added
 
 
+
+def _trk_key(v):
+    return ''.join(ch for ch in str(v or '') if ch.isdigit())
+
+
+def saved_trackings(trackings):
+    """{송장(숫자만): 사용자} — 이 송장들 중 이미 누군가의 발송 기록에 있는 것."""
+    import glob as _g, os as _o, sqlite3 as _sq
+    from db_core import DATA_DIR
+    want = {_trk_key(t) for t in (trackings or []) if _trk_key(t)}
+    out = {}
+    if not want:
+        return out
+    for f in _g.glob(_o.path.join(DATA_DIR, '*.db')):
+        u = _o.path.basename(f)[:-3]
+        if u == 'auth' or '.' in u:
+            continue
+        try:
+            c = _sq.connect(f'file:{f}?mode=ro', uri=True)
+            for (t,) in c.execute("SELECT tracking_no FROM dispatch_log WHERE COALESCE(tracking_no,'')<>''"):
+                k = _trk_key(t)
+                if k in want:
+                    out.setdefault(k, u)
+            c.close()
+        except Exception:
+            continue
+    return out
+
 def _render_sender_panel(st, pd, dmap, smap, unknown, external):
     """🏢 보낸 업체 구분 — 코코비즈 사용자가 아닌 업체 건을 빼고, 처음 보는 코드를 정한다."""
     if external:
@@ -1155,6 +1183,23 @@ def render_panel(dmap, USERNAME):
                   "저장되지 않습니다. 재발송이 맞다면 건너뛰기를 **끄고** 저장하세요 — "
                   "기존 기록은 그대로 두고 이 날짜로 **한 건 더** 쌓입니다"
                   "(기존 날짜를 덮어쓰지 않습니다). 그만큼 택배비도 더 청구됩니다.")
+        # 미분류 중 **이미 저장된 건**(같은 송장이 누군가의 발송 기록에 있음)은 뺀다 —
+        #   표는 파일에서 매번 다시 만들어져 저장한 뒤에도 그대로 남아 '저장이 안 된다'로 보였다.
+        # 파일 맨 아래 합계 줄(수취인·상품·송장 모두 빈 줄)은 발송건이 아니다
+        _unknown = [u for u in _unknown if (str(u.get('recipient') or '').strip()
+                                            or str(u.get('product_name') or '').strip()
+                                            or _trk_key(u.get('tracking_no')))]
+        _saved_trk = saved_trackings([u.get('tracking_no') for u in _unknown])
+        if _saved_trk:
+            _done_u = [u for u in _unknown
+                       if _trk_key(u.get('tracking_no')) in _saved_trk]
+            _unknown = [u for u in _unknown
+                        if _trk_key(u.get('tracking_no')) not in _saved_trk]
+            if _done_u:
+                st.caption(f"✅ 미분류 중 **이미 저장된 {len(_done_u)}건**은 목록에서 뺐습니다 — "
+                           + " · ".join(f"{dmap.get(_saved_trk[_trk_key(u.get('tracking_no'))], '')} "
+                                        f"{u.get('recipient', '')}" for u in _done_u[:6])
+                           + (" …" if len(_done_u) > 6 else ""))
         if _unknown:
             with st.expander(f"❓ 미분류 {len(_unknown)}건 — 사용자를 지정해 넣기",
                              expanded=False):
