@@ -1193,6 +1193,13 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         st.info("🔄 발송건이 새로 저장돼 **매칭을 다시 돌렸습니다** — 아래 정산표에 반영됐습니다.")
     if st.button("🔎 당일 자동배치 미리보기", type="primary", key="rs_preview_btn") or _rematch:
         with st.spinner("주문을 조회해 배치 중..."):
+            # 주문번호 없이 들어간 발송건(CJ '신선식품(냉장)' 등)을 수취인으로 실제 주문에 잇는다
+            try:
+                import dispatch_upload as _du9
+                for _u9 in _rs.settle_users(str(d_day)):
+                    _du9.relink_no_orders(_u9, str(d_day))
+            except Exception:
+                pass
             # 재고 이월 — 당일 영수증에 없는 주문을 과거 구매분(가용 재고)에서 찾는다.
             #   실측(8/15~19): 미매칭 159건 → 100건으로 59건 감소.
             _pool = build_stock_pool(str(d_to), exclude_dates=[str(d_day)])

@@ -403,6 +403,11 @@ def save_dispatch(by_user, dispatched_at, platform='upload', skip_existing=True,
                     n = log_dispatch_success(uname, _rows, str(_d), platform=platform)
                 except Exception:
                     n = 0
+                if n and any(str(r.get('order_no') or '').startswith('NO-') for r in _rows):
+                    try:
+                        relink_no_orders(uname, _d)
+                    except Exception:
+                        pass
             # 몇 건인지만 알려 주면 어느 건인지 알 수 없다 — 줄마다 결과를 남긴다
             if detail is not None:
                 for r in _grp:
@@ -797,6 +802,55 @@ def saved_trackings(trackings):
         except Exception:
             continue
     return out
+
+
+def relink_no_orders(username, the_date):
+    """주문번호 없이 들어간 발송 기록(NO-…)을 **수취인 이름으로 실제 주문에 잇는다.**
+
+    CJ 파일에 주문번호가 비고 품명이 '신선식품(냉장)'뿐인 줄이 있다. 그대로 두면 상품을
+    몰라 정산표에 안 잡혔다(10/23 배성진 → 실제 주문 이용섭 그릭요거트).
+    그 사용자 주문 중 **수취인이 같고 아직 발송 기록이 없는** 최근 30일 주문이 딱 하나일
+    때만 잇는다 — 둘 이상이면 어느 것인지 몰라 그대로 둔다.
+    반환: 이은 건수
+    """
+    from datetime import date as _date, timedelta as _td
+    from db import get_user_db
+    n = 0
+    try:
+        conn = get_user_db(username)
+    except Exception:
+        return 0
+    try:
+        _rows = conn.execute(
+            "SELECT id, order_no, recipient FROM dispatch_log WHERE order_no LIKE 'NO-%' "
+            "AND dispatched_at LIKE ?", (str(the_date)[:10] + '%',)).fetchall()
+        if not _rows:
+            return 0
+        _since = (_date.fromisoformat(str(the_date)[:10]) - _td(days=30)).isoformat()
+        _done = {str(r[0]) for r in conn.execute("SELECT order_no FROM dispatch_log")}
+        for _id, _ono, _rc in _rows:
+            _rc = str(_rc or '').strip()
+            if not _rc:
+                continue
+            _c = [r for r in conn.execute(
+                "SELECT order_no, product_name, status FROM order_history "
+                "WHERE TRIM(recipient)=? AND order_date>=?", (_rc, _since)).fetchall()
+                  if str(r[0]) not in _done and '취소' not in str(r[2] or '')
+                  and '반품' not in str(r[2] or '')]
+            if len(_c) != 1:
+                continue
+            _real, _pn = str(_c[0][0]), str(_c[0][1] or '')
+            try:
+                conn.execute("UPDATE dispatch_log SET order_no=?, product_name=? WHERE id=?",
+                             (_real, _pn, _id))
+                _done.add(_real)
+                n += 1
+            except Exception:
+                continue
+        conn.commit()
+    finally:
+        conn.close()
+    return n
 
 def _render_sender_panel(st, pd, dmap, smap, unknown, external):
     """🏢 보낸 업체 구분 — 코코비즈 사용자가 아닌 업체 건을 빼고, 처음 보는 코드를 정한다."""
