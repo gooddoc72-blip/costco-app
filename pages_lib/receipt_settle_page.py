@@ -3553,7 +3553,14 @@ def _render_reconcile(receipt_items, alloc, goods_total, d_day):
     except Exception:
         _ret = {'count': 0, 'qty': 0, 'amount': 0}
     _ret_amt = int(_ret.get('amount') or 0)
-    _wait = _rest - _ret_amt
+    # 그날 영수증분을 재고로 넣은 돈도 '대기'가 아니다 — 이미 정한 돈이다
+    try:
+        import db_inventory as _inv7
+        _stk_in7 = sum(int(l.get('unit_cost') or 0) * int(l.get('qty_in') or 0)
+                       for l in _inv7.find_receipt_lots(str(d_day), str(d_day)))
+    except Exception:
+        _stk_in7 = 0
+    _wait = _rest - _ret_amt - _stk_in7
 
     st.markdown("##### 🧮 영수증 ↔ 배치 대조")
     m1, m2, m3 = st.columns(3)
@@ -3642,6 +3649,29 @@ def _render_reconcile(receipt_items, alloc, goods_total, d_day):
     if _wait > 0:
         # 왜 남았는지까지 말해 준다. '남았다'만으로는 실수인지 정상인지 알 수 없다.
         _lefts = _sc.leftovers(receipt_items, alloc.get('rows') or [], str(d_day))
+        # 이미 그날 영수증분으로 재고에 넣은 수량은 뺀다 — 남겨 두니 넣은 것도
+        #   '아직 안 붙은 물건'으로 보여 다시 입고하려 했다(10/23 퀘이커그래놀라 2팩).
+        try:
+            import db_inventory as _inv8
+            _in8 = {}
+            for _l8 in _inv8.find_receipt_lots(str(d_day), str(d_day)):
+                _k8 = _n(_l8.get('product_no'))
+                _in8[_k8] = _in8.get(_k8, 0) + int(_l8.get('qty_in') or 0)
+            _l2 = []
+            for _l in _lefts:
+                _k8 = _n(_l.get('costco_no'))
+                _sub = min(int(_l.get('units_left') or 0), _in8.get(_k8, 0))
+                if _sub:
+                    _in8[_k8] -= _sub
+                    _ul = int(_l.get('units_left') or 0) - _sub
+                    if _ul <= 0:
+                        continue
+                    _ratio = _ul / max(1, int(_l.get('units_left') or 1))
+                    _l = dict(_l, units_left=_ul, amount=int(int(_l.get('amount') or 0) * _ratio))
+                _l2.append(_l)
+            _lefts = _l2
+        except Exception:
+            pass
         _undisp = len(alloc.get('unmatched_orders') or [])
         _msg = (f"영수증 {fmt(_r_total)}원 중 **{fmt(_goods)}원**만 이번 정산에 들어갑니다. "
                 f"나머지 **{fmt(_wait)}원**은 아직 주문에 안 붙은 물건입니다 — "
@@ -3682,8 +3712,7 @@ def _render_reconcile(receipt_items, alloc, goods_total, d_day):
             _ltot = sum(r['금액'] for r in _lrows)
             st.caption("수량은 **소분 단위**입니다. **요청자**는 그날 장보기 목록에서 "
                        "이 상품을 요청한 사람 — 누구 물건인지에 가장 가까운 답입니다. "
-                       "이미 재고로 넘겼거나 반품요청한 분량은 위 배정 목록에서 빠지지만 "
-                       "이 표에는 남아 있을 수 있습니다.")
+                       "그날 영수증분으로 **이미 재고에 넣은 수량은 뺀 값**입니다.")
             # 위 '배정 대기' 금액과 이 표 합계는 기준이 달라 자주 어긋난다
             # (지표는 재고 출고·온라인몰을 청구에서 빼고 계산하고, 이 표는
             #  영수증 잔량에서 온라인몰만 뺀다). 다르면 그 사실을 적어 준다.
