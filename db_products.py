@@ -731,6 +731,29 @@ def upsert_option_map(rows, updated_by=''):
     return out
 
 
+def user_product_costco_no(username, *naver_nos):
+    """사용자 제품DB에서 이 네이버 상품의 코스트코번호(유효한 값만). 없으면 ''."""
+    from services import is_costco_pno
+    _ks = [str(k or '').strip() for k in naver_nos if str(k or '').strip()]
+    if not _ks or not username:
+        return ''
+    try:
+        conn = get_user_db(username)
+        try:
+            for k in _ks:
+                for (pno,) in conn.execute(
+                        "SELECT product_no FROM products WHERE naver_channel_pno=? OR naver_origin_pno=?",
+                        (k, k)):
+                    pno = str(pno or '').strip()
+                    if is_costco_pno(pno) and pno != k:
+                        return pno
+        finally:
+            conn.close()
+    except Exception:
+        return ''
+    return ''
+
+
 def resolve_costco_no(username, naver_no='', naver_origin_no='', product_name='',
                       _user_prods=None, _shared_prods=None,
                       option_code='', _opt_map=None):
@@ -751,6 +774,12 @@ def resolve_costco_no(username, naver_no='', naver_origin_no='', product_name=''
             _c = str((_m or {}).get((k, _oc)) or '').strip()
             if is_costco_pno(_c):
                 return _c
+    # 사용자 제품DB에 적힌 번호가 먼저다 — 사람이 고친 값이다. 공유맵에는 이름으로
+    #   추정한(guess) 번호가 섞여 있어, 제품DB를 고쳐도 주문에 옛 번호가 계속 찍혔다
+    #   (이수진 그릭요거트 599369를 고쳤는데 새 주문에 647731).
+    _own = user_product_costco_no(username, naver_no, naver_origin_no)
+    if _own:
+        return _own
     for k in (str(naver_no or '').strip(), str(naver_origin_no or '').strip()):
         if not k:
             continue

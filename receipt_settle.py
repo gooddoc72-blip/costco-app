@@ -80,11 +80,15 @@ def _naver_to_product_map(username):
     """네이버번호(및 코스트코번호) → 사용자 products 레코드."""
     prods = get_all_products(username) or []
     m = {}
+    # 네이버번호 칸으로 먼저 다 채운 뒤에 코스트코번호 칸을 본다. 한 번에 섞어 돌면
+    #   코스트코번호 칸에 네이버번호가 잘못 들어간 다른 행이 먼저 자리를 차지해,
+    #   제대로 고친 행(이수진 그릭요거트 599369)을 못 찾았다.
     for p in prods:
         for k in ('naver_channel_pno', 'naver_origin_pno'):
             nv = _norm(p.get(k))
             if nv and nv not in m:
                 m[nv] = p
+    for p in prods:
         cn = _norm(p.get('product_no'))
         if cn and cn not in m:      # 주문이 코스트코번호로 저장된 경우 대비
             m[cn] = p
@@ -826,6 +830,19 @@ def allocate_dispatched_to_receipt(receipt_items, dispatch_date, users=None,
         _ic.close()
     except Exception:
         _own_out = {}
+    # 판매자 **본인 재고**(직접 사서 넣은 것) — 발송 뒤에 입고해 발송 때 못 뺀 경우가 있다
+    #   (10/23 이수진: 17:22 입고, 18:41 발송인데 주문 번호가 옛 번호라 차감 안 됨).
+    #   본인 재고가 있으면 영수증보다 먼저 본인 재고에서 나간 것으로 본다.
+    _own_left = {}
+    try:
+        from db_inventory import _conn as _iconn2
+        _ic2 = _iconn2()
+        for _l in _ic2.execute("SELECT owner, product_no, SUM(qty_left) q FROM inventory_lots "
+                               "WHERE status='ACTIVE' AND qty_left>0 GROUP BY owner, product_no"):
+            _own_left[(str(_l['owner']), _norm(_l['product_no']))] = int(_l['q'] or 0)
+        _ic2.close()
+    except Exception:
+        _own_left = {}
     for uname in users:
         try:
             disp = get_dispatched_orders_with_details(uname, str(dispatch_date)) or []
@@ -890,6 +907,9 @@ def allocate_dispatched_to_receipt(receipt_items, dispatch_date, users=None,
 
             # ⓪ 주문 행에 굳어 있는 코스트코번호 — 수집 때 한 번 확정한 값
             _c0v = _norm(_ono2cno.get(ono))
+            _pv = _norm((prod or {}).get('product_no'))
+            if _pv and _pv != onv and _pv.isdigit() and len(_pv) <= 8:
+                _c0v = _pv     # 제품DB에서 고친 번호가 수집 때 굳은 도장보다 앞선다
             if _c0v and _c0v in price_by_costco:
                 costco_no, via = _c0v, 'order'
             # ① 장보기 목록 브리지 (그날 사야 했던 목록 = 영수증과 같은 근거)
@@ -948,6 +968,29 @@ def allocate_dispatched_to_receipt(receipt_items, dispatch_date, users=None,
                         })
                         matched_costco.add(_cand)
                         continue
+
+            # 본인 재고에서 나간 것으로 — 정산 확정 때 그 재고에서 뺀다(stock_owner=본인)
+            _ocn = costco_no or _norm((prod or {}).get('product_no'))
+            _need9 = qty * int(_pk or 1)
+            if _ocn and _own_left.get((uname, _ocn), 0) >= _need9:
+                _own_left[(uname, _ocn)] -= _need9
+                try:
+                    from db_inventory import own_unpaid_units as _ouu2
+                    _ou2 = _ouu2(uname, _ocn, _need9, order_no=ono)
+                    _amt2 = int(_ou2.get('unpaid_amount') or 0)
+                    _paid2 = int(_ou2.get('paid_units') or 0)
+                except Exception:
+                    _amt2, _paid2 = 0, 0
+                rows.append({
+                    'username': uname, 'order_no': ono, 'order_date': str(dispatch_date),
+                    'costco_no': _ocn, 'naver_no': onv, 'product_name': nm, 'qty': qty,
+                    'unit_price': 0, 'amount': _amt2,
+                    'prev_cost': int(o.get('cost_price') or 0), 'via': 'stock',
+                    'split_qty': _sq, 'pack': _pk, 'stock_owner': uname,
+                    'memo': ('본인 재고 출고' + (' · 본인이 낸 재고 — 청구 없음'
+                                               if _paid2 and not _amt2 else '')),
+                })
+                continue
 
             if not costco_no:
                 unmatched_orders.append({

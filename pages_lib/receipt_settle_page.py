@@ -3573,6 +3573,72 @@ def _render_reconcile(receipt_items, alloc, goods_total, d_day):
                    "그날 영수증으로 산 물건이 아니라 대조 대상이 아닙니다. "
                    f"**실제 청구액은 {fmt(int(goods_total or 0))}원**입니다.")
 
+    # ── 💰 돈 흐름 — 영수증 돈이 어디로 갔고, 청구 돈이 어디서 왔나 ──
+    #   돈 문제는 한 곳이라도 어긋나면 안 된다. 영수증 합계와 청구 합계를 각각
+    #   항목별로 쪼개 같은 화면에서 맞춰 본다. 남의 재고로 나간 건은 청구에는
+    #   들어가지만 그 돈은 보유자에게 간다(예치금 적립) — 그것도 따로 보인다.
+    _rows_all = alloc.get('rows') or []
+    _self_stk, _other_stk, _manual_amt, _owners_pay = 0, 0, 0, {}
+    for r in _rows_all:
+        _v = str(r.get('via') or '')
+        _amt = int(r.get('amount') or 0)
+        _u = str(r.get('username') or '')
+        _ow = str(r.get('stock_owner') or r.get('loan_owner') or '').strip()
+        if _v == 'stock':
+            if _ow and _ow != _u:
+                _other_stk += _amt
+                _owners_pay[_ow] = _owners_pay.get(_ow, 0) + _amt
+            else:
+                _self_stk += _amt
+        elif _v == 'manual':
+            _manual_amt += _amt
+    _rcpt_bill = int(goods_total or 0) - _onl_amt - _self_stk - _other_stk - _manual_amt
+    try:
+        import db_inventory as _inv9
+        _lots9 = _inv9.find_receipt_lots(str(d_day), str(d_day))
+        _stock_in = sum(int(l.get('unit_cost') or 0) * int(l.get('qty_in') or 0) for l in _lots9)
+    except Exception:
+        _stock_in = 0
+    _left9 = _r_total - _rcpt_bill - _stock_in - _ret_amt
+    with st.expander("💰 돈 흐름 확인 — 영수증 돈은 어디로, 청구 돈은 어디서"
+                     + ("" if _left9 == 0 else f"  ·  ⚠️ 영수증 중 아직 안 정한 돈 {fmt(_left9)}원"),
+                     expanded=_left9 != 0 or bool(_owners_pay)):
+        _c1, _c2 = st.columns(2)
+        with _c1:
+            st.markdown("**🧾 영수증 돈은 어디로 갔나**")
+            st.dataframe(pd.DataFrame([
+                {'항목': '영수증 합계', '금액': _r_total},
+                {'항목': '① 주문에 붙어 청구', '금액': _rcpt_bill},
+                {'항목': '② 재고로 입고', '금액': _stock_in},
+                {'항목': '③ 반품요청', '금액': _ret_amt},
+                {'항목': '④ 아직 안 정함 (= 합계 − ①②③)', '금액': _left9},
+            ]), use_container_width=True, hide_index=True,
+                column_config={'금액': st.column_config.NumberColumn('금액', format='%d')})
+            if _left9 > 0:
+                st.warning(f"영수증 중 **{fmt(_left9)}원**이 아직 청구도 재고도 반품도 아닙니다 — "
+                           "아래 **배정할 영수증 품목**에서 정하세요.")
+            elif _left9 < 0:
+                st.error(f"영수증보다 **{fmt(-_left9)}원 더** 청구·입고됐습니다 — 배치 상세에서 "
+                         "영수증보다 많이 나간 주문을 확인하세요.")
+        with _c2:
+            st.markdown("**💳 청구 돈은 어디서 왔나**")
+            st.dataframe(pd.DataFrame([
+                {'항목': '청구 합계 (물건값)', '금액': int(goods_total or 0)},
+                {'항목': 'ⓐ 그날 영수증으로 산 것', '금액': _rcpt_bill},
+                {'항목': 'ⓑ 본인·과거 구매분 재고 출고', '금액': _self_stk},
+                {'항목': 'ⓒ 남의 재고 출고 → 보유자에게 감', '금액': _other_stk},
+                {'항목': 'ⓓ 금액 직접 지정', '금액': _manual_amt},
+                {'항목': 'ⓔ 온라인몰 직배송', '금액': _onl_amt},
+            ]), use_container_width=True, hide_index=True,
+                column_config={'금액': st.column_config.NumberColumn('금액', format='%d')})
+            if _owners_pay:
+                _dm9 = _disp_map()
+                st.caption("ⓒ는 정산 요청 때 **보유자 예치금에 '재고 판매 적립'**으로 들어갑니다 — "
+                           + " · ".join(f"{_dm9.get(o, o)} +{fmt(a)}원"
+                                        for o, a in sorted(_owners_pay.items(), key=lambda kv: -kv[1])))
+        st.caption("①과 ⓐ는 같은 돈입니다. 영수증 돈 = 청구(①) + 재고 입고(②) + 반품(③) + 미정(④)으로 "
+                   "닫혀야 하고, ④가 0이 되면 그날 영수증이 전부 정리된 것입니다.")
+
     if _wait > 0:
         # 왜 남았는지까지 말해 준다. '남았다'만으로는 실수인지 정상인지 알 수 없다.
         _lefts = _sc.leftovers(receipt_items, alloc.get('rows') or [], str(d_day))

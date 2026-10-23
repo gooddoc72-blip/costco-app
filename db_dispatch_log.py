@@ -96,6 +96,16 @@ def _resolve_order_items(conn, order_nos: list, username: str = '') -> dict:
     for _o, _c in _daily_costco_map(conn, list(out)).items():
         if _o in out:
             out[_o]['costco_no'] = _c
+    # 사람이 제품DB에서 고친 번호가 주문 행 도장(수집 때 굳은 값)보다 앞선다
+    if username:
+        try:
+            from db_products import user_product_costco_no
+            for _o, _v in out.items():
+                _own = user_product_costco_no(username, _v.get('naver_no'))
+                if _own:
+                    _v['costco_no'] = _own
+        except Exception:
+            pass
 
     _todo = [o for o, v in out.items() if not v['costco_no']]
     if _todo and username:
