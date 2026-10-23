@@ -44,9 +44,20 @@ def _save_ps(USERNAME, calc_date_str, rows):
             f"⏭ 다른 날짜에 이미 저장된 {len(_skip)}건은 건너뛰었습니다 — "
             + ", ".join(f"{d}" for d in sorted(set(_skip.values())))
             + ". 이 날짜로 옮기려면 '이 날짜로 옮기기'를 켜고 다시 저장하세요.")
-    return save_profit_settlements(
+    _n = save_profit_settlements(
         USERNAME, calc_date_str,
         [r for r in rows if str(r.get('order_no') or '') not in _skip])
+    # 그날 발송 안 된 옛 자동 저장 행(취소·다른 날 발송)을 정리 — 안 하면 달력 수익이 부풀었다
+    try:
+        from pages_lib.profit_calc.dispatch_profit import clean_stale_auto
+        _rm = clean_stale_auto(USERNAME, calc_date_str)
+        if _rm:
+            st.session_state['_profit_dup_note'] = (
+                (st.session_state.get('_profit_dup_note') or '')
+                + f"  🧹 그날 발송되지 않은 예전 자동 저장 {_rm}건(취소·다른 날 발송)을 정리했습니다.")
+    except Exception:
+        pass
+    return _n
 
 
 def save_settlements(df, USERNAME, calc_date_str, shipping_cost, box_cost, _checked_rows):

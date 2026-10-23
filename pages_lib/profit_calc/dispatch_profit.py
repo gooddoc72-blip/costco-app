@@ -145,6 +145,69 @@ def compute_dispatch_rows(username, date, use_saved=True):
     return out, src_label, kind, saved
 
 
+def _remove_stale_auto(conn, date, disp, cur=None, strict=False):
+    """이 날짜의 '자동' 저장 행 중 그날 발송되지 않은 주문을 지운다. 반환: 지운 수.
+
+    지우는 건 **다른 날 발송 기록이 있거나(그날 저장으로 옮겨진다) 취소·반품됐거나
+    주문 이력에서 아예 사라진 주문**뿐이다. 발송 기록이 없다고 안 보낸 것은 아니다 —
+    쿠팡·스마트스토어에서 직접 보내 앱 발송 기록에 없는 주문이 있다(김혜림 쿠팡 92행).
+    """
+    if cur is None:
+        cur = {str(r['order_no']): r for r in conn.execute(
+            "SELECT order_no, match_source FROM profit_settlements WHERE settlement_date=?",
+            (str(date),)).fetchall()}
+    _cand = [o for o, r in cur.items() if r['match_source'] == AUTO_SOURCE and o not in disp]
+    _stale = []
+    for o in _cand:
+        _dl = conn.execute("SELECT 1 FROM dispatch_log WHERE order_no=? LIMIT 1",
+                           (o,)).fetchone()
+        try:
+            _st = conn.execute("SELECT status FROM order_history WHERE order_no=?",
+                               (o,)).fetchone()
+        except Exception:
+            _st = ('',)
+        if strict and _dl and not (_st is None or is_cancelled_status(_st[0])):
+            # 다른 날 발송된 주문 — 그 발송일에 수익 행이 이미 있으면 여기 것은 지우고,
+            # 없으면 **발송일로 옮긴다**(지우면 그 주문 수익이 어디에도 안 남는다).
+            _has = conn.execute(
+                "SELECT 1 FROM profit_settlements p JOIN dispatch_log d ON d.order_no=p.order_no "
+                "AND p.settlement_date=substr(d.dispatched_at,1,10) WHERE p.order_no=? LIMIT 1",
+                (o,)).fetchone()
+            if not _has:
+                _dd = conn.execute("SELECT MIN(substr(dispatched_at,1,10)) FROM dispatch_log "
+                                   "WHERE order_no=?", (o,)).fetchone()[0]
+                if _dd:
+                    conn.execute("UPDATE profit_settlements SET settlement_date=? WHERE "
+                                 "settlement_date=? AND order_no=? AND match_source=?",
+                                 (_dd, str(date), o, AUTO_SOURCE))
+                continue
+        if _dl or _st is None or is_cancelled_status(_st[0]):
+            _stale.append(o)
+    if _stale:
+        conn.executemany("DELETE FROM profit_settlements WHERE settlement_date=? "
+                         "AND order_no=? AND match_source=?",
+                         [(str(date), o, AUTO_SOURCE) for o in _stale])
+    return len(_stale)
+
+
+def clean_stale_auto(username, date):
+    """정산저장(화면) 뒤에 부른다 — 그날 발송건만 남기고 옛 주문일 기준 자동 행을 정리.
+    10/1 고영부: 발송 10건인데 취소된 주문의 자동 행 17건이 남아 달력 수익이
+    49,494원이 아니라 239,333원으로 보였다."""
+    conn = get_user_db(username)
+    conn.row_factory = __import__('sqlite3').Row
+    try:
+        disp = {str(r[0]) for r in conn.execute(
+            "SELECT order_no FROM dispatch_log WHERE dispatched_at LIKE ?", (str(date)[:10] + '%',))}
+        if not disp:
+            return 0          # 발송 기록이 없는 날은 손대지 않는다
+        n = _remove_stale_auto(conn, date, disp, strict=True)
+        conn.commit()
+        return n
+    finally:
+        conn.close()
+
+
 def save_dispatch_profit(username, date):
     """그날 **발송한 주문**의 수익을 profit_settlements에 자동 저장한다.
 
@@ -170,23 +233,7 @@ def save_dispatch_profit(username, date):
         # 지우는 건 **다른 날 발송 기록이 있거나(그날 저장으로 옮겨진다) 취소·반품된
         # 주문뿐**이다. 발송 기록이 없다고 안 보낸 것은 아니다 — 쿠팡·스마트스토어에서
         # 직접 보내 앱 발송 기록에 없는 주문이 있다(김혜림 쿠팡 92행, 송장 있음).
-        _cand = [o for o, r in cur.items() if r['match_source'] == AUTO_SOURCE and o not in disp]
-        _stale = []
-        for o in _cand:
-            _dl = conn.execute("SELECT 1 FROM dispatch_log WHERE order_no=? LIMIT 1",
-                               (o,)).fetchone()
-            try:
-                _st = conn.execute("SELECT status FROM order_history WHERE order_no=?",
-                                   (o,)).fetchone()
-            except Exception:
-                _st = None
-            if _dl or (_st and is_cancelled_status(_st[0])):
-                _stale.append(o)
-        if _stale:
-            conn.executemany("DELETE FROM profit_settlements WHERE settlement_date=? "
-                             "AND order_no=? AND match_source=?",
-                             [(str(date), o, AUTO_SOURCE) for o in _stale])
-            out['removed'] = len(_stale)
+        out['removed'] = _remove_stale_auto(conn, date, disp, cur)
         # 다른 날짜에 저장된 같은 주문
         other = {}
         _nos = list(disp)
