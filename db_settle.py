@@ -181,6 +181,15 @@ def _revert_stock(order_nos):
         # 남의 재고로 적립했던 예치금도 되돌린다 — 정산이 없어졌는데 돈만 남으면 안 된다
         import db_deposit as _dep
         _dep.stock_credit_cancel_orders(order_nos)
+        # 예치금 적립 때 '정산완료'로 닫아 둔 정산 차감도 다시 열어 아래에서 되돌린다 —
+        #   안 그러면 적립은 취소되고 재고만 빠진 채 남았다(10/24 배성진 건).
+        from db_inventory import _conn as _ic
+        _c = _ic()
+        _c.executemany("UPDATE inventory_moves SET settle_status='PENDING' WHERE order_no=? "
+                       "AND platform='settle' AND is_cross=1 AND settle_status='SETTLED'",
+                       [(str(o),) for o in set(order_nos)])
+        _c.commit()
+        _c.close()
     except Exception:
         pass
     try:
@@ -996,6 +1005,46 @@ def save_draft(settle_date, rows, created_by=''):
             n += 1
         conn.commit()
         return n
+    finally:
+        conn.close()
+
+
+def upsert_draft_rows(settle_date, rows, created_by=''):
+    """초안에 행을 **덧붙이거나 바꾼다**(다른 행은 그대로). 사람이 고른 처리(재고 출고
+    보유자·금액 지정 등)를 바로 DB에 남겨, 화면이 초기화돼도 미리보기 때 되살린다."""
+    import json
+    conn = _conn()
+    ensure(conn)
+    now = _now()
+    n = 0
+    try:
+        for r in (rows or []):
+            u, o = str(r.get('username') or ''), str(r.get('order_no') or '')
+            if not (u and o):
+                continue
+            conn.execute("DELETE FROM settle_draft WHERE settle_date=? AND username=? AND order_no=?",
+                         (str(settle_date), u, o))
+            conn.execute(
+                "INSERT INTO settle_draft (settle_date, username, order_no, row_json, created_by, updated_at) "
+                "VALUES (?,?,?,?,?,?)",
+                (str(settle_date), u, o, json.dumps(r, ensure_ascii=False, default=str),
+                 str(created_by or ''), now))
+            n += 1
+        conn.commit()
+        return n
+    finally:
+        conn.close()
+
+
+def delete_draft_rows(settle_date, keys):
+    """초안에서 (사용자, 주문번호) 행을 뺀다 — 끊은 매칭이 되살아나지 않게."""
+    conn = _conn()
+    ensure(conn)
+    try:
+        for u, o in (keys or []):
+            conn.execute("DELETE FROM settle_draft WHERE settle_date=? AND username=? AND order_no=?",
+                         (str(settle_date), str(u or ''), str(o or '')))
+        conn.commit()
     finally:
         conn.close()
 

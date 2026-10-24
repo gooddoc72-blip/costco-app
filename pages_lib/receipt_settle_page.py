@@ -2388,6 +2388,15 @@ def _merge_matches(alloc, new_rows, matched_order_indices, sticky=True):
         _st[_d] = (_st.get(_d) or []) + [
             r for r in new_rows if (r.get('username'), r.get('order_no')) not in _keys]
         st.session_state['rs_sticky'] = _st
+        # 사람이 정한 처리는 DB 초안에도 바로 남긴다 — 세션에만 두면 서버가 다시 시작되거나
+        #   창을 닫는 순간 사라져, 다시 정산할 때 자동매칭(영수증가)으로 돌아갔다
+        #   (10/23 배성진: 이수진 재고 출고로 정산 → 10/24 재정산 때 영수증가로 바뀜).
+        if _d:
+            try:
+                _ds.upsert_draft_rows(_d, new_rows,
+                                      created_by=str((st.session_state.get('user') or {}).get('username') or ''))
+            except Exception:
+                pass
     st.session_state['rs_alloc'] = alloc
 
 
@@ -2414,6 +2423,11 @@ def _unmatch_rows(alloc, keys, receipt_items):
     if _st.get(_d):
         _st[_d] = [r for r in _st[_d] if (r.get('username'), r.get('order_no')) not in keys]
         st.session_state['rs_sticky'] = _st
+    if _d:
+        try:
+            _ds.delete_draft_rows(_d, list(keys))
+        except Exception:
+            pass
 
     # 온라인몰로 지정한 건은 원장(db_online_purchase)에도 적혀 있다. 거기서 지우지
     # 않으면 미리보기를 다시 누를 때 _online_restored가 그대로 되살려 놓는다 —
