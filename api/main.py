@@ -355,3 +355,7 @@ app.include_router(_auto_settle_router)
 # ── 영수증 정산 (새 화면 /m/receipt-settle 백엔드) ──
 from api.receipt_settle import router as _rsettle_router  # noqa: E402
 app.include_router(_rsettle_router)
+
+# ── SNS 트렌드 TOP 30 (새 화면 /m/trends 백엔드) ──
+from api.trends import router as _trends_router  # noqa: E402
+app.include_router(_trends_router)
