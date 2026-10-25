@@ -392,6 +392,7 @@ def view(d):
         late = []
     undecided = [r for r in out_rows if r['flag'] and not r['ok']]
     out.update({
+        'receipt_changed': alloc.get('_receipt_changed', ''),
         'matched_at': alloc.get('_matched_at', ''), 'updated_at': alloc.get('_updated_at', ''),
         'updated_by': alloc.get('_updated_by', ''),
         'rows': out_rows, 'users': sorted(users.values(), key=lambda x: -x['amount']),
@@ -770,6 +771,111 @@ def apply_assign(d, mode, username, picks, bill_stock=True, by=''):
                        'unit_price': r['price'], 'list_price': r['list_price'], 'reason': m} for r, q, m in sel],
                   created_by=by)
     return {'mode': mode, 'count': int(res.get('ok') or 0), 'amount': sum(r['price'] * q for r, q, m in sel)}
+
+
+# ── 3단계 영수증 올리기 — 읽기(저장 안 함) → 사람이 표에서 확인·수정 → 저장 ──────
+#   읽는 즉시 저장하면 판독이 틀린 값이 사람이 보기 전에 재고·가격DB에 들어간다
+#   (9/8 KS그릭요거트 수량 64로 읽혀 895,360원이 재고로 잡힘). Streamlit과 같은 규칙이다.
+def _to_rows(items):
+    out = []
+    for p in items or []:
+        try:
+            up = int(float(p.get('단가') or 0))
+        except (TypeError, ValueError):
+            up = 0
+        out.append({'receipt_date': str(p.get('receipt_date') or '')[:10], 'costco_no': _n(p.get('상품번호')),
+                    'name': _n(p.get('상품명')), 'qty': max(1, int(p.get('수량') or 1)),
+                    'list_price': int(p.get('정가단가') or up or 0), 'discount': int(p.get('할인') or 0),
+                    'unit_price': up})
+    return out
+
+
+def parse_files(files, log=None):
+    """files: [(파일이름, bytes)] → {'rows', 'fails'} — 저장하지 않는다.
+
+    파일마다 따로 읽어 진행을 알리고, 끝에 같은 상품 줄을 합친다(PDF와 사진을 같이 올려도
+    같은 품목이 두 번 들어가지 않게 — 화면과 같은 merge_receipt_lines).
+    """
+    from auto_settle import _as_file, _PDF, _IMG
+    items, fails = [], []
+    files = list(files or [])
+    for i, (name, data) in enumerate(files, 1):
+        ext = '.' + name.rpartition('.')[2].lower()
+        if ext not in _PDF + _IMG:
+            fails.append((name, 'PDF·사진(jpg·png·webp·heic)만 읽습니다'))
+            continue
+        if log:
+            log(f'{i}/{len(files)} {name} 읽는 중')
+        f = _as_file(name, data)
+        got, fl = _rs.parse_receipt_uploads([f] if ext in _PDF else [], [f] if ext in _IMG else [], None)
+        items += got
+        fails += fl
+    merged = list(_rs.merge_receipt_lines(items).values())
+    return {'rows': _to_rows(merged), 'fails': [{'file': a, 'error': b} for a, b in fails]}
+
+
+def saved_receipt(d):
+    return _to_rows(receipt_items(d))
+
+
+def _clean_rows(d, rows):
+    """표 → 저장할 영수증 줄. 정가·할인·수량을 고쳤으면 실단가를 다시 계산하고,
+    날짜를 못 읽은 줄은 같이 올린 영수증의 날짜(하나일 때) 또는 정산 날짜로 채운다."""
+    import re as _re
+    out = []
+    for r in rows or []:
+        cno = _n(r.get('costco_no'))
+        up = max(0, int(r.get('unit_price') or 0))
+        if not (cno and up > 0):
+            continue
+        lp, dc, q = max(0, int(r.get('list_price') or 0)), max(0, int(r.get('discount') or 0)), max(1, int(r.get('qty') or 1))
+        if lp > 0 and (dc or lp * q != up * q):
+            calc = max(0, lp * q - dc) // q
+            if calc > 0:
+                up = calc
+        rd = str(r.get('receipt_date') or '')[:10]
+        out.append({'상품번호': cno, '상품명': _n(r.get('name')), '수량': q, '단가': up, '정가단가': lp or up,
+                    '할인': dc, 'receipt_date': rd if _re.match(r'^\d{4}-\d{2}-\d{2}$', rd) else ''})
+    known = sorted({x['receipt_date'] for x in out if x['receipt_date']})
+    fill = known[0] if len(known) == 1 else str(d)
+    filled = 0
+    for x in out:
+        if not x['receipt_date']:
+            x['receipt_date'] = fill
+            filled += 1
+    return out, fill, filled
+
+
+def check_receipt(d, rows):
+    """저장 전 점검 — 판독이 의심스러운 줄(수량·금액 이상), 날짜 채움."""
+    items, fill, filled = _clean_rows(d, rows)
+    odd = _rs.receipt_outliers(items)
+    return {'count': len(items), 'dropped': len(rows or []) - len(items), 'filled': filled, 'fill_date': fill,
+            'dates': sorted({x['receipt_date'] for x in items}),
+            'qty': sum(x['수량'] for x in items), 'amount': sum(x['단가'] * x['수량'] for x in items),
+            'outliers': [{'name': o['상품명'], 'qty': o['수량'], 'unit_price': o['단가'], 'amount': o['금액'],
+                          'why': o['이유']} for o in odd]}
+
+
+def save_receipt(d, rows, by=''):
+    """그 날짜(들) 영수증을 통째로 교체 저장한다 — receipt_items + 공유DB 매장가.
+
+    하루 영수증이 여러 장이면 한 번에 같이 올려야 한다(나눠 저장하면 나중 것이 앞 것을 지운다).
+    저장 뒤 매칭은 다시 해야 한다 — 작업본에 '영수증 바뀜'을 표시한다.
+    """
+    items, fill, filled = _clean_rows(d, rows)
+    if not items:
+        raise ValueError('저장할 줄이 없습니다 — 상품번호와 실단가가 있는 줄만 저장됩니다.')
+    s, u, rm, pn, detail = _rs.persist_receipt(by, items)
+    if detail.get('error'):
+        raise ValueError('영수증 저장 실패: ' + str(detail['error']))
+    w = load_work(d)
+    if w:
+        w['_receipt_changed'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        save_work(d, w, by)
+    return {'count': len(items), 'new': s, 'updated': u, 'removed': rm, 'priced': pn,
+            'price_skip': len(detail.get('skip') or []), 'filled': filled, 'fill_date': fill,
+            'dates': sorted({x['receipt_date'] for x in items})}
 
 
 # ── 정산 요청 ─────────────────────────────────────────────────

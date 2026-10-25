@@ -9,7 +9,8 @@
  * 1차: 매칭 실행 → 사용자별 정산표 → 배치 상세(확인·수정·끊기) → 돈 흐름 → 정산 요청.
  * 2차: '영수증에 없는 발송건' 처리(재고 출고·금액 지정·후보 연결·청구 안 함),
  *      남은 영수증 품목 배정(청구·재고 입고·반품요청).
- * 영수증 올리기·발송 파일은 아직 기존 화면에서 한다.
+ * 3차: 영수증 올리기(PDF·사진 판독 → 표에서 확인·수정 → 저장 전 점검 → 저장).
+ * 발송 파일(누락 발송건) 올리기는 아직 기존 화면에서 한다.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import clsx from 'clsx';
@@ -19,6 +20,7 @@ import { rsettle, RsView, RsRow, RowAction } from '@/lib/client/rsettle';
 import { num } from '@/lib/fmt';
 import UnmatchedPanel from '@/components/rsettle/UnmatchedPanel';
 import AssignPanel from '@/components/rsettle/AssignPanel';
+import ReceiptPanel from '@/components/rsettle/ReceiptPanel';
 
 type Act = '' | 'ok' | 'stock' | 'cut';
 interface Pending { act?: Act; qty?: number; amount?: number; memo?: string }
@@ -152,17 +154,22 @@ export default function ReceiptSettlePage() {
           )}
         </div>
         <div className="text-xs text-gray-500">
-          영수증 {v?.receipt_count ?? 0}품목 · 영수증 올리기·발송 파일은
+          영수증 {v?.receipt_count ?? 0}품목 · 발송 파일(누락 발송건) 올리기는
           아직 <a href="/app/" className="underline">기존 화면</a>에서 합니다. 처리한 내용은 같은 DB라 여기에도 보입니다(다시 매칭).
         </div>
 
         {err && <div className="bg-red-50 text-red-700 p-3 rounded-lg text-sm whitespace-pre-wrap">❌ {err}</div>}
         {msg && <div className="bg-green-50 text-green-800 p-3 rounded-lg text-sm">{msg}</div>}
 
+        {day && v && <ReceiptPanel day={day} count={v.receipt_count} onErr={setErr}
+          onSaved={async t => { setErr(''); setMsg(t); await load(day); setMsg(t); }} />}
+        {v?.receipt_changed && (
+          <Warn tone="red">🧾 매칭한 뒤 영수증이 바뀌었습니다({v.receipt_changed.slice(5, 16)}) — <b>다시 매칭</b>해야 새 영수증이 반영됩니다.</Warn>)}
+
         {v && !v.matched && !loading && (
           <div className="bg-white rounded-xl p-6 text-center text-gray-600 text-sm">
             이 날짜는 아직 매칭하지 않았습니다. <b>매칭 실행</b>을 누르세요.
-            {v.receipt_count === 0 && <div className="mt-2 text-orange-600">⚠️ 이 날짜 영수증이 없습니다 — 기존 화면에서 영수증을 먼저 저장하세요.</div>}
+            {v.receipt_count === 0 && <div className="mt-2 text-orange-600">⚠️ 이 날짜 영수증이 없습니다 — 위 🧾 영수증 올리기에서 먼저 저장하세요.</div>}
           </div>
         )}
 

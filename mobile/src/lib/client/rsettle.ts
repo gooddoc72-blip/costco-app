@@ -28,7 +28,7 @@ export interface RsView {
   unmatched_receipt?: { costco_no: string; name: string; price: number; qty: number }[];
   money?: RsMoney; paid_invoices?: { username: string; name: string; amount: number }[];
   late_dispatch?: { username: string; name: string; order_no: string }[];
-  undecided?: number; total?: number; notes?: Record<string, number>;
+  undecided?: number; total?: number; notes?: Record<string, number>; receipt_changed?: string;
   unmatched_detail?: { orders: RsUnmatchedDetail[]; owners: RsOwner[]; error?: string };
   assign?: { rows: RsAssignRow[]; error: string };
 }
@@ -47,6 +47,16 @@ export interface RsAssignRow {
 export interface UnmatchedDecision {
   username: string; order_no: string; how: 'stock' | 'amount' | 'link' | 'skip';
   owner?: string; qty?: number; amount?: number; memo?: string;
+}
+export interface ReceiptRow {
+  receipt_date: string; costco_no: string; name: string; qty: number;
+  list_price: number; discount: number; unit_price: number;
+}
+export interface ParseJob { running: boolean; lines: string[]; error: string; started: string;
+  result: { rows: ReceiptRow[]; fails: { file: string; error: string }[] } | null }
+export interface ReceiptCheck {
+  count: number; dropped: number; filled: number; fill_date: string; dates: string[]; qty: number; amount: number;
+  outliers: { name: string; qty: number; unit_price: number; amount: number; why: string }[];
 }
 export interface RowAction {
   username: string; order_no: string; action: 'ok' | 'unok' | 'stock' | 'cut' | 'edit';
@@ -70,4 +80,21 @@ export const rsettle = {
   assign: (d: string, mode: 'bill' | 'stock' | 'return', username: string, picks: { costco_no: string; packs: number; memo?: string }[], bill_stock = true) =>
     call<RsView & { result: { mode: string; count: number; amount: number; skipped?: number; failed?: string[]; dupe?: { name: string; owner: string; have: number }[] } }>(
       'POST', `${B}/day/${d}/assign`, { mode, username, picks, bill_stock }),
+  receipt: (d: string) => call<{ rows: ReceiptRow[] }>('GET', `${B}/day/${d}/receipt`),
+  parseStart: (files: { name: string; content_b64: string }[]) => call<{ job: string }>('POST', `${B}/receipt/parse`, { files }),
+  parseStatus: (job: string) => call<ParseJob>('GET', `${B}/receipt/parse/${job}`),
+  receiptCheck: (d: string, rows: ReceiptRow[]) => call<ReceiptCheck>('POST', `${B}/day/${d}/receipt/check`, { rows }),
+  receiptSave: (d: string, rows: ReceiptRow[]) =>
+    call<{ count: number; new: number; updated: number; removed: number; priced: number; price_skip: number; filled: number; fill_date: string; dates: string[] }>(
+      'POST', `${B}/day/${d}/receipt/save`, { rows }),
 };
+
+/** 파일 → base64 (data: 머리 없이) */
+export function fileToB64(f: File): Promise<string> {
+  return new Promise((ok, bad) => {
+    const r = new FileReader();
+    r.onload = () => ok(String(r.result).split(',')[1] || '');
+    r.onerror = () => bad(r.error);
+    r.readAsDataURL(f);
+  });
+}
