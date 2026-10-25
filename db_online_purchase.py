@@ -26,6 +26,7 @@ UNIQUE(username, order_no):
   이유는 택배비 제외가 **월 단위로 아무 날짜나** 조회하기 때문이다(billing_page).
   주문번호만으로 답할 수 있어야 한 달치를 훑을 때 날짜를 몰라도 걸러진다.
 """
+from run_memo import memo as _run_memo   # 화면 한 번 그리는 동안만 같은 조회 재사용
 import sqlite3
 from datetime import datetime
 
@@ -168,6 +169,7 @@ def unmark(username, order_nos):
 
 
 # ── 읽기 ──────────────────────────────────────────────────────
+@_run_memo
 def order_nos(username):
     """{order_no} — 그 사용자의 온라인몰 건 주문번호 전부.
 

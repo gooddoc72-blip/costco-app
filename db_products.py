@@ -1,6 +1,7 @@
 """
 제품 DB 레이어 — 공유 제품(auth.db) + 개인 제품(user.db)
 """
+from run_memo import memo as _run_memo   # 화면 한 번 그리는 동안만 같은 조회 재사용
 import sqlite3
 import os
 from datetime import datetime
@@ -1196,6 +1197,7 @@ def _ensure_products_columns(conn):
     conn.commit()
 
 
+@_run_memo
 def get_all_products(username):
     conn = get_user_db(username)
     _ensure_products_columns(conn)

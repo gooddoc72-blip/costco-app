@@ -335,6 +335,16 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     if not IS_ADMIN:
         st.error("관리자 전용 기능입니다.")
         return
+    # 이번 클릭 동안 같은 조회(발송건·직접구매 여부·택배비 등)는 한 번만 — 클릭마다 1초 넘던 원인
+    import run_memo
+    run_memo.begin()
+    try:
+        _render(USERNAME, IS_ADMIN, settings)
+    finally:
+        run_memo.end()
+
+
+def _render(USERNAME: str, IS_ADMIN: bool, settings: dict):
 
     st.header("🧾 영수증 정산 — 사용자 주문 자동배치")
     # ── 정산 기준일 ────────────────────────────────────────────

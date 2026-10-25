@@ -13,6 +13,7 @@
 매칭 엔진 자체(receipt_settle.py)는 그대로 쓴다. 바꾼 것은 '매칭이 끝난 뒤'다.
 예전에는 여기서 네 군데에 서로 다른 모양으로 저장했다. 이제 db_settle 한 곳이다.
 """
+from run_memo import memo as _run_memo   # 화면 한 번 그리는 동안만 같은 조회 재사용
 import db_settle as _ds
 
 #: 매칭 경로(via) → 청구 근거(source). 화면에서 "왜 이 금액인가"에 답한다.
@@ -41,6 +42,7 @@ def _i(v):
 
 
 # ── 그날 택배비·포장비 ────────────────────────────────────────
+@_run_memo
 def daily_fees(username, settle_date):
     """그날 발생한 택배비·포장비. 청구액에 함께 실린다.
 
@@ -247,6 +249,8 @@ def finalize(settle_date, alloc_rows, created_by='', with_fees=False,
     #   예전엔 재고 관리 › 정산 장부에 쌓아 두고 관리자가 따로 정산했다.
     #   적립하면 그 주문의 정산 장부 건은 '정산완료'로 닫는다(두 번 주지 않게).
     stock['credited'] = credit_stock_owners(alloc_rows, settle_date, created_by)
+    from run_memo import clear as _rm_clear
+    _rm_clear()
     return {'saved': len(rows), 'applied': applied, 'dropped': dropped,
             'totals': totals, 'learned': learned, 'fees': fees, 'stock': stock}
 

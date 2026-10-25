@@ -850,6 +850,9 @@ def relink_no_orders(username, the_date):
         conn.commit()
     finally:
         conn.close()
+    if n:
+        from run_memo import clear as _rm_clear
+        _rm_clear()
     return n
 
 def _render_sender_panel(st, pd, dmap, smap, unknown, external):

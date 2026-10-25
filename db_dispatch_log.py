@@ -5,6 +5,7 @@
 
 재고 차감도 여기에 걸려 있다 — 발송 = 실제 판매 확정 시점.
 """
+from run_memo import memo as _run_memo   # 화면 한 번 그리는 동안만 같은 조회 재사용
 from datetime import datetime, timedelta
 
 from db_core import get_user_db
@@ -256,6 +257,8 @@ def log_dispatch_success(username: str, orders: list, dispatched_at: str,
     except Exception:
         pass
     conn.close()
+    from run_memo import clear as _rm_clear
+    _rm_clear()
     return saved
 
 
@@ -327,6 +330,7 @@ def get_dispatch_by_order_id(username: str, order_ids: list,
     return out
 
 
+@_run_memo
 def get_dispatched_orders_with_details(username: str, dispatched_at: str,
                                        platform: str = None) -> list:
     """일괄발송 성공건 + order_history 상세 정보 JOIN 조회.

@@ -10,6 +10,7 @@
 비용 공식은 수익계산과 동일:
   구입가 = (영수증단가 // split_qty) * 수량 * 묶음배수(pack)
 """
+from run_memo import memo as _run_memo   # 화면 한 번 그리는 동안만 같은 조회 재사용
 import sqlite3
 from datetime import datetime, timedelta
 
@@ -76,6 +77,7 @@ def _norm(s):
     return str(s or '').strip()
 
 
+@_run_memo
 def _naver_to_product_map(username):
     """네이버번호(및 코스트코번호) → 사용자 products 레코드."""
     prods = get_all_products(username) or []
@@ -565,6 +567,7 @@ def get_settled_order_keys():
 SELF_PURCHASE_KEY = 'self_purchase'      # '1' = 직접구매(대행 아님)
 
 
+@_run_memo
 def is_self_purchase(username):
     """직접 매장에서 사는 계정인가 — 구매대행이 아니라 정산·청구 대상이 아니다."""
     try:
@@ -619,6 +622,7 @@ def set_include_self(the_date, on):
     set_global_setting(SETTLE_INCLUDE_SELF_KEY, ','.join(sorted(_d)[-60:]))
 
 
+@_run_memo
 def settle_users(the_date=None):
     """관리자 영수증 정산이 **발송건을 모으는** 대상.
 
