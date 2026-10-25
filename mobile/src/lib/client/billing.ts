@@ -27,7 +27,7 @@ export class ApiError extends Error {
   constructor(status: number, msg: string) { super(msg); this.status = status; }
 }
 
-async function call<T>(method: 'GET' | 'POST', path: string, body?: unknown): Promise<T> {
+export async function call<T>(method: 'GET' | 'POST', path: string, body?: unknown): Promise<T> {
   const t = token();
   const res = await fetch(path, {
     method,

@@ -351,3 +351,7 @@ app.include_router(_billing_router)
 # ── 매일 자동 정산 (PC 예약 작업 → 발송 파일·영수증 업로드·매칭 초안) ──
 from api.auto_settle import router as _auto_settle_router  # noqa: E402
 app.include_router(_auto_settle_router)
+
+# ── 영수증 정산 (새 화면 /m/receipt-settle 백엔드) ──
+from api.receipt_settle import router as _rsettle_router  # noqa: E402
+app.include_router(_rsettle_router)
