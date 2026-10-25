@@ -1,0 +1,39 @@
+{
+  "manifest_version": 3,
+  "name": "코코비즈 순위추적",
+  "version": "0.20.0",
+  "description": "코코비즈에 등록한 상품의 네이버쇼핑 순위를 내 브라우저에서 측정해 코코비즈로 보냅니다.",
+  "permissions": [
+    "tabs",
+    "scripting",
+    "storage",
+    "alarms",
+    "cookies"
+  ],
+  "host_permissions": [
+    "https://search.shopping.naver.com/*",
+    "https://cocobiz.shop/*",
+    "https://*.cocobiz.shop/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "코코비즈 순위추적"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://cocobiz.shop/*",
+        "https://*.cocobiz.shop/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle",
+      "all_frames": true
+    }
+  ]
+}

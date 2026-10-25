@@ -1,0 +1,63 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>코코비즈 순위추적</title>
+<style>
+  body { font: 13px/1.5 "Malgun Gothic", system-ui, sans-serif; width: 420px; margin: 0; padding: 14px; }
+  h1 { font-size: 14px; margin: 0 0 4px; }
+  p.sub { color: #666; margin: 0 0 12px; }
+  label { display: block; margin: 8px 0 3px; color: #333; }
+  input { width: 100%; box-sizing: border-box; padding: 5px 7px; }
+  button { padding: 7px 14px; margin-top: 10px; cursor: pointer; }
+  #log { margin-top: 12px; padding: 8px; background: #f6f6f6; border: 1px solid #ddd;
+         height: 220px; overflow-y: auto; white-space: pre-wrap; font-family: Consolas, monospace;
+         font-size: 12px; }
+</style>
+<h1>코코비즈 순위추적</h1>
+<p class="sub">검색어 하나로 바로 확인해 볼 수 있습니다(코코비즈에 저장 안 함).<br>
+상품번호나 스토어명을 넣으면 내 순위까지 같이 알려줍니다.</p>
+
+<label>확인용 검색어</label>
+<input id="kw" value="코스트코 김칩스">
+
+<label>내 상품번호 <span style="color:#888">(선택 — 채널상품번호 / 상품MID / 카탈로그MID 아무거나)</span></label>
+<input id="no" placeholder="예: 13658663684">
+
+<label>또는 스토어명 <span style="color:#888">(선택)</span></label>
+<input id="store" placeholder="예: 코스트코 부산">
+
+<label>확인할 페이지 수 <span style="color:#888">(1페이지 = 40위 · 10 = 400위)</span></label>
+<input id="maxPage" type="number" min="1" max="20" value="10">
+
+<button id="run">진단 시작</button>
+
+<hr style="margin:14px 0; border:0; border-top:1px solid #e0e0e0">
+<div style="font-weight:700; margin-bottom:4px;">코코비즈 등록 목록 전체 측정</div>
+<div style="color:#666; margin-bottom:6px;">
+  코코비즈에 로그인돼 있어야 합니다. 결과가 코코비즈에 저장됩니다.
+</div>
+<label>sid <span style="color:#888">(비워두면 자동으로 찾습니다)</span></label>
+<input id="sid" placeholder="코코비즈 주소창의 sid= 뒤 값" type="password">
+<button id="saveSid" style="margin-top:6px;">sid 저장</button>
+
+<button id="runAll" style="background:#e8342e; color:#fff; border:0; border-radius:5px; font-weight:700;">
+  전체 측정 시작
+</button>
+<button id="stop" style="display:none; margin-left:6px; background:#555; color:#fff; border:0; border-radius:5px; font-weight:700;">
+  ⏹ 중지
+</button>
+
+<hr style="margin:14px 0; border:0; border-top:1px solid #e0e0e0">
+<div style="font-weight:700; margin-bottom:4px;">매일 자동 측정</div>
+<div style="color:#666; margin-bottom:6px;">
+  크롬이 켜져 있을 때만 돕니다. 꺼져 있던 날은 다음에 크롬을 켤 때 한 번 실행됩니다.
+</div>
+<label style="display:flex; align-items:center; gap:6px; margin:6px 0;">
+  <input id="autoOn" type="checkbox" style="width:auto;"> 매일 자동으로 측정
+</label>
+<label>실행 시각</label>
+<input id="autoTime" type="time" value="09:00">
+<button id="saveDaily" style="margin-top:6px;">자동 실행 저장</button>
+<div id="nextRun" style="margin-top:6px; color:#555;"></div>
+
+<div id="log">대기 중…</div>
+<script src="popup.js"></script>
