@@ -42,6 +42,37 @@ class FinalizeReq(BaseModel):
     replace: bool = False
 
 
+class UnmatchedDecision(BaseModel):
+    username: str
+    order_no: str
+    how: str                    # stock | amount | link | skip
+    owner: str = ''
+    qty: int | None = None
+    amount: int | None = None
+    memo: str = ''
+
+
+class UnmatchedReq(BaseModel):
+    decisions: list[UnmatchedDecision]
+
+
+class AssignPick(BaseModel):
+    costco_no: str
+    packs: int
+    memo: str = ''
+
+
+class AssignReq(BaseModel):
+    mode: str                   # bill | stock | return
+    username: str = ''
+    bill_stock: bool = True
+    picks: list[AssignPick]
+
+
+def _dump(m):
+    return m.model_dump() if hasattr(m, 'model_dump') else m.dict()
+
+
 @router.get("/day/{d}")
 def day(d: str, admin: dict = Depends(require_admin)):
     return svc.view(_d(d))
@@ -60,6 +91,29 @@ def rows(d: str, req: RowsReq, admin: dict = Depends(require_admin)):
     try:
         r = svc.row_actions(ds, [a.model_dump() if hasattr(a, 'model_dump') else a.dict()
                                  for a in req.actions], by=admin['username'])
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {'result': r, **svc.view(ds)}
+
+
+@router.post("/day/{d}/unmatched")
+def unmatched(d: str, req: UnmatchedReq, admin: dict = Depends(require_admin)):
+    """영수증에 없는 발송건 처리 — 재고 출고(보유자)·금액 지정·후보 연결·청구 안 함."""
+    ds = _d(d)
+    try:
+        r = svc.apply_unmatched(ds, [_dump(x) for x in req.decisions], by=admin['username'])
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {'result': r, **svc.view(ds)}
+
+
+@router.post("/day/{d}/assign")
+def assign(d: str, req: AssignReq, admin: dict = Depends(require_admin)):
+    """남은 영수증 품목 — 그 사람에게 청구·그 사람 재고로 입고·반품요청."""
+    ds = _d(d)
+    try:
+        r = svc.apply_assign(ds, req.mode, req.username, [_dump(x) for x in req.picks],
+                             bill_stock=req.bill_stock, by=admin['username'])
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return {'result': r, **svc.view(ds)}

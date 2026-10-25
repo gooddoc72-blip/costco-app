@@ -6,8 +6,10 @@
  * 재시작·창 닫기에 사라졌다. 여기서는 작업본을 서버 DB에 두고, 바꾼 줄만 저장한다.
  * 매칭·금액 계산·정산은 전부 파이썬(/api/rsettle/*)이 한다 — 여기서 다시 계산하지 않는다.
  *
- * 1차 범위: 매칭 실행 → 사용자별 정산표 → 배치 상세(확인·수정·끊기) → 돈 흐름 → 정산 요청.
- * 영수증 올리기·발송 파일·'영수증에 없는 발송건' 처리·남은 품목 배정은 아직 기존 화면에서 한다.
+ * 1차: 매칭 실행 → 사용자별 정산표 → 배치 상세(확인·수정·끊기) → 돈 흐름 → 정산 요청.
+ * 2차: '영수증에 없는 발송건' 처리(재고 출고·금액 지정·후보 연결·청구 안 함),
+ *      남은 영수증 품목 배정(청구·재고 입고·반품요청).
+ * 영수증 올리기·발송 파일은 아직 기존 화면에서 한다.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import clsx from 'clsx';
@@ -15,6 +17,8 @@ import { RefreshCw, Search } from 'lucide-react';
 import Header from '@/components/Header';
 import { rsettle, RsView, RsRow, RowAction } from '@/lib/client/rsettle';
 import { num } from '@/lib/fmt';
+import UnmatchedPanel from '@/components/rsettle/UnmatchedPanel';
+import AssignPanel from '@/components/rsettle/AssignPanel';
 
 type Act = '' | 'ok' | 'stock' | 'cut';
 interface Pending { act?: Act; qty?: number; amount?: number; memo?: string }
@@ -122,7 +126,7 @@ export default function ReceiptSettlePage() {
   const m = v?.money;
   return (
     <>
-      <Header title="🧾 영수증 정산" subtitle="매칭 확인 · 정산 요청 (새 화면 1차)" right={
+      <Header title="🧾 영수증 정산" subtitle="매칭 확인 · 미분류 처리 · 남은 품목 배정 · 정산 요청 (새 화면 2차)" right={
         <a href={`/app/`} className="text-xs text-gray-500 underline">기존 화면</a>
       } />
       <main className="px-3 md:px-6 pt-3 pb-24 space-y-4">
@@ -148,7 +152,7 @@ export default function ReceiptSettlePage() {
           )}
         </div>
         <div className="text-xs text-gray-500">
-          영수증 {v?.receipt_count ?? 0}품목 · 영수증 올리기·발송 파일·영수증에 없는 발송건 처리·남은 품목 배정은
+          영수증 {v?.receipt_count ?? 0}품목 · 영수증 올리기·발송 파일은
           아직 <a href="/app/" className="underline">기존 화면</a>에서 합니다. 처리한 내용은 같은 DB라 여기에도 보입니다(다시 매칭).
         </div>
 
@@ -264,20 +268,11 @@ export default function ReceiptSettlePage() {
               </div>
             </section>
 
-            {/* 영수증에 없는 발송건 (1차: 보기만) */}
-            {!!v.unmatched_orders?.length && (
-              <section className="bg-white rounded-xl shadow-sm overflow-x-auto">
-                <div className="px-3 py-2 font-bold text-sm border-b">📋 영수증에 없는 발송건 {v.unmatched_orders.length}건
-                  <span className="font-normal text-xs text-gray-500"> — 재고 출고·금액 지정 처리는 아직 기존 화면에서 합니다(다음 단계에서 옮김)</span></div>
-                <table className="w-full text-xs"><thead className="bg-gray-50 text-gray-500"><tr>
-                  <th className="p-2 text-left">판매자</th><th className="p-2 text-left">주문번호</th><th className="p-2 text-left">수취인</th>
-                  <th className="p-2 text-left">상품명</th><th className="p-2 text-right">수량</th><th className="p-2 text-left">비고</th></tr></thead>
-                  <tbody>{v.unmatched_orders.map(o => (
-                    <tr key={k(o)} className="border-t"><td className="p-2">{o.name}</td><td className="p-2 font-mono">{o.order_no}</td>
-                      <td className="p-2">{o.recipient}</td><td className="p-2">{o.product_name}</td><td className="p-2 text-right">{o.qty}</td>
-                      <td className="p-2">{o.pre === 'stock' ? '📦 재고 출고 예정' : o.carried_from ? `📌 ${o.carried_from.slice(5)} 발송` : ''}</td></tr>))}
-                  </tbody></table>
-              </section>)}
+            {/* 2단계: 영수증에 없는 발송건 처리 · 남은 영수증 품목 배정 */}
+            <UnmatchedPanel v={v} day={day} busy={busy} setBusy={setBusy} onErr={setErr}
+              onDone={(nv, t) => { setV(nv); setPend({}); setErr(''); setMsg(t); }} />
+            <AssignPanel v={v} day={day} busy={busy} setBusy={setBusy} onErr={setErr}
+              onDone={(nv, t) => { setV(nv); setPend({}); setErr(''); setMsg(t); }} />
 
             {/* 돈 흐름 */}
             {m && (
@@ -285,7 +280,7 @@ export default function ReceiptSettlePage() {
                 <Flow title="🧾 영수증 돈은 어디로 갔나" items={[
                   ['영수증 합계', m.receipt_total, true], ['① 주문에 붙어 청구', m.receipt_bill], ['② 재고로 입고', m.stock_in],
                   ['③ 반품요청', m.returned], ['④ 아직 안 정함', m.undecided, true]]}
-                  foot={m.undecided > 0 ? `영수증 중 ${num(m.undecided)}원이 아직 청구·재고·반품 어느 것도 아닙니다 — 기존 화면 '배정할 영수증 품목'에서 정하세요.`
+                  foot={m.undecided > 0 ? `영수증 중 ${num(m.undecided)}원이 아직 청구·재고·반품 어느 것도 아닙니다 — 위 '배정할 영수증 품목'에서 정하세요.`
                     : m.undecided < 0 ? `영수증보다 ${num(-m.undecided)}원 더 청구·입고됐습니다 — 배치 상세의 ⚠️ 줄을 확인하세요.` : '✅ 영수증이 전부 정리됐습니다.'} />
                 <Flow title="💳 청구 돈은 어디서 왔나" items={[
                   ['청구 합계', m.bill_total, true], ['ⓐ 그날 영수증으로 산 것', m.receipt_bill], ['ⓑ 본인·과거 구매분 재고', m.self_stock],

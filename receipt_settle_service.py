@@ -406,7 +406,370 @@ def view(d):
         'total': sum(r['amount'] for r in out_rows),
         'notes': {k: alloc.get(k) for k in ('_restored', '_online_restored', '_stock_carry', '_carried') if alloc.get(k)},
     })
+    try:
+        out['unmatched_detail'] = unmatched_view(alloc, items, names)
+    except Exception as e:
+        out['unmatched_detail'] = {'orders': [], 'owners': [], 'error': str(e)[:200]}
+    try:
+        out['assign'] = assign_view(alloc, items, d, names)
+    except Exception as e:
+        out['assign'] = {'rows': [], 'error': f'남은 품목을 계산하지 못했습니다: {str(e)[:200]}'}
     return out
+
+
+# ── 2단계 ① 영수증에 없는 발송건 — 무엇이었는지 정한다 ─────────────────
+#   Streamlit _render_unmatched_panel과 같은 규칙이다(재고 보유자 자동 추천, 자동 금액,
+#   장부에 없는 남의 물건 빌려 보냄, 후보 연결, 청구 안 함). 화면 코드 안에 있던 셈을
+#   여기로 옮겨 새 화면이 같은 결과를 내게 한다.
+def _n(s):
+    return str(s or '').strip()
+
+
+def _stock_book():
+    """({상품번호: {보유자: {qty, cost, list}}}, 이름 찾기 후보 목록)"""
+    import db_inventory as _inv
+    stock, names = {}, []
+    for sr in (_inv.get_stock_summary() or []):
+        pn = _n(sr.get('product_no'))
+        if not pn:
+            continue
+        stock.setdefault(pn, {})[str(sr.get('owner') or '')] = {
+            'qty': int(sr.get('qty_left') or 0), 'cost': int(sr.get('unit_cost') or 0),
+            'list': int(sr.get('list_price') or 0)}
+        names.append({'_pn': pn, 'name': str(sr.get('product_name') or '')})
+    # 다 쓴 입고분 이름까지 본다 — 같은 상품이 입고마다 다른 이름으로 들어온다
+    try:
+        c = _inv._conn()
+        names += [{'_pn': _n(r['product_no']), 'name': str(r['product_name'] or ''), 'owner': str(r['owner'] or '')}
+                  for r in c.execute("SELECT DISTINCT product_no, product_name, owner FROM inventory_lots "
+                                     "WHERE status='ACTIVE' AND TRIM(COALESCE(product_no,''))<>''")]
+        c.close()
+    except Exception:
+        pass
+    seen, cands = set(), []
+    for x in names:
+        if (x['_pn'], x['name']) not in seen:
+            seen.add((x['_pn'], x['name']))
+            cands.append(x)
+    return stock, cands
+
+
+class _Unmatched:
+    """미분류 발송건 처리에 필요한 재고·영수증 정보를 한 번 읽어 둔다."""
+
+    def __init__(self, alloc, items):
+        import db_inventory as _inv
+        self.inv = _inv
+        self.stock, self.cands = _stock_book()
+        self.price_by = {}
+        for it in items or []:
+            c = _rs._norm(it.get('상품번호'))
+            if c:
+                try:
+                    self.price_by[c] = int(float(it.get('단가') or 0))
+                except (TypeError, ValueError):
+                    pass
+        self.left_r = [(_rs._norm(x.get('상품번호')), str(x.get('상품명') or ''))
+                       for x in (alloc.get('unmatched_receipt') or []) if _rs._norm(x.get('상품번호'))]
+
+    def stock_pn(self, o):
+        """이 주문이 쓸 재고 상품번호 — 번호가 없으면 판매자 본인 입고분 이름부터 찾는다."""
+        c = _rs._norm(o.get('costco_no'))
+        if c and c in self.stock:
+            return c
+        nm, me = str(o.get('product_name') or ''), str(o.get('username') or '')
+        for pool in ([x for x in self.cands if x.get('owner') == me], self.cands):
+            if not pool:
+                continue
+            try:
+                b, _ = _rs.best_name_match(nm, pool)
+            except Exception:
+                b = None
+            if b:
+                return b['_pn']
+        return c
+
+    def auto_owner(self, cno, me):
+        h = self.stock.get(cno) or {}
+        if (h.get(me) or {}).get('qty', 0) > 0:
+            return me
+        return max(h, key=lambda k: h[k]['qty']) if h else ''
+
+    def auto_amount(self, o, cno, owner, qty):
+        """본인 재고: 아직 안 낸 몫만 · 남의 재고: 할인가로 산 것 +1,000원, 정상가면 산 값."""
+        v = (self.stock.get(cno) or {}).get(owner) or {}
+        c = int(v.get('cost') or 0)
+        if not owner or not c:
+            return 0
+        if owner == str(o.get('username') or ''):
+            try:
+                return int(self.inv.own_unpaid_units(owner, cno, qty, order_no=str(o.get('order_no') or ''))
+                           .get('unpaid_amount') or 0)
+            except Exception:
+                return c * qty
+        return (c + self.inv.cross_surcharge_for(c, v.get('list'))) * qty
+
+    def candidate(self, o):
+        """그날 영수증에 남은 품목 중 이름이 비슷한 것(영문·한글 표기 차이) — 사람이 보고 고른다."""
+        from services import name_score
+        best = (0.0, '', '')
+        for c, nm in self.left_r:
+            try:
+                s = name_score(str(o.get('product_name') or ''), nm)[0]
+            except Exception:
+                s = 0.0
+            if s > best[0]:
+                best = (s, c, nm)
+        return best if best[0] >= 0.3 else (0.0, '', '')
+
+
+def unmatched_view(alloc, items, names):
+    """영수증에 없는 발송건 — 건마다 재고 현황·자동 보유자·자동 금액·같은 물건 후보."""
+    un = list(alloc.get('unmatched_orders') or [])
+    if not un:
+        return {'orders': [], 'owners': []}
+    U = _Unmatched(alloc, items)
+    out = []
+    for o in un:
+        cno = U.stock_pn(o)
+        me = str(o.get('username') or '')
+        qty = int(o.get('qty') or 1)
+        own = U.auto_owner(cno, me)
+        cand = U.candidate(o)
+        have = U.stock.get(cno) or {}
+        out.append({
+            'username': me, 'name': names.get(me, me), 'order_no': str(o.get('order_no') or ''),
+            'recipient': str(o.get('recipient') or ''), 'product_name': str(o.get('product_name') or ''),
+            'qty': qty, 'carried_from': str(o.get('carried_from') or ''), 'pre': str(o.get('_pre') or ''),
+            'stock_no': cno, 'auto_owner': own, 'auto_amount': U.auto_amount(o, cno, own, qty),
+            'stock': [{'owner': ow, 'name': names.get(ow, ow), 'qty': v['qty'], 'cost': v['cost']}
+                      for ow, v in sorted(have.items(), key=lambda kv: -kv[1]['qty'])],
+            'receipt_price': U.price_by.get(_rs._norm(o.get('costco_no')), 0),
+            'candidate': ({'costco_no': cand[1], 'name': cand[2], 'price': U.price_by.get(cand[1], 0)}
+                          if cand[1] else None),
+        })
+    holders = sorted({ow for v in U.stock.values() for ow in v})
+    try:
+        from db import get_all_users
+        active = [u['username'] for u in get_all_users() if (u.get('status') or 'active') == 'active']
+    except Exception:
+        active = []
+    owners = ([{'username': u, 'name': names.get(u, u), 'in_ledger': True} for u in holders]
+              + [{'username': u, 'name': names.get(u, u), 'in_ledger': False}
+                 for u in sorted(set(active) - set(holders), key=lambda u: names.get(u, u))])
+    return {'orders': out, 'owners': owners}
+
+
+def apply_unmatched(d, decisions, by=''):
+    """decisions: [{username, order_no, how: stock|amount|link|skip, owner?, qty?, amount?, memo?}]
+
+    반환: {added, amount, skipped, zero, no_ledger:[상품명], loans}
+    금액 0원으로 남는 건은 넣지 않는다(0원 청구는 그대로 손실) — 본인 결제된 재고는 예외.
+    """
+    d = str(d)
+    alloc = load_work(d)
+    if not alloc:
+        raise ValueError('먼저 매칭을 실행하세요.')
+    items = receipt_items(d)
+    U = _Unmatched(alloc, items)
+    un = {_key(o): o for o in alloc.get('unmatched_orders') or []}
+    new_rows, skip_keys, zero, no_ledger = [], [], 0, []
+    for a in decisions or []:
+        k = (str(a.get('username') or ''), str(a.get('order_no') or ''))
+        o = un.get(k)
+        how = str(a.get('how') or '')
+        if not o or how not in ('stock', 'amount', 'link', 'skip'):
+            continue
+        if how == 'skip':
+            skip_keys.append(k)
+            continue
+        o = dict(o)
+        qty = max(1, int(a.get('qty') or o.get('qty') or 1))
+        o['qty'] = qty
+        memo = str(a.get('memo') or '').strip()
+        amt = max(0, int(a.get('amount') or 0))
+        me = k[0]
+        if how == 'link':
+            _, cc, cnm = U.candidate(o)
+            if not cc or not U.price_by.get(cc):
+                zero += 1
+                continue
+            lr = _rs.build_manual_rows([{'order': o, 'costco_no': cc, 'unit_price': U.price_by[cc], 'via': 'name'}])[0]
+            lr['memo'] = memo or f'후보 연결 · {cnm}'
+            lr['confirmed'] = True
+            new_rows.append(lr)
+            continue
+        cno = U.stock_pn(o)
+        stk_owner, loan, cost_basis = '', False, 0
+        if how == 'stock':
+            own = str(a.get('owner') or '') or U.auto_owner(cno, me)
+            have = U.stock.get(cno) or {}
+            cost = int((have.get(own) or {}).get('cost') or 0)
+            cross = bool(own and own != me)
+            in_ledger = bool(own and own in have)
+            own_paid = False
+            if not amt:
+                if own and not cross:
+                    try:
+                        ou = U.inv.own_unpaid_units(own, cno, qty, order_no=k[1])
+                    except Exception:
+                        ou = {'unpaid_units': qty, 'unpaid_amount': cost * qty, 'paid_units': 0}
+                    amt = int(ou.get('unpaid_amount') or 0)
+                    cost_basis = cost * qty
+                    own_paid = int(ou.get('paid_units') or 0) > 0
+                elif in_ledger or not own:
+                    amt = U.auto_amount(o, cno, own, qty) if own else 0
+                else:
+                    amt = 0      # 장부에 그 사람 재고가 없다 — 금액을 적어야 한다
+            if amt <= 0 and not own_paid:
+                zero += 1
+                continue
+            loan = bool(cross and not in_ledger and amt > 0)
+            if not memo and loan:
+                memo = f"빌린 재고 · {own} — 재고 관리 › 정산 장부에서 {own}에게 {amt:,}원 지급"
+            if not memo:
+                sur = U.inv.cross_surcharge_for(cost, (have.get(own) or {}).get('list')) if cross else 0
+                memo = ('재고 출고' + (f' · {own} 재고' if own else '')
+                        + ((f' · 할인 재고 +{sur:,}원' if sur else ' · 정상가 재고') if cross else '')
+                        + (' · 본인 재고(결제됨) — 청구 없음' if own_paid and not amt
+                           else (' · 본인 재고 일부 결제됨' if own_paid else '')))
+            via = 'stock'
+            stk_owner = own if (own and (own in have or own_paid)) else ''
+            if not stk_owner and not loan:
+                no_ledger.append(str(o.get('product_name') or '')[:20])
+        else:
+            if amt <= 0:
+                zero += 1
+                continue
+            via = 'manual'
+        new_rows.append({
+            'username': me, 'order_no': o.get('order_no', ''), 'order_date': o.get('order_date', '') or d,
+            'costco_no': (str(cno or '') if stk_owner else str(o.get('costco_no') or '')),
+            'naver_no': o.get('naver_no', ''), 'product_name': o.get('product_name', ''),
+            'qty': qty, 'unit_price': amt, 'amount': amt, 'prev_cost': int(o.get('prev_cost') or 0),
+            'via': via, 'split_qty': 1, 'pack': 1, 'memo': memo, 'stock_owner': stk_owner,
+            'loan_owner': (str(a.get('owner') or '') if loan else ''), 'cost_basis': cost_basis})
+    if skip_keys:
+        _rs.dismiss_carry(skip_keys, note=f'{d} 영수증 정산에서 청구 안 함')
+        sk = set(skip_keys)
+        alloc['unmatched_orders'] = [o for o in alloc.get('unmatched_orders') or [] if _key(o) not in sk]
+    if new_rows:
+        _rs.merge_matches(alloc, new_rows, [])
+        try:
+            _ds.upsert_draft_rows(d, new_rows, created_by=by)
+        except Exception:
+            pass
+        # 끊어 둔 줄(_cut)이면 표시를 지운다 — 남겨 두면 다시 매칭할 때 또 끊겨 이 처리가 사라진다
+        cm = dict(alloc.get('_cut') or {})
+        for r in new_rows:
+            cm.pop('\t'.join(_key(r)), None)
+        alloc['_cut'] = cm
+    alloc['user_summary'] = _rs._summarize(alloc['rows'])
+    save_work(d, alloc, by)
+    return {'added': len(new_rows), 'amount': sum(int(r['amount']) for r in new_rows),
+            'skipped': len(skip_keys), 'zero': zero, 'no_ledger': no_ledger,
+            'loans': sum(1 for r in new_rows if r.get('loan_owner'))}
+
+
+# ── 2단계 ② 남은 영수증 품목 — 누구에게 청구 / 누구 재고로 / 반품요청 ─────────
+def assign_view(alloc, items, d, names):
+    """Streamlit _build_assign_rows와 같은 목록 — 주문 못 찾은 품목 + 팔고 남은 수량(팩 단위).
+
+    그날 이미 재고로 넣은 수량과 반품요청한 수량은 뺀다. 입고 이력을 못 읽으면 목록을
+    열지 않는다 — 이미 넣은 재고가 한 번 더 들어간다.
+    """
+    lefts = _sc.leftovers(items, alloc.get('rows') or [], str(d))
+    if not lefts:
+        return {'rows': [], 'error': ''}
+    lots = _rs.receipt_lot_units(str(d), start=str(d))
+    if lots.get('_error'):
+        return {'rows': [], 'error': '재고 입고 이력을 읽지 못해 배정 목록을 열 수 없습니다 — 이대로 배정하면 '
+                                     '이미 넣은 재고가 한 번 더 들어갑니다. 잠시 뒤 다시 여세요.'}
+    try:
+        import db_receipt_return as _rr
+        rets = _rr.units_by_date(str(d))
+    except Exception:
+        rets = {}
+    price_by, list_by = {}, {}
+    for it in items or []:
+        c = _rs._norm(it.get('상품번호'))
+        if c:
+            try:
+                price_by[c] = int(float(it.get('단가') or 0))
+            except (TypeError, ValueError):
+                price_by[c] = 0
+            list_by[c] = int(it.get('정가단가') or it.get('단가') or 0)
+    out = []
+    for l in lefts:
+        c = str(l['costco_no'])
+        sq = max(1, int(l.get('split_qty') or 1))
+        units = int(l.get('units_left') or 0) - int(lots.get(c, 0) or 0) - int(rets.get(c, 0) or 0)
+        packs = units // sq
+        if packs <= 0:
+            continue
+        ow = str(l.get('owner') or '')
+        out.append({'costco_no': c, 'name': str(l.get('name') or ''),
+                    'price': price_by.get(c, int(l.get('unit_price') or 0)), 'list_price': list_by.get(c, 0),
+                    'receipt_qty': int(l.get('qty_receipt') or 0), 'packs_left': packs, 'split_qty': sq,
+                    'kind': '주문없음' if int(l.get('units_used') or 0) <= 0 else '팔고남음',
+                    'requester': ow, 'requester_name': names.get(ow, ow) if ow else ''})
+    out.sort(key=lambda r: (-r['packs_left'] * r['price'], r['name']))
+    return {'rows': out, 'error': ''}
+
+
+def apply_assign(d, mode, username, picks, bill_stock=True, by=''):
+    """mode: bill(그 사람에게 청구) | stock(그 사람 재고로 입고) | return(반품요청)
+    picks: [{costco_no, packs, memo?}] — 수량은 남은 팩 수를 넘지 못한다."""
+    d = str(d)
+    alloc = load_work(d)
+    if not alloc:
+        raise ValueError('먼저 매칭을 실행하세요.')
+    if mode not in ('bill', 'stock', 'return'):
+        raise ValueError('mode는 bill·stock·return 중 하나')
+    if mode != 'return' and not username:
+        raise ValueError('받을 사용자를 고르세요.')
+    items = receipt_items(d)
+    av = assign_view(alloc, items, d, {})
+    if av['error']:
+        raise ValueError(av['error'])
+    src = {r['costco_no']: r for r in av['rows']}
+    sel = []
+    for p in picks or []:
+        r = src.get(str(p.get('costco_no') or ''))
+        q = int(p.get('packs') or 0)
+        if not r or q <= 0:
+            continue
+        if q > r['packs_left']:
+            raise ValueError(f"{r['name']}: 남은 {r['packs_left']}팩보다 많이 배정할 수 없습니다.")
+        sel.append((r, q, str(p.get('memo') or '').strip()))
+    if not sel:
+        raise ValueError('배정할 품목이 없습니다.')
+    if mode == 'bill':
+        new = _rs.build_memo_rows([{'username': username, 'costco_no': r['costco_no'], 'product_name': r['name'],
+                                    'unit_price': r['price'], 'qty': q, 'memo': m} for r, q, m in sel], d)
+        if not new:
+            raise ValueError('청구 줄을 만들지 못했습니다(사용자·상품번호 확인).')
+        _rs.merge_matches(alloc, new, [])
+        try:
+            _ds.upsert_draft_rows(d, new, created_by=by)
+        except Exception:
+            pass
+        alloc['user_summary'] = _rs._summarize(alloc['rows'])
+        save_work(d, alloc, by)
+        return {'mode': mode, 'count': len(new), 'amount': sum(int(x.get('amount') or 0) for x in new)}
+    if mode == 'stock':
+        res = _sc.receive_leftovers(d, [{
+            'costco_no': r['costco_no'], 'name': r['name'], 'unit_price': r['price'], 'list_price': r['list_price'],
+            'split_qty': r['split_qty'], 'units_left': q * r['split_qty'], 'owner': username} for r, q, m in sel],
+            bill=bool(bill_stock), created_by=by)
+        return {'mode': mode, 'count': int(res.get('ok') or 0), 'amount': int(res.get('billed') or 0),
+                'skipped': int(res.get('skipped') or 0), 'failed': res.get('failed') or [],
+                'dupe': res.get('dupe') or []}
+    import db_receipt_return as _rr
+    res = _rr.add(d, [{'costco_no': r['costco_no'], 'name': r['name'], 'qty': q, 'split_qty': r['split_qty'],
+                       'unit_price': r['price'], 'list_price': r['list_price'], 'reason': m} for r, q, m in sel],
+                  created_by=by)
+    return {'mode': mode, 'count': int(res.get('ok') or 0), 'amount': sum(r['price'] * q for r, q, m in sel)}
 
 
 # ── 정산 요청 ─────────────────────────────────────────────────

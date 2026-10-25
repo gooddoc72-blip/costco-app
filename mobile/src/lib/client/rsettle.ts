@@ -29,6 +29,24 @@ export interface RsView {
   money?: RsMoney; paid_invoices?: { username: string; name: string; amount: number }[];
   late_dispatch?: { username: string; name: string; order_no: string }[];
   undecided?: number; total?: number; notes?: Record<string, number>;
+  unmatched_detail?: { orders: RsUnmatchedDetail[]; owners: RsOwner[]; error?: string };
+  assign?: { rows: RsAssignRow[]; error: string };
+}
+export interface RsUnmatchedDetail {
+  username: string; name: string; order_no: string; recipient: string; product_name: string;
+  qty: number; carried_from: string; pre: string; stock_no: string;
+  auto_owner: string; auto_amount: number; receipt_price: number;
+  stock: { owner: string; name: string; qty: number; cost: number }[];
+  candidate: { costco_no: string; name: string; price: number } | null;
+}
+export interface RsOwner { username: string; name: string; in_ledger: boolean }
+export interface RsAssignRow {
+  costco_no: string; name: string; price: number; list_price: number; receipt_qty: number;
+  packs_left: number; split_qty: number; kind: string; requester: string; requester_name: string;
+}
+export interface UnmatchedDecision {
+  username: string; order_no: string; how: 'stock' | 'amount' | 'link' | 'skip';
+  owner?: string; qty?: number; amount?: number; memo?: string;
 }
 export interface RowAction {
   username: string; order_no: string; action: 'ok' | 'unok' | 'stock' | 'cut' | 'edit';
@@ -46,4 +64,10 @@ export const rsettle = {
   rows: (d: string, actions: RowAction[]) =>
     call<RsView & { result: { cut: number; edited: number; ok: number } }>('POST', `${B}/day/${d}/rows`, { actions }),
   finalize: (d: string, replace: boolean) => call<FinalizeRes>('POST', `${B}/day/${d}/finalize`, { replace }),
+  unmatched: (d: string, decisions: UnmatchedDecision[]) =>
+    call<RsView & { result: { added: number; amount: number; skipped: number; zero: number; no_ledger: string[]; loans: number } }>(
+      'POST', `${B}/day/${d}/unmatched`, { decisions }),
+  assign: (d: string, mode: 'bill' | 'stock' | 'return', username: string, picks: { costco_no: string; packs: number; memo?: string }[], bill_stock = true) =>
+    call<RsView & { result: { mode: string; count: number; amount: number; skipped?: number; failed?: string[]; dupe?: { name: string; owner: string; have: number }[] } }>(
+      'POST', `${B}/day/${d}/assign`, { mode, username, picks, bill_stock }),
 };
