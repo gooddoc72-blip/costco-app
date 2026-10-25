@@ -29,14 +29,17 @@ document.getElementById("stop").addEventListener("click", async () => {
   const s = document.getElementById("stop");
   s.disabled = true; s.textContent = "중지하는 중…";
   try { await chrome.runtime.sendMessage({ type: "stop" }); } catch (e) {}
-  setTimeout(() => { s.disabled = false; s.textContent = "⏹ 중지"; }, 4000);
 });
 
 // 팝업이 열려 있는 동안 주기적으로 실제 상태를 확인한다(로그를 놓쳤을 때 대비).
 setInterval(async () => {
   try {
     const st = await chrome.runtime.sendMessage({ type: "status" });
-    if (st && st.ok) setBusy(!!st.running);
+    if (st && st.ok) {
+      setBusy(!!st.running);
+      const s = document.getElementById("stop");
+      if (s && st.running) { s.disabled = !!st.stopping; s.textContent = st.stopping ? "중지하는 중…" : "⏹ 중지"; }
+    }
   } catch (e) {}
 }, 2000);
 document.getElementById("run").addEventListener("click", async () => {

@@ -55,13 +55,17 @@ function setPanelState(v) {
   try { chrome.storage.local.set({ [STATE_KEY]: v }); } catch (e) {}
 }
 
-function setRunning(v) {
+function setRunning(v, stopping) {
   _running = v;
   const btn = document.getElementById("cbx-run");
   if (btn) { btn.disabled = v; btn.textContent = v ? "측정 중…" : "등록된 키워드 순위 측정"; }
   const stopBtn = document.getElementById("cbx-stop");
-  if (stopBtn) { stopBtn.style.display = v ? "block" : "none"; stopBtn.disabled = false;
-                 stopBtn.textContent = "⏹ 중지 (측정한 것까지 저장)"; }
+  if (stopBtn) {
+    stopBtn.style.display = v ? "block" : "none";
+    stopBtn.disabled = !!(v && stopping);
+    stopBtn.textContent = v && stopping ? "중지하는 중… (보던 페이지를 마치는 중)"
+                                        : "⏹ 중지 (측정한 것까지 저장)";
+  }
   applyPanelState();
 }
 
@@ -210,6 +214,26 @@ chrome.runtime.onMessage.addListener((msg) => {
   if (msg.line === "__DONE__") { setRunning(false); return; }
   if (log) write(log, msg.line);
 });
+
+// 진행 로그·끝남 신호는 확장 팝업에만 바로 전달되고 이 화면(패널)에는 오지 않는다.
+// 그래서 패널이 '측정 중… / 중지하는 중…'에 멈춰 있었다. 2초마다 실제 상태를
+// 직접 물어 로그와 버튼을 맞춘다.
+let _lastLineCount = -1;
+setInterval(async () => {
+  if (!document.getElementById(PANEL_ID)) return;
+  try {
+    const st = await chrome.runtime.sendMessage({ type: "status" });
+    if (!st || !st.ok) return;
+    const log = document.getElementById("cbx-log");
+    const lines = st.lines || [];
+    if (log && lines.length && lines.length !== _lastLineCount) {
+      log.textContent = lines.join(NL_CHAR);
+      log.scrollTop = log.scrollHeight;
+      _lastLineCount = lines.length;
+    }
+    if (!!st.running !== _running || st.running) setRunning(!!st.running, !!st.stopping);
+  } catch (e) { /* 확장이 새로 고쳐지는 중 — 다음 번에 다시 */ }
+}, 2000);
 
 
 function nowStamp() {
