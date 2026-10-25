@@ -13,7 +13,8 @@
   · 우리 주문 — 최근 14일 vs 직전 14일 판매량, 파는 사용자 수
   ※ 네이버 쇼핑 검색 API는 2026-07-31 종료 — 최저가·판매처 수는 크롬 확장 수집으로 붙인다.
 점수(100): 언급 증가 30 · 언급량 15 · 검색 증가 20 · 월간 검색수 15 · 판매 가능성 20
-상위 30개는 AI가 '뜨는 이유·추천 등급·추천가·상품명·키워드·주의'를 쓴다.
+상위 40개는 에이전트 회의(trend_council)가 서로 검토해 등급·이유·추천가·상품명·키워드·주의를
+정하고('제외'는 빠진다) 30개를 남긴다. Claude 키가 없으면 AI 한 번 제안(ai_suggest)으로 대신한다.
 결과는 auth.db trend_reports에 주 단위로 쌓는다.
 """
 import json
@@ -68,9 +69,52 @@ def get_report(rid=None):
     conn = get_auth_db()
     try:
         _ensure(conn)
-        r = (conn.execute("SELECT data_json FROM trend_reports WHERE id=?", (int(rid),)).fetchone()
-             if rid else conn.execute("SELECT data_json FROM trend_reports ORDER BY id DESC LIMIT 1").fetchone())
-        return json.loads(r[0]) if r else None
+        r = (conn.execute("SELECT id, data_json FROM trend_reports WHERE id=?", (int(rid),)).fetchone()
+             if rid else conn.execute("SELECT id, data_json FROM trend_reports ORDER BY id DESC LIMIT 1").fetchone())
+        if not r:
+            return None
+        d = json.loads(r[1])
+        d['id'] = r[0]
+        return d
+    finally:
+        conn.close()
+
+
+# ── 관리자 승인 — 회의 결과를 실제로 밀지 정한다 (판정 성적의 기준) ──
+def _ensure_dec(conn):
+    conn.execute("""CREATE TABLE IF NOT EXISTS trend_decisions (
+        report_id INTEGER NOT NULL, costco_no TEXT NOT NULL,
+        decision TEXT NOT NULL, memo TEXT DEFAULT '', decided_by TEXT DEFAULT '', decided_at TEXT,
+        UNIQUE(report_id, costco_no))""")
+
+
+def get_decisions(rid):
+    """{코스트코번호: {decision, memo, decided_by, decided_at}}"""
+    conn = get_auth_db()
+    try:
+        _ensure_dec(conn)
+        return {r[0]: {'decision': r[1], 'memo': r[2], 'decided_by': r[3], 'decided_at': r[4]} for r in conn.execute(
+            "SELECT costco_no, decision, memo, decided_by, decided_at FROM trend_decisions WHERE report_id=?",
+            (int(rid),))}
+    finally:
+        conn.close()
+
+
+def set_decision(rid, costco_no, decision, memo='', by=''):
+    """decision: approve(주력으로 민다) | hold(보류) | ''(취소)"""
+    conn = get_auth_db()
+    try:
+        _ensure_dec(conn)
+        if not decision:
+            conn.execute("DELETE FROM trend_decisions WHERE report_id=? AND costco_no=?", (int(rid), str(costco_no)))
+        else:
+            conn.execute(
+                "INSERT INTO trend_decisions (report_id, costco_no, decision, memo, decided_by, decided_at) "
+                "VALUES (?,?,?,?,?,?) ON CONFLICT(report_id, costco_no) DO UPDATE SET "
+                "decision=excluded.decision, memo=excluded.memo, decided_by=excluded.decided_by, "
+                "decided_at=excluded.decided_at",
+                (int(rid), str(costco_no), decision, memo, by, datetime.now().strftime('%Y-%m-%d %H:%M')))
+        conn.commit()
     finally:
         conn.close()
 
@@ -264,12 +308,16 @@ def blog_week(ck, kw):
     네이버 검색은 단어 하나만 걸려도 글을 준다. 그대로 세면 '가지'·'토마토'처럼 흔한 말이
     모든 코스트코 글에 걸려 언급이 한도(300)까지 차고, 이전 7일은 못 세서 '급상승'으로
     잘못 나왔다(시범 1차). 글 본문에 토막이 다 있을 때만 세고, 14일 전까지 넘겨 본다.
+    검색 결과는 1,000건까지만 넘길 수 있어 최근 글이 아주 많으면 14일 전까지 못 간다 —
+    그때는 이전 7일이 0으로 남아 '급상승'처럼 보인다(2차: 789/0). capped로 알려 준다.
+    반환: (최근 7일, 이전 7일, 전체 글 수, capped)
     """
     t = date.today()
     c7, c14 = (t - timedelta(days=7)).strftime('%Y%m%d'), (t - timedelta(days=14)).strftime('%Y%m%d')
     toks = [w.lower() for w in kw.split() if w]
     a = b = 0
     total = 0
+    reached = False
     for start in range(1, 1000, 100):
         j = _naver('blog', '코스트코 ' + kw, start, ck)
         total = int(j.get('total') or total)
@@ -284,9 +332,10 @@ def blog_week(ck, kw):
             elif pd_ >= c14:
                 b += 1
         if not its or str(its[-1].get('postdate') or '') < c14:
+            reached = True
             break
         time.sleep(0.08)
-    return a, b, total
+    return a, b, total, not reached
 
 
 def datalab(ck, kws):
@@ -425,7 +474,7 @@ def run(by='', top_n=30, log=print):
     for pn in cand:
         e = cat[pn]
         kw = e['short']
-        b7, bp, btot = blog_week(k['open'], kw)
+        b7, bp, btot, capped = blog_week(k['open'], kw)
         vol, comp = ad_volume(k['ad'], kw)
         hs = hits.get(pn, [])
         yt = [d for d in hs if d['src'] == 'youtube']
@@ -433,12 +482,15 @@ def run(by='', top_n=30, log=print):
         rows.append({
             'costco_no': pn, 'name': e.get('receipt_name') or e['name'], 'full_name': e['name'], 'kw': kw,
             'store': e['store'], 'category': e['category'],
-            'mentions': len(hs), 'blog7': b7, 'blog_prev7': bp, 'blog_total': btot,
+            'mentions': len(hs), 'blog7': b7, 'blog_prev7': bp, 'blog_total': btot, 'blog_capped': capped,
             'yt_count': len(yt), 'yt_views': sum(d['views'] for d in yt),
             'volume': vol, 'comp': comp,
             'sales_recent': s[0], 'sales_prev': s[1], 'sellers': s[2],
             'samples': [{'src': d['src'], 'text': d['text'][:120], 'link': d['link']} for d in
                         sorted(hs, key=lambda d: -d['views'])[:4]],
+            # 회의 조사원이 볼 글 — 조회수 많은 것, 그다음 최신 글 (보고서에는 저장 안 함)
+            '_evid': [{'src': d['src'], 'text': d['text'][:160]} for d in
+                      sorted(hs, key=lambda d: (d['views'], str(d['date'])), reverse=True)[:8]],
         })
         time.sleep(0.05)
     tr = datalab(k['open'], [r['kw'] for r in rows])
@@ -453,7 +505,8 @@ def run(by='', top_n=30, log=print):
         r['cold'] = bool(re.search(r'냉동|냉장|아이스|요거트|치즈|우유|고기|갈비|연어|케이크', r['name'] + r['full_name']))
     # 점수
     # 증가율은 작은 수에 흔들리지 않게 +3을 더해 본다(0→3건이 '무한대 상승'이 되지 않게)
-    g_mention = [(r['blog7'] + 3) / (r['blog_prev7'] + 3) for r in rows]
+    # 이전 7일을 끝까지 못 센 상품(capped)은 증가율을 알 수 없다 — 중립(1.0)으로 둔다
+    g_mention = [1.0 if r.get('blog_capped') else (r['blog7'] + 3) / (r['blog_prev7'] + 3) for r in rows]
     pr = {
         'growth': _pct_rank(g_mention),
         'volume_m': _pct_rank([r['blog7'] + r['yt_count'] * 3 for r in rows]),
@@ -480,18 +533,39 @@ def run(by='', top_n=30, log=print):
         r['score_parts'] = parts
         r['score'] = round(sum(parts.values()), 1)
     rows.sort(key=lambda r: -r['score'])
-    top = rows[:top_n]
-    sug = ai_suggest(top, k['anthropic'], k['gemini'], log=log) if (k['anthropic'] or k['gemini']) else {}
+    council = None
+    if k['anthropic']:
+        # 에이전트 회의: 30위 밖 20개까지 올려 '제외'로 빠지는 자리를 채운다
+        import trend_council
+        pool = rows[:top_n + 20]
+        try:
+            council = trend_council.run_council(pool, k, log=log)
+            top = [r for r in pool if (r.get('ai') or {}).get('grade') != '제외'][:top_n]
+            council['excluded'] = [{'costco_no': r['costco_no'], 'name': r['name'],
+                                    'reason': (r.get('ai') or {}).get('reason', '')}
+                                   for r in pool if (r.get('ai') or {}).get('grade') == '제외']
+        except Exception as e:
+            log(f'회의 실패 → AI 한 번 제안으로 대신: {e}')
+            council = None
+            for r in pool:
+                r.pop('ai', None)
+                r.pop('council', None)
+    if council is None:
+        top = rows[:top_n]
+        sug = ai_suggest(top, k['anthropic'], k['gemini'], log=log) if (k['anthropic'] or k['gemini']) else {}
+        for i, r in enumerate(top, 1):
+            r['ai'] = sug.get(i, {})
     prev = get_report()
     prev_rank = {x['costco_no']: x['rank'] for x in (prev or {}).get('items', [])}
     for i, r in enumerate(top, 1):
         r['rank'] = i
         r['prev_rank'] = prev_rank.get(r['costco_no'])
-        r['ai'] = sug.get(i, {})
+    for r in rows:
+        r.pop('_evid', None)
     data = {'week': date.today().isoformat(), 'created_at': datetime.now().strftime('%Y-%m-%d %H:%M'),
             'docs': len(docs), 'sources': {s: sum(1 for d in docs if d['src'] == s) for s in ('blog', 'cafe', 'youtube')},
             'candidates': len(rows), 'youtube': bool(k['youtube']), 'elapsed': int(time.time() - t0),
-            'items': top}
+            'council': council, 'items': top}
     save_report(data, by)
     log(f'완료 — TOP {len(top)} 저장 ({data["elapsed"]}초)')
     return data

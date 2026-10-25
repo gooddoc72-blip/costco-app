@@ -35,6 +35,10 @@ DEFAULT_PRICES = {
     'claude-haiku-4-5':  {'in': 1.00, 'out': 5.00},
     'claude-sonnet-5':   {'in': 2.00, 'out': 10.00},
     'claude-opus-5':     {'in': 5.00, 'out': 25.00},
+    # 5.5 세대 — 접두사가 겹쳐(claude-opus-5 ⊂ claude-opus-5-5) 따로 없으면 옛 단가로 잡힌다
+    'claude-opus-5-5':   {'in': 4.00, 'out': 20.00},
+    'claude-sonnet-5-5': {'in': 2.00, 'out': 10.00},
+    'claude-haiku-5-5':  {'in': 0.10, 'out': 0.50},
     'gemini-flash':      {'in': 0.0,  'out': 0.0},
     'gemini-pro':        {'in': 0.0,  'out': 0.0},
 }
@@ -59,6 +63,7 @@ FEATURE_LABELS = {
     'category': '카테고리 판단',
     'brief':    '정산 브리핑',
     'ask':      '화면 질문',
+    'trend':    'SNS 트렌드 회의',
     '':         '기타',
 }
 
