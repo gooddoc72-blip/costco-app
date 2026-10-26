@@ -100,7 +100,7 @@ from pages_lib import (
     product_db_page, admin_page, naver_register_page,
     guide_page, settlement_page, cafe24_page, inventory_page,
     receipt_settle_page, billing_page, purchase_settle_page, my_purchase_page,
-    settle_billing_page, self_receipt_page, margin_calc_page,
+    settle_billing_page, self_receipt_page, margin_calc_page, trends_page,
 )
 
 # 페이지 모듈에 캐시 헬퍼 주입 (페이지 모듈이 동일한 캐시 인스턴스 공유)
@@ -534,6 +534,10 @@ def run_settle_billing():
     settle_billing_page.render(USERNAME, IS_ADMIN, settings)
 
 
+def run_trends():
+    trends_page.render(USERNAME, IS_ADMIN, settings)
+
+
 def run_purchase_settle():
     purchase_settle_page.render(USERNAME, IS_ADMIN, settings)
 
@@ -595,6 +599,7 @@ if IS_ADMIN:
         st.Page(run_settle_billing, title="정산·청구", icon=":material/credit_card:"),
         st.Page(run_purchase_settle, title="구매가·매핑", icon=":material/link:"),
         st.Page(run_billing, title="포장 관리", icon=":material/inventory:"),
+        st.Page(run_trends, title="SNS 트렌드 TOP 30", icon=":material/local_fire_department:"),
     ]
 
 # 페이지 이동 시 sid 보존 — st.navigation()이 URL 경로를 바꿔도 query param 유지

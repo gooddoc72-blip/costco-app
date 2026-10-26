@@ -347,6 +347,11 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
 def _render(USERNAME: str, IS_ADMIN: bool, settings: dict):
 
     st.header("🧾 영수증 정산 — 사용자 주문 자동배치")
+    # 새 화면 — 발송 파일·영수증·매칭·처리·정산 요청을 한 화면에서. 작업본을 DB에 둬서
+    #   서버가 다시 시작돼도 고른 처리가 남는다. 같은 로그인으로 넘어가도록 토큰을 붙인다.
+    _sid_now = str(st.session_state.get('_sid') or '')
+    st.link_button("🆕 새 화면에서 열기 (빠름 · 재시작해도 작업 유지 · 발송 파일→영수증→매칭→정산 요청)",
+                   "/m/receipt-settle" + (f"?sid={_sid_now}" if _sid_now else ""))
     # ── 정산 기준일 ────────────────────────────────────────────
     #   기준일 이전 구매는 재고 계산에서 제외한다. 과거에는 영수증 업로드가
     #   들쭉날쭉해 재고가 실제와 맞지 않는다. 데이터를 지우지는 않는다.
