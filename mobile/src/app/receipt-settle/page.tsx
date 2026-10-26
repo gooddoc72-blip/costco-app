@@ -10,7 +10,8 @@
  * 2차: '영수증에 없는 발송건' 처리(재고 출고·금액 지정·후보 연결·청구 안 함),
  *      남은 영수증 품목 배정(청구·재고 입고·반품요청).
  * 3차: 영수증 올리기(PDF·사진 판독 → 표에서 확인·수정 → 저장 전 점검 → 저장).
- * 발송 파일(누락 발송건) 올리기는 아직 기존 화면에서 한다.
+ * 4차: 발송 파일 올리기(사용자 분류·저장·미분류 지정·직접 입력·스토어 대신 발송처리).
+ * 열 매핑 직접 수정·보낸 업체 분류 관리는 기존 화면에서 한다.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import clsx from 'clsx';
@@ -21,6 +22,7 @@ import { num } from '@/lib/fmt';
 import UnmatchedPanel from '@/components/rsettle/UnmatchedPanel';
 import AssignPanel from '@/components/rsettle/AssignPanel';
 import ReceiptPanel from '@/components/rsettle/ReceiptPanel';
+import DispatchPanel from '@/components/rsettle/DispatchPanel';
 
 type Act = '' | 'ok' | 'stock' | 'cut';
 interface Pending { act?: Act; qty?: number; amount?: number; memo?: string }
@@ -154,13 +156,15 @@ export default function ReceiptSettlePage() {
           )}
         </div>
         <div className="text-xs text-gray-500">
-          영수증 {v?.receipt_count ?? 0}품목 · 발송 파일(누락 발송건) 올리기는
-          아직 <a href="/app/" className="underline">기존 화면</a>에서 합니다. 처리한 내용은 같은 DB라 여기에도 보입니다(다시 매칭).
+          영수증 {v?.receipt_count ?? 0}품목 · 순서: 🚚 발송 파일 → 🧾 영수증 → 매칭 → 처리 → 정산 요청.
+          <a href="/app/" className="underline">기존 화면</a>과 같은 DB라 거기서 한 것도 여기 보입니다(다시 매칭).
         </div>
 
         {err && <div className="bg-red-50 text-red-700 p-3 rounded-lg text-sm whitespace-pre-wrap">❌ {err}</div>}
         {msg && <div className="bg-green-50 text-green-800 p-3 rounded-lg text-sm">{msg}</div>}
 
+        {day && v && <DispatchPanel day={day} names={v.names} onErr={setErr}
+          onSaved={async t => { setErr(''); setMsg(t); await load(day); setMsg(t); }} />}
         {day && v && <ReceiptPanel day={day} count={v.receipt_count} onErr={setErr}
           onSaved={async t => { setErr(''); setMsg(t); await load(day); setMsg(t); }} />}
         {v?.receipt_changed && (

@@ -89,6 +89,41 @@ export const rsettle = {
       'POST', `${B}/day/${d}/receipt/save`, { rows }),
 };
 
+// ── 발송 파일 ──
+export interface DispUnknown { idx: number; row: number; order_no: string; recipient: string; product_name: string;
+  qty: number; tracking_no: string; dispatched_at: string; sender: string; why: string; pre: string }
+export interface DispShip { username: string; naver: number; coupang: number; done: number; no_trk: number;
+  naver_key: boolean; coupang_key: boolean; state: string; sendable: number }
+export interface DispSummary { users: { username: string; count: number; same: number; other: number; new: number }[];
+  other_dates: { date: string; count: number }[]; total: number; new_total: number; ship: DispShip[] }
+export interface DispPreview {
+  token: string; error?: string; files: { file: string; rows: number }[]; bad: { file: string; error: string }[];
+  notes?: string[]; columns?: Record<string, string>; dates?: { date: string; count: number }[]; default_date?: string;
+  dup_owner?: number; external?: number; already_saved?: number;
+  combined?: { username: string; with: string; order_no: string; recipient: string; product_name: string; tracking_no: string }[];
+  unknown?: DispUnknown[]; summary?: DispSummary; couriers?: string[];
+}
+export interface DispSaveRes { saved: Record<string, number>; total: number; skipped: number; moved?: number; bad?: number;
+  detail: Record<string, string>[] }
+export interface ShipRes { [u: string]: { naver_ok: number; naver_fail: number; coupang_ok: number; coupang_fail: number;
+  errors: string[]; fails: Record<string, string>[] } }
+export interface Job<T> { running: boolean; lines: string[]; error: string; started: string; result: T | null }
+
+export const dispatch = {
+  preview: (files: { name: string; content_b64: string }[]) => call<DispPreview>('POST', `${B}/dispatch/preview`, { files }),
+  summary: (token: string, date: string) => call<DispSummary>('GET', `${B}/dispatch/${token}/summary?date=${date}`),
+  save: (token: string, date: string, o: { skip_existing: boolean; use_row_date: boolean; move_wrong_date: boolean }) =>
+    call<DispSaveRes>('POST', `${B}/dispatch/${token}/save`, { date, ...o }),
+  unknown: (token: string, date: string, assign: { idx: number; username: string; qty?: number }[],
+    o: { skip_existing: boolean; use_row_date: boolean; move_wrong_date: boolean }) =>
+    call<DispSaveRes>('POST', `${B}/dispatch/${token}/unknown`, { date, assign, ...o }),
+  manual: (date: string, rows: { username: string; order_no?: string; tracking_no?: string; recipient?: string; product_name?: string; qty?: number; courier?: string }[]) =>
+    call<DispSaveRes>('POST', `${B}/dispatch/manual`, { date, rows }),
+  ship: (token: string, date: string, users: string[], courier: string) =>
+    call<{ job: string }>('POST', `${B}/dispatch/${token}/ship`, { date, users, courier, agree: true }),
+  job: <T,>(job: string) => call<Job<T>>('GET', `${B}/job/${job}`),
+};
+
 /** 파일 → base64 (data: 머리 없이) */
 export function fileToB64(f: File): Promise<string> {
   return new Promise((ok, bad) => {
