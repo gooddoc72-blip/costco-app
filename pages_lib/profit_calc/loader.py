@@ -1,5 +1,5 @@
 """수익계산 — 정산표 데이터 로드.
-profit_settlements → dispatch_log → order_history → daily_orders 순으로 df 구성.
+(그날 송장 등록으로 발송처리된 건 + 온라인몰 직배송 건)만 df로 만든다. 저장값(profit_settlements)은 행을 만들지 않고 값만 덮어쓴다.
 profit_settlements 소스면 저장값(ship/box/cost/kw)을 session_state로 복원한다.
 profit_calc/page.py 에서 분리 (동작 불변).
 
@@ -19,7 +19,7 @@ from db import (
 def build_settlement_df(USERNAME, calc_date_str, _cached_daily_orders=None):
     """(df, src_label, source_kind) 반환 — 세션 비의존(순수 DB→df).
 
-    source_kind: 'ps' | 'dispatch' | 'history' | 'daily' | None.
+    source_kind: 'ps' | 'dispatch' | None.  (행 = 그날 발송 기록 + 온라인몰 직배송, 그 외는 없음)
     df 없으면 (None, label|None, None).
     """
     # ⭐ 신규 데이터 소스: dispatch_log (일괄발송 성공건) + order_history JOIN
@@ -28,6 +28,13 @@ def build_settlement_df(USERNAME, calc_date_str, _cached_daily_orders=None):
     _src_label = None
     _source_kind = None
     _dispatched_rows = get_dispatched_orders_with_details(USERNAME, calc_date_str)
+    # 코스트코 온라인몰 직배송 — 우리 송장 등록이 없어도 실제로 판 주문이다(그날 정산일로 표시된 것)
+    try:
+        from db_dispatch_log import get_online_orders_with_details
+        _dispatched_rows = list(_dispatched_rows or []) + get_online_orders_with_details(
+            USERNAME, calc_date_str, exclude={str(r.get('order_no')) for r in _dispatched_rows or []})
+    except Exception:
+        pass
 
     rename_map = {
         'recipient': '수취인명',
@@ -89,49 +96,24 @@ def build_settlement_df(USERNAME, calc_date_str, _cached_daily_orders=None):
             if _c in df.columns:
                 df[_c] = pd.to_numeric(df[_c], errors='coerce').fillna(0).astype(int)
 
-        _src_label = (f"🚀 발송 {len(df)}건 (송장 기준) — 정산저장 {_hit}건 반영"
-                      if _hit else f"🚀 발송 기준 ({len(df)}건) — dispatch_log")
+        _n_onl = sum(1 for r in _dispatched_rows if r.get('platform') == 'online')
+        _n_dsp = len(df) - _n_onl
+        _src_label = (f"🚀 발송 {_n_dsp}건 (송장 기준)" + (f" + 🛒 온라인몰 직배송 {_n_onl}건" if _n_onl else "")
+                      + (f" — 정산저장 {_hit}건 반영" if _hit else ""))
         # 저장값이 하나라도 있으면 session 복원 루프를 태워야 한다
         _source_kind = 'ps' if _hit else 'dispatch'
 
-    elif _ps_rows_src:
-        # 발송기록이 없는 날짜 — 수동 정산 등 옛 데이터 보존용
-        df = pd.DataFrame(_ps_rows_src).rename(columns=_ps_col_map)
-        if 'id' in df.columns:
-            df = df.drop(columns=['id'])  # PK 제거 — order_no를 stable_key로 사용
-        if 'order_no' in df.columns:
-            df.index = df['order_no'].astype(str)
-            df.index.name = None
-        _src_label = f"✅ 정산완료 ({len(df)}건) — 발송기록 없음"
-        _source_kind = 'ps'
     else:
-        # Fallback 1: order_history (결제일 기준) — 각 주문이 자기 날짜에 정확히 있어
-        # '그 날짜 주문건'만 정확히 로드 (daily_orders 누적 오염 회피)
-        _hist_rows = search_order_history(USERNAME, date_from=calc_date_str, date_to=calc_date_str)
-        if _hist_rows:
-            df = pd.DataFrame(_hist_rows)
-            df = df.rename(columns=rename_map)
-            if '제주/도서 추가배송비' not in df.columns:
-                df['제주/도서 추가배송비'] = 0
-            if 'order_no' in df.columns:
-                df.index = df['order_no'].astype(str)
-                df.index.name = None
-            _src_label = f"📋 주문이력 ({len(df)}건) — order_history (결제일 기준)"
-            _source_kind = 'history'
-        else:
-            # Fallback 2: 옛 daily_orders 데이터 (order_history 없을 때만)
-            _get_daily = _cached_daily_orders if _cached_daily_orders else get_daily_orders
-            saved_rows = _get_daily(USERNAME, calc_date_str)
-            if saved_rows:
-                df = pd.DataFrame(saved_rows)
-                df = df.rename(columns=rename_map)
-                if 'id' in df.columns:
-                    df.index = df['id'].astype(str)
-                    df.index.name = None
-                _src_label = f"📋 옛 데이터 ({len(df)}건) — daily_orders fallback"
-                _source_kind = 'daily'
-            else:
-                df = None
+        # 그날 송장 등록으로 발송처리된 건도, 온라인몰 직배송 건도 없다 — 수익계산 대상이 없다.
+        #   예전에는 저장값·주문이력(결제일)·daily_orders로 대신 보여 줬는데, 그러면 발송하지 않은
+        #   주문이 그 날짜 수익으로 저장돼 통계가 어긋났다(10/26: 결제일 기준 행 109·발송 없는 행 186).
+        #   수익계산은 무조건 '송장 등록으로 발송처리된 건 + 온라인몰 직배송 건'이다.
+        df = None
+        _src_label = ("ℹ️ 이 날짜에 송장 등록으로 발송처리된 건(온라인몰 직배송 포함)이 없습니다 — "
+                      "수익계산은 발송된 건만 합니다.")
+        if _ps_rows_src:
+            _src_label += (f" ⚠️ 이 날짜에 발송 기록 없이 저장된 수익 {len(_ps_rows_src)}건이 있습니다"
+                           " — 발송 기준이 아니라 수익 통계에서 정리할 대상입니다.")
     # ⚓ 단일 안정키(_sk): 항상 '문자열'로 통일.
     #   정수 id 컬럼은 iterrows()에서 실수(143→143.0)로 승격돼 위젯키/계산키가 어긋난다.
     #   → 여기서 문자열 컬럼으로 고정해 전 구간이 동일한 키를 쓰게 한다. (삭제·박스·택배·체크박스 키 일치)

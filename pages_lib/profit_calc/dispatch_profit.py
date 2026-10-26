@@ -194,60 +194,108 @@ def clean_stale_auto(username, date):
     """정산저장(화면) 뒤에 부른다 — 그날 발송건만 남기고 옛 주문일 기준 자동 행을 정리.
     10/1 고영부: 발송 10건인데 취소된 주문의 자동 행 17건이 남아 달력 수익이
     49,494원이 아니라 239,333원으로 보였다."""
+    online = _online_dates(username)
     conn = get_user_db(username)
     conn.row_factory = __import__('sqlite3').Row
     try:
-        disp = {str(r[0]) for r in conn.execute(
+        keep = {str(r[0]) for r in conn.execute(
             "SELECT order_no FROM dispatch_log WHERE dispatched_at LIKE ?", (str(date)[:10] + '%',))}
-        if not disp:
-            return 0          # 발송 기록이 없는 날은 손대지 않는다
-        n = _remove_stale_auto(conn, date, disp, strict=True)
+        keep |= {o for o, d in online.items() if d == str(date)[:10]}
+        if not keep:
+            return 0          # 발송 기록이 없는 날은 손대지 않는다(화면도 이 날은 행을 만들지 않는다)
+        mv, rm = enforce_dispatch_basis(conn, date, keep, online)
         conn.commit()
-        return n
+        return mv + rm
     finally:
         conn.close()
 
 
-def save_dispatch_profit(username, date):
-    """그날 **발송한 주문**의 수익을 profit_settlements에 자동 저장한다.
+def _online_dates(username):
+    """{주문번호: 정산일} — 코스트코 온라인몰 직배송으로 표시된 주문."""
+    try:
+        from db_core import get_auth_db
+        a = get_auth_db()
+        try:
+            return {str(o): str(d) for o, d in a.execute(
+                "SELECT order_no, settle_date FROM online_purchase WHERE username=?", (str(username),))}
+        finally:
+            a.close()
+    except Exception:
+        return {}
 
-    · 사람이 고친 저장값(match_source가 '자동'이 아닌 행)은 건드리지 않는다.
-    · 이 주문이 다른 날짜에 '자동'으로 저장돼 있으면 지우고 발송일로 옮긴다
-      (주문 수집일 기준 옛 자동 저장). 다른 날짜의 사람 저장값은 그대로 두고 건너뛴다.
-    · 이 날짜의 '자동' 행 중 그날 발송되지 않은 주문은 지운다.
+
+def basis_date(conn, order_no, online=None):
+    """그 주문의 수익 날짜 — 송장 등록으로 발송처리된 날(첫 발송), 없으면 온라인몰 직배송 정산일, 없으면 None."""
+    r = conn.execute("SELECT MIN(substr(dispatched_at,1,10)) FROM dispatch_log WHERE order_no=?",
+                     (str(order_no),)).fetchone()
+    return (r[0] if r and r[0] else None) or (online or {}).get(str(order_no))
+
+
+def enforce_dispatch_basis(conn, date, keep, online=None):
+    """이 날짜의 수익 행 중 keep(그날 발송 + 온라인몰 직배송)에 없는 행을 정리한다 — 저장 출처와 상관없이.
+
+    수익계산은 무조건 '송장 등록으로 발송처리된 건 + 온라인몰 직배송 건'이다(10/26 확정).
+      · 다른 날 발송(또는 온라인몰 정산)된 주문 → 그 날짜로 옮긴다(그 날짜에 이미 행이 있으면 여기 것을 지운다)
+      · 발송 기록도 온라인몰 표시도 없는 주문 → 지운다(발송하지 않은 주문은 수익이 아니다)
+    반환: (옮긴 수, 지운 수)
+    """
+    moved = removed = 0
+    for rid, o in conn.execute("SELECT id, order_no FROM profit_settlements WHERE settlement_date=?",
+                               (str(date),)).fetchall():
+        o = str(o)
+        if o in keep:
+            continue
+        bd = basis_date(conn, o, online)
+        if bd and bd != str(date) and not conn.execute(
+                "SELECT 1 FROM profit_settlements WHERE settlement_date=? AND order_no=?", (bd, o)).fetchone():
+            conn.execute("UPDATE profit_settlements SET settlement_date=? WHERE id=?", (bd, rid))
+            moved += 1
+        else:
+            conn.execute("DELETE FROM profit_settlements WHERE id=?", (rid,))
+            removed += 1
+    return moved, removed
+
+
+def save_dispatch_profit(username, date):
+    """그날 **송장 등록으로 발송처리된 주문 + 온라인몰 직배송 주문**의 수익을 profit_settlements에 저장한다.
+
+    · 이 날짜에 있는 그 밖의 행은 출처와 상관없이 정리한다(enforce_dispatch_basis) — 발송일로 옮기거나 지운다.
+    · 이 날짜 주문이 다른 날짜에 저장돼 있으면: '자동' 행은 지우고 여기 새로 저장, 사람이 고친 행은
+      **이 날짜로 옮긴다**(고친 값은 지키되 날짜는 발송일이어야 한다).
+    · 이 날짜에 사람이 고친 행은 덮어쓰지 않는다.
     · 구입가가 0(미매칭)인 행도 저장한다 — 통계는 구입가 0 행을 수익에서 빼고,
       월별 점검이 '구입가 없음'으로 짚는다.
     반환: {'saved', 'moved', 'removed', 'kept_manual', 'skipped_other'}
     """
     out = {'saved': 0, 'moved': 0, 'removed': 0, 'kept_manual': 0, 'skipped_other': 0}
     rows, _lbl, kind, _saved = compute_dispatch_rows(username, date, use_saved=False)
-    if kind not in ('dispatch', 'ps'):
-        return out                                  # 그날 발송 기록이 없다
-    disp = {r['order_no'] for r in rows}
+    disp = {r['order_no'] for r in rows} if kind in ('dispatch', 'ps') else set()
+    online = _online_dates(username)
     conn = get_user_db(username)
     try:
+        out['moved'], out['removed'] = enforce_dispatch_basis(conn, date, disp, online)
+        if not disp:
+            conn.commit()
+            return out                              # 그날 발송·온라인몰 건이 없다
         cur = {str(r['order_no']): r for r in conn.execute(
             "SELECT order_no, match_source FROM profit_settlements WHERE settlement_date=?",
             (str(date),)).fetchall()}
-        # 이 날짜의 자동 행 중 그날 발송되지 않은 주문 — 수집일 기준 옛 자동 저장.
-        # 지우는 건 **다른 날 발송 기록이 있거나(그날 저장으로 옮겨진다) 취소·반품된
-        # 주문뿐**이다. 발송 기록이 없다고 안 보낸 것은 아니다 — 쿠팡·스마트스토어에서
-        # 직접 보내 앱 발송 기록에 없는 주문이 있다(김혜림 쿠팡 92행, 송장 있음).
-        out['removed'] = _remove_stale_auto(conn, date, disp, cur)
-        # 다른 날짜에 저장된 같은 주문
-        other = {}
+        # 다른 날짜에 저장된 같은 주문 — 자동은 지우고(여기 새로 저장), 사람이 고친 값은 이 날짜로 옮긴다
         _nos = list(disp)
         for i in range(0, len(_nos), 900):
             ch = _nos[i:i + 900]
             for r in conn.execute(
-                    "SELECT id, order_no, settlement_date, match_source FROM profit_settlements "
+                    "SELECT id, order_no, match_source FROM profit_settlements "
                     "WHERE settlement_date!=? AND order_no IN (%s)" % ",".join("?" * len(ch)),
                     [str(date)] + ch).fetchall():
-                other.setdefault(str(r['order_no']), []).append(dict(r))
-        _mv = [x['id'] for v in other.values() for x in v if x['match_source'] == AUTO_SOURCE]
-        if _mv:
-            conn.executemany("DELETE FROM profit_settlements WHERE id=?", [(i,) for i in _mv])
-            out['moved'] = len(_mv)
+                o = str(r['order_no'])
+                if r['match_source'] != AUTO_SOURCE and o not in cur:
+                    conn.execute("UPDATE profit_settlements SET settlement_date=? WHERE id=?",
+                                 (str(date), r['id']))
+                    cur[o] = {'match_source': r['match_source']}
+                else:
+                    conn.execute("DELETE FROM profit_settlements WHERE id=?", (r['id'],))
+                out['moved'] += 1
         conn.commit()
     finally:
         conn.close()
@@ -257,9 +305,6 @@ def save_dispatch_profit(username, date):
         o = r['order_no']
         if o in cur and cur[o]['match_source'] != AUTO_SOURCE:
             out['kept_manual'] += 1
-            continue
-        if any(x['match_source'] != AUTO_SOURCE for x in other.get(o, [])):
-            out['skipped_other'] += 1                # 다른 날짜에 사람이 저장해 둔 주문
             continue
         to_save.append(dict(r, match_source=AUTO_SOURCE,
                             matched_keyword=r.get('matched_name', ''),

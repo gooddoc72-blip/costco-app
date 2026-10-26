@@ -259,6 +259,15 @@ def log_dispatch_success(username: str, orders: list, dispatched_at: str,
     conn.close()
     from run_memo import clear as _rm_clear
     _rm_clear()
+    # 수익계산 = 송장 등록으로 발송처리된 건 — 발송이 기록되는 순간 그날 수익도 저장한다.
+    #   전에는 '주문 자동 수집' 작업이 도는 사용자만 최근 3일분을 저장해, 그 작업이 없는 사용자는
+    #   발송해도 수익이 안 남았다(10/26: tblue 발송 407건 수익 없음). 실패해도 발송 기록은 그대로다.
+    if saved:
+        try:
+            from pages_lib.profit_calc.dispatch_profit import save_dispatch_profit
+            save_dispatch_profit(username, str(dispatched_at)[:10])
+        except Exception:
+            pass
     return saved
 
 
@@ -402,6 +411,53 @@ def get_dispatched_orders_with_details(username: str, dispatched_at: str,
         ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+def get_online_orders_with_details(username: str, settle_date: str, exclude=()) -> list:
+    """코스트코 온라인몰 직배송 주문 — 그날(정산일) 표시된 것, get_dispatched_orders_with_details와 같은 키.
+
+    코스트코가 고객에게 직접 보내 우리 송장 등록(발송 기록)이 없어도 실제로 판 주문이다.
+    수익계산 대상 = 송장 등록으로 발송처리된 건 + 이 온라인몰 직배송 건 (10/26 확정).
+    exclude: 이미 발송 기록으로 잡힌 주문번호 — 한 주문을 두 번 세지 않는다.
+    """
+    try:
+        import db_online_purchase as _op
+        ops = [o for o in (_op.get_by_date(str(settle_date), username) or [])
+               if str(o.get('order_no') or '') not in set(exclude)]
+    except Exception:
+        return []
+    if not ops:
+        return []
+    conn = get_user_db(username)
+    try:
+        oh = {}
+        _nos = [str(o['order_no']) for o in ops]
+        for r in conn.execute(
+                "SELECT order_no, recipient, product_name, option_info, product_no, qty, order_amount, "
+                "shipping_fee, settlement, cost_price, profit FROM order_history WHERE order_no IN (%s)"
+                % ",".join("?" * len(_nos)), _nos):
+            oh[str(r['order_no'])] = dict(r)
+    except Exception:
+        oh = {}
+    finally:
+        conn.close()
+    out = []
+    for o in ops:
+        h = oh.get(str(o['order_no'])) or {}
+        out.append({
+            'order_no': str(o['order_no']), 'dispatched_at': str(settle_date), 'platform': 'online',
+            'tracking_no': '', 'courier': '코스트코 온라인몰',
+            'recipient': h.get('recipient') or o.get('recipient') or '',
+            'product_name': h.get('product_name') or o.get('product_name') or '',
+            'option_info': h.get('option_info') or '', 'product_no': h.get('product_no') or '',
+            'costco_no': str(o.get('costco_no') or ''), 'qty': int(h.get('qty') or o.get('qty') or 1),
+            'order_amount': int(h.get('order_amount') or 0), 'shipping_fee': int(h.get('shipping_fee') or 0),
+            'settlement': int(h.get('settlement') or 0),
+            # 구입가 = 온라인몰 결제가(정산이 order_history에 반영했으면 그 값)
+            'cost_price': int(h.get('cost_price') or o.get('amount') or 0),
+            'profit': int(h.get('profit') or 0),
+        })
+    return out
 
 
 def get_dispatch_counts(username: str, date_from: str, date_to: str) -> dict:

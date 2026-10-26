@@ -144,6 +144,13 @@ def mark(rows, created_by=''):
         conn.commit()
     finally:
         conn.close()
+    # 온라인몰 직배송도 수익계산 대상이다 — 표시하는 순간 그 정산일 수익을 저장한다
+    for _u, _d in {(_s(r.get('username')), _s(r.get('settle_date'))) for r in rows if _s(r.get('settle_date'))}:
+        try:
+            from pages_lib.profit_calc.dispatch_profit import save_dispatch_profit
+            save_dispatch_profit(_u, _d)
+        except Exception:
+            pass
     return n
 
 
