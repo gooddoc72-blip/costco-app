@@ -113,13 +113,15 @@ def render(_subs, _period_label, get_items, name_map=None, key_prefix="shop_comb
         for _it in _its:
             _pno = str(_it.get('코스트코상품번호') or '') or '—'
             _nm = _h.escape(str(_it.get('상품명', '')))
+            # 옵션 — 같은 상품도 맛·색·용량이 달라 매장에서 다른 물건을 집는다(사용자별 인쇄엔 있는데 합본에만 없었다)
+            _opt = _h.escape(str(_it.get('옵션정보') or _it.get('옵션') or '').strip())
             _qty = int(_it.get('코스트코구매수량') or _it.get('주문수량') or 0)
             _cnt = int(_it.get('주문건수') or 0)
             _money = ('' if _hide_money else
                       f'<td class="r">{fmt(int(_it.get("정산금액") or 0))}</td>'
                       f'<td class="r">{fmt(int(_it.get("배송비") or 0))}</td>')
             _rs.append(f'<tr><td class="chk"></td><td class="no">{_pno}</td>'
-                       f'<td>{_nm}</td><td class="r">{_qty}개'
+                       f'<td>{_nm}</td><td class="opt">{_opt or "-"}</td><td class="r">{_qty}개'
                        + (f'<span class="sub">({_cnt}건)</span>' if _cnt else '')
                        + f'</td>{_money}</tr>')
         _money_h = '' if _hide_money else '<th class="r">정산금액</th><th class="r">택배비</th>'
@@ -130,7 +132,7 @@ def render(_subs, _period_label, get_items, name_map=None, key_prefix="shop_comb
             f'<span class="d">{_s["order_date"]}</span></h2>'
             f'<div class="meta">{len(_its)}종 · 매장금액 {fmt(_amt)}원{_money_t}</div>'
             '<table><thead><tr><th class="chk">✓</th><th class="no">상품번호</th>'
-            f'<th>상품명</th><th class="r">수량</th>{_money_h}</tr></thead>'
+            f'<th>상품명</th><th>옵션</th><th class="r">수량</th>{_money_h}</tr></thead>'
             '<tbody>' + ''.join(_rs) + '</tbody></table></section>')
 
     if not _blocks:
@@ -163,6 +165,7 @@ def render(_subs, _period_label, get_items, name_map=None, key_prefix="shop_comb
         'td.chk::before{content:"";display:inline-block;width:10px;height:10px;'
         'border:1px solid #999;border-radius:2px}'
         '.sub{color:#888;font-size:10px;margin-left:2px}'
+        '.opt{color:#333;font-size:11px;max-width:38%}'
         '@media print{.noprint{display:none}}'
         + _brk + _col +
         '</style></head><body>'
