@@ -27,6 +27,7 @@ import re
 from datetime import date, datetime, timedelta
 
 import ai_service
+import trend_prompts as P
 
 MODEL_JUDGE = 'claude-opus-5-5'       # 검증관 — 판정·종합
 MODEL_ANALYST = 'claude-sonnet-5-5'   # 분석가 A
@@ -140,22 +141,9 @@ def _card(no, x, scout=None):
     return c
 
 
-COMMON = (
-    "너는 코스트코 구매대행 판매자들의 상품 기획 회의에 참석한 분석가다. 판매자들은 코스트코 상품을 "
-    "사서 네이버 스마트스토어에서 되판다. 회의 목표는 'SNS·검색에서 뜨는 상품 중 지금 주력상품으로 "
-    "밀 것'을 고르는 것이다.\n"
-    "등급: 주력=지금 적극 등록·광고할 상품 / 시도=소량 등록해 반응을 볼 상품 / 관찰=아직 이르거나 "
-    "근거가 약한 상품 / 제외=글이 이 상품 이야기가 아니거나 팔기 어려운 상품.\n"
-    "규칙: 카드의 숫자만 근거로 쓰고 숫자를 바꾸지 마라. 데이터에 없는 사실(방송, 품절, 가격 인상)을 "
-    "지어내지 마라. 글예시가 다른 상품 이야기면 언급 수를 믿지 말고 data_issue에 적어라. 월간검색수가 "
-    "작으면 찾는 사람이 적어 팔기 어렵다. 마진이 마이너스면 주력이 될 수 없다. 오늘은 {today}이다 — "
-    "이미 끝났거나 끝나 가는 시즌 상품은 관찰 이하로 둔다.\n"
-    "price는 공식추천가 근처의 네이버 판매가(원, 정수), title은 '코스트코'를 넣은 40자 이내 상품명, "
-    "keywords는 검색 키워드 5개, confidence는 1(낮음)~5(높음), reason과 caution은 한국어 1~2문장.")
-
-
-def _system(role_line):
-    return COMMON.format(today=date.today().isoformat()) + '\n' + role_line
+def _system(role):
+    """공통 사업 맥락 + 역할 지시 — 내용은 trend_prompts에 있다(거기만 고치면 판단 기준이 바뀐다)."""
+    return P.domain() + role
 
 
 # ── 0. 조사원 — 글 관련성 ────────────────────────────────────────
@@ -167,10 +155,7 @@ def scout(cl, rows, log):
             lines.append(json.dumps({'no': i, '상품': x['name'], '글': ev}, ensure_ascii=False))
     if not lines:
         return {}
-    sys_ = ("너는 조사원이다. 각 상품에 붙은 블로그·카페·유튜브 글 조각이 정말 그 상품(같은 종류·같은 "
-            "브랜드) 이야기인지 판정한다. 다른 상품 이야기거나 단어만 겹친 글은 관련 없음이다. "
-            "relevant=관련 글 수, total=글 수, note=판정 이유 한 문장(한국어).")
-    j = _claude_json(cl, MODEL_SCOUT, sys_, '\n'.join(lines), SCHEMA_SCOUT, effort='low')
+    j = _claude_json(cl, MODEL_SCOUT, _system(P.ROLE_SCOUT), '\n'.join(lines), SCHEMA_SCOUT, effort='low')
     out = {int(a['no']): a for a in j.get('items', [])}
     log(f'조사원: 글 관련성 {len(out)}개 판정')
     return out
@@ -179,18 +164,14 @@ def scout(cl, rows, log):
 # ── 1. 독립 의견 ─────────────────────────────────────────────────
 def opinions(cl, gk, cards, log):
     user = '아래 상품 각각을 평가해 items 배열로 답하라.\n' + '\n'.join(json.dumps(c, ensure_ascii=False) for c in cards)
-    a = _claude_json(cl, MODEL_ANALYST, _system(
-        '너는 분석가 A다. 수요(검색·언급)와 수익성(마진·경쟁)을 함께 본다.'), user, SCHEMA_OPINION)
+    a = _claude_json(cl, MODEL_ANALYST, _system(P.ROLE_ANALYST_A), user, SCHEMA_OPINION)
     a = {int(x['no']): x for x in a.get('items', [])}
     log(f'분석가 A(Claude Sonnet): {len(a)}개 의견')
-    sys_b = _system('너는 분석가 B다. 다른 분석가와 따로, 특히 데이터가 이상하거나 과장된 곳을 의심하며 본다.')
+    sys_b = _system(P.ROLE_ANALYST_B)
     b, b_name = {}, ''
     if gk:
         try:
-            schema_hint = ('\n출력 형식(JSON): {"items":[{"no":번호,"grade":"주력|시도|관찰|제외","confidence":1~5,'
-                           '"reason":"","evidence":["언급증가|언급량|검색추세|월간검색수|우리판매|마진|글내용|시즌|경쟁도"],'
-                           '"data_issue":"","price":정수,"title":"","keywords":[""],"caution":""}]}')
-            b = _gemini_json(gk, sys_b + schema_hint, user)
+            b = _gemini_json(gk, sys_b + P.GEMINI_OPINION_FORMAT, user)
             b_name = 'Gemini'
         except Exception as e:
             log(f'분석가 B Gemini 실패 → Claude Haiku로 대신: {e}')
@@ -206,12 +187,18 @@ def opinions(cl, gk, cards, log):
 
 
 def disputed(a, b):
-    """토론할 상품 — 등급이 다르거나, 누군가 데이터 이상을 짚었거나, 주력인데 확신이 낮은 것."""
+    """토론할 상품 — 등급이 다르거나, 주력·시도인데 데이터 이상이 지적됐거나, 주력인데 확신이 낮은 것.
+
+    데이터 이상 지적만으로 다 올리면 안 된다 — 분석가 B(감사관)는 거의 모든 상품에 무언가를 적어서,
+    둘 다 '관찰'로 합의한 상품까지 검증관(Opus)에게 가 비용만 늘었다(10/26 시험: 20개 전부 판정).
+    관찰·제외로 합의한 상품은 이상이 있어도 결론이 바뀌지 않는다.
+    """
     out = []
     for no in sorted(set(a) | set(b)):
         x, y = a.get(no) or {}, b.get(no) or {}
-        if (x.get('grade') != y.get('grade') or (x.get('data_issue') or '').strip()
-                or (y.get('data_issue') or '').strip()
+        up = bool({x.get('grade'), y.get('grade')} & {'주력', '시도'})
+        issue = (x.get('data_issue') or '').strip() or (y.get('data_issue') or '').strip()
+        if (x.get('grade') != y.get('grade') or (issue and up)
                 or ('주력' in (x.get('grade'), y.get('grade')) and min(x.get('confidence', 3), y.get('confidence', 3)) <= 2)):
             out.append(no)
     # 등급 차이가 큰 것부터
@@ -226,20 +213,17 @@ def debate(cl, gk, cards, a, b, nos, b_name, log):
     def _brief(me, other):
         return '\n'.join(json.dumps({'카드': by_no[n], '내_의견': me.get(n), '상대_의견': other.get(n)},
                                     ensure_ascii=False) for n in nos)
-    ask = ('아래는 두 분석가의 의견이 엇갈렸거나 데이터 이상이 지적된 상품이다. 상대 의견과 근거를 읽고 '
-           '네 등급을 유지하거나 바꿔라. changed=바꿨는지, reason=최종 이유, rebuttal=상대 의견에 대한 '
-           '동의·반박 한 문장. items 배열로 답하라.\n')
-    ra = _claude_json(cl, MODEL_ANALYST, _system('너는 분석가 A다.'), ask + _brief(a, b), SCHEMA_DEBATE)
+    ask = '토론할 상품(items 배열로 답하라):\n'
+    ra = _claude_json(cl, MODEL_ANALYST, _system(P.ROLE_ANALYST_A + P.ROLE_DEBATE), ask + _brief(a, b), SCHEMA_DEBATE)
     ra = {int(x['no']): x for x in ra.get('items', [])}
     rb = {}
     if b_name == 'Gemini':
         try:
-            hint = '\n출력 형식(JSON): {"items":[{"no":번호,"grade":"주력|시도|관찰|제외","changed":true/false,"reason":"","rebuttal":""}]}'
-            rb = _gemini_json(gk, _system('너는 분석가 B다.') + hint, ask + _brief(b, a))
+            rb = _gemini_json(gk, _system(P.ROLE_ANALYST_B + P.ROLE_DEBATE) + P.GEMINI_DEBATE_FORMAT, ask + _brief(b, a))
         except Exception as e:
             log(f'분석가 B 토론 실패 → Claude Haiku로 대신: {e}')
     if not rb:
-        rb = _claude_json(cl, MODEL_SCOUT, _system('너는 분석가 B다.'), ask + _brief(b, a), SCHEMA_DEBATE)
+        rb = _claude_json(cl, MODEL_SCOUT, _system(P.ROLE_ANALYST_B + P.ROLE_DEBATE), ask + _brief(b, a), SCHEMA_DEBATE)
     rb = {int(x.get('no', 0)): x for x in rb.get('items', []) if isinstance(x, dict)}
     moved = sum(1 for d in list(ra.values()) + list(rb.values()) if d.get('changed'))
     log(f'토론: {len(nos)}개 상품, 의견 수정 {moved}건')
@@ -313,11 +297,7 @@ def _valid(name, inp):
 
 def judge(cl, cards, rows, k, a, b, ra, rb, nos, record, log):
     by_no = {c['no']: c for c in cards}
-    sys_ = _system(
-        '너는 회의의 검증관(의장)이다. 두 분석가의 처음 의견과 토론 뒤 의견을 읽고, 필요하면 도구로 근거를 '
-        '직접 다시 확인한 다음 최종 등급을 정한다. 다수결이 아니라 근거로 판정한다 — 도구로 확인한 '
-        '사실이 카드와 다르면 그 사실을 따른다. ruling에는 무엇을 확인해 어떻게 판정했는지 한두 문장으로 '
-        '적는다. 도구는 꼭 필요한 상품에만 쓴다.' + (f'\n지난 회의 판정 성적(참고): {record}' if record else ''))
+    sys_ = _system(P.ROLE_JUDGE + P.track_record_note(record))
     user = ('판정할 상품(items 배열로 답하라):\n' + '\n'.join(json.dumps({
         '카드': by_no[n], 'A_처음': a.get(n), 'B_처음': b.get(n), 'A_토론': ra.get(n), 'B_토론': rb.get(n)},
         ensure_ascii=False) for n in nos))
@@ -498,7 +478,7 @@ def run_council(rows, k, log=print):
             'b': {kk: B.get(kk) for kk in ('grade', 'confidence', 'reason', 'evidence', 'data_issue')},
             'a_debate': ra.get(i), 'b_debate': rb.get(i), 'ruling': fin.get('ruling', ''), 'rules': rules,
         }
-    summ = {'members': {'scout': MODEL_SCOUT, 'a': MODEL_ANALYST, 'b': b_name, 'judge': MODEL_JUDGE},
+    summ = {'prompt_version': P.PROMPT_VERSION, 'members': {'scout': MODEL_SCOUT, 'a': MODEL_ANALYST, 'b': b_name, 'judge': MODEL_JUDGE},
             'agreed': len(rows) - len(nos), 'disputed': len(nos), 'rules_applied': n_rules,
             'seconds': int((datetime.now() - t0).total_seconds())}
     log(f"회의 끝 — 합의 {summ['agreed']} · 판정 {summ['disputed']} · 규칙 적용 {n_rules} ({summ['seconds']}초)")
