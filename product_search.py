@@ -58,8 +58,11 @@ def query_variants(q):
     return [(name_key(v), name_tokens(v)) for v in _vs if v]
 
 
-def search_products(q, limit=50):
+def search_products(q, limit=50, only_owner=None):
     """재고 직접 입고용 상품 찾기 — 영수증 구매이력 + 공용 DB를 상품번호로 합친다.
+
+    only_owner: 사용자 제품 DB는 이 사용자 것만 본다(사용자가 직접 입고할 때 —
+    다른 판매자의 상품·판매가가 보이면 안 된다). None이면 전체(관리자).
 
     반환: [{product_no, name, paid(최근 영수증 실결제 단가), list(정가),
            receipt_date, store(공용 DB 매장가)}] — 최근 구매한 것이 먼저.
@@ -127,6 +130,8 @@ def search_products(q, limit=50):
         for _f in sorted(_glob.glob(_os.path.join(DATA_DIR, '*.db'))):
             _u = _os.path.basename(_f)[:-3]
             if _u == 'auth' or '.bak' in _u or '.' in _u:
+                continue
+            if only_owner is not None and _u != str(only_owner):
                 continue
             try:
                 _c = _sq.connect(f'file:{_f}?mode=ro', uri=True)

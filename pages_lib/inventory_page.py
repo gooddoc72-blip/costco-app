@@ -73,8 +73,8 @@ def render(USERNAME, IS_ADMIN, settings):
         with tabs[8]:
             _guide(sur, IS_ADMIN=True)
     else:
-        tabs = st.tabs(["📢 대량구매 공지", "📥 내 요청", "📦 내 재고", "↩️ 내 반품",
-                        "📖 구매 가이드"])
+        tabs = st.tabs(["📢 대량구매 공지", "📥 내 요청", "📦 내 재고", "➕ 내 재고 입고",
+                        "↩️ 내 반품", "📖 구매 가이드"])
         with tabs[0]:
             _user_notices(USERNAME)
         with tabs[1]:
@@ -82,8 +82,12 @@ def render(USERNAME, IS_ADMIN, settings):
         with tabs[2]:
             _user_stock(USERNAME, sur)
         with tabs[3]:
-            _user_returns(USERNAME)
+            _manual_stock_in(USERNAME, self_only=True)
+            st.divider()
+            _user_lot_undo(USERNAME)
         with tabs[4]:
+            _user_returns(USERNAME)
+        with tabs[5]:
             _guide(sur, IS_ADMIN=False)
 
 
@@ -668,11 +672,25 @@ def _admin_stock():
     _stock_fix_panel(rows)
 
 
-def _manual_stock_in(USERNAME):
-    """추천건 없이 재고를 손으로 넣는다 — 전체 재고 맨 아래 토글에 숨어 있어 못 찾았다."""
-    st.subheader("➕ 수동 재고 입고")
-    st.caption("대량구매 추천건 없이 산 물건·예전 재고·남에게 받은 물건을 보유자 앞으로 넣습니다. "
-               "입고일부터 반품 기한이 계산됩니다.")
+#: 사용자가 직접 넣은 입고 표시 — 본인이 취소할 수 있는 입고를 가려내는 데 쓴다
+USER_LOT_MEMO = '사용자 직접 입고'
+
+
+def _manual_stock_in(USERNAME, self_only=False):
+    """추천건 없이 재고를 손으로 넣는다 — 전체 재고 맨 아래 토글에 숨어 있어 못 찾았다.
+
+    self_only=True: 사용자 본인 화면 — 보유자는 본인으로 고정, '본인이 직접 구매(청구 없음)'만,
+    상품 찾기에서 다른 판매자의 제품 DB는 보이지 않는다.
+    """
+    if self_only:
+        st.subheader("➕ 내 재고 직접 입고")
+        st.caption("내가 직접 사 둔 물건을 내 재고로 넣습니다. **청구는 없습니다**(내 돈으로 산 물건). "
+                   "내 주문으로 발송하면 이 재고에서 자동으로 빠지고, 다른 판매자가 빌려 쓰면 관리자 "
+                   "확인 뒤 내 예치금으로 적립됩니다. 입고일부터 반품 기한이 계산됩니다.")
+    else:
+        st.subheader("➕ 수동 재고 입고")
+        st.caption("대량구매 추천건 없이 산 물건·예전 재고·남에게 받은 물건을 보유자 앞으로 넣습니다. "
+                   "입고일부터 반품 기한이 계산됩니다.")
     # 폼을 쓰지 않는다 — 폼 안에서 엔터를 치면 '입고'가 눌려 검증 오류와 함께
     # 처음으로 돌아갔다. 접기 박스도 rerun마다 닫혀 토글(세션 유지)로 연다.
     _ml_msg = st.session_state.pop('_ml_msg', None)
@@ -685,7 +703,8 @@ def _manual_stock_in(USERNAME):
                                placeholder="예: 팬틴 / 메이플시럽 / 854362 — 입력 후 엔터")
             # 공용 DB(크롤링 카탈로그)만 보면 매장 전용·미수집 상품은 안 나온다 —
             # 영수증 구매이력(실제로 산 것)을 함께 찾고, 같은 번호면 하나로 합친다.
-            _hits = _manual_lot_search(_q) if _q.strip() else []
+            _hits = (_manual_lot_search(_q, only_owner=USERNAME if self_only else None)
+                     if _q.strip() else [])
             if _q.strip() and not _hits:
                 st.caption("공용 DB·영수증 구매이력에서 찾지 못했습니다 — 더 짧게 넣거나 "
                            "아래에 직접 입력하세요.")
@@ -722,15 +741,21 @@ def _manual_stock_in(USERNAME):
             # 구매자 앞으로 입고 — 이름(표시 이름)을 쳐서 찾는다. 아이디 목록에서 고르는
             # 방식은 누가 누군지 알아보기 어려웠고, 첫 항목(admin)이 기본으로 잡혀
             # 구매자를 안 바꾸고 누르면 관리자 재고로 들어갔다. 그래서 기본값을 비운다.
-            _au = [u for u in get_all_users() if u.get('status', 'active') == 'active']
-            users = [u['username'] for u in _au]
-            _disp = {u['username']: (u.get('display_name') or u['username']) for u in _au}
-            owner = (c3.selectbox(
-                        "보유자 (구매자)", users, index=None, key="ml_owner",
-                        placeholder="이름 입력 — 예: 김미진",
-                        format_func=lambda u: (f"{_disp[u]} ({u})" if _disp.get(u, u) != u else u),
-                        help="이 사람 앞으로 재고가 들어갑니다. 이름이나 아이디를 치면 찾아집니다.")
-                     if users else c3.text_input("보유자 (구매자)", key="ml_owner_t"))
+            if self_only:
+                # 사용자 본인 화면 — 남의 앞으로는 넣을 수 없다
+                _disp = {USERNAME: USERNAME}
+                owner = USERNAME
+                c3.text_input("보유자", value="나", disabled=True, key="ml_owner_self")
+            else:
+                _au = [u for u in get_all_users() if u.get('status', 'active') == 'active']
+                users = [u['username'] for u in _au]
+                _disp = {u['username']: (u.get('display_name') or u['username']) for u in _au}
+                owner = (c3.selectbox(
+                            "보유자 (구매자)", users, index=None, key="ml_owner",
+                            placeholder="이름 입력 — 예: 김미진",
+                            format_func=lambda u: (f"{_disp[u]} ({u})" if _disp.get(u, u) != u else u),
+                            help="이 사람 앞으로 재고가 들어갑니다. 이름이나 아이디를 치면 찾아집니다.")
+                         if users else c3.text_input("보유자 (구매자)", key="ml_owner_t"))
             cost = c4.number_input("구입가(1팩)", min_value=0, step=100, value=_sp,
                                    key=f"ml_cost_{_sk}",
                                    help="상품을 고르면 매장가가 들어갑니다. 실제 결제가로 고치세요.")
@@ -745,16 +770,20 @@ def _manual_stock_in(USERNAME):
             _K_SELF, _K_BILL, _K_OLD = ("본인이 직접 구매 — 청구 없음",
                                         "관리자가 대신 구매 — 구매비용 지금 청구",
                                         "나갈 때 청구(예전 방식)")
-            _kind = st.radio("입고 종류", [_K_SELF, _K_BILL, _K_OLD], horizontal=True,
-                             key="ml_kind")
+            # 사용자는 본인이 산 물건만 넣는다 — 청구 방식은 고르지 않는다
+            _kind = (_K_SELF if self_only else
+                     st.radio("입고 종류", [_K_SELF, _K_BILL, _K_OLD], horizontal=True, key="ml_kind"))
             if st.button("입고", type="primary", key="ml_add"):
                 if not (name.strip() and pno.strip() and owner):
-                    st.error("상품명·상품번호·보유자를 채우세요.")
+                    st.error("상품명·상품번호" + ("를" if self_only else "·보유자를") + " 채우세요.")
+                elif self_only and int(cost) <= 0:
+                    st.error("구입가(1팩)를 넣으세요 — 다른 판매자가 빌려 쓸 때 이 값으로 정산됩니다.")
                 else:
                     _lid = add_lot(pno.strip(), name.strip(), owner, int(cost), int(packs),
                                    split_qty=int(sq), received_at=rdate.strftime("%Y-%m-%d"),
                                    list_price=int(lprice or cost),
-                                   paid=0 if _kind == _K_OLD else 1)
+                                   paid=0 if _kind == _K_OLD else 1,
+                                   memo=(USER_LOT_MEMO if self_only else ''))
                     _bill_txt = ""
                     if _lid and _kind == _K_BILL:
                         try:
@@ -769,9 +798,46 @@ def _manual_stock_in(USERNAME):
                         except Exception as _be:
                             _bill_txt = f" · ⚠️ 구매비용 청구 실패: {_be}"
                     st.session_state['_ml_msg'] = (f"✅ 입고 완료 — {name.strip()[:30]} "
-                                                   f"{int(packs)}팩 → {_disp.get(owner, owner)}"
-                                                   f"{_bill_txt}")
+                                                   f"{int(packs)}팩 → "
+                                                   + ("내 재고" if self_only else _disp.get(owner, owner))
+                                                   + _bill_txt)
                     st.rerun()
+
+
+def _user_lot_undo(USERNAME):
+    """내가 직접 넣은 입고 되돌리기 — 아직 판매·차감에 쓰이지 않은 것만(delete_lots가 거른다)."""
+    from db_inventory import find_lots, delete_lots
+    lots = [l for l in find_lots(owner=USERNAME) if str(l.get('memo') or '').startswith(USER_LOT_MEMO)]
+    st.subheader("↩️ 내가 넣은 입고 취소")
+    if not lots:
+        st.caption("직접 넣은 입고가 없습니다.")
+        return
+    st.caption("잘못 넣은 입고를 지웁니다. **이미 판매에 쓰였거나 일부라도 빠진 입고는 지울 수 없습니다** "
+               "— 그런 건은 관리자에게 수량 조정을 요청하세요.")
+    import pandas as pd
+    _rows = [{'취소': False, '입고일': l['received_at'], '상품번호': l['product_no'],
+              '상품명': str(l['product_name'] or '')[:40],
+              '팩': int(l['qty_in'] or 0) // max(1, int(l['split_qty'] or 1)),
+              '남은 개수': int(l['qty_left'] or 0), '입고 개수': int(l['qty_in'] or 0),
+              '구입가(1팩)': int(l['unit_cost'] or 0) * max(1, int(l['split_qty'] or 1)),
+              '상태': ('판매에 사용됨' if int(l.get('used') or 0) else
+                      '일부 차감됨' if int(l['qty_left'] or 0) != int(l['qty_in'] or 0) else '취소 가능')}
+             for l in lots[:100]]
+    _ed = st.data_editor(pd.DataFrame(_rows), hide_index=True, use_container_width=True,
+                         key="ul_undo_ed", disabled=[c for c in _rows[0] if c != '취소'],
+                         column_config={'취소': st.column_config.CheckboxColumn('취소')})
+    _pick = [lots[i]['id'] for i, r in enumerate(_ed.to_dict('records'))
+             if r.get('취소') and _rows[i]['상태'] == '취소 가능']
+    _msg = st.session_state.pop('_ul_msg', None)
+    if _msg:
+        st.success(_msg)
+    if st.button(f"↩️ 선택한 {len(_pick)}건 입고 취소", key="ul_undo_go", disabled=not _pick):
+        # 내 입고만 지운다 — 화면에서 고른 id가 정말 내가 직접 넣은 것인지 다시 확인
+        _mine = {l['id'] for l in lots}
+        res = delete_lots([i for i in _pick if i in _mine])
+        st.session_state['_ul_msg'] = (f"↩️ {res['deleted']}건 입고를 취소했습니다."
+                                       + (f" (건너뜀 {len(res['skipped'])}건: 이미 사용됨)" if res['skipped'] else ""))
+        st.rerun()
 
 
 def _stock_fix_panel(rows):
