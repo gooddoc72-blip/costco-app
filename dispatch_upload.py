@@ -721,6 +721,7 @@ def combined_siblings(username, order_nos):
             ACTIVE_ORDER_STATUSES)]
         _done = {str(r[0]) for r in conn.execute("SELECT order_no FROM dispatch_log")}
         _src = {}
+        _in = set(_nos)
         for i in range(0, len(_nos), 900):
             _ch = _nos[i:i + 900]
             for r in conn.execute(
@@ -728,10 +729,22 @@ def combined_siblings(username, order_nos):
                     "WHERE order_no IN (%s)" % ",".join("?" * len(_ch)), _ch):
                 _src[str(r['order_no'])] = (str(r['order_group_no'] or ''),
                                             _addr_key(r['raw_json']))
+        # 택배사 파일에 상품주문번호가 아니라 '주문번호'(묶음 번호)가 들어온 경우 — 상품주문번호로는
+        #   못 찾아 주소가 같은 다른 주문을 붙이지 못했다(같은 주문번호 안의 상품은 네이버 번호 변환에서
+        #   따로 붙어 '어떤 건 되고 어떤 건 안 되는' 것처럼 보였다). 묶음 번호로 다시 찾는다.
+        _miss = [o for o in _nos if o not in _src]
+        for i in range(0, len(_miss), 900):
+            _ch = _miss[i:i + 900]
+            for r in conn.execute(
+                    "SELECT order_no, order_group_no, raw_json FROM order_history "
+                    "WHERE order_group_no IN (%s)" % ",".join("?" * len(_ch)), _ch):
+                _g = str(r['order_group_no'] or '')
+                _in.add(str(r['order_no']))       # 이 묶음의 상품은 번호 변환에서 붙는다 — 여기서 또 붙이지 않는다
+                if _g not in _src or _src[_g][1] is None:
+                    _src[_g] = (_g, _addr_key(r['raw_json']))
         conn.close()
     except Exception:
         return {}
-    _in = set(_nos)
     _by_grp, _by_addr = {}, {}
     for a in _active:
         _o = str(a['order_no'])
