@@ -14,8 +14,9 @@ export interface TrendItem {
   mentions: number; blog7: number; blog_prev7: number; blog_total: number; blog_capped?: boolean;
   yt_count: number; yt_views: number; volume: number; comp: string; trend: number | null;
   volume_checked?: number; volume_kw?: string;   // 검증관이 다른 표현으로 다시 조회한 검색수
-  sales_recent: number; sales_prev: number; sellers: number;
-  our_price: number; suggest_price: number; margin: number; margin_rate: number; cold: boolean;
+  news?: number; buzz?: number;                    // 화제성 — 유명인·방송·대란 기사 수, 화제 표현 글 수
+  influencers?: { channel: string; subs: number; views: number; link: string }[];   // 구독 10만+ 채널 영상
+  suggest_price: number; margin: number; margin_rate: number; cold: boolean;
   samples: { src: string; text: string; link: string }[];
   ai: { grade?: string; confidence?: number; reason?: string; ruling?: string; price?: number; title?: string; keywords?: string[]; caution?: string };
   council?: Council;

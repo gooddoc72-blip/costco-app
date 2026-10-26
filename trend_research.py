@@ -7,12 +7,14 @@
 데이터(모두 공식 API):
   · 네이버 블로그·카페 검색 — '코스트코 추천템/신상/하울…' 최근 글로 후보를 찾고, 상품별
     최근 7일·이전 7일 언급 수를 센다
-  · 유튜브 Data API — 최근 2주 '코스트코 …' 영상 제목·설명·조회수 (키가 있을 때)
+  · 유튜브 Data API — 최근 2주 '코스트코 …' 영상 제목·설명·조회수·채널 구독자 수 (키가 있을 때)
+  · 네이버 뉴스 — 최근 2주 '코스트코 + 연예인·방송·대란·완판' 기사
   · 데이터랩 검색어 트렌드 — 최근 2주 ÷ 앞 6주
   · 검색광고 keywordstool — 월간 검색수·경쟁도
-  · 우리 주문 — 최근 14일 vs 직전 14일 판매량, 파는 사용자 수
+  ※ 우리 판매자들의 주문·판매가는 쓰지 않는다 — 목적은 SNS에서 뜨는 코스트코 상품의 트렌드를
+    파악하는 것이다(10/26). 우리 판매 실적이 끼면 이미 파는 상품이 '트렌드'로 올라온다.
   ※ 네이버 쇼핑 검색 API는 2026-07-31 종료 — 최저가·판매처 수는 크롬 확장 수집으로 붙인다.
-점수(100): 언급 증가 30 · 언급량 15 · 검색 증가 20 · 월간 검색수 15 · 판매 가능성 20
+점수(100): 언급 증가 25 · 언급량 10 · 화제성 20(유명인·방송·대란 기사, 화제 표현 글, 구독자 10만+ 유튜버) · 검색 증가 20 · 월간 검색수 15 · 판매 가능성 10
 상위 40개는 에이전트 회의(trend_council)가 서로 검토해 등급·이유·추천가·상품명·키워드·주의를
 정하고('제외'는 빠진다) 30개를 남긴다. Claude 키가 없으면 AI 한 번 제안(ai_suggest)으로 대신한다.
 결과는 auth.db trend_reports에 주 단위로 쌓는다.
@@ -27,7 +29,7 @@ from datetime import date, datetime, timedelta
 
 import requests
 
-from db_core import get_auth_db, DATA_DIR
+from db_core import get_auth_db
 
 SEEDS = ['코스트코 추천템', '코스트코 신상', '코스트코 하울', '코스트코 재구매',
          '코스트코 장보기', '코스트코 품절', '코스트코 꿀템', '코스트코 할인']
@@ -187,8 +189,46 @@ def _strip(s):
     return re.sub(r'<[^>]+>|&[a-z]+;', ' ', str(s or ''))
 
 
+# 화제성 — 유명인·방송·인플루언서·품절 대란을 다룬 기사와 글. 인기가 '번지는' 신호다.
+NEWS_SEEDS = ['코스트코 연예인', '코스트코 방송', '코스트코 대란', '코스트코 품절', '코스트코 완판',
+              '코스트코 유튜버', '코스트코 인플루언서', '코스트코 화제']
+BUZZ = re.compile(r'연예인|배우|가수|아이돌|셀럽|스타|방송|예능|나혼자|나 혼자|편스토랑|전참시|유튜버|인플루언서|'
+                  r'품절|대란|완판|오픈런|난리|핫템|인싸템|틱톡|릴스|인스타', re.I)
+INFLUENCER_SUBS = 100_000      # 이 구독자 수 이상 채널을 인플루언서로 본다
+
+
+def _news(ck, days, log):
+    """네이버 뉴스 — 최근 days일 '코스트코 + 유명인·방송·대란' 기사."""
+    from email.utils import parsedate_to_datetime
+    since = datetime.now() - timedelta(days=days)
+    out, seen = [], set()
+    for q in NEWS_SEEDS:
+        for start in (1, 101):
+            j = _naver('news', q, start, ck)
+            its = j.get('items') or []
+            for it in its:
+                link = it.get('originallink') or it.get('link') or ''
+                if link in seen:
+                    continue
+                seen.add(link)
+                try:
+                    pdt = parsedate_to_datetime(it.get('pubDate')).replace(tzinfo=None)
+                except Exception:
+                    continue
+                if pdt < since:
+                    continue
+                txt = _strip(it.get('title')) + ' ' + _strip(it.get('description'))
+                out.append({'src': 'news', 'date': pdt.strftime('%Y%m%d'), 'text': txt, 'link': link,
+                            'views': 0, 'buzz': True})
+            if len(its) < 100:
+                break
+            time.sleep(0.1)
+    log(f'뉴스 기사 {len(out)}건')
+    return out
+
+
 def collect_docs(ck, yt_key, days=14, log=print):
-    """최근 days일 블로그·카페·유튜브 글 — [{src, date, text, views, link}]"""
+    """최근 days일 블로그·카페·뉴스·유튜브 글 — [{src, date, text, views, link, buzz, subs?, channel?}]"""
     cut = (date.today() - timedelta(days=days)).strftime('%Y%m%d')
     docs, seen = [], set()
     for q in SEEDS:
@@ -219,6 +259,7 @@ def collect_docs(ck, yt_key, days=14, log=print):
                              'link': it.get('link', ''), 'views': 0})
             time.sleep(0.1)
     log(f"블로그·카페 글 {len(docs)}건")
+    docs += _news(ck, days, log)
     if yt_key:
         after = (datetime.utcnow() - timedelta(days=days)).strftime('%Y-%m-%dT%H:%M:%SZ')
         ids = []
@@ -235,7 +276,7 @@ def collect_docs(ck, yt_key, days=14, log=print):
                 log(f'유튜브 오류: {e}')
                 break
         ids = list(dict.fromkeys(ids))
-        n = 0
+        vids = []
         for i in range(0, len(ids), 50):
             try:
                 r = requests.get("https://www.googleapis.com/youtube/v3/videos", timeout=15, params={
@@ -244,11 +285,28 @@ def collect_docs(ck, yt_key, days=14, log=print):
                 continue
             for it in r.get('items') or []:
                 sn, stt = it.get('snippet') or {}, it.get('statistics') or {}
-                docs.append({'src': 'youtube', 'date': str(sn.get('publishedAt', ''))[:10].replace('-', ''),
+                vids.append({'src': 'youtube', 'date': str(sn.get('publishedAt', ''))[:10].replace('-', ''),
                              'text': f"{sn.get('title', '')} {str(sn.get('description', ''))[:600]}",
-                             'link': 'https://youtu.be/' + it['id'], 'views': int(stt.get('viewCount') or 0)})
-                n += 1
-        log(f"유튜브 영상 {n}건")
+                             'link': 'https://youtu.be/' + it['id'], 'views': int(stt.get('viewCount') or 0),
+                             'channel': str(sn.get('channelTitle') or ''), '_cid': sn.get('channelId', '')})
+        # 채널 구독자 수 — 구독자 많은 채널(인플루언서)이 다룬 상품은 인기가 번지는 신호다
+        cids = list(dict.fromkeys(v['_cid'] for v in vids if v['_cid']))
+        subs = {}
+        for i in range(0, len(cids), 50):
+            try:
+                r = requests.get("https://www.googleapis.com/youtube/v3/channels", timeout=15, params={
+                    'key': yt_key, 'id': ','.join(cids[i:i + 50]), 'part': 'statistics'}).json()
+                for it in r.get('items') or []:
+                    subs[it['id']] = int((it.get('statistics') or {}).get('subscriberCount') or 0)
+            except Exception:
+                continue
+        for v in vids:
+            v['subs'] = subs.get(v.pop('_cid'), 0)
+        docs += vids
+        log(f"유튜브 영상 {len(vids)}건 (구독자 {INFLUENCER_SUBS // 10000}만+ 채널 "
+            f"{sum(1 for v in vids if v['subs'] >= INFLUENCER_SUBS)}건)")
+    for d in docs:
+        d['buzz'] = bool(d.get('buzz') or BUZZ.search(d['text']))
     return docs
 
 
@@ -273,33 +331,6 @@ def match_docs(docs, cat):
             if c >= need:
                 hits[pn].append(d)
     return hits
-
-
-def our_sales(days=14):
-    """{코스트코번호: (최근, 직전, 판매자수)} — 사용자 주문(취소 제외)."""
-    import glob, os
-    today = date.today()
-    r_from, p_from = (today - timedelta(days=days)).isoformat(), (today - timedelta(days=days * 2)).isoformat()
-    rec, prev, sellers = defaultdict(int), defaultdict(int), defaultdict(set)
-    for f in glob.glob(os.path.join(DATA_DIR, '*.db')):
-        u = os.path.basename(f)[:-3]
-        if u in ('auth', 'admin') or '.' in u:
-            continue
-        try:
-            c = sqlite3.connect(f'file:{f}?mode=ro', uri=True)
-            for cc, q, od in c.execute(
-                    "SELECT COALESCE(d.costco_no,''), h.qty, substr(h.order_date,1,10) FROM order_history h "
-                    "LEFT JOIN daily_orders d ON d.order_no=h.order_no "
-                    "WHERE substr(h.order_date,1,10)>=? AND COALESCE(h.status,'') NOT LIKE '%취소%'", (p_from,)):
-                cc = str(cc or '').strip()
-                if not cc.isdigit() or len(cc) > 8:
-                    continue
-                (rec if od >= r_from else prev)[cc] += int(q or 1)
-                sellers[cc].add(u)
-            c.close()
-        except Exception:
-            continue
-    return {cc: (rec[cc], prev[cc], len(sellers[cc])) for cc in set(rec) | set(prev)}
 
 
 def blog_week(ck, kw):
@@ -376,26 +407,6 @@ def ad_volume(adk, kw):
     return (int(best['총검색량']), str(best.get('경쟁도') or '')) if best else (0, '')
 
 
-def our_prices(pns):
-    """{코스트코번호: 우리 사용자 네이버 판매가 중앙값}"""
-    import glob, os
-    vals = defaultdict(list)
-    for f in glob.glob(os.path.join(DATA_DIR, '*.db')):
-        u = os.path.basename(f)[:-3]
-        if u in ('auth', 'admin') or '.' in u:
-            continue
-        try:
-            c = sqlite3.connect(f'file:{f}?mode=ro', uri=True)
-            for pn, sp in c.execute("SELECT product_no, sale_price FROM products WHERE COALESCE(sale_price,0)>0"):
-                pn = str(pn or '').strip()
-                if pn in pns:
-                    vals[pn].append(int(sp))
-            c.close()
-        except Exception:
-            continue
-    return {pn: sorted(v)[len(v) // 2] for pn, v in vals.items() if v}
-
-
 def suggested_price(store, margin=0.15):
     """네이버 판매가 공식: (매장가 + 택배 3,000) × (1+마진) ÷ 0.945, 10원 올림."""
     if not store:
@@ -424,14 +435,13 @@ def ai_suggest(items, ak, gk, log=print):
     for i, x in enumerate(items, 1):
         lines.append(json.dumps({
             'no': i, 'costco_no': x['costco_no'], '상품': x['name'], '매장가': x['store'],
-            '우리판매_14일': x['sales_recent'], '직전14일': x['sales_prev'], '파는사용자': x['sellers'],
             '블로그_7일': x['blog7'], '블로그_이전7일': x['blog_prev7'], '유튜브영상': x['yt_count'],
             '유튜브조회': x['yt_views'], '검색추세': x['trend'], '월간검색수': x['volume'],
-            '경쟁도': x['comp'], '공식추천가': x['suggest_price'], '우리판매가': x['our_price'],
+            '경쟁도': x['comp'], '공식추천가': x['suggest_price'],
             '글예시': x['samples'][:3]}, ensure_ascii=False))
     user = ("아래 상품 각각에 대해 JSON 배열로 답하라. 원소 형식:\n"
             '{"no":번호,"grade":"주력|시도|관찰","reason":"뜨는 이유 1~2문장",'
-            '"price":추천 네이버 판매가(정수, 공식추천가 근처, 우리판매가가 있으면 참고),'
+            '"price":추천 네이버 판매가(정수, 공식추천가 근처),'
             '"title":"네이버 상품명 제안(40자 이내, 코스트코 포함)","keywords":["검색 키워드 5개"],'
             '"caution":"배송·보관·경쟁 주의 1문장(없으면 빈 문자열)"}\n\n' + '\n'.join(lines))
     txt, err, prov = ai_complete(AI_SYSTEM, user, gemini_key=gk or '', anthropic_key=ak or '',
@@ -459,16 +469,17 @@ def run(by='', top_n=30, log=print):
     log(f'코스트코 상품 {len(cat)}개')
     docs = collect_docs(k['open'], k['youtube'], log=log)
     hits = match_docs(docs, cat)
-    sales = our_sales()
-    # 후보: 글 언급 상위 + 우리 판매 상위·급증
-    cand = sorted(hits, key=lambda pn: -len(hits[pn]))[:70]
-    cand += sorted(sales, key=lambda pn: -sales[pn][0])[:20]
-    cand += sorted([pn for pn in sales if sales[pn][0] >= 4],
-                   key=lambda pn: -(sales[pn][0] - sales[pn][1]) / max(1, sales[pn][1]))[:15]
+    # 후보: SNS 글에 많이 언급된 상품 — 기사·화제 표현 글·인플루언서 영상은 더 무겁게 본다
+    #   (우리 판매 실적은 보지 않는다)
+    def _weight(pn):
+        hs = hits[pn]
+        return (len(hs) + 3 * sum(1 for d in hs if d.get('buzz'))
+                + 5 * sum(1 for d in hs if d.get('subs', 0) >= INFLUENCER_SUBS))
+    cand = sorted(hits, key=lambda pn: -_weight(pn))[:90]
     cand = [pn for pn in dict.fromkeys(cand) if pn in cat and cat[pn]['short']
             and not re.search(r'상품권|멤버십|기프트카드|gift ?card', cat[pn]['name'], re.I)
-            # 이름 토막이 '가지'처럼 흔한 한 단어뿐이면 글을 가려낼 수 없다(우리 판매 상품은 남긴다)
-            and (len(cat[pn]['tokens']) >= 2 or len(cat[pn]['short']) >= 4 or pn in sales)]
+            # 이름 토막이 '가지'처럼 흔한 한 단어뿐이면 글을 가려낼 수 없다
+            and (len(cat[pn]['tokens']) >= 2 or len(cat[pn]['short']) >= 4)]
     log(f'후보 {len(cand)}개 — 상품별 언급·검색 확인 중')
     rows = []
     for pn in cand:
@@ -478,28 +489,30 @@ def run(by='', top_n=30, log=print):
         vol, comp = ad_volume(k['ad'], kw)
         hs = hits.get(pn, [])
         yt = [d for d in hs if d['src'] == 'youtube']
-        s = sales.get(pn, (0, 0, 0))
+        infl = sorted([d for d in yt if d.get('subs', 0) >= INFLUENCER_SUBS], key=lambda d: -d['subs'])
+        # 근거 글 순서 — 인플루언서 영상 → 기사 → 화제 표현 글 → 조회수 → 최신
+        _pri = sorted(hs, key=lambda d: (d.get('subs', 0) >= INFLUENCER_SUBS, d['src'] == 'news',
+                                         bool(d.get('buzz')), d['views'], str(d['date'])), reverse=True)
         rows.append({
             'costco_no': pn, 'name': e.get('receipt_name') or e['name'], 'full_name': e['name'], 'kw': kw,
             'store': e['store'], 'category': e['category'],
             'mentions': len(hs), 'blog7': b7, 'blog_prev7': bp, 'blog_total': btot, 'blog_capped': capped,
             'yt_count': len(yt), 'yt_views': sum(d['views'] for d in yt),
+            'news': sum(1 for d in hs if d['src'] == 'news'),
+            'buzz': sum(1 for d in hs if d.get('buzz') and d['src'] != 'news'),
+            'influencers': [{'channel': d.get('channel', ''), 'subs': d['subs'], 'views': d['views'], 'link': d['link']}
+                            for d in infl[:5]],
             'volume': vol, 'comp': comp,
-            'sales_recent': s[0], 'sales_prev': s[1], 'sellers': s[2],
-            'samples': [{'src': d['src'], 'text': d['text'][:120], 'link': d['link']} for d in
-                        sorted(hs, key=lambda d: -d['views'])[:4]],
-            # 회의 조사원이 볼 글 — 조회수 많은 것, 그다음 최신 글 (보고서에는 저장 안 함)
-            '_evid': [{'src': d['src'], 'text': d['text'][:160]} for d in
-                      sorted(hs, key=lambda d: (d['views'], str(d['date'])), reverse=True)[:8]],
+            'samples': [{'src': d['src'], 'text': d['text'][:120], 'link': d['link']} for d in _pri[:5]],
+            # 회의 조사원이 볼 글 (보고서에는 저장 안 함)
+            '_evid': [{'src': d['src'], 'text': d['text'][:160]} for d in _pri[:8]],
         })
         time.sleep(0.05)
     tr = datalab(k['open'], [r['kw'] for r in rows])
-    prices = our_prices({r['costco_no'] for r in rows})
     for r in rows:
         r['trend'] = tr.get(r['kw'])
-        r['our_price'] = prices.get(r['costco_no'], 0)
         r['suggest_price'] = suggested_price(r['store'])
-        sp = r['our_price'] or r['suggest_price']
+        sp = r['suggest_price']
         r['margin'] = int(sp - r['store'] - 3000 - 300 - sp * 0.055) if sp and r['store'] else 0
         r['margin_rate'] = round(r['margin'] / sp, 3) if sp else 0
         r['cold'] = bool(re.search(r'냉동|냉장|아이스|요거트|치즈|우유|고기|갈비|연어|케이크', r['name'] + r['full_name']))
@@ -507,9 +520,14 @@ def run(by='', top_n=30, log=print):
     # 증가율은 작은 수에 흔들리지 않게 +3을 더해 본다(0→3건이 '무한대 상승'이 되지 않게)
     # 이전 7일을 끝까지 못 센 상품(capped)은 증가율을 알 수 없다 — 중립(1.0)으로 둔다
     g_mention = [1.0 if r.get('blog_capped') else (r['blog7'] + 3) / (r['blog_prev7'] + 3) for r in rows]
+    # 화제성 = 기사×3 + 화제 표현 글 + 인플루언서 영상×5 (+ 인플루언서 영상 조회수 규모)
+    def _buzz(r):
+        iv = sum(i['views'] for i in r['influencers'])
+        return r['news'] * 3 + r['buzz'] + len(r['influencers']) * 5 + (math.log10(iv + 1) if iv else 0)
     pr = {
         'growth': _pct_rank(g_mention),
         'volume_m': _pct_rank([r['blog7'] + r['yt_count'] * 3 for r in rows]),
+        'buzz': _pct_rank([_buzz(r) for r in rows]),
         'trend': _pct_rank([r['trend'] or 1.0 for r in rows]),
         'search': _pct_rank([r['volume'] for r in rows]),
     }
@@ -523,12 +541,15 @@ def run(by='', top_n=30, log=print):
         # 찾는 사람이 거의 없는 상품(월 검색 300 미만)은 팔기 어렵다 — 시즌 장식 등
         if r['volume'] < 300:
             sell *= 0.4
+        # 화제성이 없는(0) 상품에 백분위 점수를 주지 않는다 — 대부분 0이면 0끼리 중간 등수를 받는다
+        b = _buzz(r)
         parts = {
-            '언급증가': round(30 * pr['growth'](g), 1),
-            '언급량': round(15 * pr['volume_m'](r['blog7'] + r['yt_count'] * 3), 1),
+            '언급증가': round(25 * pr['growth'](g), 1),
+            '언급량': round(10 * pr['volume_m'](r['blog7'] + r['yt_count'] * 3), 1),
+            '화제성': round(20 * pr['buzz'](b), 1) if b else 0.0,
             '검색증가': round(20 * pr['trend'](r['trend'] or 1.0), 1),
             '검색수': round(15 * pr['search'](r['volume']), 1),
-            '판매가능성': round(20 * sell, 1),
+            '판매가능성': round(10 * sell, 1),
         }
         r['score_parts'] = parts
         r['score'] = round(sum(parts.values()), 1)
@@ -563,7 +584,7 @@ def run(by='', top_n=30, log=print):
     for r in rows:
         r.pop('_evid', None)
     data = {'week': date.today().isoformat(), 'created_at': datetime.now().strftime('%Y-%m-%d %H:%M'),
-            'docs': len(docs), 'sources': {s: sum(1 for d in docs if d['src'] == s) for s in ('blog', 'cafe', 'youtube')},
+            'docs': len(docs), 'sources': {s: sum(1 for d in docs if d['src'] == s) for s in ('blog', 'cafe', 'news', 'youtube')},
             'candidates': len(rows), 'youtube': bool(k['youtube']), 'elapsed': int(time.time() - t0),
             'council': council, 'items': top}
     save_report(data, by)

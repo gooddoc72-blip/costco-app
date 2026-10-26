@@ -43,8 +43,11 @@ def render(USERNAME, IS_ADMIN, settings=None):
         rows.append({
             '순위': x.get('rank'), '상품': x.get('name', ''), '등급': ai.get('grade', ''),
             '판정': (x.get('council') or {}).get('how', ''),
+            '화제성': ' '.join(t for t in (
+                f"⭐{len(x.get('influencers') or [])}" if x.get('influencers') else '',
+                f"📰{x.get('news')}" if x.get('news') else '', f"🔥{x.get('buzz')}" if x.get('buzz') else '') if t),
             '월 검색수': max(int(x.get('volume') or 0), int(x.get('volume_checked') or 0)),
-            '우리 판매 14일': x.get('sales_recent', 0), '추천가': int(ai.get('price') or x.get('suggest_price') or 0),
+            '추천가': int(ai.get('price') or x.get('suggest_price') or 0),
             '예상 마진': x.get('margin', 0), '승인': _lab.get((dec.get(x.get('costco_no')) or {}).get('decision'), ''),
             '이유': ai.get('reason', ''),
         })

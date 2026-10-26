@@ -12,13 +12,14 @@
                               서로의 답을 보지 않고 평가한다
   2. 토론                    — 등급이 엇갈리거나 데이터 이상을 짚은 상품만, 상대 의견을 보고
                               유지·수정·반박한다
-  3. 판정(Claude Opus)       — 검증관이 도구(블로그 글·검색수·판매 추이 조회)로 근거를 다시
+  3. 판정(Claude Opus)       — 검증관이 도구(블로그 글·검색수 조회)로 근거를 다시
                               확인해 최종 등급을 정한다
-  4. 규칙 검사(코드)         — 마진 마이너스 주력 금지, 월 검색 300 미만은 우리 판매가 없으면
-                              관찰, 끝난 시즌은 관찰, 추천가 범위 — AI가 어겨도 코드가 막는다
-  5. 관리자 승인             — 화면에서 승인·보류하고, 2주 뒤 실제 판매로 적중률을 매겨
+  4. 규칙 검사(코드)         — 마진 마이너스 주력 금지, 월 검색 300 미만은 관찰, 끝난 시즌은
+                              관찰, 추천가 범위 — AI가 어겨도 코드가 막는다
+  5. 관리자 승인             — 화면에서 승인·보류하고, 2주 뒤 네이버 검색 추세로 적중률을 매겨
                               다음 회의 검증관에게 '지난 판정 성적'으로 넘긴다
 
+우리 판매자들의 주문·판매가는 쓰지 않는다 — 목적은 SNS에서 뜨는 코스트코 상품의 트렌드 파악이다.
 숫자는 언제나 코드(DB·API)가 만든다. 에이전트는 받은 숫자를 바꿀 수 없고, 등급·이유·
 추천가·상품명만 쓴다.
 """
@@ -36,7 +37,7 @@ MAX_DISPUTE = 20                      # 토론·판정에 올릴 최대 상품 �
 JUDGE_TURNS = 10                      # 검증관 도구 호출 왕복 상한
 
 GRADES = ['주력', '시도', '관찰', '제외']
-EVIDENCE = ['언급증가', '언급량', '검색추세', '월간검색수', '우리판매', '마진', '글내용', '시즌', '경쟁도']
+EVIDENCE = ['언급증가', '언급량', '유튜브', '화제성', '검색추세', '월간검색수', '마진', '글내용', '시즌', '경쟁도']
 _RANK = {'주력': 3, '시도': 2, '관찰': 1, '제외': 0}
 
 
@@ -128,9 +129,10 @@ def _card(no, x, scout=None):
         'no': no, '상품': x['name'], '코스트코번호': x['costco_no'], '매장가': x['store'],
         '블로그_최근7일': x['blog7'], '블로그_이전7일': x['blog_prev7'],
         '유튜브영상': x['yt_count'], '유튜브조회': x['yt_views'],
+        '뉴스기사': x.get('news', 0), '화제표현글': x.get('buzz', 0),
+        '인플루언서영상': [f"{i['channel']}(구독 {i['subs'] // 10000}만·조회 {i['views']:,})" for i in x.get('influencers') or []],
         '검색추세(최근2주÷앞6주)': x['trend'], '월간검색수': x['volume'], '경쟁도': x['comp'],
-        '우리판매_14일': x['sales_recent'], '우리판매_직전14일': x['sales_prev'], '파는사용자': x['sellers'],
-        '공식추천가': x['suggest_price'], '우리판매가': x['our_price'],
+        '공식추천가': x['suggest_price'],
         '예상마진': x['margin'], '마진율': x['margin_rate'], '냉장냉동': x['cold'],
         '점수': x['score'], '글예시': [s['text'] for s in x.get('_evid', x['samples'])[:6]],
     }
@@ -241,25 +243,20 @@ TOOLS = [
                      "카드의 상품 키워드가 어색해서 검색수가 작게 나왔을 수 있을 때 다른 표현으로 다시 확인한다. "
                      "no에는 확인하려는 상품 번호를 넣는다 — 그 키워드와 정확히 같은 줄의 검색수는 규칙 검사에도 쓰인다."),
      'input_schema': _obj({'no': S_INT, 'keyword': S_STR}), 'eager_input_streaming': True},
-    {'name': 'sales_history',
-     'description': '우리 판매자들의 이 상품 주별 판매 수량(최근 8주, 오래된 주부터)을 가져온다.',
-     'input_schema': _obj({'no': S_INT}), 'eager_input_streaming': True},
 ]
 
 
 def _run_tool(name, inp, rows, k):
     import trend_research as tr
-    if name in ('blog_posts', 'sales_history'):
+    if name == 'blog_posts':
         no = inp.get('no')
         if not isinstance(no, int) or not 1 <= no <= len(rows):
             return {'error': f'no는 1~{len(rows)} 사이 정수여야 한다'}
         x = rows[no - 1]
-        if name == 'blog_posts':
-            j = tr._naver('blog', '코스트코 ' + x['kw'], 1, k['open'])
-            return {'query': '코스트코 ' + x['kw'], 'total': j.get('total', 0), 'posts': [
-                {'date': it.get('postdate', ''), 'title': tr._strip(it.get('title'))[:80],
-                 'desc': tr._strip(it.get('description'))[:120]} for it in (j.get('items') or [])[:10]]}
-        return {'weeks': weekly_sales(x['costco_no'])}
+        j = tr._naver('blog', '코스트코 ' + x['kw'], 1, k['open'])
+        return {'query': '코스트코 ' + x['kw'], 'total': j.get('total', 0), 'posts': [
+            {'date': it.get('postdate', ''), 'title': tr._strip(it.get('title'))[:80],
+             'desc': tr._strip(it.get('description'))[:120]} for it in (j.get('items') or [])[:10]]}
     if name == 'keyword_volume':
         kw = str(inp.get('keyword') or '').strip()
         if not kw:
@@ -288,7 +285,7 @@ def _valid(name, inp):
     """스트리밍으로 받은 도구 입력은 잘려 올 수 있다 — 스키마대로인지 직접 본다."""
     if not isinstance(inp, dict):
         return False
-    if name in ('blog_posts', 'sales_history'):
+    if name == 'blog_posts':
         return isinstance(inp.get('no'), int)
     if name == 'keyword_volume':
         return isinstance(inp.get('keyword'), str) and isinstance(inp.get('no'), int)
@@ -359,8 +356,8 @@ def apply_rules(x, v):
     if x['margin'] < 0:
         cap('시도', f"예상 마진 {x['margin']:,}원(마이너스) — 주력 금지")
     vol = max(int(x['volume'] or 0), int(x.get('volume_checked') or 0))
-    if vol < 300 and x['sales_recent'] < 5:
-        cap('관찰', f"월간 검색 {vol}회·우리 판매 {x['sales_recent']}건 — 찾는 사람이 적음")
+    if vol < 300:
+        cap('관찰', f"월간 검색 {vol}회 — 찾는 사람이 적음")
     if _season_over(x['name'] + ' ' + x.get('full_name', '')):
         cap('관찰', '시즌이 끝났거나 끝나 감')
     v['grade'] = g
@@ -372,68 +369,66 @@ def apply_rules(x, v):
     return rules
 
 
-# ── 판정 성적 (2주 뒤 실제 판매) ───────────────────────────────────
-def _sales_between(start, end):
-    """{코스트코번호: 수량} — 결제일 start 이상 end 미만, 취소 제외."""
-    import glob, os, sqlite3
-    from collections import defaultdict
-    from db_core import DATA_DIR
-    out = defaultdict(int)
-    for f in glob.glob(os.path.join(DATA_DIR, '*.db')):
-        u = os.path.basename(f)[:-3]
-        if u in ('auth', 'admin') or '.' in u:
-            continue
+# ── 판정 성적 (2주 뒤 네이버 검색 추세) ────────────────────────────
+_REC = {}      # 보고서 id → (집계, 계산한 날) — 화면을 열 때마다 데이터랩을 부르지 않게
+
+
+def _search_change(ck, kws, d0):
+    """{키워드: 보고서 다음 14일 검색량 ÷ 그 전 14일} — 네이버 데이터랩(일 단위, '코스트코 키워드')."""
+    import requests
+    out = {}
+    body_base = {'startDate': (d0 - timedelta(days=14)).isoformat(),
+                 'endDate': (d0 + timedelta(days=13)).isoformat(), 'timeUnit': 'date'}
+    for i in range(0, len(kws), 5):
+        body = dict(body_base, keywordGroups=[{'groupName': k_, 'keywords': ['코스트코 ' + k_]} for k_ in kws[i:i + 5]])
         try:
-            c = sqlite3.connect(f'file:{f}?mode=ro', uri=True)
-            for cc, q in c.execute(
-                    "SELECT COALESCE(d.costco_no,''), h.qty FROM order_history h "
-                    "LEFT JOIN daily_orders d ON d.order_no=h.order_no "
-                    "WHERE substr(h.order_date,1,10)>=? AND substr(h.order_date,1,10)<? "
-                    "AND COALESCE(h.status,'') NOT LIKE '%취소%'", (start, end)):
-                cc = str(cc or '').strip()
-                if cc:
-                    out[cc] += int(q or 1)
-            c.close()
+            j = requests.post('https://openapi.naver.com/v1/datalab/search', timeout=15, json=body,
+                              headers={'X-Naver-Client-Id': ck[0], 'X-Naver-Client-Secret': ck[1]}).json()
         except Exception:
             continue
+        for res in j.get('results') or []:
+            before = sum(x['ratio'] for x in res.get('data') or [] if x['period'] < d0.isoformat())
+            after = sum(x['ratio'] for x in res.get('data') or [] if x['period'] >= d0.isoformat())
+            if before or after:
+                out[res['title']] = (after / before) if before else 9.9
     return out
 
 
-def weekly_sales(pn, weeks=8):
-    t = date.today()
-    res = []
-    for w in range(weeks, 0, -1):
-        s, e = t - timedelta(days=7 * w), t - timedelta(days=7 * (w - 1))
-        res.append({'주': s.isoformat(), '수량': _sales_between(s.isoformat(), e.isoformat()).get(pn, 0)})
-    return res
-
-
 def track_record():
-    """14일 이상 지난 보고서의 주력·시도 판정이 실제 판매 증가로 이어졌는지.
-
-    '적중' = 보고서 다음 14일 판매가 그 전 14일보다 늘었다. 관리자가 승인한 상품만 센다
-    (승인 안 한 상품은 팔아 보지 않았으니 맞았는지 알 수 없다). 승인 기록이 없으면 전부.
+    """14일 이상 지난 회의의 주력·시도 판정이 맞았는지 — 보고서 다음 14일 네이버 검색량이 그 전 14일보다
+    늘었으면 '적중'. 우리 판매가 아니라 시장(검색)이 실제로 그 상품을 더 찾았는지로 본다.
+    관리자가 승인한 상품만 센다(승인 기록이 없으면 그 회의의 주력·시도 전부).
     """
     import trend_research as tr
     cut = (date.today() - timedelta(days=14)).isoformat()
+    ck = tr.keys()['open']
+    if not all(ck):
+        return ''
     stats = {'주력': [0, 0], '시도': [0, 0]}
     for meta in tr.list_reports(limit=12):
-        rep = tr.get_report(meta['id'])
-        if not rep or rep.get('week', '9') > cut or not rep.get('council'):
-            continue
-        d0 = date.fromisoformat(rep['week'])
-        before = _sales_between((d0 - timedelta(days=14)).isoformat(), d0.isoformat())
-        after = _sales_between(d0.isoformat(), (d0 + timedelta(days=14)).isoformat())
-        dec = tr.get_decisions(meta['id'])
-        for x in rep.get('items', []):
-            g = (x.get('ai') or {}).get('grade')
-            if g not in stats or (dec and dec.get(x['costco_no'], {}).get('decision') != 'approve'):
+        rid = meta['id']
+        if rid in _REC and _REC[rid][1] == date.today():
+            part = _REC[rid][0]
+        else:
+            rep = tr.get_report(rid)
+            if not rep or rep.get('week', '9') > cut or not rep.get('council'):
                 continue
-            stats[g][1] += 1
-            if after.get(x['costco_no'], 0) > before.get(x['costco_no'], 0):
-                stats[g][0] += 1
-    parts = [f'{g} {h}/{n} 적중' for g, (h, n) in stats.items() if n]
-    return ', '.join(parts)
+            dec = tr.get_decisions(rid)
+            items = [x for x in rep.get('items', []) if (x.get('ai') or {}).get('grade') in stats
+                     and (not dec or dec.get(x['costco_no'], {}).get('decision') == 'approve')]
+            chg = _search_change(ck, sorted({x['kw'] for x in items}), date.fromisoformat(rep['week']))
+            part = {'주력': [0, 0], '시도': [0, 0]}
+            for x in items:
+                if x['kw'] not in chg:
+                    continue
+                g = x['ai']['grade']
+                part[g][1] += 1
+                part[g][0] += chg[x['kw']] > 1.0
+            _REC[rid] = (part, date.today())
+        for g in stats:
+            stats[g][0] += part[g][0]
+            stats[g][1] += part[g][1]
+    return ', '.join(f'{g} {h}/{n} 적중(2주 뒤 검색 증가)' for g, (h, n) in stats.items() if n)
 
 
 # ── 전체 회의 ────────────────────────────────────────────────────

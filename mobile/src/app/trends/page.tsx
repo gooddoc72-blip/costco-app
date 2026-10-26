@@ -2,8 +2,8 @@
 /**
  * 🔥 SNS 트렌드 TOP 30 (관리자) — 지금 뜨는 코스트코 상품과 판매 제안.
  *
- * 블로그·카페·유튜브 언급, 검색 증가, 월간 검색수, 우리 판매 추이를 점수로 묶어 순위를 매기고
- * 상위 40개는 에이전트 회의(조사원 → 분석가 A·B 독립 의견 → 엇갈린 것만 토론 → 검증관 판정
+ * 블로그·카페·유튜브 언급, 검색 증가, 월간 검색수를 점수로 묶어 순위를 매기고(우리 판매 실적은 보지 않는다)
+ * 상위 50개는 에이전트 회의(조사원 → 분석가 A·B 독립 의견 → 엇갈린 것만 토론 → 검증관 판정
  * → 규칙 검사)가 등급·이유·추천가·상품명·키워드를 정하고, 관리자가 승인한다. 조사·회의는
  * 파이썬(trend_research, trend_council)이 하고, 이 화면은 결과·회의록을 보여 주고 승인을 받는다.
  */
@@ -82,7 +82,7 @@ export default function TrendsPage() {
             </select>
           )}
           {rep && <span className="text-xs text-gray-500">
-            {rep.created_at} · 글 {num(rep.docs)}건 (블로그 {rep.sources.blog || 0} · 카페 {rep.sources.cafe || 0} · 유튜브 {rep.sources.youtube || 0}) · 후보 {rep.candidates}개
+            {rep.created_at} · 글 {num(rep.docs)}건 (블로그 {rep.sources.blog || 0} · 카페 {rep.sources.cafe || 0} · 뉴스 {rep.sources.news || 0} · 유튜브 {rep.sources.youtube || 0}) · 후보 {rep.candidates}개
           </span>}
         </div>
 
@@ -128,8 +128,8 @@ export default function TrendsPage() {
                 <thead className="bg-gray-50 text-xs text-gray-500"><tr>
                   <th className="p-2">순위</th><th className="p-2 text-left">상품</th><th className="p-2">등급</th>
                   <th className="p-2 text-right">점수</th><th className="p-2 text-right">블로그 7일</th>
-                  <th className="p-2 text-right">유튜브</th><th className="p-2 text-right">검색 추세</th>
-                  <th className="p-2 text-right">월 검색수</th><th className="p-2 text-right">우리 판매 14일</th>
+                  <th className="p-2 text-right">유튜브</th><th className="p-2 text-left">화제성</th><th className="p-2 text-right">검색 추세</th>
+                  <th className="p-2 text-right">월 검색수</th>
                   <th className="p-2 text-right">매장가</th><th className="p-2 text-right">추천가</th><th className="p-2 text-right">예상 마진</th>
                   <th className="p-2">승인</th>
                 </tr></thead>
@@ -139,9 +139,10 @@ export default function TrendsPage() {
               </table>
             </section>
             <div className="text-[11px] text-gray-500">
-              점수(100) = 언급 증가 30 · 언급량 15 · 검색 증가 20 · 월간 검색수 15 · 판매 가능성 20(마진·경쟁도·냉장/냉동).
-              등급은 회의가 정하고, 마진 마이너스·검색 300 미만(우리 판매 없음)·끝난 시즌은 코드가 등급을 낮춘다.
-              ✅ 승인한 상품만 2주 뒤 판매로 적중 여부를 매겨 다음 회의 검증관에게 알려 준다.
+              점수(100) = 언급 증가 25 · 언급량 10 · 화제성 20(⭐ 구독 10만+ 유튜버 영상 · 📰 유명인·방송·대란 기사 · 🔥 화제 표현 글) · 검색 증가 20 · 월간 검색수 15 · 판매 가능성 10.
+              등급은 회의가 정하고, 마진 마이너스·월 검색 300 미만·끝난 시즌은 코드가 등급을 낮춘다.
+              우리 판매자들의 판매 실적은 보지 않는다 — SNS·검색 트렌드만으로 판단한다.
+              ✅ 승인한 상품만 2주 뒤 네이버 검색량이 늘었는지로 적중 여부를 매겨 다음 회의 검증관에게 알려 준다.
               네이버 쇼핑 검색 API가 2026-07-31 종료돼 경쟁 최저가는 아직 빠져 있습니다(크롬 확장 수집으로 추가 예정).
             </div>
           </>)}
@@ -178,18 +179,21 @@ function Row({ x, open, onToggle, d, onDecide }: { x: TrendItem; open: boolean; 
         </td>
         <td className="p-2 min-w-[200px]">
           <span className="inline-flex items-center gap-1">{open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}{x.name}</span>
-          <div className="text-[11px] text-gray-400">{x.costco_no}{x.cold && ' · ❄️ 냉장/냉동'}{x.sellers ? ` · 판매자 ${x.sellers}명` : ' · 아직 파는 사람 없음'}</div>
+          <div className="text-[11px] text-gray-400">{x.costco_no}{x.cold && ' · ❄️ 냉장/냉동'}</div>
         </td>
         <td className="p-2 text-center whitespace-nowrap">{x.ai?.grade && <span className={clsx('px-2 py-0.5 rounded-full text-xs', GRADE_CLS[x.ai.grade] || 'bg-gray-100')}>{x.ai.grade}</span>}
           {x.council && <div className="text-[10px] text-gray-400">{x.council.how === '합의' ? '🤝 합의' : '⚖️ 판정'}{x.council.rules.length ? ' · 📏규칙' : ''}</div>}</td>
         <td className="p-2 text-right font-semibold">{x.score}</td>
         <td className="p-2 text-right">{x.blog7}<span className="text-[11px] text-gray-400"> ({x.blog_prev7})</span></td>
         <td className="p-2 text-right">{x.yt_count ? `${x.yt_count}편 · ${num(x.yt_views)}회` : ''}</td>
+        <td className="p-2 whitespace-nowrap text-xs">
+          {!!x.influencers?.length && <span title={x.influencers.map(i => `${i.channel} 구독 ${num(i.subs)}`).join(' · ')}>⭐ 인플루언서 {x.influencers.length} </span>}
+          {!!x.news && <span>📰 기사 {x.news} </span>}
+          {!!x.buzz && <span className="text-gray-500">🔥 {x.buzz}</span>}</td>
         <td className={clsx('p-2 text-right', (x.trend || 0) >= 1.15 && 'text-red-600 font-semibold')}>{x.trend ?? '–'}</td>
         <td className="p-2 text-right">{x.volume ? num(x.volume) : ''}{x.comp && <span className="text-[11px] text-gray-400"> {x.comp}</span>}
           {!!x.volume_checked && x.volume_checked > (x.volume || 0) && (
             <div className="text-[11px] text-blue-700" title={`검증관이 '${x.volume_kw}'로 다시 조회`}>🔎 {num(x.volume_checked)}</div>)}</td>
-        <td className="p-2 text-right">{x.sales_recent}<span className="text-[11px] text-gray-400"> ({x.sales_prev})</span></td>
         <td className="p-2 text-right">{num(x.store)}</td>
         <td className="p-2 text-right">{num(price)}</td>
         <td className={clsx('p-2 text-right', x.margin < 0 && 'text-red-600')}>{x.margin ? `${num(x.margin)} (${Math.round(x.margin_rate * 100)}%)` : ''}</td>
@@ -215,11 +219,12 @@ function Row({ x, open, onToggle, d, onDecide }: { x: TrendItem; open: boolean; 
           {x.ai?.title && <div>🏷 <b>상품명 제안</b> — {x.ai.title}</div>}
           {!!x.ai?.keywords?.length && <div>🔑 <b>키워드</b> — {x.ai.keywords.join(' · ')}</div>}
           {x.ai?.caution && <div>⚠️ <b>주의</b> — {x.ai.caution}</div>}
-          <div className="text-xs text-gray-500">점수 구성 — {Object.entries(x.score_parts).map(([k, v]) => `${k} ${v}`).join(' · ')}
-            {x.our_price ? ` · 우리 사용자 판매가 ${num(x.our_price)}원` : ''}</div>
+          {!!x.influencers?.length && <div>⭐ <b>인플루언서</b> — {x.influencers.map((i, k) => (
+            <a key={k} href={i.link} target="_blank" rel="noreferrer" className="underline text-blue-700 mr-2">{i.channel}(구독 {num(Math.round(i.subs / 10000))}만 · 조회 {num(i.views)})</a>))}</div>}
+          <div className="text-xs text-gray-500">점수 구성 — {Object.entries(x.score_parts).map(([k, v]) => `${k} ${v}`).join(' · ')}</div>
           {!!x.samples.length && <div className="space-y-1">{x.samples.map((s, i) => (
             <a key={i} href={s.link} target="_blank" rel="noreferrer" className="block text-xs text-blue-700 underline truncate">
-              [{s.src === 'youtube' ? '유튜브' : s.src === 'cafe' ? '카페' : '블로그'}] {s.text}</a>))}</div>}
+              [{s.src === 'youtube' ? '유튜브' : s.src === 'cafe' ? '카페' : s.src === 'news' ? '뉴스' : '블로그'}] {s.text}</a>))}</div>}
         </td></tr>)}
     </>
   );
