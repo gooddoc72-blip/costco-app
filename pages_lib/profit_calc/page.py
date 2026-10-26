@@ -423,6 +423,12 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             _sur_map = _get_sur(USERNAME, [str(_x) for _x in df.index]) or {}
         except Exception:
             _sur_map = {}
+        # 영수증 정산으로 청구가 확정된 주문의 청구액 — 판매자가 실제로 낸 돈이 구입가다(빌린 재고는 빌린 금액)
+        try:
+            from pages_lib.profit_calc.enrich import load_settled_cost_map
+            _settled_map = load_settled_cost_map(USERNAME, [str(_x) for _x in df.index])
+        except Exception:
+            _settled_map = {}
 
         # ⚓ 매칭·원가 계산을 순수 함수 compute_rows()로 위임.
         #   (기존 인라인 루프를 그대로 추출 — 패리티 테스트로 결과 불변 증명됨)
@@ -457,7 +463,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 receipt_by_pno=_rcpt_by_pno, receipt_matches=receipt_matches,
                 kw_overrides=st.session_state.get('kw_overrides', {}),
                 receipt_pick=st.session_state.get('receipt_pick', {}),
-                surcharge_map=_sur_map, calc_date_str=calc_date_str)
+                surcharge_map=_sur_map, calc_date_str=calc_date_str,
+                settled_map=_settled_map)
             costs = [r['cost'] for r in _cres]
             match_sources = [r['source'] for r in _cres]
             matched_names = [r['matched_name'] for r in _cres]
@@ -494,6 +501,9 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         # 다른 판매자 재고로 나간 건은 실제 원가가 구입가+500 → 안 더하면 수익이 부풀려진다.
         # ⚠️ 캐시 저장 '뒤'에서, 리스트를 새로 만들어(rebind) 적용한다.
         #    캐시에 든 리스트를 제자리 수정하면 재진입 때마다 웃돈이 중복 가산됨.
+        # 정산청구 행(영수증 정산 청구액 = 빌린 금액 포함)에는 웃돈을 다시 더하지 않는다
+        _sur_map = {k: v for k, v in _sur_map.items()
+                    if k not in _settled_map}
         if _sur_map:
             costs = [int(_c) + int(_sur_map.get(str(_ix), 0) or 0)
                      for _c, _ix in zip(costs, df.index)]

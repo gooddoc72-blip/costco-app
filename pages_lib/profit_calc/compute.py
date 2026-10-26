@@ -44,12 +44,21 @@ def compute_profit(settlement_amount, shipping_fee, cost_price, delivery_cost, b
         cp + _int(delivery_cost) + _int(box_cost))
 
 
+SETTLED_SOURCE = '정산청구'
+
+
 def compute_row(row, *, match_fn, receipt_by_pno, receipt_matches,
-                kw_overrides, receipt_pick, surcharge_map, calc_date_str):
+                kw_overrides, receipt_pick, surcharge_map, calc_date_str, settled_map=None):
     """한 주문행 매칭·원가. Returns dict(cost, source, matched_name, matched_pno, sqty, auto_links)."""
     product = str(row.get('상품명', '') or '')
     qty = max(1, _int(row.get('수량', 1), 1))
     idx = str(row.get('idx', ''))
+    # 0. 영수증 정산으로 청구가 확정된 주문 — 판매자가 실제로 낸 돈(청구액)이 구입가다(최우선).
+    #    남의 재고를 빌려 판 건은 빌린 금액(할인 재고 +1,000원, 정상가 재고는 산 값)이 그대로 들어간다.
+    #    웃돈이 이미 들어 있으므로 호출자는 이 행에 타인재고 웃돈을 다시 더하지 않는다.
+    if settled_map and _int(settled_map.get(idx, 0)) > 0:
+        return {'cost': _int(settled_map[idx]), 'source': SETTLED_SOURCE, 'matched_name': product,
+                'matched_pno': '', 'sqty': 1, 'auto_links': []}
     saved_cost = _int(row.get('구입가격', 0))
     row_sur = _int(surcharge_map.get(idx, 0))
     if row_sur and saved_cost > row_sur:
@@ -136,7 +145,8 @@ def compute_row(row, *, match_fn, receipt_by_pno, receipt_matches,
 
 
 def compute_rows(rows, *, match_fn, receipt_by_pno=None, receipt_matches=None,
-                 kw_overrides=None, receipt_pick=None, surcharge_map=None, calc_date_str=''):
+                 kw_overrides=None, receipt_pick=None, surcharge_map=None, calc_date_str='',
+                 settled_map=None):
     """전체 행 계산. match_fn은 (상품명, 상품번호)->제품|None. 메모이제이션은 호출자 권장.
 
     Returns: (results, auto_links)
@@ -153,7 +163,7 @@ def compute_rows(rows, *, match_fn, receipt_by_pno=None, receipt_matches=None,
         r = compute_row(row, match_fn=match_fn, receipt_by_pno=receipt_by_pno,
                         receipt_matches=receipt_matches, kw_overrides=kw_overrides,
                         receipt_pick=receipt_pick, surcharge_map=surcharge_map,
-                        calc_date_str=calc_date_str)
+                        calc_date_str=calc_date_str, settled_map=settled_map)
         for lk in r.pop('auto_links'):
             _k = (lk.get('type'), lk.get('product_no') or lk.get('costco_no'),
                   lk.get('keyword') or lk.get('naver_no'))

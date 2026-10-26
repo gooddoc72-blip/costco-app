@@ -151,11 +151,17 @@ def load_settlement_df(USERNAME, calc_date_str, _cached_daily_orders=None):
                     return None
 
             _ids_ps = df.index.values
+            try:
+                from pages_lib.profit_calc.enrich import load_settled_cost_map
+                _settled = load_settled_cost_map(USERNAME, [str(_x) for _x in _ids_ps])
+            except Exception:
+                _settled = {}
             for _pi, (_pidx, _pr) in enumerate(df.iterrows()):
                 _psk = str(_ids_ps[_pi])
                 _pkey = f"{_pr.get('수취인명', '')}_{_pr.get('상품명', '')}_{_psk}_{calc_date_str}"
                 _pcp = _saved_int(_pr.get('구입가격')) or 0
-                if _pcp > 0:
+                # 영수증 정산 청구가 확정된 주문은 청구액이 구입가다 — 옛 저장값으로 덮지 않는다
+                if _pcp > 0 and _psk not in _settled:
                     st.session_state['cost_overrides'][_pkey] = _pcp
                 _pship = _saved_int(_pr.get('택배원가'))
                 if _pship is not None and f"ship_{_psk}" not in st.session_state:

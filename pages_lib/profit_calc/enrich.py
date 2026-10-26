@@ -71,6 +71,35 @@ def build_kw_overrides(username, rows, calc_date_str):
     return kw
 
 
+def load_settled_cost_map(username, ids):
+    """{주문번호: 청구액} — 영수증 정산으로 청구가 확정된 주문의 물건값(settle_item 합계, 0원 제외).
+
+    판매자가 실제로 낸 돈이 구입가다. 남의 재고를 빌려 판 주문은 '빌린 금액'(할인 재고 +1,000원,
+    정상가 재고는 산 값)으로 청구되는데, 수익계산이 그날 영수증·제품DB 단가로 다시 계산하면
+    그 금액이 반영되지 않았다(10/26). 분할 발송으로 여러 날 청구된 주문은 더한다.
+    """
+    ids = [str(i) for i in ids if str(i)]
+    if not ids:
+        return {}
+    try:
+        from db_core import get_auth_db
+        a = get_auth_db()
+        try:
+            out = {}
+            for i in range(0, len(ids), 900):
+                ch = ids[i:i + 900]
+                for o, amt in a.execute(
+                        "SELECT order_no, SUM(amount) FROM settle_item WHERE username=? AND order_no IN (%s) "
+                        "GROUP BY order_no" % ",".join("?" * len(ch)), [str(username)] + ch):
+                    if int(amt or 0) > 0:
+                        out[str(o)] = int(amt)
+            return out
+        finally:
+            a.close()
+    except Exception:
+        return {}
+
+
 def load_surcharge_map(username, ids):
     """{idx: 웃돈} — 타인재고 웃돈(+원가). compute_rows/후처리 addback 공용.
 

@@ -15,9 +15,9 @@ from db import (
 )
 from services import match_product_to_db
 from pages_lib.profit_calc.loader import build_settlement_df
-from pages_lib.profit_calc.compute import compute_rows, compute_profit, settled_shipping
+from pages_lib.profit_calc.compute import compute_rows, compute_profit, settled_shipping, SETTLED_SOURCE
 from pages_lib.profit_calc.enrich import (
-    build_receipt_maps, build_kw_overrides, load_surcharge_map,
+    build_receipt_maps, build_kw_overrides, load_surcharge_map, load_settled_cost_map,
 )
 
 #: 자동 저장 표시 — 사람이 고친 저장값(수동입력·영수증 등)과 구별한다
@@ -101,21 +101,25 @@ def compute_dispatch_rows(username, date, use_saved=True):
     receipt_by_pno, receipt_matches = build_receipt_maps(username, unique_products, match_fn)
     kw_overrides = build_kw_overrides(username, rows_in, date)
     surcharge_map = load_surcharge_map(username, [r['idx'] for r in rows_in])
+    settled_map = load_settled_cost_map(username, [r['idx'] for r in rows_in])
     results, _links = compute_rows(
         rows_in, match_fn=match_fn,
         receipt_by_pno=receipt_by_pno, receipt_matches=receipt_matches,
-        kw_overrides=kw_overrides, surcharge_map=surcharge_map, calc_date_str=date)
+        kw_overrides=kw_overrides, surcharge_map=surcharge_map, calc_date_str=date,
+        settled_map=settled_map)
 
     out = []
     for rec, res in zip(records, results):
         settlement = _int(rec.get('정산예정금액', 0))
         shipping = _int(rec.get('배송비 합계', 0))
         _src = str(res.get('source', ''))
-        if _use and has_cost:
+        if _use and has_cost and _src != SETTLED_SOURCE:
+            # 저장값 — 단 영수증 정산 청구가 확정된 주문은 청구액(빌린 금액 포함)이 저장값보다 우선이다
             cost = _int(rec.get('구입가격', 0))
         else:
             # 타인재고 웃돈(+원가) 가산 — page.py 후처리(costs += surcharge)와 동일
-            _sur = _int(surcharge_map.get(str(rec.get('_sk', '')), 0))
+            # 정산청구 행은 청구액에 이미 빌린 금액(웃돈 포함)이 들어 있다 — 다시 더하지 않는다
+            _sur = 0 if _src == SETTLED_SOURCE else _int(surcharge_map.get(str(rec.get('_sk', '')), 0))
             cost = _int(res.get('cost', 0)) + _sur
             if _sur and '타인재고' not in _src:
                 _src = f"{_src}+타인재고"
