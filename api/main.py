@@ -359,3 +359,7 @@ app.include_router(_rsettle_router)
 # ── SNS 트렌드 TOP 30 (새 화면 /m/trends 백엔드) ──
 from api.trends import router as _trends_router  # noqa: E402
 app.include_router(_trends_router)
+
+# ── 재고 조회·점검 (새 화면 /m/stock 백엔드, 읽기 전용) ──
+from api.stock import router as _stock_router  # noqa: E402
+app.include_router(_stock_router)

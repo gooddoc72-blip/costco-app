@@ -22,6 +22,7 @@ const sections: Array<{
     links: [
       { href: '/settings', label: '설정', icon: Settings },
       { href: '/admin', label: '관리자', icon: Crown, desc: '장보기 제출 + DB 정리' },
+      { href: '/stock', label: '재고 조회', icon: Package, desc: '사용자별 재고·출고 내역·이상 점검' },
       { href: '/receipt-settle', label: '영수증 정산', icon: CreditCard, desc: '매칭 확인·정산 요청 (관리자)' },
       { href: '/trends', label: 'SNS 트렌드 TOP 30', icon: TrendingUp, desc: '뜨는 코스트코 상품·판매 제안 (관리자)' },
       { href: '/billing', label: '정산·청구', icon: CreditCard, desc: '청구·입금·예치금 (관리자)' },

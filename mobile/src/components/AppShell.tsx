@@ -9,7 +9,7 @@ import { usePathname } from 'next/navigation';
 import clsx from 'clsx';
 
 /** 넓게 펼 경로(앞부분 일치) */
-const WIDE = ['/billing', '/receipt-settle', '/trends'];
+const WIDE = ['/billing', '/receipt-settle', '/trends', '/stock'];
 
 export default function AppShell({ children }: { children: React.ReactNode }) {
   const p = usePathname() || '';
