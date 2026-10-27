@@ -75,7 +75,7 @@ export const rsettle = {
     call<RsView & { result: { cut: number; edited: number; ok: number } }>('POST', `${B}/day/${d}/rows`, { actions }),
   finalize: (d: string, replace: boolean) => call<FinalizeRes>('POST', `${B}/day/${d}/finalize`, { replace }),
   unmatched: (d: string, decisions: UnmatchedDecision[]) =>
-    call<RsView & { result: { added: number; amount: number; skipped: number; zero: number; no_ledger: string[]; loans: number } }>(
+    call<RsView & { result: { added: number; amount: number; skipped: number; zero: number; no_ledger: string[]; loans: number; borrowed: number; credited: number; borrow_amount: number; borrow_short: { order_no: string; name: string; owner: string; short: number }[]; borrow_error: string; borrow_paid_blocked: string[] } }>(
       'POST', `${B}/day/${d}/unmatched`, { decisions }),
   assign: (d: string, mode: 'bill' | 'stock' | 'return', username: string, picks: { costco_no: string; packs: number; memo?: string }[], bill_stock = true) =>
     call<RsView & { result: { mode: string; count: number; amount: number; skipped?: number; failed?: string[]; dupe?: { name: string; owner: string; have: number }[] } }>(

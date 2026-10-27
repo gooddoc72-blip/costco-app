@@ -211,6 +211,10 @@ def finalize(settle_date, alloc_rows, created_by='', with_fees=False,
             # 수익계산이 공짜로 보지 않게 그 재고의 구입가를 주문 구입가로 쓴다.
             if _i(_rr.get('cost_basis')) and not _i(_rr.get('amount')):
                 _rr = dict(_rr, amount=_i(_rr.get('cost_basis')))
+            # 원장에서 버려지는 0원 행(단가 못 찾음)은 주문 구입가를 0으로 덮지 않는다 —
+            #   덮으면 수익계산이 공짜로 보고, 원장 행이 없어 되돌릴 근거(prev_cost)도 없다
+            if _i(_rr.get('amount')) <= 0:
+                continue
             _cost_rows.append(_rr)
         applied = _rs.apply_receipt_settlement(_cost_rows)
 
@@ -287,6 +291,145 @@ def credit_stock_owners(alloc_rows, settle_date, by=''):
     return n
 
 
+def _units_of(username, product_no, product_name, qty):
+    """주문 qty개가 재고에서 빼는 낱개 수 — 발송 차감·정산 차감과 같은 해석(주문수량 × 묶음배수)."""
+    try:
+        from db_dispatch_log import _pack_factor
+        from db_core import get_user_db
+        uc = get_user_db(str(username))
+        try:
+            pf = max(1, int(_pack_factor(uc, str(product_no), str(product_name or '')) or 1))
+        finally:
+            uc.close()
+    except Exception:
+        pf = 1
+    return max(1, _i(qty)) * pf
+
+
+BORROW_LOT_MEMO = '빌려 출고 때 등록'
+
+
+def is_borrow_row(r):
+    """남의 재고를 빌려 보낸 행인가 — 보유자(또는 장부에 없던 빌려준 사람)가 판매자와 다르다."""
+    _u = str(r.get('username') or '').strip()
+    _ow = str(r.get('stock_owner') or r.get('loan_owner') or '').strip()
+    return bool(_u and _ow and _ow != _u and _i(r.get('amount')) > 0)
+
+
+def commit_borrow(settle_date, rows, by=''):
+    """빌려 출고를 **지정하는 즉시** 끝낸다 — 세 가지를 한 번에.
+
+      ① 빌려준 사람 재고 −낱개   (inventory_lots / inventory_moves)
+      ② 빌린 사람 청구           (그날 settle_item → 청구서 다시 계산)
+      ③ 빌려준 사람 예치금 적립  (deposit_ledger stock_credit)
+
+    예전엔 지정이 초안에만 남고 ①②③은 '정산 요청'을 눌러야 일어났다. 정산 요청을
+    미루거나 다시 매칭하는 사이 빌려준 사람은 적립을 못 받았고, 장부에 없던 물건은
+    '정산 장부'로 따로 돌아 관리자가 한 번 더 '정산 완료'를 눌러야 했다.
+
+    빌려준 사람 재고가 장부에 없으면(loan_owner) 그 자리에서 그 사람 재고로 등록하고
+    바로 뺀다 — 직접 사서 갖고 있던 물건이라 '결제됨'(청구 없음)으로 넣는다.
+
+    rows: apply_unmatched가 만든 행. 빌림 행에 'borrow_done'=True를 달아 돌려준다.
+    여러 번 불러도 같다: 차감은 주문번호로, 적립은 주문당 한 번으로 막혀 있다.
+    취소는 uncommit_borrow.
+    반환: {'done': n, 'credited': n, 'registered': n, 'short': [...]}
+    """
+    out = {'done': 0, 'credited': 0, 'registered': 0, 'short': [], 'paid_blocked': []}
+    todo = [r for r in (rows or []) if is_borrow_row(r)]
+    # 판매자 그날 청구서가 이미 입금완료면 품목만 들어가고 청구액은 안 바뀐다(recompute_invoice가
+    #   입금완료 금액을 지킨다) — 빌려준 사람만 돈을 받게 되므로 처리하지 않고 알린다.
+    _paid = {}
+    for r in list(todo):
+        _u = str(r.get('username') or '')
+        if _u not in _paid:
+            _paid[_u] = str((_ds.get_invoice(str(settle_date), _u) or {}).get('status') or '') == 'paid'
+        if _paid[_u]:
+            todo.remove(r)
+            out['paid_blocked'].append(str(r.get('product_name') or '')[:20])
+    if not todo:
+        return out
+    from db_inventory import add_lot_units
+    for r in todo:
+        _lo = str(r.get('loan_owner') or '').strip()
+        if not _lo:
+            continue
+        # 장부에 없던 물건 — 빌려준 사람 재고로 먼저 등록. 번호를 모르면 이 주문 전용 번호로
+        _pno = str(r.get('costco_no') or '').strip() or f"BORROW-{r.get('order_no')}"
+        _units = _units_of(r.get('username'), _pno, r.get('product_name'), r.get('qty'))
+        _per = max(0, _i(r.get('amount')) // max(1, _units))
+        try:
+            if add_lot_units(product_no=_pno, product_name=str(r.get('product_name') or ''),
+                             owner=_lo, pack_unit_cost=_per, qty_units=_units, split_qty=1,
+                             received_at=str(settle_date),
+                             memo=f"{BORROW_LOT_MEMO} · 판매자 {r.get('username')} · 주문 {r.get('order_no')}",
+                             pack_list_price=_per, paid=1):
+                out['registered'] += 1
+        except Exception:
+            continue
+        r['costco_no'] = _pno
+        r['stock_owner'] = _lo
+        r['loan_owner'] = ''
+        r['borrow_registered'] = True
+    ledger, _ = to_ledger_rows(todo, settle_date)
+    by_user = {}
+    for lr in ledger:
+        by_user.setdefault(lr['username'], []).append(lr)
+    for u, urows in by_user.items():
+        _ds.merge_items(str(settle_date), u, urows, created_by=by)
+    stock = consume_stock_rows(ledger, settle_date)
+    out['short'] = stock.get('short') or []
+    out['credited'] = credit_stock_owners(todo, settle_date, by)
+    for r in todo:
+        r['borrow_done'] = True
+        r['_edited'] = True      # 다시 매칭해도 자동매칭(영수증가)이 이 처리를 덮지 않게
+    out['done'] = len(todo)
+    try:
+        from run_memo import clear as _rm_clear
+        _rm_clear()
+    except Exception:
+        pass
+    return out
+
+
+def uncommit_borrow(rows):
+    """빌려 출고 취소 — 청구 행을 지우면 재고 차감·예치금 적립이 함께 되돌아간다
+    (db_settle.remove_items → _revert_stock). 반환: 지운 청구 행 수."""
+    n = 0
+    by_user, reg = {}, []
+    for r in (rows or []):
+        if r.get('borrow_done') and str(r.get('order_no') or ''):
+            by_user.setdefault(str(r.get('username') or ''), []).append(str(r['order_no']))
+            if r.get('borrow_registered'):
+                reg.append(r)
+    for u, onos in by_user.items():
+        try:
+            n += _ds.remove_items(u, onos)
+        except Exception:
+            pass
+    # 빌릴 때 그 자리에서 등록한 재고는 지운다 — 남기면 없는 물건이 빌려준 사람 재고로 남는다.
+    #   행은 '장부에 없던 물건' 상태로 되돌려 다시 지정하면 다시 등록되게 한다.
+    if reg:
+        try:
+            from db_inventory import _conn as _ic
+            c = _ic()
+            for r in reg:
+                c.execute("DELETE FROM inventory_lots WHERE memo LIKE ? AND qty_left=qty_in "
+                          "AND id NOT IN (SELECT lot_id FROM inventory_moves)",
+                          (f"{BORROW_LOT_MEMO}%주문 {r['order_no']}",))
+            c.commit()
+            c.close()
+        except Exception:
+            pass
+        for r in reg:
+            r['loan_owner'] = r.get('stock_owner') or ''
+            r['stock_owner'] = ''
+            r.pop('borrow_registered', None)
+    for r in (rows or []):
+        r.pop('borrow_done', None)
+    return n
+
+
 def consume_stock_rows(rows, settle_date):
     """📦 재고 출고 행(stock_owner 있음)만큼 그 보유자 재고 장부에서 뺀다.
 
@@ -306,23 +449,11 @@ def consume_stock_rows(rows, settle_date):
         return out
     try:
         from db_inventory import consume_for_sale
-        from db_dispatch_log import _pack_factor
-        from db_core import get_user_db
     except Exception:
         return out
-    _pk = {}
     for r in _todo:
         u, pno = str(r['username']), str(r['product_no'])
-        try:
-            if (u, pno) not in _pk:
-                uc = get_user_db(u)
-                try:
-                    _pk[(u, pno)] = max(1, int(_pack_factor(uc, pno, r.get('product_name') or '') or 1))
-                finally:
-                    uc.close()
-        except Exception:
-            _pk[(u, pno)] = 1
-        units = max(1, _i(r.get('qty'))) * _pk[(u, pno)]
+        units = _units_of(u, pno, r.get('product_name'), r.get('qty'))
         try:
             res = consume_for_sale(u, pno, units, str(r['order_no']),
                                    dispatched_at=str(settle_date), platform='settle',

@@ -181,6 +181,8 @@ def _unmatch(alloc, d, keys, items, keep_draft=False):
     """배치에서 떼어 '영수증에 없는 발송건'으로 되돌린다(Streamlit _unmatch_rows와 같은 일)."""
     drop = [r for r in alloc.get('rows', []) if _key(r) in keys]
     alloc['rows'] = [r for r in alloc.get('rows', []) if _key(r) not in keys]
+    # 지정 즉시 처리한 빌려 출고 — 청구·재고 차감·적립을 함께 되돌린다
+    _sc.uncommit_borrow(drop)
     if not keep_draft:
         try:
             _ds.delete_draft_rows(d, list(keys))
@@ -254,6 +256,10 @@ def row_actions(d, actions, by=''):
                     if a.get('memo') is not None:
                         r['memo'] = str(a['memo'])
                     r['_edited'] = True
+                    # 이미 처리한 빌려 출고 — 바뀐 수량·금액으로 다시 처리(청구·차감·적립)
+                    if r.get('borrow_done'):
+                        _sc.uncommit_borrow([r])
+                        _sc.commit_borrow(d, [r], by=by)
                     edits.append(dict(r))
     n_cut = _unmatch(alloc, d, cut, items) if cut else 0
     _cm = dict(alloc.get('_cut') or {})
@@ -627,7 +633,7 @@ def apply_unmatched(d, decisions, by=''):
                 continue
             loan = bool(cross and not in_ledger and amt > 0)
             if not memo and loan:
-                memo = f"빌린 재고 · {own} — 재고 관리 › 정산 장부에서 {own}에게 {amt:,}원 지급"
+                memo = f"빌린 재고 · {own} 재고로 등록 후 출고 — {own} 예치금 {amt:,}원 적립"
             if not memo:
                 sur = U.inv.cross_surcharge_for(cost, (have.get(own) or {}).get('list')) if cross else 0
                 memo = ('재고 출고' + (f' · {own} 재고' if own else '')
@@ -654,7 +660,13 @@ def apply_unmatched(d, decisions, by=''):
         _rs.dismiss_carry(skip_keys, note=f'{d} 영수증 정산에서 청구 안 함')
         sk = set(skip_keys)
         alloc['unmatched_orders'] = [o for o in alloc.get('unmatched_orders') or [] if _key(o) not in sk]
+    borrow = {'done': 0, 'credited': 0, 'registered': 0, 'short': []}
     if new_rows:
+        # 빌려 출고는 지정 즉시 — 빌려준 사람 재고 차감·빌린 사람 청구·빌려준 사람 적립
+        try:
+            borrow = _sc.commit_borrow(d, new_rows, by=by)
+        except Exception as e:
+            borrow['error'] = str(e)[:120]
         _rs.merge_matches(alloc, new_rows, [])
         try:
             _ds.upsert_draft_rows(d, new_rows, created_by=by)
@@ -669,7 +681,11 @@ def apply_unmatched(d, decisions, by=''):
     save_work(d, alloc, by)
     return {'added': len(new_rows), 'amount': sum(int(r['amount']) for r in new_rows),
             'skipped': len(skip_keys), 'zero': zero, 'no_ledger': no_ledger,
-            'loans': sum(1 for r in new_rows if r.get('loan_owner'))}
+            'loans': borrow.get('registered', 0), 'borrowed': borrow.get('done', 0),
+            'credited': borrow.get('credited', 0),
+            'borrow_amount': sum(int(r['amount']) for r in new_rows if r.get('borrow_done')),
+            'borrow_short': borrow.get('short') or [], 'borrow_error': borrow.get('error', ''),
+            'borrow_paid_blocked': borrow.get('paid_blocked') or []}
 
 
 # ── 2단계 ② 남은 영수증 품목 — 누구에게 청구 / 누구 재고로 / 반품요청 ─────────

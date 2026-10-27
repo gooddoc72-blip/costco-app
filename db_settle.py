@@ -180,6 +180,15 @@ def _revert_stock(order_nos):
     try:
         # 남의 재고로 적립했던 예치금도 되돌린다 — 정산이 없어졌는데 돈만 남으면 안 된다
         import db_deposit as _dep
+        # 예치금 적립으로 닫힌 차감만 다시 연다 — 관리자가 정산 장부에서 직접 지급해 닫은
+        #   차감까지 열면 되돌린 뒤 다시 정산할 때 보유자에게 한 번 더 적립된다.
+        _dc = _dep._conn()
+        try:
+            _credited = [str(o) for o in set(order_nos) if _i(_dc.execute(
+                "SELECT COALESCE(SUM(amount),0) FROM deposit_ledger WHERE kind='stock_credit' "
+                "AND memo LIKE ?", (f"%[주문 {o}]%",)).fetchone()[0]) > 0]
+        finally:
+            _dc.close()
         _dep.stock_credit_cancel_orders(order_nos)
         # 예치금 적립 때 '정산완료'로 닫아 둔 정산 차감도 다시 열어 아래에서 되돌린다 —
         #   안 그러면 적립은 취소되고 재고만 빠진 채 남았다(10/24 배성진 건).
@@ -187,7 +196,7 @@ def _revert_stock(order_nos):
         _c = _ic()
         _c.executemany("UPDATE inventory_moves SET settle_status='PENDING' WHERE order_no=? "
                        "AND platform='settle' AND is_cross=1 AND settle_status='SETTLED'",
-                       [(str(o),) for o in set(order_nos)])
+                       [(o,) for o in _credited])
         _c.commit()
         _c.close()
     except Exception:
@@ -199,12 +208,25 @@ def _revert_stock(order_nos):
         return 0
 
 
-def _stock_orders(conn, where, args):
-    """조건에 맞는 품목 중 재고 장부에서 뺀 주문번호 — 지우기 **전에** 잡아 둔다."""
+def _stock_orders(conn, where, args, keep_rows=None):
+    """조건에 맞는 품목 중 재고 장부에서 뺀 주문번호 — 지우기 **전에** 잡아 둔다.
+
+    keep_rows: 곧 다시 쓸 새 행들. 보유자·상품·수량·금액이 그대로인 주문은 빼고
+    돌려준다 — 되돌렸다 다시 빼면 재고는 같아도 예치금에 '취소 −'·'적립 +'가
+    정산 요청 때마다 한 쌍씩 쌓인다(빌려 출고는 지정 때 이미 처리돼 있다).
+    """
+    _same = {}
+    for r in (keep_rows or []):
+        _same[str(r.get('order_no') or '')] = (
+            str(r.get('stock_owner') or ''), str(r.get('product_no') or ''),
+            _i(r.get('qty')) or 1, _i(r.get('amount')))
     try:
         return [str(r['order_no']) for r in conn.execute(
-            "SELECT order_no FROM settle_item WHERE COALESCE(stock_owner,'')<>'' "
-            "AND order_no<>'' AND " + where, args)]
+            "SELECT order_no, stock_owner, product_no, qty, amount FROM settle_item "
+            "WHERE COALESCE(stock_owner,'')<>'' AND order_no<>'' AND " + where, args)
+            if _same.get(str(r['order_no'])) != (
+                str(r['stock_owner'] or ''), str(r['product_no'] or ''),
+                _i(r['qty']) or 1, _i(r['amount']))]
     except sqlite3.Error:
         return []
 
@@ -258,7 +280,8 @@ def merge_items(settle_date, username, rows, created_by=''):
             # 덮어쓸 옛 행이 재고에서 뺀 것은 먼저 되돌린다 — 새 행이 다시 뺀다
             _old_stock += _stock_orders(
                 conn, "settle_date=? AND username=? AND order_no IN (%s)"
-                % ",".join("?" * len(part)), [str(settle_date), str(username)] + part)
+                % ",".join("?" * len(part)), [str(settle_date), str(username)] + part,
+                keep_rows=rows)
             conn.execute(
                 "DELETE FROM settle_item WHERE settle_date=? AND username=? "
                 "AND order_no IN (%s)" % ",".join("?" * len(part)),
@@ -283,7 +306,7 @@ def replace_items(settle_date, username, rows, created_by=''):
     now = _now()
     try:
         _old_stock = _stock_orders(conn, "settle_date=? AND username=?",
-                                   [str(settle_date), str(username)])
+                                   [str(settle_date), str(username)], keep_rows=rows)
         # 재고 입고 청구(STOCKIN-)는 매칭 결과가 아니라 입고 때 생긴 청구다 —
         # 그날 매칭을 통째로 다시 써도 남겨야 한다(지우면 재고는 결제됨인데 돈은 안 받음)
         conn.execute("DELETE FROM settle_item WHERE settle_date=? AND username=? "

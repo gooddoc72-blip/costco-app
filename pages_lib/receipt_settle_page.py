@@ -1932,6 +1932,10 @@ def _render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                             _tgt['unit_price'] = _tgt['amount']
                             _tgt['memo'] = str(_r4.get('메모') or '')
                             _tgt['_edited'] = True   # 미리보기 재계산이 덮지 않게
+                            # 이미 처리한 빌려 출고 — 바뀐 값으로 청구·차감·적립을 다시
+                            if _tgt.get('borrow_done'):
+                                _sc.uncommit_borrow([_tgt])
+                                _sc.commit_borrow(str(d_day), [_tgt], by=USERNAME)
                         # 손으로 고친 값은 미리보기를 다시 눌러도 살아남아야 한다
                         _stk = st.session_state.get('rs_sticky') or {}
                         _dk2 = str(d_day)
@@ -2432,6 +2436,8 @@ def _unmatch_rows(alloc, keys, receipt_items):
         return 0
     alloc['rows'] = [r for r in alloc.get('rows', [])
                      if (r.get('username'), r.get('order_no')) not in keys]
+    # 지정 즉시 처리한 빌려 출고 — 청구·재고 차감·적립을 함께 되돌린다
+    _sc.uncommit_borrow(_drop)
 
     _st = st.session_state.get('rs_sticky') or {}
     _d = str(st.session_state.get('rs_sticky_date') or '')
@@ -3038,8 +3044,8 @@ def _render_unmatched_panel(alloc, dmap, d_day, USERNAME, receipt_items):
                 # 장부에 없는 남의 물건을 빌려 보냄 — 정산 장부에 그 사람 몫으로 올린다
                 _loan = bool(_cross and not _in_ledger and _amt > 0)
                 if not _memo and _loan:
-                    _memo = (f"빌린 재고 · {_name_id(dmap, _own)} — 재고 관리 › 정산 장부에서 "
-                             f"{dmap.get(_own, _own)}에게 {_amt:,}원 지급")
+                    _memo = (f"빌린 재고 · {_name_id(dmap, _own)} 재고로 등록 후 출고 — "
+                             f"{dmap.get(_own, _own)} 예치금 {_amt:,}원 적립")
                 if not _memo:
                     _memo = ('재고 출고'
                              + (f" · {dmap.get(_own, _own)} 재고" if _own else "")
@@ -3097,14 +3103,16 @@ def _render_unmatched_panel(alloc, dmap, d_day, USERNAME, receipt_items):
             st.markdown(f"**{_tot_n}건 · 청구액 "
                         f"{fmt(sum(r['amount'] for r in _rows_new))}원**")
             _n_led = sum(1 for r in _rows_new if r.get('stock_owner'))
-            if _n_led:
-                st.caption(f"📦 {_n_led}건은 **정산 요청 때 그 보유자의 재고 장부(📊 전체 재고)"
-                           "에서 실제로 차감**됩니다. 정산을 취소하면 되돌아옵니다.")
-        _n_loan = sum(1 for r in _rows_new if r.get('loan_owner'))
-        if _n_loan:
-            st.caption(f"🤝 {_n_loan}건은 **장부에 없던 남의 물건을 빌려 보낸 건**입니다 — "
-                       "판매자에게 그 금액을 청구하고, 정산 요청 때 재고 관리 › **정산 장부**에 "
-                       "빌려준 사람에게 줄 돈으로 올라갑니다.")
+            _n_bor = sum(1 for r in _rows_new if _sc.is_borrow_row(r))
+            if _n_bor:
+                st.caption(f"🤝 {_n_bor}건은 **남의 재고를 빌려 보낸 건**입니다 — 버튼을 누르는 "
+                           "즉시 빌려준 사람 재고에서 빠지고, 판매자 청구서에 들어가고, "
+                           "빌려준 사람 예치금에 같은 금액이 적립됩니다(정산 요청을 기다리지 "
+                           "않음). 장부에 없던 물건이면 빌려준 사람 재고로 먼저 등록합니다. "
+                           "아래 매칭 수정에서 끊으면 셋 다 되돌아갑니다.")
+            if _n_led - _n_bor > 0:
+                st.caption(f"📦 본인 재고 {_n_led - _n_bor}건은 **정산 요청 때** 재고 장부에서 "
+                           "차감됩니다.")
         if _no_ledger:
             st.warning("⚠️ 재고 장부에 그 보유자 재고가 없어 **청구만 되고 재고는 차감되지 "
                        "않는** 재고 출고: " + " · ".join(_no_ledger[:6])
@@ -3125,11 +3133,26 @@ def _render_unmatched_panel(alloc, dmap, d_day, USERNAME, receipt_items):
                     o for o in alloc.get('unmatched_orders') or []
                     if (str(o.get('username') or ''), str(o.get('order_no') or '')) not in _sk]
                 st.session_state['rs_alloc'] = alloc
+            _bres = {}
             if _rows_new:
+                try:
+                    _bres = _sc.commit_borrow(str(d_day), _rows_new, by=USERNAME)
+                except Exception as _be:
+                    st.error(f"빌려 출고 처리 실패 — {str(_be)[:120]}")
                 _merge_matches(alloc, _rows_new, _row_idx)
                 _done += len(_rows_new)
-            st.success(f"✅ {_done}건을 청구에 넣었습니다 — '정산 요청'을 눌러 저장하세요. "
-                       "잘못 넣었으면 아래 **매칭 수정**에서 끊을 수 있습니다.")
+            _bn = int(_bres.get('done') or 0)
+            st.success(f"✅ {_done}건을 청구에 넣었습니다"
+                       + (f" — 🤝 빌려 출고 {_bn}건은 청구·재고 차감·예치금 적립까지 끝났습니다"
+                          if _bn else "")
+                       + ". 나머지는 '정산 요청'을 눌러 저장하세요.")
+            # st.rerun() 뒤에도 보이게 토스트로
+            for _sh in (_bres.get('short') or []):
+                st.toast(f"⚠️ {_sh['name']} — {_sh['owner']} 재고가 {_sh['short']}개 모자라 "
+                         "그만큼은 차감하지 못했습니다(청구·적립은 됨).", icon="⚠️")
+            if _bres.get('paid_blocked'):
+                st.toast("⛔ 판매자 청구서가 이미 입금완료라 빌려 출고 안 함: "
+                         + ", ".join(_bres['paid_blocked']), icon="⛔")
             st.rerun()
 
 

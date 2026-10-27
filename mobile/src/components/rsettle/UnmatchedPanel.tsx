@@ -53,7 +53,11 @@ export default function UnmatchedPanel({ v, day, busy, setBusy, onDone, onErr }:
       onDone(r, `✅ ${x.added}건 ${num(x.amount)}원을 청구에 넣었습니다`
         + (x.skipped ? ` · 🚫 ${x.skipped}건 청구 안 함으로 정리` : '')
         + (x.zero ? ` · ⚠️ 금액 0원 ${x.zero}건은 넣지 않음(금액을 적으세요)` : '')
-        + (x.loans ? ` · 🤝 빌린 재고 ${x.loans}건은 정산 요청 때 정산 장부에 지급액으로 올라감` : '')
+        + (x.borrowed ? ` · 🤝 빌려 출고 ${x.borrowed}건 ${num(x.borrow_amount)}원 — 빌려준 사람 재고 차감·예치금 적립까지 끝남` : '')
+        + (x.loans ? ` (장부에 없던 ${x.loans}건은 빌려준 사람 재고로 등록 후 출고)` : '')
+        + (x.borrow_short.length ? ` · ⚠️ 재고 모자라 차감 못 한 것: ${x.borrow_short.map(s => `${s.name}(${s.owner} −${s.short})`).join(', ')}` : '')
+        + (x.borrow_error ? ` · ❌ 빌려 출고 처리 실패: ${x.borrow_error}` : '')
+        + (x.borrow_paid_blocked.length ? ` · ⛔ 판매자 청구서가 이미 입금완료라 빌려 출고 안 함: ${x.borrow_paid_blocked.join(', ')}` : '')
         + (x.no_ledger.length ? ` · ⚠️ 장부에 재고가 없어 차감 안 됨: ${x.no_ledger.join(', ')}` : ''));
     } catch (e: any) { onErr('처리 실패: ' + (e.message || e)); }
     finally { setBusy(false); }
@@ -119,7 +123,8 @@ export default function UnmatchedPanel({ v, day, busy, setBusy, onDone, onErr }:
       <div className="p-3 space-y-2 border-t">
         <div className="text-[11px] text-gray-500">
           📦 재고 출고: 본인 재고면 아직 안 낸 몫만(이미 낸 재고는 0원), 남의 재고면 할인가로 산 재고는 할인가+1,000원·정상가 재고는 산 값 —
-          정산 요청 때 보유자 재고에서 차감되고 보유자 예치금에 적립됩니다. ‘장부에 재고 없음’인 사람을 고르면 <b>금액을 직접 적으세요</b>(정산 장부에 지급액으로 올라감).
+          <b>남의 재고는 처리하는 즉시</b> 보유자 재고에서 빠지고 판매자 청구서에 들어가고 보유자 예치금에 적립됩니다(본인 재고는 정산 요청 때 차감).
+          ‘장부에 재고 없음’인 사람을 고르면 <b>금액을 직접 적으세요</b> — 그 사람 재고로 등록한 뒤 바로 빌려 출고합니다. 매칭 수정에서 끊으면 모두 되돌아갑니다.
           ✍️ 금액 지정: 금액을 꼭 적습니다. 🚫 청구 안 함: 취소·무상 재발송 — 다시 뜨지 않습니다. 0원 청구는 넣지 않습니다.
         </div>
         <button onClick={apply} disabled={busy || !picked.length}
