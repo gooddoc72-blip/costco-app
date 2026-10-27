@@ -50,6 +50,27 @@ export async function call<T>(method: 'GET' | 'POST', path: string, body?: unkno
   return res.json();
 }
 
+/** 파일 받기(엑셀 등) — call과 같은 로그인으로 받아 브라우저 다운로드로 넘긴다. */
+export async function download(path: string, fallbackName: string): Promise<void> {
+  const t = token();
+  const res = await fetch(path, {
+    credentials: 'include', cache: 'no-store',
+    headers: t ? { Authorization: `Bearer ${t}` } : {},
+  });
+  if (!res.ok) {
+    const e = await res.json().catch(() => ({}));
+    throw new ApiError(res.status, (e && (e.detail || e.error)) || `${res.status} ${res.statusText}`);
+  }
+  const cd = res.headers.get('content-disposition') || '';
+  const m = /filename\*=UTF-8''([^;]+)/i.exec(cd);
+  const name = m ? decodeURIComponent(m[1]) : fallbackName;
+  const url = URL.createObjectURL(await res.blob());
+  const a = document.createElement('a');
+  a.href = url; a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 // ── 타입 ──
 export type Status = 'draft' | 'billed' | 'paid';
 
@@ -114,6 +135,9 @@ export const billing = {
   deposits: () => call<DepResp>('GET', `${B}/deposits`),
   depositHistory: (u: string, from = '', to = '') =>
     call<DepHistResp>('GET', `${B}/deposits/${encodeURIComponent(u)}?date_from=${from}&date_to=${to}`),
+  depositExcel: (u = '', from = '', to = '') =>
+    download(`${B}/deposits-export?username=${encodeURIComponent(u)}&date_from=${from}&date_to=${to}`,
+      `예치금내역_${u || '전체'}.xlsx`),
   charge: (username: string, amount: number, tx_date: string, memo: string) =>
     call<{ ok: boolean; balance: number }>('POST', `${B}/deposits/charge`, { username, amount, tx_date, memo }),
   unpaid: () => call<{ rows: UnpaidRow[]; total: number }>('GET', `${B}/unpaid`),

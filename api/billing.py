@@ -357,6 +357,41 @@ def deposit_history(username: str, date_from: str = '', date_to: str = '',
     }
 
 
+@router.get("/deposits-export")
+def deposit_export(username: str = '', date_from: str = '', date_to: str = '',
+                   admin: dict = Depends(require_admin)):
+    """예치금 내역 엑셀 — 통장과 맞춰 볼 때 쓴다. username을 비우면 전체.
+    한 사람이면 그때그때 누적 잔액(처음부터)도 붙인다."""
+    import io
+    from urllib.parse import quote
+    import pandas as pd
+    from fastapi.responses import Response
+    names = _names()
+    f = _check_date(date_from) if date_from else '2000-01-01'
+    t = _check_date(date_to) if date_to else str(date.today())
+    allr = _dep.ledger(username=username or None, limit=100000) or []
+    asc = sorted(allr, key=lambda x: (str(x['tx_date']), int(x['id'])))
+    run, bal_at = {}, {}
+    for r in asc:
+        run[r['username']] = run.get(r['username'], 0) + _i(r['amount'])
+        bal_at[int(r['id'])] = run[r['username']]
+    rows = [{'날짜': str(r['tx_date'])[:10], '판매자': names.get(r['username'], r['username']),
+             '아이디': r['username'], '구분': _dep.KIND_LABEL.get(r['kind'], r['kind']),
+             '금액': _i(r['amount']), '잔액(누적)': bal_at.get(int(r['id']), 0),
+             '정산일': r.get('settle_date') or '', '메모': r.get('memo') or '',
+             '처리자': r.get('created_by') or '', '등록시각': str(r.get('created_at') or '')[:16]}
+            for r in asc if f <= str(r['tx_date'])[:10] <= t]
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine='openpyxl') as xw:
+        pd.DataFrame(rows, columns=['날짜', '판매자', '아이디', '구분', '금액', '잔액(누적)',
+                                    '정산일', '메모', '처리자', '등록시각']
+                     ).to_excel(xw, index=False, sheet_name='예치금 내역')
+    fname = f"예치금내역_{username or '전체'}_{f if date_from else '처음'}_{t}.xlsx"
+    return Response(buf.getvalue(),
+                    media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(fname)}"})
+
+
 class ChargeReq(BaseModel):
     username: str
     amount: int

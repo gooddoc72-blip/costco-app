@@ -1004,6 +1004,11 @@ def _tab_deposit(USERNAME, dmap):
     st.subheader("➕ 예치 등록")
     st.caption("판매자가 보낸 돈을 확인하고 올립니다. 입금일은 실제 통장에 찍힌 날로 "
                "두세요 — 나중에 통장과 맞춰 볼 때 기준이 됩니다.")
+    # 결과는 다시 그린 뒤에 보여 준다 — 띄우자마자 st.rerun()하면 메시지가 사라져
+    #   등록이 안 된 줄 알고 또 누른다(10/27 김미진 10/20 53,420원이 3번 들어감).
+    _ch_msg = st.session_state.pop('_dep_ch_msg', None)
+    if _ch_msg:
+        (st.success if _ch_msg[0] else st.error)(_ch_msg[1])
     with st.form("dep_charge", clear_on_submit=True):
         c1, c2, c3 = st.columns([2, 1.4, 1.2])
         _u = c1.selectbox("판매자", _users, format_func=lambda u: dmap.get(u, u),
@@ -1012,14 +1017,22 @@ def _tab_deposit(USERNAME, dmap):
         _d = c3.date_input("입금일", value=date.today(), key="dep_ch_d")
         _memo = st.text_input("메모 (은행·입금자명 등)", key="dep_ch_memo",
                               placeholder="예: 국민 홍길동 9/10")
+        _again = st.checkbox("같은 날짜·금액이 이미 있어도 한 번 더 등록 (실제로 두 번 입금된 경우만)",
+                             key="dep_ch_again")
         if st.form_submit_button("➕ 예치 등록", type="primary", use_container_width=True):
-            r = _dep.charge(_u, int(_amt), tx_date=str(_d), memo=_memo, by=USERNAME)
-            if r['ok']:
-                st.success(f"✅ {dmap.get(_u, _u)} · {fmt(int(_amt))}원 예치 — "
-                           f"잔액 {fmt(r['balance'])}원")
-                st.rerun()
+            _same = [r for r in (_dep.ledger(username=_u, date_from=str(_d), date_to=str(_d)) or [])
+                     if r['kind'] == 'charge' and int(r['amount'] or 0) == int(_amt)]
+            if _same and not _again:
+                st.session_state['_dep_ch_msg'] = (False, (
+                    f"⚠️ {dmap.get(_u, _u)} {_d} {fmt(int(_amt))}원 예치가 이미 있습니다"
+                    f"(등록 {str(_same[0].get('created_at') or '')[:16]}) — 등록하지 않았습니다. "
+                    "실제로 두 번 입금됐으면 '한 번 더 등록'을 켜고 다시 누르세요."))
             else:
-                st.error(r['msg'])
+                r = _dep.charge(_u, int(_amt), tx_date=str(_d), memo=_memo, by=USERNAME)
+                st.session_state['_dep_ch_msg'] = (bool(r['ok']), (
+                    f"✅ {dmap.get(_u, _u)} · {_d} · {fmt(int(_amt))}원 예치 — 잔액 {fmt(r['balance'])}원"
+                    if r['ok'] else r['msg']))
+            st.rerun()
 
     # ── 수동 조정 ──
     with st.expander("🛠 예치금 수동 조정", expanded=False):
@@ -1032,10 +1045,14 @@ def _tab_deposit(USERNAME, dmap):
         _aamt = c2.number_input("조정 금액 (+늘림 / −줄임)", step=1000, value=0,
                                 key="dep_adj_amt")
         _amemo = st.text_input("조정 사유 (필수)", key="dep_adj_memo")
+        _am = st.session_state.pop('_dep_adj_msg', None)
+        if _am:
+            st.success(_am)
         if st.button("🛠 조정 적용", key="dep_adj_go"):
             r = _dep.adjust(_au, int(_aamt), _amemo, by=USERNAME)
             if r['ok']:
-                st.success(f"✅ {dmap.get(_au, _au)} 조정 — 잔액 {fmt(r['balance'])}원")
+                st.session_state['_dep_adj_msg'] = (f"✅ {dmap.get(_au, _au)} 조정 {fmt(int(_aamt))}원 — "
+                                                    f"잔액 {fmt(r['balance'])}원")
                 st.rerun()
             else:
                 st.error(r['msg'])
@@ -1050,11 +1067,11 @@ def _tab_deposit(USERNAME, dmap):
     _lf = c2.date_input("시작", value=date.today() - timedelta(days=30), key="dep_lg_f")
     _lt = c3.date_input("끝", value=date.today(), key="dep_lg_t")
     _lg = _dep.ledger(username=None if _lu == '(전체)' else _lu,
-                      date_from=str(_lf), date_to=str(_lt))
+                      date_from=str(_lf), date_to=str(_lt), limit=5000)
     if not _lg:
         st.caption("이 기간 내역이 없습니다.")
         return
-    st.dataframe(pd.DataFrame([{
+    _lg_df = pd.DataFrame([{
         '날짜': r['tx_date'],
         '판매자': dmap.get(r['username'], r['username']),
         '구분': _dep.KIND_LABEL.get(r['kind'], r['kind']),
@@ -1062,8 +1079,23 @@ def _tab_deposit(USERNAME, dmap):
         '정산일': r['settle_date'] or '',
         '메모': r['memo'] or '',
         '처리자': r['created_by'] or '',
-    } for r in _lg]), use_container_width=True, hide_index=True,
-        column_config={'금액': st.column_config.NumberColumn('금액', format='%d')})
+        '등록시각': str(r.get('created_at') or '')[:16],
+    } for r in _lg])
+    st.dataframe(_lg_df, use_container_width=True, hide_index=True,
+                 column_config={'금액': st.column_config.NumberColumn('금액', format='%d')})
+    # 통장과 맞춰 보려면 표를 엑셀로 받아야 한다 — 보이는 기간·판매자 그대로
+    try:
+        import io
+        _buf = io.BytesIO()
+        with pd.ExcelWriter(_buf, engine='openpyxl') as _xw:
+            _lg_df.to_excel(_xw, index=False, sheet_name='예치금 내역')
+        _who = '전체' if _lu == '(전체)' else _lu
+        st.download_button(f"📥 예치금 내역 엑셀 ({len(_lg_df)}건)", data=_buf.getvalue(),
+                           file_name=f"예치금내역_{_who}_{_lf}_{_lt}.xlsx",
+                           mime=("application/vnd.openxmlformats-officedocument"
+                                 ".spreadsheetml.sheet"), key="dep_lg_xls")
+    except Exception as _e:
+        st.caption(f"엑셀 생성 실패: {_e}")
     # 기간 합계도 받은 돈·쓴 돈을 갈라서 낸다. 증감 한 줄만으로는
     # "이 달에 얼마 받았나"에 답할 수 없다(입금과 차감이 섞여 상쇄된다).
     _pt = _dep.totals(date_from=str(_lf), date_to=str(_lt),
@@ -1083,11 +1115,13 @@ def _tab_deposit(USERNAME, dmap):
         with st.expander("🗑 잘못 올린 예치·조정 지우기", expanded=False):
             _pick = st.selectbox("지울 내역", list(_rm),
                                  format_func=lambda i: _rm[i], key="dep_del_pick")
+            _dm = st.session_state.pop('_dep_del_msg', None)
+            if _dm:
+                (st.success if _dm[0] else st.error)(_dm[1])
             if st.button("🗑 이 내역 삭제", key="dep_del_go"):
                 ok, msg = _dep.delete_entry(int(_pick))
-                (st.success if ok else st.error)(msg)
-                if ok:
-                    st.rerun()
+                st.session_state['_dep_del_msg'] = (ok, f"{msg} — {_rm[int(_pick)]}" if ok else msg)
+                st.rerun()
 
 
 def _render_user_deposit_pick(rows, sel, dmap):

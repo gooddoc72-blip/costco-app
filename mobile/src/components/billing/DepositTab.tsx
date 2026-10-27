@@ -113,6 +113,10 @@ export default function DepositTab() {
             ))}
           </tbody>
         </table>
+        <div className="p-2">
+          <button onClick={() => billing.depositExcel().catch(e => setErr(`엑셀 받기 실패: ${e.message || e}`))}
+            className="border rounded px-2 py-1 text-xs bg-white">📥 전체 예치금 내역 엑셀 (판매자별 누적 잔액 포함)</button>
+        </div>
         <div className="p-2 text-[11px] text-gray-500">
           잔액 = 누적 입금 − 예치금 차감 (± 조정 + 반품 적립). 청구 합계에서 빼는 것이 아닙니다 — 계좌로 받았거나 아직 못 받은 청구는 예치금에서 빠지지 않습니다(예치금 외 결제).
         </div>
@@ -122,9 +126,13 @@ export default function DepositTab() {
         <div className="bg-white rounded-xl border p-3 space-y-2">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="font-semibold">💳 {hist.name} 예치금 내역 · 현재 잔액 <span className={clsx(hist.balance < 0 && 'text-red-600')}>{num(hist.balance)}원</span></div>
-            <select value={period} onChange={e => setPeriod(e.target.value)} className="border rounded px-2 py-1 text-sm">
-              {Object.keys(PERIODS).map(k => <option key={k}>{k}</option>)}
-            </select>
+            <div className="flex items-center gap-2">
+              <select value={period} onChange={e => setPeriod(e.target.value)} className="border rounded px-2 py-1 text-sm">
+                {Object.keys(PERIODS).map(k => <option key={k}>{k}</option>)}
+              </select>
+              <button onClick={() => { const [f, t] = PERIODS[period](); billing.depositExcel(pick, f, t).catch(e => setErr(`엑셀 받기 실패: ${e.message || e}`)); }}
+                className="border rounded px-2 py-1 text-sm bg-white">📥 엑셀</button>
+            </div>
           </div>
           <div className="text-xs text-gray-600">
             기간 예치 입금 {num(hist.period.charged)}원 · 구매 차감 {num(hist.period.spent)}원 · 적립·조정 {num(hist.period.adjusted)}원
