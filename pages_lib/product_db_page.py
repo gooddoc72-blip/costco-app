@@ -1264,17 +1264,37 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     _filtered = [p for p in products if p.get('category', '') == _tname]
 
                 # 검색
-                _sc, _ = st.columns([2, 3])
-                _sq = _sc.text_input("\U0001f50d 검색", placeholder="상품명 또는 상품번호",
-                                     key=f"psearch_t{_ti}")
-                if _sq:
-                    _sql = _sq.strip().lower()
-                    _filtered = [p for p in _filtered if
-                        _sql in p.get('costco_name', '').lower() or
-                        _sql in str(p.get('product_no', '')) or
-                        _sql in (p.get('naver_name') or '').lower() or
-                        _sql in str(p.get('naver_origin_pno') or '') or
-                        _sql in str(p.get('naver_product_no') or '')]
+                # 검색 — 띄어쓰기·기호·브랜드 한↔영을 무시한다('그래놀라바' → 'KS 그래놀라 바').
+                #   예전엔 글자가 그대로 들어 있어야만 찾아서, 있는 상품도 0개로 나왔다.
+                with st.form(key=f"psearch_f{_ti}", border=False):
+                    _sc, _sb, _ = st.columns([2, 0.6, 2.4])
+                    _sq = _sc.text_input("\U0001f50d 검색", placeholder="상품명 또는 상품번호 (띄어쓰기 상관없음)",
+                                         key=f"psearch_t{_ti}")
+                    _sb.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+                    _sb.form_submit_button("🔎 검색", use_container_width=True)
+                if _sq and _sq.strip():
+                    from product_search import matcher as _matcher
+                    _hit = _matcher(_sq)
+                    _filtered = [p for p in _filtered if _hit(
+                        (p.get('costco_name'), p.get('naver_name')),
+                        (p.get('product_no'), p.get('naver_origin_pno'), p.get('naver_product_no'),
+                         p.get('naver_channel_pno')))]
+                    # 가격DB에 없거나 이 분류에 안 보이는 것 — 영수증 구매이력에서 찾아 보여 준다
+                    if _ti == 0:
+                        try:
+                            from product_search import search_products as _sp_search
+                            _have = {str(p.get('product_no') or '').strip() for p in _filtered}
+                            _extra = [h for h in _sp_search(_sq, limit=30,
+                                                            only_owner=None if IS_ADMIN else USERNAME)
+                                      if h.get('receipt_date') and h['product_no'] not in _have]
+                        except Exception:
+                            _extra = []
+                        if _extra:
+                            st.caption(f"🧾 구매이력에만 있는 상품 {len(_extra)}개 — 가격DB 목록에는 없습니다")
+                            st.dataframe([{'코스트코 상품번호': h['product_no'], '상품명(영수증)': h['name'],
+                                           '최근 구입가': h['paid'], '정가': h['list'],
+                                           '최근 구입일': h['receipt_date']} for h in _extra],
+                                         hide_index=True, use_container_width=True)
 
                 _tot  = len(_filtered)
                 _pp   = 10  # 페이지당 10개로 축소 (속도 최적화)

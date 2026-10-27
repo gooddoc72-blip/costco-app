@@ -46,16 +46,45 @@ BRAND_ALIAS = {
 }
 
 
+def _alias_variants(base):
+    """브랜드 한↔영을 바꾼 검색어들."""
+    _vs = set()
+    for ko, en in BRAND_ALIAS.items():
+        if ko in base:
+            _vs.add(base.replace(ko, en))
+        if en in name_key(base):
+            _vs.add(name_key(base).replace(en, ko))
+    return _vs
+
+
 def query_variants(q):
     """검색어 + 브랜드 한↔영 바꾼 것들 — [(정규화 키, 필수 토막)]."""
     _base = str(q or '').strip().lower()
-    _vs = {_base}
-    for ko, en in BRAND_ALIAS.items():
-        if ko in _base:
-            _vs.add(_base.replace(ko, en))
-        if en in name_key(_base):
-            _vs.add(name_key(_base).replace(en, ko))
+    _vs = {_base} | _alias_variants(_base)
     return [(name_key(v), name_tokens(v)) for v in _vs if v]
+
+
+def matcher(q):
+    """검색어 → hit(이름들, 번호들) 함수. 띄어쓰기·기호·대소문자·브랜드 한↔영을 무시한다.
+
+    '그래놀라바'로 'KS 그래놀라 바'를, 'kirkland'로 '커클랜드'를 찾는다. 번호는 일부만 맞아도 된다.
+    """
+    import re as _re
+    _qs = str(q or '').strip()
+    # 가격DB 검색은 사람이 친 단어를 **모두** 요구한다(두 글자 이상) — '커클랜드 그릭'이
+    #   커클랜드 전부(138개)로 번지지 않게. 영수증 축약어 대응(name_tokens)과는 목적이 다르다.
+    _vars = [(name_key(v), [t for t in _re.findall(r'[0-9]+|[a-z]+|[가-힣]+', v) if len(t) >= 2])
+             for v in {_qs.lower()} | {x for x in _alias_variants(_qs.lower())}]
+
+    def hit(names, nos=()):
+        if _qs and any(_qs in str(n or '') for n in nos):
+            return True
+        for nm in names:
+            k = name_key(nm)
+            if k and any((vk and vk in k) or (vt and all(t in k for t in vt)) for vk, vt in _vars):
+                return True
+        return False
+    return hit
 
 
 def search_products(q, limit=50, only_owner=None):
