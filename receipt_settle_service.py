@@ -142,13 +142,16 @@ def run_match(d, by='', carry_days=0):
         if orows:
             _rs.merge_matches(alloc, orows, [])
             alloc['_online_restored'] = len(orows)
-    if pool:
-        try:
-            n = _rs.apply_stock_carry(alloc, pool)
-            if n:
-                alloc['_stock_carry'] = n
-        except Exception:
-            pass
+    # 영수증보다 많이 붙은 자동 매칭 줄은 사람에게 묻지 않고 '영수증에 없는 발송건'으로 보낸다 —
+    #   그날 산 수량을 넘은 몫은 그날 영수증으로 산 물건이 아니다. 아래 재고 이월이 먼저
+    #   과거 구매분으로 메꿔 보고, 그래도 남으면 예외 목록에서 재고·금액을 정한다.
+    try:
+        n_cut = _auto_cut_overflow(alloc, items, d, {_key(r) for r in sticky})
+        if n_cut:
+            alloc['_auto_cut'] = n_cut
+    except Exception:
+        pass
+    # 이미 정산한 날짜에 늦게 들어온 발송건 — 그 날짜를 다시 열지 않고 오늘 정산에 붙인다
     if carry_days:
         try:
             have = {_key(r) for r in alloc.get('rows') or []} | \
@@ -157,6 +160,14 @@ def run_match(d, by='', carry_days=0):
             if carry:
                 alloc['unmatched_orders'] = list(alloc.get('unmatched_orders') or []) + carry
                 alloc['_carried'] = len(carry)
+        except Exception:
+            pass
+    # 남은 발송건(넘친 것·늦게 온 것 포함)을 과거 영수증의 미발송 구매분으로 메꾼다
+    if pool:
+        try:
+            n = _rs.apply_stock_carry(alloc, pool)
+            if n:
+                alloc['_stock_carry'] = n
         except Exception:
             pass
     # 전에 사람이 정한 것 — 끊은 줄(재고에서 나감·끊기)과 '영수증가로 청구' 확인 — 은
@@ -177,6 +188,35 @@ def run_match(d, by='', carry_days=0):
 
 
 # ── 배치 줄 처리 ───────────────────────────────────────────────
+def _auto_cut_overflow(alloc, items, d, keep):
+    """영수증 수량을 넘겨 붙은 자동 매칭 줄을 떼어 '영수증에 없는 발송건'으로 보낸다.
+
+    receipt_overflow가 나중에 붙은 줄부터 초과분만큼 짚어 준다. 그중 **줄 전체가 초과분
+    안에 드는 것**만 뗀다 — 일부만 넘는 줄은 떼면 영수증이 남아 버리므로 그대로 두고
+    '확인 필요'로 남긴다. 사람이 정한 줄(keep: 초안)은 건드리지 않는다.
+    반환: 뗀 줄 수
+    """
+    cut = set()
+    for o in _rs.receipt_overflow(items, alloc.get('rows') or []):
+        left = int(o.get('units_over') or 0)
+        sq = max(1, int(o.get('split_qty') or 1))
+        for r in o.get('orders') or []:
+            if left <= 0:
+                break
+            u = int(round(int(r.get('qty') or 0) * int(r.get('pack') or 1) * sq
+                          / max(1, int(r.get('split_qty') or 1))))
+            if u <= left and _key(r) not in keep and not r.get('_edited'):
+                cut.add(_key(r))
+                left -= u
+    if not cut:
+        return 0
+    _unmatch(alloc, d, cut, items, keep_draft=True)
+    for o in alloc.get('unmatched_orders') or []:
+        if _key(o) in cut:
+            o['_pre'] = 'over'
+    return len(cut)
+
+
 def _unmatch(alloc, d, keys, items, keep_draft=False):
     """배치에서 떼어 '영수증에 없는 발송건'으로 되돌린다(Streamlit _unmatch_rows와 같은 일)."""
     drop = [r for r in alloc.get('rows', []) if _key(r) in keys]
@@ -411,7 +451,7 @@ def view(d):
         'late_dispatch': [{'username': u, 'name': names.get(u, u), 'order_no': o} for u, o in late],
         'undecided': len(undecided),
         'total': sum(r['amount'] for r in out_rows),
-        'notes': {k: alloc.get(k) for k in ('_restored', '_online_restored', '_stock_carry', '_carried') if alloc.get(k)},
+        'notes': {k: alloc.get(k) for k in ('_restored', '_online_restored', '_stock_carry', '_carried', '_auto_cut') if alloc.get(k)},
     })
     try:
         out['unmatched_detail'] = unmatched_view(alloc, items, names)
