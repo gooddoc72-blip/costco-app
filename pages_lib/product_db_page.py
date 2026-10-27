@@ -1192,7 +1192,22 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             return int(p.get('split_qty', 1) or 1) > 1
         _cnt_selfreg = sum(1 for p in products if _is_selfreg(p))
         _cnt_split   = sum(1 for p in products if _is_split(p))
+        # ⭐ 기본 = 주문이 있었던 내 상품 + 실제로 산(영수증) 상품. 공용 가격표의 92%는
+        #   온라인몰에서 긁어 온 카탈로그, 내 제품표 대부분은 한 번도 안 팔린 등록 상품이라
+        #   전체를 기본으로 보이면 찾는 상품이 묻힌다(10/27 점검).
+        try:
+            from db_products import price_db_focus as _focus
+            _ordered, _bought = _focus(USERNAME)
+        except Exception:
+            _ordered, _bought = set(), set()
+
+        def _is_focus(p):
+            return (str(p.get('product_no') or '').strip() in _bought
+                    or bool({str(p.get(k) or '').strip() for k in
+                             ('naver_channel_pno', 'naver_origin_pno', 'naver_product_no')} & _ordered))
+        _cnt_focus = sum(1 for p in products if _is_focus(p))
         _filter_opts = [
+            f"⭐ 팔았거나 산 상품 ({_cnt_focus})",
             f"전체 ({_cnt_total})",
             f"🌐 코스트코 온라인 ({_cnt_online})",
             f"🛍 네이버 등록 상품 ({_cnt_naver})",
@@ -1213,13 +1228,16 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     st.session_state[_rk] = 1
             st.session_state['_db_filter_prev'] = _db_filter
         # 라벨에서 카운트 부분 제거하여 핵심 키워드로 분기
+        _is_filter_focus  = "팔았거나 산" in _db_filter
         _is_filter_online = "코스트코 온라인" in _db_filter
         _is_filter_naver  = "네이버 등록" in _db_filter
         _is_filter_selfreg = "자체등록" in _db_filter
         _is_filter_split  = "소분" in _db_filter
         _is_filter_oos    = "품절" in _db_filter
         _is_filter_susp   = "판매중지" in _db_filter
-        if _is_filter_online:
+        if _is_filter_focus:
+            products = [p for p in products if _is_focus(p)]
+        elif _is_filter_online:
             products = [p for p in products if (p.get('price_type') or '') == '온라인']
         elif _is_filter_naver:
             products = [p for p in products
@@ -1235,7 +1253,36 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         elif _is_filter_susp:
             products = [p for p in products if (p.get('status') or 'SALE').upper() in ('SUSPENSION', 'STOP', 'PAUSE', 'CLOSE', 'PROHIBITION')]
 
-        st.caption(f"{_db_filter} 표시 중 — {len(products)}개")
+        st.caption(f"{_db_filter} 표시 중 — {len(products)}개"
+                   + (" · 온라인 카탈로그·안 팔린 등록 상품까지 보려면 '전체'" if _is_filter_focus else ""))
+
+        # ── 🔗 코스트코 번호 연결 제안 — 정산 이력으로 번호가 하나로 정해지는 내 상품 ──
+        try:
+            from db_products import suggest_costco_links as _sugg
+            _links = _sugg(USERNAME)
+        except Exception:
+            _links = []
+        if _links:
+            with st.expander(f"🔗 코스트코 번호 연결 제안 {len(_links)}건 — 영수증 정산에서 확인된 번호",
+                             expanded=False):
+                st.caption("코스트코 번호가 빈 내 상품 중, 지난 영수증 정산에서 그 상품의 주문이 항상 같은 "
+                           "코스트코 번호로 청구된 것입니다. 연결하면 원가·정산이 이름 추정 대신 번호로 맞춰집니다.")
+                import pandas as _pd5
+                _lk_df = _pd5.DataFrame([{'연결': True, '내 상품(네이버)': l['name'][:40], '네이버번호': l['naver_no'],
+                                          '코스트코번호': l['costco_no'], '코스트코 상품명': l['costco_name'][:30],
+                                          '정산 횟수': l['times']} for l in _links])
+                _lk_ed = st.data_editor(_lk_df, hide_index=True, use_container_width=True, key="pdb_link_ed",
+                                        disabled=['내 상품(네이버)', '네이버번호', '코스트코번호', '코스트코 상품명', '정산 횟수'])
+                _lk_pick = [r for r in _lk_ed.to_dict('records') if r.get('연결')]
+                if st.button(f"🔗 {len(_lk_pick)}건 연결", key="pdb_link_go", disabled=not _lk_pick):
+                    from db_products import link_costco_to_naver as _lnk
+                    _n = sum(_lnk(USERNAME, r['네이버번호'], r['코스트코번호']) for r in _lk_pick)
+                    try:
+                        invalidate_data_cache()
+                    except Exception:
+                        pass
+                    st.success(f"✅ {_n}개 상품에 코스트코 번호를 연결했습니다.")
+                    st.rerun()
 
         # ── 옵션별 코스트코번호 매핑 ──
         _render_option_map(USERNAME, IS_ADMIN)

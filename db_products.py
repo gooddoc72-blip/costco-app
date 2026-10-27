@@ -1535,6 +1535,80 @@ def _contribute_shared_from_user(product_no, costco_name, keyword, price, split_
     return True
 
 
+def price_db_focus(username):
+    """가격DB 기본 목록에 낼 상품의 근거 — (주문이 있었던 네이버번호들, 실제로 산 코스트코번호들).
+
+    공용 가격표의 92%는 온라인몰에서 긁어 온 카탈로그이고, 사용자 제품표의 대부분은
+    한 번도 주문이 없던 네이버 등록 상품이다. 원가·정산에 쓰이는 것은 '팔린 것'과 '산 것'뿐이다.
+    """
+    ordered, bought = set(), set()
+    try:
+        conn = get_user_db(username)
+        try:
+            ordered = {str(r[0]).strip() for r in conn.execute(
+                "SELECT DISTINCT product_no FROM order_history WHERE TRIM(COALESCE(product_no,''))<>''")}
+        finally:
+            conn.close()
+    except Exception:
+        pass
+    try:
+        a = get_auth_db()
+        try:
+            bought = {str(r[0]).strip() for r in a.execute(
+                "SELECT DISTINCT product_no FROM receipt_items WHERE TRIM(COALESCE(product_no,''))<>''")}
+        finally:
+            a.close()
+    except Exception:
+        pass
+    return ordered, bought
+
+
+def suggest_costco_links(username):
+    """코스트코번호가 빈 내 상품 중 **정산 이력으로 번호가 하나로 정해지는 것** — 연결 제안.
+
+    영수증 정산은 주문마다 '네이버번호 → 코스트코번호'를 실제 영수증으로 확인한 기록이다
+    (settle_item, 영수증·재고 출고분). 후보가 둘 이상이면 내지 않는다(사람이 정할 일).
+    반환: [{naver_no, name, costco_no, costco_name, times}]
+    """
+    hist = {}
+    try:
+        a = get_auth_db()
+        try:
+            for r in a.execute(
+                    "SELECT naver_no, product_no, product_name FROM settle_item WHERE username=? "
+                    "AND source IN ('receipt','stock') AND TRIM(COALESCE(naver_no,''))<>'' "
+                    "AND TRIM(COALESCE(product_no,''))<>''", (str(username),)):
+                d = hist.setdefault(str(r[0]).strip(), {})
+                d[str(r[1]).strip()] = d.get(str(r[1]).strip(), 0) + 1
+        finally:
+            a.close()
+    except Exception:
+        return []
+    try:
+        from services import is_costco_pno
+    except Exception:
+        is_costco_pno = lambda x: True  # noqa: E731
+    names = {str(s.get('product_no') or '').strip(): s.get('costco_name') or ''
+             for s in (get_shared_products() or [])}
+    out = []
+    for p in get_all_products(username):
+        _pn = str(p.get('product_no') or '').strip()
+        _ch = str(p.get('naver_channel_pno') or '').strip()
+        _or = str(p.get('naver_origin_pno') or '').strip()
+        if _pn and _pn not in (_ch, _or) and is_costco_pno(_pn):
+            continue                      # 이미 코스트코번호가 있다
+        cand = {}
+        for k in {_ch, _or} - {''}:
+            for c, n in (hist.get(k) or {}).items():
+                cand[c] = cand.get(c, 0) + n
+        if len(cand) != 1:
+            continue
+        (c, n), = cand.items()
+        out.append({'naver_no': _ch or _or, 'name': str(p.get('costco_name') or ''),
+                    'costco_no': c, 'costco_name': names.get(c, ''), 'times': n})
+    return out
+
+
 def link_costco_to_naver(username, naver_no, costco_no):
     """영수증 매칭 시, 주문의 네이버번호(channel 또는 origin)로 제품 레코드를 찾아
     코스트코 상품번호를 채운다. (코스트코번호가 비어 있는 레코드만 — 기존값 보호)
