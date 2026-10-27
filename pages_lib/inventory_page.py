@@ -619,6 +619,19 @@ def _stock_store_return(rows):
                     _bad.append(f"{p['보유자']} {p['상품명'][:12]}: {_r.get('msg')}")
                     continue
                 _ok += 1
+                # 적립은 보유자가 값을 낸 재고(결제됨)만, 그 구입가까지만 — 결제 안 된 재고는
+                #   관리자 돈으로 산 것이라 환불도 관리자 몫이다(10/27 검증: 미결제 재고 반품에
+                #   109,920원이 적립돼 있었음).
+                _paid_amt = int(_r.get('paid_amount') or 0)
+                if p['_credit'] and p['환불액'] > _paid_amt:
+                    if _paid_amt <= 0:
+                        _bad.append(f"{p['보유자']} {p['상품명'][:12]}: 결제 안 된 재고(관리자 돈)라 "
+                                    "적립하지 않았습니다")
+                    else:
+                        _bad.append(f"{p['보유자']} {p['상품명'][:12]}: 적립을 결제된 몫 "
+                                    f"{_paid_amt:,}원까지로 줄였습니다")
+                    p['환불액'] = _paid_amt
+                _did = 0
                 if p['_credit'] and p['환불액'] > 0:
                     try:
                         _did = _dep.return_credit(
@@ -634,6 +647,15 @@ def _stock_store_return(rows):
                     else:
                         _bad.append(f"{p['보유자']} {p['상품명'][:12]}: 재고는 뺐지만 예치금 "
                                     "적립 실패 — 예치금 화면에서 직접 넣으세요")
+                # 고객반품으로 재입고된 물건이었으면 반품 장부도 '매장 반품'으로 닫는다
+                try:
+                    import db_customer_return as _cr
+                    for _t in (_r.get('taken_lots') or []):
+                        if '고객 반품 재입고' in _t['memo']:
+                            _cr.mark_store_returned_by_lot(_t['lot_id'], deposit_id=_did,
+                                                           amount=p['환불액'], by=_by)
+                except Exception:
+                    pass
             st.session_state['inv_sr_v'] = st.session_state.get('inv_sr_v', 0) + 1
             st.session_state['_inv_sr_msg'] = {
                 'ok': not _bad,

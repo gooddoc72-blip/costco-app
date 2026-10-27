@@ -403,7 +403,7 @@ def add_lot_units(product_no: str, product_name: str, owner: str,
 
 def adjust_stock(owner: str, product_no: str, units: int, reason: str,
                  by: str = '', product_name: str = '', unit_cost: int = 0,
-                 split_qty: int = 1, paid: int = 0) -> dict:
+                 split_qty: int = 1, paid: int = 0, only_lot: int = 0) -> dict:
     """관리자 수동 입출고 — 실물과 장부가 어긋났을 때 맞춘다.
 
     자동 경로(영수증 배정·판매 차감)만으로는 맞출 수 없는 일이 생긴다.
@@ -457,9 +457,17 @@ def adjust_stock(owner: str, product_no: str, units: int, reason: str,
             return {'ok': False, 'units': 0, 'lots': 0,
                     'msg': '남은 재고 %d개보다 많이 뺄 수 없습니다 (요청 %d개).' % (have, need)}
 
+        if only_lot:
+            # 그 입고분에서만 뺀다 — 고객반품 재입고 취소처럼 '어느 물건'인지 정해진 경우.
+            #   FIFO로 빼면 남의 다른 매입분이 깎인다(10/23 반품#17 취소가 lot 53을 깎음).
+            lots = [l for l in lots if int(l['id']) == int(only_lot)]
+            if sum(int(l['qty_left'] or 0) for l in lots) < need:
+                return {'ok': False, 'units': 0, 'lots': 0,
+                        'msg': '그 입고분(lot %s)에 남은 수량이 %d개보다 적습니다 — 이미 팔렸거나 빠졌습니다.'
+                               % (only_lot, need)}
         now = _now()
         tag = 'ADJ-%s' % datetime.now().strftime('%Y%m%d%H%M%S%f')
-        taken, n_lots = 0, 0
+        taken, n_lots, taken_lots = 0, 0, []
         for i, lot in enumerate(lots):
             if taken >= need:
                 break
@@ -478,11 +486,17 @@ def adjust_stock(owner: str, product_no: str, units: int, reason: str,
                  int(lot['unit_cost'] or 0), '%s-%d' % (tag, i), _today(), now))
             taken += take
             n_lots += 1
+            taken_lots.append({'lot_id': int(lot['id']), 'qty': take,
+                               'unit_cost': int(lot['unit_cost'] or 0),
+                               'paid': int(lot['paid'] or 0), 'memo': str(lot['memo'] or '')})
         conn.commit()
     finally:
         conn.close()
+    # 결제된 재고(보유자가 값을 낸 것)만 '보유자 돈'이다 — 매장반품 적립의 상한
     return {'ok': True, 'msg': '출고 %d개 (lot %d개에서)' % (taken, n_lots),
-            'units': -taken, 'lots': n_lots}
+            'units': -taken, 'lots': n_lots, 'taken_lots': taken_lots,
+            'paid_units': sum(t['qty'] for t in taken_lots if t['paid']),
+            'paid_amount': sum(t['qty'] * t['unit_cost'] for t in taken_lots if t['paid'])}
 
 
 def find_lots_by_memo(memo_prefix: str, received_at: str = '') -> list:

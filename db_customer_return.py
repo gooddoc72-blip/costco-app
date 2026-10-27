@@ -102,7 +102,9 @@ def ensure(conn=None):
     try:
         _cols = {r[1] for r in conn.execute("PRAGMA table_info(customer_return)")}
         # deposit_id: 매장반품 환불을 예치금에 적립한 원장 행(0=미적립)
-        for _c, _t in (('store_req', 'INTEGER DEFAULT 0'),
+        # restock_lot_id: 재고로 되돌릴 때 만든 입고분 — 취소·매장반품이 그 물건만 뺀다
+        for _c, _t in (('restock_lot_id', 'INTEGER DEFAULT 0'),
+                       ('store_req', 'INTEGER DEFAULT 0'),
                        ('store_req_at', "TEXT DEFAULT ''"),
                        ('store_req_by', "TEXT DEFAULT ''"),
                        ('deposit_id', 'INTEGER DEFAULT 0'),
@@ -251,12 +253,23 @@ def restock(_id, owner='', by='', memo=''):
                    + (f" · {_s(r.get('order_no'))}" if r.get('order_no') else ''),
             by=by, product_name=_s(r.get('product_name')),
             unit_cost=_i(r.get('unit_cost')),
-            split_qty=max(1, _i(r.get('split_qty')) or 1))
+            split_qty=max(1, _i(r.get('split_qty')) or 1),
+            # 판매자가 이미 값을 낸 물건이 돌아온 것 — 결제된 재고. 0이면 다시 나갈 때
+            #   한 번 더 청구된다(10/27 검증: 재입고 lot 6개 모두 paid=0이었음).
+            paid=1)
     except Exception as e:
         return {'ok': False, 'msg': f"재고 입고 실패 — {e}"}
     if not res.get('ok'):
         return {'ok': False, 'msg': res.get('msg') or '재고 입고 실패'}
     _finish(_id, 'restocked', by=by, restock_owner=owner, memo=memo)
+    if res.get('lot_id'):
+        conn = _conn()
+        try:
+            conn.execute("UPDATE customer_return SET restock_lot_id=? WHERE id=?",
+                         (int(res['lot_id']), _i(_id)))
+            conn.commit()
+        finally:
+            conn.close()
     return {'ok': True, 'msg': f"{owner} 재고로 {_i(r.get('qty'))}개 되돌렸습니다."}
 
 
@@ -317,6 +330,12 @@ def credit_deposit(_id, by=''):
     amt = _i(r.get('refund_amount'))
     if amt <= 0:
         return {'ok': False, 'msg': '환불금액이 0원입니다.'}
+    # 판매자에게 돌려줄 수 있는 건 그 물건값으로 청구한 만큼까지다. 구입가가 비어 있으면
+    #   무엇을 돌려주는지 근거가 없다(10/27 검증: 구입가 0원 건에 39,980원 적립).
+    _pt = purchase_total(r)
+    if _pt <= 0:
+        return {'ok': False, 'msg': '구입가가 비어 있어 적립할 수 없습니다 — 반품 건에 구입가를 먼저 넣으세요.'}
+    amt = min(amt, _pt)
     un = _s(r.get('username'))
     _memo = (f"매장반품 환불 적립 · 반품#{_i(_id)} · {_s(r.get('product_name'))[:40]} "
              f"{_i(r.get('qty'))}개 · 구입가 {purchase_total(r):,}원 · 환불 {amt:,}원"
@@ -437,12 +456,16 @@ def cancel(_id, by=''):
     st_ = str(r.get('status'))
     _tag = f"#{_i(_id)} {_s(r.get('product_name'))[:30]} {_i(r.get('qty'))}개"
     if st_ == 'restocked':
+        _lot = restock_lot(r)
+        if not _lot:
+            return {'ok': False, 'msg': '재입고한 입고분을 찾지 못해 취소할 수 없습니다 — '
+                                       '다른 매입분이 깎이지 않게 막았습니다. 재고 관리에서 직접 조정하세요.'}
         try:
             from db_inventory import adjust_stock
             res = adjust_stock(
                 owner=_s(r.get('restock_owner')) or _s(r.get('username')),
                 product_no=_s(r.get('costco_no')), units=-_i(r.get('qty')),
-                reason=f"고객 반품 재입고 취소 #{_i(_id)}", by=by)
+                reason=f"고객 반품 재입고 취소 #{_i(_id)}", by=by, only_lot=_lot)
         except Exception as e:
             return {'ok': False, 'msg': f'재고 차감 실패 — {e}'}
         if not res.get('ok'):
@@ -477,6 +500,46 @@ def cancel(_id, by=''):
     finally:
         conn.close()
     return {'ok': True, 'msg': _msg}
+
+
+def restock_lot(r):
+    """그 반품을 재고로 되돌릴 때 만든 입고분 id — 저장된 값, 없으면(예전 건) 입고 메모로 찾는다."""
+    if _i(r.get('restock_lot_id')):
+        return _i(r.get('restock_lot_id'))
+    import re as _re
+    try:
+        from db_inventory import _conn as _ic
+        c = _ic()
+        try:
+            for l in c.execute("SELECT id, memo FROM inventory_lots WHERE memo LIKE ? ORDER BY id DESC",
+                               (f"%고객 반품 재입고 #{_i(r.get('id'))}%",)):
+                # '#1'이 '#11'에 걸리지 않게 번호 뒤가 숫자가 아닌 것만
+                if _re.search(rf"고객 반품 재입고 #{_i(r.get('id'))}(?!\d)", str(l['memo'] or '')):
+                    return int(l['id'])
+        finally:
+            c.close()
+    except Exception:
+        pass
+    return 0
+
+
+def mark_store_returned_by_lot(lot_id, deposit_id=0, amount=0, by=''):
+    """재고 탭에서 매장반품한 물건이 고객반품 재입고분이면 그 반품 건도 '매장 반품'으로 닫는다 —
+    안 그러면 반품 장부엔 '재고로 되돌림'으로 남아, 취소를 누르면 다른 재고가 빠진다."""
+    conn = _conn()
+    ensure(conn)
+    try:
+        for r in conn.execute("SELECT * FROM customer_return WHERE status='restocked'").fetchall():
+            if restock_lot(dict(r)) == int(lot_id):
+                conn.execute("UPDATE customer_return SET status='store_returned', refund_amount=?, "
+                             "deposit_id=?, deposit_amount=?, deposit_at=?, done_by=?, done_at=? WHERE id=?",
+                             (_i(amount), _i(deposit_id), _i(amount) if deposit_id else 0,
+                              _now() if deposit_id else '', _s(by), _now(), int(r['id'])))
+                conn.commit()
+                return int(r['id'])
+    finally:
+        conn.close()
+    return 0
 
 
 def uncredited_store_returns():
