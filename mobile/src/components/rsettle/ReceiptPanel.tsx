@@ -16,6 +16,31 @@ import { num } from '@/lib/fmt';
 
 const blank = (d: string): ReceiptRow => ({ receipt_date: d, costco_no: '', name: '', qty: 1, list_price: 0, discount: 0, unit_price: 0 });
 
+/** 한 번 읽은 결과 — 같은 영수증을 다시 읽으면 이걸 빼고 새 값으로 바꾼다(수량을 더하지 않게). */
+type Read = { files: string[]; sig: string; rows: ReceiptRow[] };
+const same = (a: ReceiptRow, b: ReceiptRow) => !!a.costco_no && a.costco_no === b.costco_no && a.receipt_date === b.receipt_date;
+const sigOf = (rs: ReceiptRow[]) => rs.map(r => `${r.costco_no}|${r.receipt_date}|${r.qty}`).sort().join(',');
+function addRows(base: ReceiptRow[], got: ReceiptRow[]) {
+  const out = [...base];
+  for (const g of got) {
+    const i = out.findIndex(r => same(r, g));
+    if (i >= 0) out[i] = { ...out[i], qty: out[i].qty + g.qty, discount: out[i].discount + g.discount };
+    else out.push(g);
+  }
+  return out;
+}
+function subRows(base: ReceiptRow[], part: ReceiptRow[]) {
+  let out = [...base];
+  for (const p of part) {
+    const i = out.findIndex(r => same(r, p));
+    if (i < 0) continue;
+    const q = out[i].qty - p.qty;
+    out = q > 0 ? out.map((r, j) => j === i ? { ...r, qty: q, discount: Math.max(0, r.discount - p.discount) } : r)
+      : out.filter((_, j) => j !== i);
+  }
+  return out;
+}
+
 export default function ReceiptPanel({ day, count, onSaved, onErr }: {
   day: string; count: number; onSaved: (msg: string) => void; onErr: (m: string) => void;
 }) {
@@ -30,23 +55,27 @@ export default function ReceiptPanel({ day, count, onSaved, onErr }: {
   const [note, setNote] = useState<{ ok: boolean; text: string } | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const noteRef = useRef<HTMLDivElement>(null);
+  const reads = useRef<Read[]>([]);
+  // 저장된 영수증에 이미 다 있는 품목을 또 읽어 더했을 때 — 되돌릴 수 있게 그 판독을 들고 있는다
+  const [overlap, setOverlap] = useState<ReceiptRow[] | null>(null);
 
-  useEffect(() => { setRows(null); setUnsaved(false); setChk(null); setAsk(false); setFails([]); setLines([]); setOpen(count === 0); }, [day, count]);
+  useEffect(() => { setRows(null); setUnsaved(false); setChk(null); setAsk(false); setFails([]); setLines([]); setOpen(count === 0); reads.current = []; setOverlap(null); }, [day, count]);
   useEffect(() => { setNote(null); }, [day]);
   useEffect(() => { if (note) noteRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' }); }, [note]);
   const fail = (t: string) => { setNote({ ok: false, text: t }); onErr(t); };
 
   const loadSaved = async () => {
     setBusy(true);
-    try { const r = await rsettle.receipt(day); setRows(r.rows.length ? r.rows : [blank(day)]); setUnsaved(false); setChk(null); setAsk(false); }
+    try { const r = await rsettle.receipt(day); setRows(r.rows.length ? r.rows : [blank(day)]); setUnsaved(false); setChk(null); setAsk(false); reads.current = []; setOverlap(null); }
     catch (e: any) { fail(e.message || String(e)); }
     finally { setBusy(false); }
   };
 
   const upload = async (fl: FileList | null) => {
     if (!fl?.length) return;
-    setBusy(true); setLines([]); setFails([]); setNote(null);
+    setBusy(true); setLines([]); setFails([]); setNote(null); setOverlap(null);
     try {
+      const fkeys = Array.from(fl).map(f => `${f.name}|${f.size}`);
       const files = await Promise.all(Array.from(fl).map(async f => ({ name: f.name, content_b64: await fileToB64(f) })));
       const { job } = await rsettle.parseStart(files);
       for (;;) {
@@ -57,18 +86,20 @@ export default function ReceiptPanel({ day, count, onSaved, onErr }: {
         if (s.error) throw new Error(s.error);
         const got = s.result?.rows || [];
         setFails(s.result?.fails || []);
-        // 이미 표에 있는 것(앞서 읽은 파일·불러온 영수증)과 합친다 — 같은 상품·같은 날짜는 수량을 더한다
-        setRows(prev => {
-          const base = (prev || []).filter(r => r.costco_no || r.name);
-          const out = [...base];
-          for (const g of got) {
-            const i = out.findIndex(r => r.costco_no && r.costco_no === g.costco_no && r.receipt_date === g.receipt_date);
-            if (i >= 0) out[i] = { ...out[i], qty: out[i].qty + g.qty, discount: out[i].discount + g.discount };
-            else out.push(g);
-          }
-          return out.length ? out : [blank(day)];
-        });
+        // 다른 영수증이면 표에 있는 것과 합친다(같은 상품·같은 날짜는 수량을 더한다).
+        // 같은 영수증을 다시 읽은 것(같은 파일이거나 품목·수량이 똑같음)이면 앞 판독을 빼고
+        // 새 값으로 바꾼다 — 판독을 두 번 해서 수량이 두 배가 되던 것(10/28).
+        const sig = sigOf(got);
+        const dup = reads.current.find(r => (sig && r.sig === sig) || r.files.some(f => fkeys.includes(f)));
+        reads.current = [...reads.current.filter(r => r !== dup), { files: fkeys, sig, rows: got }];
+        const prevRows = (rows || []).filter(r => r.costco_no || r.name);
+        const base = dup ? subRows(prevRows, dup.rows) : prevRows;
+        const out = addRows(base, got);
+        setRows(out.length ? out : [blank(day)]);
         setUnsaved(true); setChk(null); setAsk(false);
+        if (dup) setNote({ ok: true, text: '🔁 같은 영수증을 다시 읽어 앞 판독값을 새 값으로 바꿨습니다 — 수량을 더하지 않았습니다.' });
+        // 처음 읽는 판독인데 표(불러온 저장 영수증 등)에 같은 품목이 이미 다 있으면 같은 영수증일 수 있다
+        else if (got.length && got.every(g => base.some(r => same(r, g) && r.qty >= g.qty))) setOverlap(got);
         break;
       }
     } catch (e: any) { fail('영수증 읽기 실패: ' + (e.message || e)); }
@@ -143,6 +174,16 @@ export default function ReceiptPanel({ day, count, onSaved, onErr }: {
           <div className="text-[11px] text-gray-500">읽은 값은 표에만 채워지고 <b>💾 저장 전에는 DB에 들어가지 않습니다.</b> 하루 영수증이 여러 장이면 <b>한 번에 같이</b> 올리세요 — 저장은 그 날짜를 통째로 교체합니다.</div>
           {busy && !!lines.length && <div className="text-xs text-gray-600">⏳ {lines[lines.length - 1]}</div>}
           {fails.map((f, i) => <div key={i} className="text-xs text-orange-700">⚠️ {f.file} — {f.error}. 표에 직접 넣을 수 있습니다.</div>)}
+          {overlap && (
+            <div className="p-2 rounded bg-amber-50 text-amber-900 text-xs space-y-1">
+              <div>⚠️ 방금 읽은 {overlap.length}품목이 표에 <b>이미 같은 수량 이상</b> 있어 수량을 더했습니다. 이미 올린 영수증을 다시 읽은 거라면 되돌리세요.</div>
+              <button onClick={() => {
+                setRows(rs => { const o = subRows((rs || []).filter(r => r.costco_no || r.name), overlap); return o.length ? o : [blank(day)]; });
+                reads.current = reads.current.filter(r => r.rows !== overlap);
+                setOverlap(null); setChk(null); setAsk(false); setUnsaved(true);
+                setNote({ ok: true, text: '↩️ 방금 읽은 수량을 뺐습니다.' });
+              }} className="px-2 py-1 rounded border border-amber-400 bg-white">↩️ 방금 읽은 것 빼기 (같은 영수증)</button>
+            </div>)}
           {rows && (
             <>
               <div className="overflow-x-auto">
