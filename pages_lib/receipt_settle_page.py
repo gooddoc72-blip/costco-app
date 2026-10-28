@@ -808,6 +808,26 @@ def _render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     _pseen = set(st.session_state.get('_rs_pseen') or [])
     _ph_all, _ph = (_ph or []), [f for f in (_ph or []) if _pid(f) not in _pseen]
     _pkey = tuple(sorted(_pid(f) for f in _ph_all))
+    # 🔄 사진 다시 판독 — 판독이 틀렸을 때 같은 사진을 처음부터 다시 읽는다(10/28 요청).
+    #   그냥 다시 읽으면 앞 판독 수량에 또 더해지므로, 사진을 처음 읽기 직전의 표
+    #   (_rs_photo_base: PDF·불러온 영수증)로 되돌린 뒤 지금 올라 있는 사진을 전부 다시 읽는다.
+    #   사진 판독 뒤 표에서 직접 고친 값은 사라진다. (버튼은 판독 블록 아래에 그린다)
+    def _photo_reparse_btn():
+        if not (_ph_all and st.session_state.get('_rs_pseen')):
+            return
+        if st.button("🔄 사진 다시 판독 (앞 판독값 버리고 새로 읽기)", key="rs_photo_reparse",
+                     help="판독이 틀렸을 때 누르세요. 앞서 사진에서 읽은 값을 빼고 지금 올라 있는 "
+                          "사진을 다시 읽습니다 — 수량이 더해지지 않습니다. 사진 판독 뒤 표에서 "
+                          "직접 고친 값은 사라집니다."):
+            st.session_state['rs_receipt_items'] = list(st.session_state.get('_rs_photo_base') or [])
+            st.session_state.pop('_rs_pseen', None)
+            st.session_state.pop('rs_alloc', None)
+            st.session_state['_rs_fails'] = [x for x in (st.session_state.get('_rs_fails') or [])
+                                              if x[0] not in {f.name for f in _ph_all}]
+            st.rerun()
+    if _ph and not _pseen:
+        # 사진을 처음 읽기 직전의 표 — '사진 다시 판독'이 여기로 되돌린다
+        st.session_state['_rs_photo_base'] = list(st.session_state.get('rs_receipt_items') or [])
     if _ph:
         import ai_service
         from pages_lib.receipt_page import _image_for_ai
@@ -880,6 +900,7 @@ def _render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             st.session_state['_rs_pkey'] = _pkey
             st.session_state['_rs_pseen'] = sorted(_pseen | {_pid(f) for f in _ph})
             st.session_state['_rs_fails'] = (st.session_state.get('_rs_fails') or []) + _pfails
+    _photo_reparse_btn()
 
     for fn, em in st.session_state.get('_rs_fails', []):
         st.warning(f"⚠️ 자동 인식 실패: **{fn}** — {em}. 아래 표에 **직접 입력**해서 정산할 수 있습니다.")
