@@ -3,6 +3,11 @@
  * 🧾 영수증 올리기 — PDF·사진을 읽어 표에 채우고(저장 안 함), 사람이 확인·수정한 뒤에만 저장한다.
  * 읽는 즉시 저장하면 판독이 틀린 값이 재고·가격DB에 들어간다(9/8 그릭요거트 수량 64 사고).
  * 저장은 그 날짜를 통째로 교체한다 — 하루 영수증이 여러 장이면 한 번에 같이 올린다.
+ *
+ * 휴대폰에서 '💾 저장을 눌러도 반응이 없다'(10/28): 결과·오류가 페이지 맨 위에만 떠 표 아래에선
+ * 안 보였고, 점검 전엔 저장 버튼이 꺼져 있었고, window.confirm은 브라우저가 대화상자를 막으면
+ * 묻지도 않고 '취소'가 된다. 그래서 저장은 점검을 스스로 돌리고, 확인은 화면 안에서 받고,
+ * 결과는 이 칸 안에 띄운다.
  */
 import { useEffect, useRef, useState } from 'react';
 import clsx from 'clsx';
@@ -21,20 +26,26 @@ export default function ReceiptPanel({ day, count, onSaved, onErr }: {
   const [fails, setFails] = useState<{ file: string; error: string }[]>([]);
   const [busy, setBusy] = useState(false);
   const [chk, setChk] = useState<ReceiptCheck | null>(null);
+  const [ask, setAsk] = useState(false);
+  const [note, setNote] = useState<{ ok: boolean; text: string } | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  const noteRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => { setRows(null); setUnsaved(false); setChk(null); setFails([]); setLines([]); setOpen(count === 0); }, [day, count]);
+  useEffect(() => { setRows(null); setUnsaved(false); setChk(null); setAsk(false); setFails([]); setLines([]); setOpen(count === 0); }, [day, count]);
+  useEffect(() => { setNote(null); }, [day]);
+  useEffect(() => { if (note) noteRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' }); }, [note]);
+  const fail = (t: string) => { setNote({ ok: false, text: t }); onErr(t); };
 
   const loadSaved = async () => {
     setBusy(true);
-    try { const r = await rsettle.receipt(day); setRows(r.rows.length ? r.rows : [blank(day)]); setUnsaved(false); setChk(null); }
-    catch (e: any) { onErr(e.message || String(e)); }
+    try { const r = await rsettle.receipt(day); setRows(r.rows.length ? r.rows : [blank(day)]); setUnsaved(false); setChk(null); setAsk(false); }
+    catch (e: any) { fail(e.message || String(e)); }
     finally { setBusy(false); }
   };
 
   const upload = async (fl: FileList | null) => {
     if (!fl?.length) return;
-    setBusy(true); setLines([]); setFails([]);
+    setBusy(true); setLines([]); setFails([]); setNote(null);
     try {
       const files = await Promise.all(Array.from(fl).map(async f => ({ name: f.name, content_b64: await fileToB64(f) })));
       const { job } = await rsettle.parseStart(files);
@@ -57,10 +68,10 @@ export default function ReceiptPanel({ day, count, onSaved, onErr }: {
           }
           return out.length ? out : [blank(day)];
         });
-        setUnsaved(true); setChk(null);
+        setUnsaved(true); setChk(null); setAsk(false);
         break;
       }
-    } catch (e: any) { onErr('영수증 읽기 실패: ' + (e.message || e)); }
+    } catch (e: any) { fail('영수증 읽기 실패: ' + (e.message || e)); }
     finally { setBusy(false); if (fileRef.current) fileRef.current.value = ''; }
   };
 
@@ -73,30 +84,37 @@ export default function ReceiptPanel({ day, count, onSaved, onErr }: {
         n.unit_price = Math.max(0, Math.floor((n.list_price * n.qty - n.discount) / Math.max(1, n.qty)));
       return n;
     }));
-    setUnsaved(true); setChk(null);
+    setUnsaved(true); setChk(null); setAsk(false);
   };
 
-  const check = async () => {
-    if (!rows) return;
-    setBusy(true);
-    try { setChk(await rsettle.receiptCheck(day, rows)); }
-    catch (e: any) { onErr(e.message || String(e)); }
+  const check = async (): Promise<ReceiptCheck | null> => {
+    if (!rows) return null;
+    setBusy(true); setNote(null);
+    try { const c = await rsettle.receiptCheck(day, rows); setChk(c); return c; }
+    catch (e: any) { fail('점검 실패: ' + (e.message || e)); return null; }
     finally { setBusy(false); }
+  };
+
+  // 💾 첫 누름: 점검이 없으면 돌리고 화면 안 확인 칸을 연다. 실제 저장은 확인 칸의 버튼으로.
+  const askSave = async () => {
+    const c = chk || await check();
+    if (!c) return;
+    if (!c.count) { fail('저장할 줄이 없습니다 — 코스트코 번호와 실단가가 있는 줄만 저장됩니다(회색 줄 확인).'); return; }
+    setAsk(true);
   };
 
   const save = async () => {
     if (!rows || !chk) return;
-    const t = `영수증 ${chk.count}종 · ${num(chk.amount)}원을 저장합니다 (${chk.dates.join(', ')}).\n\n그 날짜 영수증을 통째로 교체합니다 — 이번에 없는 옛 품목은 지워집니다.`
-      + (chk.outliers.length ? `\n\n⚠️ 의심스러운 줄 ${chk.outliers.length}건을 확인했나요?` : '');
-    if (!window.confirm(t)) return;
-    setBusy(true);
+    setAsk(false); setBusy(true); setNote(null);
     try {
       const r = await rsettle.receiptSave(day, rows);
       setUnsaved(false); setChk(null);
-      onSaved(`💾 영수증 ${r.count}종 저장 (${r.dates.join(', ')}) — 신규 ${r.new} · 갱신 ${r.updated} · 가격DB 반영 ${r.priced}`
+      const t = `💾 영수증 ${r.count}종 저장 (${r.dates.join(', ')}) — 신규 ${r.new} · 갱신 ${r.updated} · 가격DB 반영 ${r.priced}`
         + (r.removed ? ` · 🧹 이번에 없는 옛 품목 ${r.removed}줄 지움` : '')
-        + (r.filled ? ` · 📅 날짜 없는 ${r.filled}줄은 ${r.fill_date}로` : '') + ' — 이제 다시 매칭하세요.');
-    } catch (e: any) { onErr('영수증 저장 실패: ' + (e.message || e)); }
+        + (r.filled ? ` · 📅 날짜 없는 ${r.filled}줄은 ${r.fill_date}로` : '') + ' — 이제 다시 매칭하세요.';
+      setNote({ ok: true, text: t });
+      onSaved(t);
+    } catch (e: any) { fail('영수증 저장 실패: ' + (e.message || e)); }
     finally { setBusy(false); }
   };
 
@@ -108,6 +126,10 @@ export default function ReceiptPanel({ day, count, onSaved, onErr }: {
         <span className="text-xs text-gray-500">저장된 영수증 {count}품목{unsaved ? ' · ⚠️ 저장 안 한 표가 있습니다' : ''}</span>
         <span className="flex-1" /><span className="text-xs text-gray-400">{open ? '접기' : '펼치기'}</span>
       </button>
+      {note && (
+        <div ref={noteRef} className={clsx('mx-3 mb-2 p-2 rounded text-xs whitespace-pre-wrap', note.ok ? 'bg-green-50 text-green-800' : 'bg-red-50 text-red-700')}>
+          {note.ok ? '' : '❌ '}{note.text}
+        </div>)}
       {open && (
         <div className="px-3 pb-3 space-y-2">
           <div className="flex flex-wrap items-center gap-2">
@@ -140,7 +162,7 @@ export default function ReceiptPanel({ day, count, onSaved, onErr }: {
                       <td className="p-1 text-right"><input type="number" min={0} step={100} value={r.discount} onChange={e => put(i, { discount: Math.max(0, Number(e.target.value)) })} className="w-20 border rounded px-1 py-0.5 text-right" /></td>
                       <td className="p-1 text-right"><input type="number" min={0} step={100} value={r.unit_price} onChange={e => put(i, { unit_price: Math.max(0, Number(e.target.value)) })} className="w-20 border rounded px-1 py-0.5 text-right" /></td>
                       <td className="p-1 text-right">{num(r.unit_price * r.qty)}</td>
-                      <td className="p-1"><button onClick={() => { setRows(rs => (rs || []).filter((_, j) => j !== i)); setUnsaved(true); setChk(null); }} className="text-gray-400 hover:text-red-600">✕</button></td>
+                      <td className="p-1"><button onClick={() => { setRows(rs => (rs || []).filter((_, j) => j !== i)); setUnsaved(true); setChk(null); setAsk(false); }} className="text-gray-400 hover:text-red-600">✕</button></td>
                     </tr>))}</tbody>
                 </table>
               </div>
@@ -152,9 +174,19 @@ export default function ReceiptPanel({ day, count, onSaved, onErr }: {
                   {chk.outliers.map((o, i) => <div key={i}>🚨 <b>{o.name}</b> 수량 {o.qty} × {num(o.unit_price)} = {num(o.amount)}원 ({o.why}) — 판독이 맞는지 확인하세요</div>)}
                   {!chk.outliers.length && <div>✅ 의심스러운 줄이 없습니다.</div>}
                 </div>)}
+              {ask && chk && (
+                <div className="p-2 rounded border-2 border-primary text-xs space-y-2">
+                  <div>영수증 <b>{chk.count}종 · {num(chk.amount)}원</b>을 저장합니다 ({chk.dates.join(', ')}).<br />
+                    그 날짜 영수증을 통째로 교체합니다 — 이번에 없는 옛 품목은 지워집니다.</div>
+                  {!!chk.outliers.length && <div className="text-red-700 font-semibold">⚠️ 위 의심스러운 줄 {chk.outliers.length}건을 확인했나요?</div>}
+                  <div className="flex gap-2">
+                    <button onClick={() => setAsk(false)} disabled={busy} className="flex-1 py-2 rounded-lg border text-sm">취소</button>
+                    <button onClick={save} disabled={busy} className="flex-1 py-2 rounded-lg bg-primary text-white font-bold text-sm disabled:opacity-40">💾 저장합니다</button>
+                  </div>
+                </div>)}
               <div className="flex gap-2">
                 <button onClick={check} disabled={busy} className="flex-1 py-2 rounded-lg border-2 border-primary text-primary font-bold text-sm disabled:opacity-40">🔍 저장 전 점검</button>
-                <button onClick={save} disabled={busy || !chk || !chk.count} className="flex-1 py-2 rounded-lg bg-primary text-white font-bold text-sm disabled:opacity-40">💾 영수증 저장</button>
+                <button onClick={askSave} disabled={busy || ask} className="flex-1 py-2 rounded-lg bg-primary text-white font-bold text-sm disabled:opacity-40">{busy ? '⏳ 처리 중…' : '💾 영수증 저장'}</button>
               </div>
             </>)}
         </div>)}
