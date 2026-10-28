@@ -202,7 +202,9 @@ def snap_items_to_catalog(items, min_score=0.55):
                 _it['상품번호'] = _best
             continue
         if not _no:
-            _m = best_name_match(_nm, _cands, name_key='name')
+            # best_name_match는 (후보, 정보)를 돌려준다 — 통째로 받아 .get을 부르면
+            # 번호 못 읽은 줄이 하나만 있어도 판독 전체가 'tuple' 오류로 죽었다(10/28).
+            _m, _ = best_name_match(_nm, _cands, name_key='name')
             if _m and str(_m.get('no') or '').strip():
                 _log.append(f"{_nm[:18]} · 번호 없음 → {_m['no']} (이름으로 찾음)")
                 _it['상품번호'] = str(_m['no']).strip()
@@ -1768,7 +1770,10 @@ def parse_receipt_uploads(pdfs, photos, settings):
             if not _d.get('_verified', True):
                 fails.append((_pf.name, "금액·수량 자가검증 불일치 — 표에서 값을 확인하세요"))
 
-    items, _snap = snap_items_to_catalog(items)
+    try:
+        items, _snap = snap_items_to_catalog(items)
+    except Exception:
+        pass                                   # 번호 교정은 덤 — 실패해도 읽은 값은 살린다
     # 같은 상품이 두 줄로 찍히는 일이 흔하다 — 관리자 화면과 같은 규칙으로 합친다
     return list(merge_receipt_lines(items).values()), fails
 
