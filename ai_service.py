@@ -970,7 +970,11 @@ _RECEIPT_SYSTEM = (
     "  ```\n"
     "  → 상품번호 1768085 / 상품명 KS종이타월 / 수량 1 / 단가 26490 / 금액 26490\n"
     "  → 상품번호 667538 / 상품명 이디야골드블렌드 / 수량 3 / 단가 41990 / 금액 125970\n"
-    "  **수량은 상품번호 바로 오른쪽의 맨 앞 숫자**다. `2x` 같은 표시가 아니라 그냥 숫자다.\n"
+    "  **수량은 상품번호 바로 오른쪽의 맨 앞 숫자**다. 매장에 따라 `599369  2×  12,990  25,980 T` 처럼 "
+    "`2×`·`1x` 로 찍히기도 한다 — ×/x 앞 숫자가 수량이다(qty에는 숫자만).\n"
+    "  `** Begin Bottom Of Basket`, `** Bottom Of Basket Item Count 4`, `---- 상품수 소계 : 9` 같은 줄은 "
+    "품목이 아니다. 넣지 마라(그 사이에 있는 품목 줄은 평소대로 넣는다).\n"
+    "  상품명은 영수증에 찍힌 글자 그대로 옮긴다 — 아는 다른 상품명으로 바꾸거나 다듬지 마라.\n"
     "  같은 상품이 **따로 두 줄**로 찍히기도 한다(각각 수량 1). 합치지 말고 **줄마다 그대로** 넣어라.\n"
     "- ⚠️ **할인(쿠폰) 줄**: `*** CPN` 이라는 줄이 나오면 **그 다음 두 줄이 할인**이다.\n"
     "  ```\n"
@@ -980,7 +984,10 @@ _RECEIPT_SYSTEM = (
     "  꽃담초유연제5.7L\n"
     "  5234        1      3,500     - 3,500 T   ← 할인 3,500원\n"
     "  ```\n"
-    "  · **마이너스는 금액 '앞'에 붙는다**(`- 3,500 T`). 금액이 음수면 무조건 할인이다.\n"
+    "  · **마이너스는 금액 앞(`- 3,500 T`)이나 뒤(`5,000-T`)에 붙는다**. 어느 쪽이든 할인이다.\n"
+    "  · `*** CPN` 대신 `CPN` 한 단어만 있는 줄도 같다. 예:\n"
+    "    `스니커즈편사이즈 / 661290 1× 22,990 22,990 T / CPN / 스니커즈 펀IRC / 1351 1× 5,000 5,000-T`\n"
+    "    → 스니커즈편사이즈 1개 22,990원, discount 5000. '스니커즈 펀IRC'는 품목이 아니다.\n"
     "  · 할인 줄의 앞 숫자(5234)는 **상품번호가 아니라 쿠폰코드**다. 이걸 상품번호로 넣으면 있지도 않은 상품이 생긴다. 절대 items에 넣지 마라.\n"
     "  · 할인 줄은 **바로 위 품목의 discount에 양수로** 넣는다. 상품명이 위 품목과 같거나 뒤에 IRC/CPN 이 붙는다.\n"
     "  · 그래서 item_kinds(품목 종수)와 total_qty(총수량)에 할인 줄은 세지 않는다.\n"
@@ -1027,8 +1034,12 @@ def _parse_receipt_json(txt):
         return None
 
     def _num(v):
+        _s = str(v if v is not None else "").replace(",", "").replace("원", "").strip()
+        _s = _s.rstrip("Tt ").strip().rstrip("xX×* ").strip()   # 수량 '2×'·'2x'
+        if _s.endswith("-"):                   # '5,000-T' — 마이너스가 뒤에 붙은 할인
+            _s = "-" + _s[:-1].strip()
         try:
-            return int(float(str(v).replace(",", "").replace("원", "").strip() or 0))
+            return int(float(_s or 0))
         except (TypeError, ValueError):
             return 0
 
@@ -1041,7 +1052,13 @@ def _parse_receipt_json(txt):
     # 할인 줄을 품목으로 잘못 읽는 경우가 잦다(코스트코 영수증은 '-3,000' 형태).
     #   → 품목에서 빼고 할인으로 돌린다. 안 그러면 품목합·수량·종수가 전부 부풀어
     #     자가검증이 매번 불일치로 뜬다.
-    _DISCOUNT_WORDS = ('할인', '쿠폰', '세일', 'DISCOUNT', 'COUPON', 'SALE', 'SAVING', '즉시')
+    #   10/27 부산점 영수증: 쿠폰 줄이 `스니커즈 펀IRC / 1351 1x 5,000 5,000-T` 로 찍혀
+    #   (마이너스가 금액 '뒤', 이름 끝 IRC, 번호 4자리) 할인으로 안 걸러지고 없는 상품
+    #   '스니커즈 펀IRC'가 생겼다. 쿠폰코드는 4자리(1351·5234)라 4자리 이하 번호도 할인으로 본다.
+    #   걸러낸 할인은 **바로 위 품목**의 할인에 붙인다 — 영수증 전체 할인으로만 두면
+    #   그 품목이 정가로 청구된다.
+    _DISCOUNT_WORDS = ('할인', '쿠폰', '세일', 'DISCOUNT', 'COUPON', 'SALE', 'SAVING', '즉시',
+                       'IRC', 'CPN')
     _items = []
     _extra_discount = 0
     for _it in (_d.get("items") or []):
@@ -1052,10 +1069,16 @@ def _parse_receipt_json(txt):
         _up = _num(_it.get("unit_price"))
         _amt = _num(_it.get("amount")) or _q * _up
         _upper = _name.upper()
+        _pno = "".join(ch for ch in str(_it.get("product_no", "") or "") if ch.isdigit())
         _is_disc = (any(_w in _name or _w in _upper for _w in _DISCOUNT_WORDS)
-                    or _amt < 0 or _up < 0)
+                    or _amt < 0 or _up < 0 or (_pno and len(_pno) <= 4))
         if _is_disc:
-            _extra_discount += abs(_amt) or abs(_up) * max(1, _q)
+            _dv = abs(_amt) or abs(_up) * max(1, _q)
+            # AI가 위 품목 discount에도 넣고 할인 줄도 따로 낸 경우는 두 번 빼지 않는다
+            if _items and _items[-1]["할인"] != _dv:
+                _items[-1]["할인"] += _dv
+            elif not _items:
+                _extra_discount += _dv
             continue
         _items.append({
             "상품번호": "".join(ch for ch in str(_it.get("product_no", "") or "") if ch.isdigit()),
