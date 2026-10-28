@@ -87,6 +87,7 @@ export const rsettle = {
   receiptSave: (d: string, rows: ReceiptRow[]) =>
     call<{ count: number; new: number; updated: number; removed: number; priced: number; price_skip: number; filled: number; fill_date: string; dates: string[] }>(
       'POST', `${B}/day/${d}/receipt/save`, { rows }),
+  receiptDelete: (d: string) => call<{ deleted: number }>('POST', `${B}/day/${d}/receipt/delete`, {}),
 };
 
 // ── 발송 파일 ──

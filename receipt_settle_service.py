@@ -934,6 +934,20 @@ def save_receipt(d, rows, by=''):
             'dates': sorted({x['receipt_date'] for x in items})}
 
 
+def delete_receipt(d, by=''):
+    """그 날짜에 저장된 영수증을 지운다 — 잘못 저장한 것(두 번 읽어 수량이 두 배 등)을
+    처음부터 다시 올리기 위해. Streamlit 영수증 정산의 날짜별 삭제와 같은 범위다.
+    가격DB에 들어간 매장가는 그대로 둔다(다시 저장하면 그 값으로 갱신된다).
+    반환: {'deleted': 지운 줄 수}"""
+    from db import delete_receipt_items_by_date
+    n = int(delete_receipt_items_by_date('', str(d)) or 0)
+    w = load_work(d)
+    if w and n:
+        w['_receipt_changed'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        save_work(d, w, by)
+    return {'deleted': n}
+
+
 # ── 정산 요청 ─────────────────────────────────────────────────
 def finalize(d, by='', replace=False):
     d = str(d)

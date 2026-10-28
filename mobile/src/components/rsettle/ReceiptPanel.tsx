@@ -58,8 +58,29 @@ export default function ReceiptPanel({ day, count, onSaved, onErr }: {
   const reads = useRef<Read[]>([]);
   // 저장된 영수증에 이미 다 있는 품목을 또 읽어 더했을 때 — 되돌릴 수 있게 그 판독을 들고 있는다
   const [overlap, setOverlap] = useState<ReceiptRow[] | null>(null);
+  const [askDel, setAskDel] = useState(false);
 
-  useEffect(() => { setRows(null); setUnsaved(false); setChk(null); setAsk(false); setFails([]); setLines([]); setOpen(count === 0); reads.current = []; setOverlap(null); }, [day, count]);
+  useEffect(() => { setRows(null); setUnsaved(false); setChk(null); setAsk(false); setFails([]); setLines([]); setOpen(count === 0); reads.current = []; setOverlap(null); setAskDel(false); }, [day, count]);
+
+  // 🧹 표만 비운다(DB는 그대로) — 판독을 처음부터 다시 할 때
+  const clearTable = () => {
+    setRows(null); setUnsaved(false); setChk(null); setAsk(false); setFails([]); setLines([]);
+    reads.current = []; setOverlap(null);
+    setNote({ ok: true, text: '🧹 표를 비웠습니다 — 저장된 영수증은 그대로입니다.' });
+  };
+
+  // 🗑 그 날짜에 저장된 영수증을 지운다 — 잘못 저장한 것을 처음부터 다시 올릴 때
+  const delSaved = async () => {
+    setAskDel(false); setBusy(true); setNote(null);
+    try {
+      const r = await rsettle.receiptDelete(day);
+      setRows(null); setUnsaved(false); setChk(null); setAsk(false); reads.current = []; setOverlap(null);
+      const t = `🗑 ${day} 저장된 영수증 ${r.deleted}줄을 지웠습니다 — 영수증을 다시 올려 저장한 뒤 다시 매칭하세요.`;
+      setNote({ ok: true, text: t });
+      onSaved(t);
+    } catch (e: any) { fail('영수증 삭제 실패: ' + (e.message || e)); }
+    finally { setBusy(false); }
+  };
   useEffect(() => { setNote(null); }, [day]);
   useEffect(() => { if (note) noteRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' }); }, [note]);
   const fail = (t: string) => { setNote({ ok: false, text: t }); onErr(t); };
@@ -170,7 +191,18 @@ export default function ReceiptPanel({ day, count, onSaved, onErr }: {
             </label>
             <button onClick={loadSaved} disabled={busy} className="px-3 py-2 rounded-lg border text-sm disabled:opacity-50">📂 저장된 영수증 불러오기</button>
             {rows && <button onClick={() => { setRows(rs => [...(rs || []), blank(day)]); setUnsaved(true); }} className="px-3 py-2 rounded-lg border text-sm">➕ 줄 추가</button>}
+            {rows && <button onClick={clearTable} disabled={busy} className="px-3 py-2 rounded-lg border text-sm disabled:opacity-50">🧹 표 비우기</button>}
+            {count > 0 && <button onClick={() => setAskDel(true)} disabled={busy || askDel} className="px-3 py-2 rounded-lg border border-red-300 text-red-700 text-sm disabled:opacity-50">🗑 저장된 영수증 삭제</button>}
           </div>
+          {askDel && (
+            <div className="p-2 rounded border-2 border-red-400 bg-red-50 text-xs space-y-2">
+              <div><b>{day}</b>에 저장된 영수증 <b>{count}품목</b>을 모두 지웁니다. 되돌릴 수 없습니다.<br />
+                지운 뒤 영수증을 다시 올려 저장하고 다시 매칭해야 정산에 반영됩니다. (가격DB 매장가는 그대로 둡니다)</div>
+              <div className="flex gap-2">
+                <button onClick={() => setAskDel(false)} disabled={busy} className="flex-1 py-2 rounded-lg border bg-white text-sm">취소</button>
+                <button onClick={delSaved} disabled={busy} className="flex-1 py-2 rounded-lg bg-red-600 text-white font-bold text-sm disabled:opacity-40">🗑 지웁니다</button>
+              </div>
+            </div>)}
           <div className="text-[11px] text-gray-500">읽은 값은 표에만 채워지고 <b>💾 저장 전에는 DB에 들어가지 않습니다.</b> 하루 영수증이 여러 장이면 <b>한 번에 같이</b> 올리세요 — 저장은 그 날짜를 통째로 교체합니다.</div>
           {busy && !!lines.length && <div className="text-xs text-gray-600">⏳ {lines[lines.length - 1]}</div>}
           {fails.map((f, i) => <div key={i} className="text-xs text-orange-700">⚠️ {f.file} — {f.error}. 표에 직접 넣을 수 있습니다.</div>)}

@@ -282,6 +282,12 @@ def receipt_save(d: str, req: ReceiptReq, admin: dict = Depends(require_admin)):
         raise HTTPException(status_code=400, detail=str(e))
 
 
+@router.post("/day/{d}/receipt/delete")
+def receipt_delete(d: str, admin: dict = Depends(require_admin)):
+    """그 날짜 저장된 영수증 삭제 — 다시 올려 저장하고 다시 매칭해야 한다."""
+    return svc.delete_receipt(_d(d), by=admin['username'])
+
+
 @router.get("/day/{d}")
 def day(d: str, admin: dict = Depends(require_admin)):
     return svc.view(_d(d))
