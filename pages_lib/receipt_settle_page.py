@@ -775,6 +775,7 @@ def _render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         # 이제 표에만 채우고, 저장은 사람이 확인한 뒤에만 한다.
         st.session_state['_rs_unsaved'] = True
         st.session_state['_rs_fkey'] = _fkey
+        st.session_state.pop('_rs_rsigs', None)
         st.session_state.pop('_rs_pseen', None)   # 표가 PDF 것으로 바뀌었다 — 사진은 다시 읽어 합친다
         st.session_state['_rs_fails'] = fails
         st.session_state.pop('rs_alloc', None)   # 새 업로드 → 이전 미리보기 초기화
@@ -821,6 +822,7 @@ def _render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                           "직접 고친 값은 사라집니다."):
             st.session_state['rs_receipt_items'] = list(st.session_state.get('_rs_photo_base') or [])
             st.session_state.pop('_rs_pseen', None)
+            st.session_state.pop('_rs_rsigs', None)
             st.session_state.pop('rs_alloc', None)
             st.session_state['_rs_fails'] = [x for x in (st.session_state.get('_rs_fails') or [])
                                               if x[0] not in {f.name for f in _ph_all}]
@@ -837,6 +839,7 @@ def _render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                        "Gemini 또는 Claude 키를 등록하세요.")
         else:
             _pparsed, _pfails = [], []
+            _rsigs = set(tuple(x) for x in (st.session_state.get('_rs_rsigs') or []))
             _pbar = st.progress(0.0, text="영수증 사진 판독 중...")
             for _pi, _pf in enumerate(_ph, 1):
                 _pbar.progress(_pi / len(_ph), text=f"영수증 사진 판독 중... ({_pi}/{len(_ph)})")
@@ -847,6 +850,15 @@ def _render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     _ak, _img[0], _img[1], gemini_key=_gk)
                 if _perr or not _data:
                     _pfails.append((_pf.name, _perr or '판독 실패')); continue
+                # 같은 영수증을 여러 장 찍어 올리면(흔들려서 다시 찍기 등) 수량이 장수만큼
+                # 더해졌다 — 구매일시·결제금액이 같은 영수증은 한 번만 넣는다.
+                _rsig = _rs.receipt_signature(_data)
+                if _rsig and _rsig in _rsigs:
+                    st.info(f"🔁 {_pf.name} — 앞 사진과 같은 영수증({_rsig[0]} {_rsig[1]} · "
+                            f"{fmt(_rsig[2])}원)이라 건너뜁니다. 수량을 더하지 않았습니다.")
+                    continue
+                if _rsig:
+                    _rsigs.add(_rsig)
                 _rdate = _data.get('purchase_date', '') or ''
                 for _it in (_data.get('items') or []):
                     if not str(_it.get('상품명', '') or '').strip():
@@ -899,6 +911,7 @@ def _render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 st.success(f"📱 사진 {len(_ph)}장에서 {len(_merged_p)}품목 인식")
             st.session_state['_rs_pkey'] = _pkey
             st.session_state['_rs_pseen'] = sorted(_pseen | {_pid(f) for f in _ph})
+            st.session_state['_rs_rsigs'] = sorted(_rsigs)
             st.session_state['_rs_fails'] = (st.session_state.get('_rs_fails') or []) + _pfails
     _photo_reparse_btn()
 

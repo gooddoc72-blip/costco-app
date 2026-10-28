@@ -1710,6 +1710,22 @@ def persist_receipt(username, items):
     return _saved, _updated, _removed, _pn, {'rows': _detail, 'skip': _skip, 'error': _err}
 
 
+def receipt_signature(data):
+    """사진 판독 결과로 '같은 영수증'을 알아보는 키 — (구매일, 구매시각, 결제금액).
+
+    같은 영수증을 여러 장 찍어 올리면 품목 수량이 장수만큼 더해졌다(10/28).
+    날짜나 결제금액을 못 읽었으면 None — 확신이 없으면 합치지 않는다(지금처럼 더한다).
+    """
+    _d = str((data or {}).get('purchase_date') or '').strip()
+    try:
+        _t = int((data or {}).get('total_amount') or 0)
+    except (TypeError, ValueError):
+        _t = 0
+    if not _d or _t <= 0:
+        return None
+    return (_d, str((data or {}).get('purchase_time') or '').strip()[:5], _t)
+
+
 def parse_receipt_uploads(pdfs, photos, settings):
     """PDF·사진 → 영수증 줄 목록. 반환: (items, fails)
 
@@ -1757,6 +1773,7 @@ def parse_receipt_uploads(pdfs, photos, settings):
     if photos and not (_ak or _gk):
         fails.append(('사진', 'AI 키가 없어 사진 판독을 할 수 없습니다 — 관리자에게 문의하세요'))
     elif photos:
+        _sigs = set()
         for _pf in photos:
             _img, _ierr = _image_for_ai(_pf)
             if _ierr:
@@ -1766,6 +1783,13 @@ def parse_receipt_uploads(pdfs, photos, settings):
             if _de or not _d:
                 fails.append((_pf.name, _de or '판독 실패'))
                 continue
+            _sig = receipt_signature(_d)
+            if _sig and _sig in _sigs:
+                fails.append((_pf.name, f"앞 사진과 같은 영수증({_sig[0]} {_sig[1]} · {_sig[2]:,}원)이라 "
+                                        "건너뜀 — 수량을 더하지 않았습니다"))
+                continue
+            if _sig:
+                _sigs.add(_sig)
             _from_ai(_d)
             if not _d.get('_verified', True):
                 fails.append((_pf.name, "금액·수량 자가검증 불일치 — 표에서 값을 확인하세요"))
