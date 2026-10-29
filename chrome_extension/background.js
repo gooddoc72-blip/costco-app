@@ -350,7 +350,9 @@ export async function measure(keyword, targets, maxPage, log) {
       return {
         tracking_id: t.tracking_id, label: t.label,
         rank: hit.rank != null ? hit.rank : (page - 1) * 40 + idx + 1,
-        page, isAd: hit.isAd, mallName: hit.mallName, title: hit.title, how
+        page, isAd: hit.isAd, mallName: hit.mallName, title: hit.title, how,
+        // 화면에서 몇 번째인지(광고 뺀 자리) — 네이버가 준 rank 값과 화면 순서가 다른지 보려고
+        pos: (page - 1) * 40 + r.products.slice(0, idx + 1).filter(x => !x.isAd).length
       };
     };
     for (let i = pending.length - 1; i >= 0; i--) {
@@ -427,7 +429,7 @@ export async function runAll(maxPage, log) {
     }
     for (const f of res.found) {
       // 무엇을 찾아 순위로 삼았는지 남긴다 — 네이버 화면과 비교할 수 있게
-      log(`   ✅ ${trim(f.label)} — ${f.rank}위 (${f.how}로 찾음 · ${f.mallName || "판매처 없음"} · ${trim(f.title)})`);
+      log(`   ✅ ${trim(f.label)} — ${f.rank}위 (${f.how}로 찾음 · ${f.page}페이지 화면 ${f.pos}번째 · ${f.mallName || "판매처 없음"} · ${trim(f.title)})`);
       rows.push(row(kw, f.label, f.tracking_id, f.rank, f.page));
     }
     // 순위가 없는 행의 page 에는 '몇 페이지까지 봤는가'를 담는다. 코코비즈는 이걸로
