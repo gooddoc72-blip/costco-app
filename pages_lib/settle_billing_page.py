@@ -272,22 +272,31 @@ def _period_range(label):
 
 
 # ── 👤 사용자별 정산·청구 ─────────────────────────────────────
-def _tab_user(USERNAME, dmap):
+def _tab_user(USERNAME, dmap, fixed_user=None):
     """한 판매자의 청구서를 기간으로 모아 본다 + 미입금 날짜를 한꺼번에 입금완료.
 
     청구하기·예치금 차감은 날짜별 화면에서만 한다 — 그날 전원을 두고 판단하는
     일이라 한 사람 화면에서 누르면 같은 날 다른 사람과 기준이 갈린다. 입금은
     사람이 보내는 돈이라 사람 단위로 체크하는 게 맞다.
+
+    fixed_user: 사용자 본인 화면(내 구매내역 정산)에서 부를 때. 관리자와 **같은
+    화면**을 보여 주되 판매자 고르기와 고치는 버튼(품목 삭제·입금완료 취소·입금
+    확인)은 뺀다 — 화면을 따로 만들면 둘이 다시 어긋난다.
     """
-    _users = sorted((u['username'] for u in get_all_users() if not u.get('is_admin')),
-                    key=lambda u: dmap.get(u, u))
-    if not _users:
-        st.info("판매자가 없습니다.")
-        return
-    c1, c2, c3 = st.columns([2, 1.3, 1.3])
-    _u = c1.selectbox("판매자 (이름을 입력해 찾기)", _users,
-                      format_func=lambda u: f"{dmap.get(u, u)} ({u})"
-                      if dmap.get(u, u) != u else u, key="sbu_user")
+    _ro = bool(fixed_user)
+    if _ro:
+        c2, c3 = st.columns(2)
+        _u = str(fixed_user)
+    else:
+        _users = sorted((u['username'] for u in get_all_users() if not u.get('is_admin')),
+                        key=lambda u: dmap.get(u, u))
+        if not _users:
+            st.info("판매자가 없습니다.")
+            return
+        c1, c2, c3 = st.columns([2, 1.3, 1.3])
+        _u = c1.selectbox("판매자 (이름을 입력해 찾기)", _users,
+                          format_func=lambda u: f"{dmap.get(u, u)} ({u})"
+                          if dmap.get(u, u) != u else u, key="sbu_user")
     _pl = c2.selectbox("기간", _PERIODS, index=1, key="sbu_period")
     _stl = c3.selectbox("상태", list(_STATUS_OPTS), key="sbu_status")
     _rng = _period_range(_pl)
@@ -342,7 +351,9 @@ def _tab_user(USERNAME, dmap):
               delta_color="inverse" if _unpaid else "off")
     m4.metric("예치금 잔액", f"{fmt(_bal)}원")
     if _draft_amt:
-        st.caption(f"⚪ 아직 청구 전 {fmt(_draft_amt)}원 — 청구는 **📅 날짜별**에서 합니다.")
+        st.caption(f"⚪ 아직 청구 전 {fmt(_draft_amt)}원 — "
+                   + ("관리자가 청구하면 '청구됨'으로 바뀝니다." if _ro
+                      else "청구는 **📅 날짜별**에서 합니다."))
 
     st.markdown(f"##### 📋 {_name} 청구 내역")
     _rows = [{
@@ -377,7 +388,7 @@ def _tab_user(USERNAME, dmap):
             _box.caption(_meta)
         _render_items_detail(_sd, [i], dmap,
                              ded={_u: _ded[_sd]} if _ded.get(_sd) else {},
-                             by=USERNAME, box=_box)
+                             by=USERNAME, box=_box, readonly=_ro)
         with _box:
             # 청구금액 − 예치금 차감 = 남은 청구 · 예치금 잔액
             _amt = int(i['total_amount'] or 0)
@@ -440,6 +451,8 @@ def _tab_user(USERNAME, dmap):
         st.caption(f"엑셀 생성 실패: {_e}")
 
     # ── 💰 입금 확인 — 이 사람의 미입금 날짜를 한꺼번에 ──
+    if _ro:
+        return
     st.divider()
     st.subheader("💰 입금 확인")
     if not _billed:
@@ -635,7 +648,7 @@ def _amt_of(invs, username):
     return 0
 
 
-def _render_items_detail(ds, invs, dmap, ded=None, by='', box=None):
+def _render_items_detail(ds, invs, dmap, ded=None, by='', box=None, readonly=False):
     """청구 근거 — 어느 주문의 어느 품목이 얼마인지. 청구액만으로는 설명이 안 된다.
 
     오매칭 품목을 여기서 뺄 수 있다. 지운 주문은 '이미 정산된 주문' 목록에서
@@ -699,7 +712,14 @@ def _render_items_detail(ds, invs, dmap, ded=None, by='', box=None):
         _dis = ['근거', '상품명', '코스트코번호', '수량', '정가', '할인(팩당)',
                 '팩단가', '금액', '주문번호', '_id']
 
-        if _paid:
+        if readonly:
+            # 사용자 본인 화면 — 같은 표를 보여 주되 고치는 버튼은 없다
+            st.dataframe(pd.DataFrame([{k: v for k, v in r.items()
+                                        if k not in ('삭제', '_id')} for r in _rows]),
+                         use_container_width=True, hide_index=True,
+                         column_config={k: v for k, v in _cfg.items()
+                                        if k not in ('삭제', '_id')})
+        elif _paid:
             # 입금완료 건은 금액이 잠긴다 — 받은 돈과 청구액이 달라지면 무엇을
             # 받은 것인지 설명할 수 없다. 되돌리려면 '입금완료 취소'가 먼저다.
             #
