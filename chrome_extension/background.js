@@ -35,13 +35,20 @@ export async function setConfig(patch) {
 //
 // 확장프로그램에서 보내는 요청은 출처가 chrome-extension:// 이라, 코코비즈
 // 로그인 쿠키가 SameSite 제한에 걸려 안 실린다(실측: 401). 그래서 sid 를
-// 직접 찾아 Authorization 헤더로 보낸다. 찾는 순서는 손이 덜 가는 쪽부터:
-//   ① 설정에 저장해 둔 값
-//   ② 브라우저의 cocobiz.shop 쿠키
+// 직접 찾아 Authorization 헤더로 보낸다. 찾는 순서:
+//   ① 측정 버튼을 누른 화면 주소의 sid
+//   ② 가장 최근에 본 코코비즈 화면의 sid(설정에 저장)
 //   ③ 열려 있는 코코비즈 탭 주소의 ?sid=
+//   ④ 브라우저의 cocobiz.shop 쿠키
 async function sidCandidates(cfg) {
   const out = [];
   const add = v => { v = (v || "").trim(); if (v && out.indexOf(v) < 0) out.push(v); };
+
+  // 지금 측정 버튼을 누른 화면의 sid, 그다음 가장 최근에 본 코코비즈 화면의 sid.
+  // 탭 순서대로 고르면 관리자로 열어둔 다른 탭(/m 영수증 정산 등)의 sid 가 먼저
+  // 잡혀, 순위가 그 계정에 저장되고 보고 있는 계정의 표는 비어 있었다(10/28 실측).
+  add(_pageSid);
+  add(cfg.sid);
 
   // 열려 있는 코코비즈 탭들의 주소에 박힌 sid.
   // 탭이 여러 개면 예전 계정으로 열어둔 탭이 섞여 있을 수 있으므로 전부 모은다.
@@ -58,8 +65,6 @@ async function sidCandidates(cfg) {
     const c = await chrome.cookies.get({ url: cfg.base, name: "sid" });
     if (c) add(c.value);
   } catch (e) {}
-
-  add(cfg.sid);
   return out;
 }
 
@@ -68,6 +73,7 @@ async function sidCandidates(cfg) {
 // 주소만 보고 고르면 예전 계정 sid 를 집어 401 이 난다(실측: admin 으로 열어둔
 // 탭이 남아 있어 costbusan 로그인인데도 계속 만료로 나왔다).
 let _goodSid = null;
+let _pageSid = "";
 async function resolveSid(cfg, force) {
   if (_goodSid && !force) return _goodSid;
   const base = cfg.base.replace(/\/$/, "");
@@ -441,7 +447,7 @@ export async function runAll(maxPage, log) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ rows, source: "chrome_extension" })
   });
-  log(`저장 완료 — ${saved.saved || 0}건`);
+  log(`저장 완료 — ${saved.saved || 0}건` + (lastUser() ? ` (계정: ${lastUser()})` : ""));
   log("코코비즈 화면을 새로고침하면 표에 반영됩니다.");
   return saved;
 }
@@ -518,7 +524,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
   if (msg && msg.type === "setSid") {
-    setConfig({ sid: (msg.sid || "").trim() })
+    const sid = (msg.sid || "").trim();
+    // 다른 계정 화면을 열었으면 기억해 둔 sid 를 버리고 다시 고른다
+    if (sid && sid !== _goodSid) _goodSid = null;
+    setConfig({ sid })
       .then(() => sendResponse({ ok: true }))
       .catch(e => sendResponse({ ok: false, error: e.message }));
     return true;
@@ -550,6 +559,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     STATE.stopRequested = false;
     STATE.lines = [];
     STATE.startedAt = Date.now();
+    // 버튼을 누른 화면의 계정으로 잰다 — 기억해 둔 sid 가 다른 계정일 수 있다
+    _pageSid = (msg.sid || "").trim();
+    _goodSid = null;
     // 측정은 몇 분씩 걸린다. 응답 채널을 그동안 열어두면 팝업을 닫거나
     // 서비스 워커가 잠들 때 채널이 끊겨 "실행 오류"로 보인다(실측).
     // 그래서 시작만 알리고 바로 응답한다. 진행 상황은 log 메시지와

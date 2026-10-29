@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "코코비즈 순위추적",
-  "version": "0.20.1",
+  "version": "0.20.2",
   "description": "코코비즈에 등록한 상품의 네이버쇼핑 순위를 내 브라우저에서 측정해 코코비즈로 보냅니다.",
   "permissions": [
     "tabs",

@@ -145,6 +145,12 @@ function write(log, line) {
 // 코코비즈는 로그인을 주소의 ?sid= 로 유지한다(쿠키가 아니다).
 // 그래서 같은 출처에서 부르더라도 sid 를 직접 실어야 한다.
 let _sid = null;
+// 이 화면 주소에 박힌 sid 만 — 없으면 "" (확장이 기억한 다른 계정 sid 를 섞지 않는다)
+function pageSid() {
+  const m = /[?&]sid=([^&#]+)/.exec(location.search) ||
+            /[?&]sid=([^&#]+)/.exec(document.referrer || "");
+  return m ? decodeURIComponent(m[1]) : "";
+}
 async function getSid() {
   if (_sid !== null) return _sid;
   const m = /[?&]sid=([^&#]+)/.exec(location.search) ||
@@ -188,7 +194,7 @@ async function run(btn, log) {
   log.textContent = `등록된 키워드를 ${maxPage}페이지(${maxPage * 40}위)까지 측정합니다.`;
   write(log, "다른 메뉴로 이동해도 계속 진행됩니다.");
   try {
-    const res = await chrome.runtime.sendMessage({ type: "runAll", maxPage });
+    const res = await chrome.runtime.sendMessage({ type: "runAll", maxPage, sid: pageSid() });
     if (res && !res.ok) { write(log, "실패: " + res.error); setRunning(false); }
   } catch (e) {
     write(log, "실행 오류: " + e.message);
