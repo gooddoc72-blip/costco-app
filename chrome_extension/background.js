@@ -341,18 +341,35 @@ export async function measure(keyword, targets, maxPage, log) {
     prevIds = ids;
     checkedTo = page;
 
-    for (let i = pending.length - 1; i >= 0; i--) {
-      const t = pending[i];
-      const idx = r.products.findIndex(p => matches(t, p));
-      if (idx < 0) continue;
+    // 상품번호가 맞는 줄을 판매처 이름이 맞는 줄보다 먼저 본다.
+    // 둘 중 아무거나 먼저 나온 것을 쓰면, 같은 판매처의 다른 상품(다른 빼빼로 세트 등)
+    // 순위가 이 상품 순위로 기록돼 날마다 11위↔152위처럼 튀었다(10/29).
+    // 판매처 이름으로만 찾은 것은 끝까지 번호를 못 찾았을 때만 쓴다.
+    const hitOf = (t, idx, how) => {
       const hit = r.products[idx];
-      found.push({
+      return {
         tracking_id: t.tracking_id, label: t.label,
         rank: hit.rank != null ? hit.rank : (page - 1) * 40 + idx + 1,
-        page, isAd: hit.isAd, mallName: hit.mallName
-      });
-      pending.splice(i, 1);
+        page, isAd: hit.isAd, mallName: hit.mallName, title: hit.title, how
+      };
+    };
+    for (let i = pending.length - 1; i >= 0; i--) {
+      const t = pending[i];
+      const idx = t.no ? r.products.findIndex(p => matches({ no: t.no }, p)) : -1;
+      if (idx >= 0) {
+        found.push(hitOf(t, idx, "번호"));
+        pending.splice(i, 1);
+        continue;
+      }
+      if (t.fallback || !t.store) continue;
+      const sidx = r.products.findIndex(p => matches({ store: t.store }, p));
+      if (sidx < 0) continue;
+      t.fallback = hitOf(t, sidx, "판매처");
+      if (!t.no) { found.push(t.fallback); pending.splice(i, 1); }
     }
+  }
+  for (let i = pending.length - 1; i >= 0; i--) {
+    if (pending[i].fallback) { found.push(pending[i].fallback); pending.splice(i, 1); }
   }
   return {
     found,
@@ -409,7 +426,8 @@ export async function runAll(maxPage, log) {
       log(`   ⚠️ ${res.checkedTo}페이지에서 중단 — ${res.stop}`);
     }
     for (const f of res.found) {
-      log(`   ✅ ${trim(f.label)} — ${f.rank}위`);
+      // 무엇을 찾아 순위로 삼았는지 남긴다 — 네이버 화면과 비교할 수 있게
+      log(`   ✅ ${trim(f.label)} — ${f.rank}위 (${f.how}로 찾음 · ${f.mallName || "판매처 없음"} · ${trim(f.title)})`);
       rows.push(row(kw, f.label, f.tracking_id, f.rank, f.page));
     }
     // 순위가 없는 행의 page 에는 '몇 페이지까지 봤는가'를 담는다. 코코비즈는 이걸로
