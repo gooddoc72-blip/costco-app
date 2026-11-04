@@ -371,3 +371,7 @@ app.include_router(_pdb_router)
 # ── 수익계산 (새 화면 /m/profit 백엔드) ──
 from api.profit_calc import router as _pc_router  # noqa: E402
 app.include_router(_pc_router)
+
+# ── 일일 주문 수집 (새 화면 /m/orders/collect 백엔드) ──
+from api.orders_collect import router as _oc_router  # noqa: E402
+app.include_router(_oc_router)
