@@ -55,11 +55,64 @@ def settings_defaults(username):
     return ship, box
 
 
-def compute_dispatch_rows(username, date, use_saved=True):
+def _saved_val(v):
+    """저장값 — 저장된 적 없으면(None·NaN) None. int(NaN)은 ValueError라 0으로 떨어지면 안 된다."""
+    try:
+        if v is None or v != v:          # NaN은 자기 자신과 같지 않다
+            return None
+        return int(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def apply_actual_settlements(rows, act_map, cp_map):
+    """정산예정금액 → 실제 정산액(확정된 주문만). page.py 557-603과 같은 규칙.
+
+    네이버: settlement_matches의 actual. 쿠팡: 주문(orderId) 전체 정산액을 그 주문의 아이템
+    행들에 추정 정산액 비율로 나눈다 — 통째로 넣으면 다품목 주문이 2배로 잡힌다. 마지막 행이
+    나머지를 받아 합계가 정확히 맞는다. rows를 그대로 고치고 'actual' 표시를 단다.
+    """
+    for r in rows:
+        r.setdefault('actual', False)
+        av = (act_map or {}).get(str(r['order_no']))
+        if av and _int(av.get('actual')) > 0:
+            r['settlement_amount'] = _int(av['actual'])
+            r['actual'] = True
+    groups = {}
+    for r in rows:
+        if '-' in str(r['order_no']):
+            groups.setdefault(str(r['order_no']).split('-')[0], []).append(r)
+    for oid, grp in groups.items():
+        cv = (cp_map or {}).get(oid)
+        if not (cv and _int(cv.get('settlement')) > 0):
+            continue
+        total = _int(cv['settlement'])
+        if len(grp) == 1:
+            grp[0]['settlement_amount'], grp[0]['actual'] = total, True
+            continue
+        bases = [max(0, _int(r['settlement_amount'])) for r in grp]
+        bsum, alloc = sum(bases), 0
+        for j, r in enumerate(grp):
+            if j == len(grp) - 1:
+                val = total - alloc
+            elif bsum > 0:
+                val = int(round(total * bases[j] / bsum)); alloc += val
+            else:
+                val = int(round(total / len(grp))); alloc += val
+            r['settlement_amount'], r['actual'] = int(val), True
+    return rows
+
+
+def compute_dispatch_rows(username, date, use_saved=True, page_rules=False, overrides=None,
+                          links_out=None):
     """날짜별 정산표 행 — build_settlement_df + compute_rows(구입가·매칭) + compute_profit.
 
-    use_saved=True: 정산저장(ps) 소스면 저장된 구입가·택배·박스를 그대로 쓴다(화면·API).
+    use_saved=True: 정산저장(ps)된 주문은 저장된 구입가·택배·박스를 쓴다(화면·API).
+                    **저장 안 된 주문은 새로 계산한다** — 같은 날짜에 저장분이 섞여 있어도.
     use_saved=False: 저장값을 무시하고 지금 매칭·설정으로 새로 계산한다(자동 저장용).
+    page_rules=True: Streamlit 수익계산 화면과 똑같이 — 실정산 확정액, 포장 배정 박스비.
+    overrides: {order_no: {unit_cost, keyword, receipt_pno, receipt_name, receipt_unit,
+                delivery, box}} — 화면에서 고친 값(저장 전 미리보기·저장 공용).
     반환: (rows, src_label, kind, saved). rows는 dict 목록.
     """
     df, src_label, kind = build_settlement_df(username, date)
@@ -67,6 +120,10 @@ def compute_dispatch_rows(username, date, use_saved=True):
     if df is None or df.empty:
         return [], src_label, kind, saved
     _use = saved and use_saved
+    _ps = {}
+    if _use:
+        _ps = {str(r.get('order_no') or ''): r for r in (get_profit_settlements(username, date) or [])}
+    ov = {str(k): (v or {}) for k, v in (overrides or {}).items()}
 
     def_ship, def_box = settings_defaults(username)
     preload_user = get_all_products(username)
@@ -100,31 +157,67 @@ def compute_dispatch_rows(username, date, use_saved=True):
     unique_products = list(dict.fromkeys(str(r['상품명'] or '') for r in rows_in))
     receipt_by_pno, receipt_matches = build_receipt_maps(username, unique_products, match_fn)
     kw_overrides = build_kw_overrides(username, rows_in, date)
+    receipt_pick = {}
+    for r in rows_in:
+        o = ov.get(r['idx']) or {}
+        _kw = str(o.get('receipt_name') or o.get('keyword') or '').strip()
+        if _kw:                             # 화면에서 고른 키워드·영수증 품목 — compute의 복합키로
+            _rk = f"{r['수취인명']}_{r['상품명']}_{r['idx']}_{date}"
+            kw_overrides[_rk] = _kw
+            if o.get('receipt_pno'):
+                receipt_pick[_rk] = str(o['receipt_pno'])
     surcharge_map = load_surcharge_map(username, [r['idx'] for r in rows_in])
     settled_map = load_settled_cost_map(username, [r['idx'] for r in rows_in])
     results, _links = compute_rows(
         rows_in, match_fn=match_fn,
         receipt_by_pno=receipt_by_pno, receipt_matches=receipt_matches,
-        kw_overrides=kw_overrides, surcharge_map=surcharge_map, calc_date_str=date,
-        settled_map=settled_map)
+        kw_overrides=kw_overrides, receipt_pick=receipt_pick,
+        surcharge_map=surcharge_map, calc_date_str=date, settled_map=settled_map)
+
+    pkg_map = {}
+    if page_rules:
+        try:
+            from db_packaging import get_packaging_cost_map
+            pkg_map = get_packaging_cost_map(username, [str(r.get('_sk', '')) for r in records]) or {}
+        except Exception:
+            pkg_map = {}
 
     out = []
     for rec, res in zip(records, results):
         settlement = _int(rec.get('정산예정금액', 0))
         shipping = _int(rec.get('배송비 합계', 0))
+        ono = str(rec.get('_sk', ''))
+        o = ov.get(ono) or {}
+        sv = _ps.get(ono)
+        qty = max(1, _int(rec.get('수량', 1), 1))
         _src = str(res.get('source', ''))
-        if _use and has_cost and _src != SETTLED_SOURCE:
+        _sv_cost = _int((sv or {}).get('cost_price')) if sv else 0
+        if o.get('receipt_unit') is not None and (o.get('receipt_name') or o.get('receipt_pno')):
+            cost, _src = _int(o['receipt_unit']) * qty, '영수증(선택)'
+        elif o.get('unit_cost') is not None:
+            cost = _int(o['unit_cost']) * qty
+            if cost > 0:
+                _src = '수동입력'
+        elif _use and sv and _sv_cost > 0 and _src != SETTLED_SOURCE \
+                and not str(o.get('keyword') or '').strip():
+            # (화면에서 매칭 상품을 바꾼 행은 저장값 대신 바꾼 상품으로 다시 계산한다)
             # 저장값 — 단 영수증 정산 청구가 확정된 주문은 청구액(빌린 금액 포함)이 저장값보다 우선이다
-            cost = _int(rec.get('구입가격', 0))
+            cost = _sv_cost
         else:
             # 타인재고 웃돈(+원가) 가산 — page.py 후처리(costs += surcharge)와 동일
             # 정산청구 행은 청구액에 이미 빌린 금액(웃돈 포함)이 들어 있다 — 다시 더하지 않는다
-            _sur = 0 if _src == SETTLED_SOURCE else _int(surcharge_map.get(str(rec.get('_sk', '')), 0))
+            _sur = 0 if _src == SETTLED_SOURCE else _int(surcharge_map.get(ono, 0))
             cost = _int(res.get('cost', 0)) + _sur
             if _sur and '타인재고' not in _src:
                 _src = f"{_src}+타인재고"
-        deliv = _int(rec.get('택배원가', def_ship)) if (_use and has_deliv) else def_ship
-        box = _int(rec.get('박스원가', def_box)) if (_use and has_box) else def_box
+        _sv_d = _saved_val((sv or {}).get('delivery_cost')) if _use else None
+        _sv_b = _saved_val((sv or {}).get('box_cost')) if _use else None
+        # 행별 택배·박스 우선순위(page.py 622-632): 화면 수정 → 저장값 → (박스: 포장 배정) → 설정
+        deliv = (_int(o['delivery']) if o.get('delivery') is not None
+                 else _sv_d if _sv_d is not None else def_ship)
+        box = (_int(o['box']) if o.get('box') is not None
+               else _sv_b if _sv_b is not None else _int(pkg_map.get(ono, def_box), def_box))
+        _kw = str(o.get('receipt_name') or o.get('keyword') or '').strip()
         out.append({
             'order_no': str(rec.get('_sk', '')),
             'recipient': str(rec.get('수취인명', '') or ''),
@@ -145,7 +238,23 @@ def compute_dispatch_rows(username, date, use_saved=True):
             'matched_name': str(res.get('matched_name', '')),
             'matched_pno': str(res.get('matched_pno', '')),
             'split_qty': _int(res.get('sqty', 1), 1),
+            'saved': bool(sv),
+            'keyword': _kw,
+            'edited': bool(o),
         })
+    if page_rules:
+        try:
+            from db import get_actual_settlements_map, get_coupang_settled_map
+            apply_actual_settlements(out, get_actual_settlements_map(username),
+                                     get_coupang_settled_map(username))
+        except Exception:
+            pass
+        for r in out:
+            r['profit'] = compute_profit(r['settlement_amount'], r['shipping_fee'], r['cost_price'],
+                                         r['delivery_cost'], r['box_cost'])
+    # 자동링크(영수증 이름매칭으로 알게 된 코스트코번호)는 저장할 때 반영한다 — 호출자가 받아 간다
+    if links_out is not None:
+        links_out.extend(_links)
     return out, src_label, kind, saved
 
 

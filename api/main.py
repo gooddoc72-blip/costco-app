@@ -367,3 +367,7 @@ app.include_router(_stock_router)
 # ── 제품 DB (새 화면 /m/products 백엔드) ──
 from api.pdb import router as _pdb_router  # noqa: E402
 app.include_router(_pdb_router)
+
+# ── 수익계산 (새 화면 /m/profit 백엔드) ──
+from api.profit_calc import router as _pc_router  # noqa: E402
+app.include_router(_pc_router)

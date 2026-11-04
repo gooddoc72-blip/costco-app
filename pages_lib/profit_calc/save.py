@@ -21,29 +21,29 @@ def saved_elsewhere(USERNAME, calc_date_str, order_nos):
     return _out
 
 
-def _save_ps(USERNAME, calc_date_str, rows):
-    """정산저장 — 다른 날짜에 이미 저장된 주문은 기본으로 건너뛴다.
+def save_ps_rows(USERNAME, calc_date_str, rows, move_dup=False):
+    """정산저장 — 다른 날짜에 이미 저장된 주문은 기본으로 건너뛴다. 반환: (저장 수, 안내 문구).
 
     휴일(10/9 한글날) 주문을 그날 날짜로 저장하고 발송일(10/12)에 또 저장해
     한 주문이 두 날짜에 들어갔다. 달력은 휴일 수익을 숨겨 티가 안 났지만 월
-    합계·대시보드는 두 번 셌다. 화면의 '이 날짜로 옮기기'를 켠 경우에만
+    합계·대시보드는 두 번 셌다. move_dup('이 날짜로 옮기기')을 켠 경우에만
     다른 날짜 행을 지우고 이 날짜로 저장한다(실제 발송일로 옮길 때).
+    세션을 모른다 — Streamlit 화면과 API(/m 수익계산)가 같이 쓴다.
     """
     from db_profit_calc import get_settlements_by_order_nos, delete_profit_rows
+    note = ''
     _nos = {str(r.get('order_no') or '') for r in rows}
     _other = [r for r in get_settlements_by_order_nos(USERNAME, list(_nos))
               if r['settlement_date'] != calc_date_str]
-    if _other and st.session_state.get('profit_move_dup'):
+    if _other and move_dup:
         delete_profit_rows(USERNAME, [r['id'] for r in _other])
-        st.session_state['_profit_dup_note'] = (
-            f"🔁 다른 날짜에 있던 {len(_other)}건을 {calc_date_str}로 옮겼습니다.")
+        note = f"🔁 다른 날짜에 있던 {len(_other)}건을 {calc_date_str}로 옮겼습니다."
         _other = []
     _skip = {str(r['order_no']): r['settlement_date'] for r in _other}
     if _skip:
-        st.session_state['_profit_dup_note'] = (
-            f"⏭ 다른 날짜에 이미 저장된 {len(_skip)}건은 건너뛰었습니다 — "
-            + ", ".join(f"{d}" for d in sorted(set(_skip.values())))
-            + ". 이 날짜로 옮기려면 '이 날짜로 옮기기'를 켜고 다시 저장하세요.")
+        note = (f"⏭ 다른 날짜에 이미 저장된 {len(_skip)}건은 건너뛰었습니다 — "
+                + ", ".join(f"{d}" for d in sorted(set(_skip.values())))
+                + ". 이 날짜로 옮기려면 '이 날짜로 옮기기'를 켜고 다시 저장하세요.")
     _n = save_profit_settlements(
         USERNAME, calc_date_str,
         [r for r in rows if str(r.get('order_no') or '') not in _skip])
@@ -52,12 +52,54 @@ def _save_ps(USERNAME, calc_date_str, rows):
         from pages_lib.profit_calc.dispatch_profit import clean_stale_auto
         _rm = clean_stale_auto(USERNAME, calc_date_str)
         if _rm:
-            st.session_state['_profit_dup_note'] = (
-                (st.session_state.get('_profit_dup_note') or '')
-                + f"  🧹 그날 발송되지 않은 예전 자동 저장 {_rm}건(취소·다른 날 발송)을 정리했습니다.")
+            note = (note + f"  🧹 그날 발송되지 않은 예전 자동 저장 {_rm}건"
+                           "(취소·다른 날 발송)을 정리했습니다.").strip()
     except Exception:
         pass
+    return _n, note
+
+
+def _save_ps(USERNAME, calc_date_str, rows):
+    """Streamlit 화면용 — 옮기기 체크와 안내 문구를 세션으로 주고받는다."""
+    _n, _note = save_ps_rows(USERNAME, calc_date_str, rows,
+                             move_dup=bool(st.session_state.get('profit_move_dup')))
+    if _note:
+        st.session_state['_profit_dup_note'] = _note
     return _n
+
+
+def upsert_row_prices(USERNAME, rows, user_products):
+    """화면에서 구입가를 고친 행 → 제품가격 DB 단가. save_price_db의 행별 규칙 그대로.
+
+    rows: [{product_name, product_no(주문 채널번호), matched_pno, matched_name, qty, cost_price}]
+    단가 = 구입가 × 소분수 ÷ (수량 × 상품명 묶음수). 레코드는 주문 채널번호로 먼저 찾는다
+    (코스트코번호로 찾으면 같은 번호의 다른 판매 상품 단가까지 바뀐다). 반환: 반영 수.
+    """
+    from utils import extract_sell_factor as _sf_from_name
+    n = 0
+    for r in rows:
+        _pno = str(r.get('matched_pno') or '').strip()
+        _kw = str(r.get('matched_name') or '').strip()
+        _cost = int(r.get('cost_price') or 0)
+        if _cost <= 0 or not (_pno or _kw):
+            continue
+        _ch = str(r.get('product_no') or '').strip()
+        _up = next((p for p in (user_products or [])
+                    if _ch and str(p.get('naver_channel_pno', '') or '') == _ch), None)
+        if not _up:
+            _up = next((p for p in (user_products or [])
+                        if (p.get('product_no') and p.get('product_no') == _pno)
+                        or p.get('match_keyword') == _kw), None)
+        _sq = max(1, int((_up or {}).get('split_qty') or 1))
+        _denom = max(1, max(1, int(r.get('qty') or 1)) * _sf_from_name(str(r.get('product_name') or '')))
+        _save_kw = ((_up or {}).get('match_keyword') or '') or _kw or _pno
+        upsert_product(USERNAME, _save_kw, _save_kw, (_cost * _sq) // _denom,
+                       product_no=((_up or {}).get('product_no') or '') or _pno, split_qty=_sq,
+                       naver_origin_pno=(_up or {}).get('naver_origin_pno', '') or '',
+                       shipping_fee=(_up or {}).get('shipping_fee'),
+                       auto_split_costco_no=False, manual=True)
+        n += 1
+    return n
 
 
 def save_settlements(df, USERNAME, calc_date_str, shipping_cost, box_cost, _checked_rows):
