@@ -1838,3 +1838,92 @@ def split_qty_by_name(product_name, rules=None):
         if score > best_score:
             best_score, best_sq = score, max(1, int(r.get('split_qty') or 1))
     return best_sq
+
+
+# ── 제품 DB 화면 쓰기 ─────────────────────────────────────────
+#   Streamlit 제품 DB 화면 안에 SQL로 박혀 있던 쓰기들이다. /m 새 화면(API)도
+#   같은 규칙으로 써야 해서 여기로 옮겼다. 모두 **사용자 본인 행**만 고친다.
+
+def update_private_product(username, product_id, *, product_no=None, costco_name=None,
+                           unit_price=None, split_qty=None, sale_price=None,
+                           shipping_fee=None):
+    """개인 행(공유DB에 없는 내 상품) 필드 수정. 넘긴 값만 바꾼다. 반환: 바뀐 행 수."""
+    sets, args = [], []
+    for col, v in (('product_no', product_no), ('costco_name', costco_name),
+                   ('unit_price', unit_price), ('split_qty', split_qty),
+                   ('sale_price', sale_price), ('shipping_fee', shipping_fee)):
+        if v is None:
+            continue
+        if col == 'split_qty':
+            v = max(1, min(50, int(v or 1)))
+        elif col in ('unit_price', 'sale_price', 'shipping_fee'):
+            v = max(0, int(v or 0))
+        else:
+            v = str(v).strip()
+        sets.append(f"{col}=?")
+        args.append(v)
+    if not sets:
+        return 0
+    if costco_name is not None:
+        sets.append("store_product_name=?")
+        args.append(str(costco_name).strip())
+    sets.append("updated_at=?")
+    args.append(datetime.now().strftime("%Y-%m-%d %H:%M"))
+    conn = get_user_db(username)
+    _ensure_products_columns(conn)
+    try:
+        cur = conn.execute(f"UPDATE products SET {', '.join(sets)} WHERE id=?",
+                           args + [int(product_id)])
+        conn.commit()
+        return cur.rowcount
+    finally:
+        conn.close()
+
+
+def unlock_split_product(username, product_id):
+    """가격 분리 해제 — 옮겨 둔 원래 코스트코번호를 product_no로 되돌린다.
+    반환: 되돌린 번호('' = 분리된 행이 아님)."""
+    conn = get_user_db(username)
+    _ensure_products_columns(conn)
+    try:
+        r = conn.execute("SELECT COALESCE(costco_no_display,'') FROM products WHERE id=?",
+                         (int(product_id),)).fetchone()
+        orig = str(r[0] if r else '').strip()
+        if not orig:
+            return ''
+        conn.execute("UPDATE products SET product_no=?, costco_no_display='' WHERE id=?",
+                     (orig, int(product_id)))
+        conn.commit()
+        return orig
+    finally:
+        conn.close()
+
+
+def delete_private_product(username, product_id):
+    """내 상품 행 1개 삭제. 공유DB 행은 지우지 않는다. 반환: 지운 행 수."""
+    return delete_user_products_by_ids(username, [product_id])
+
+
+def set_shared_naver_category(shared_id, category_id):
+    """공유 상품의 네이버 카테고리 ID — 모든 판매자의 등록에 쓰인다(관리자만 부를 것)."""
+    conn = get_auth_db()
+    try:
+        cur = conn.execute("UPDATE shared_products SET naver_category_id=? WHERE id=?",
+                           (str(category_id or '').strip(), int(shared_id)))
+        conn.commit()
+        return cur.rowcount
+    finally:
+        conn.close()
+
+
+def clear_price_change_history(username):
+    """코스트코 가격 변동 이력 전체 삭제. 반환: 지운 행 수."""
+    conn = get_user_db(username)
+    try:
+        cur = conn.execute("DELETE FROM price_change_history")
+        conn.commit()
+        return cur.rowcount
+    except sqlite3.OperationalError:
+        return 0
+    finally:
+        conn.close()

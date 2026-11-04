@@ -363,3 +363,7 @@ app.include_router(_trends_router)
 # ── 재고 조회·점검 (새 화면 /m/stock 백엔드, 읽기 전용) ──
 from api.stock import router as _stock_router  # noqa: E402
 app.include_router(_stock_router)
+
+# ── 제품 DB (새 화면 /m/products 백엔드) ──
+from api.pdb import router as _pdb_router  # noqa: E402
+app.include_router(_pdb_router)
