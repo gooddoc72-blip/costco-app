@@ -3652,7 +3652,32 @@ def _render_reconcile(receipt_items, alloc, goods_total, d_day):
     m1, m2, m3 = st.columns(3)
     m1.metric("영수증 합계", f"{fmt(_r_total)}원", f"{len(receipt_items or [])}종")
     m2.metric("그날 영수증분 청구", f"{fmt(_goods)}원")
-    m3.metric("배정 대기", f"{fmt(_wait)}원", delta_color="off")
+    # 배정 대기 금액은 눌러서 바로 그 목록을 연다 — 숫자만 보이면 '어느 물건인지'를 찾으러
+    #   재고 관리 › ⏳ 배정 대기로 옮겨 가야 했다. 지표 카드는 누를 수 없어 금액을 버튼으로 그린다.
+    _wk = f"_rs_wait_open_{d_day}"
+    with m3:
+        st.markdown(
+            "<style>.st-key-rs_wait_btn button{border:1px solid rgba(49,51,63,.2);"
+            "border-radius:.5rem;padding:.75rem 1rem;justify-content:flex-start;width:100%;"
+            "text-align:left}.st-key-rs_wait_btn button p{font-size:1.85rem;font-weight:600}</style>"
+            "<div style='font-size:14px;color:rgba(49,51,63,.6);margin-bottom:2px'>배정 대기 "
+            "<span style='font-size:12px'>(눌러서 목록 보기)</span></div>",
+            unsafe_allow_html=True)
+        if st.button(f"{fmt(_wait)}원 {'▴' if st.session_state.get(_wk) else '▾'}",
+                     key="rs_wait_btn", use_container_width=True,
+                     help="배정 대기 목록(영수증으로 샀는데 아직 주문·재고에 안 붙은 물건)을 엽니다"):
+            st.session_state[_wk] = not st.session_state.get(_wk)
+            st.rerun()
+    if st.session_state.get(_wk):
+        with st.container(border=True):
+            st.markdown("##### ⏳ 배정 대기 — 영수증 남은 물건")
+            st.caption(f"위 금액({fmt(_wait)}원)은 **{d_day} 하루** 영수증 기준이고, 아래 목록은 "
+                       "정산 기준일 이후 **전체 기간**의 남은 물건입니다. 여기서 바로 재고로 넘기거나 "
+                       "반품요청으로 뺄 수 있습니다(재고 관리 › ⏳ 배정 대기와 같은 화면).")
+            if _wait < 0:
+                st.caption(f"⚠️ 이 날은 영수증분 청구가 영수증보다 {fmt(-_wait)}원 많아 남은 물건이 "
+                           "없습니다 — 아래 경고와 배치 상세에서 영수증보다 많이 나간 주문을 확인하세요.")
+            _render_wait_pool()
     if _ret_amt:
         st.caption(f"↩️ **반품요청 {_ret['count']}건 · {fmt(_ret_amt)}원**은 배정 대기에서 "
                    "빠져 있습니다 — 잘못 산 물건이라 청구도 재고도 아닙니다.")
