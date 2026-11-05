@@ -387,6 +387,8 @@ export async function measure(keyword, targets, maxPage, log) {
 // ── 코코비즈 등록 목록 전체 측정 ────────────────────────────────────
 export async function runAll(maxPage, log) {
   const cfg = await getConfig();
+  // 사용자 PC마다 확장 버전이 달라 로그만으로는 어느 규칙으로 쟀는지 알 수 없었다
+  log(`[확장 v${chrome.runtime.getManifest().version}]`);
   log("코코비즈에서 추적 목록을 받아옵니다…");
   const data = await cocobiz(cfg, "/api/ranks/latest");
   if (lastUser()) log(`로그인 계정: ${lastUser()}`);
