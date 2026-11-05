@@ -6,7 +6,13 @@
 //
 // 이 함수는 chrome.scripting.executeScript 로 페이지에 주입되어 실행된다.
 function readNaverSearchPage() {
-  const out = { ok: false, page: null, products: [], reason: "" };
+  const out = { ok: false, page: null, query: null, products: [], reason: "" };
+  // 이 문서가 어느 검색어·몇 페이지인지 — 탭 주소를 바꾼 직후엔 이전 검색어 문서가
+  // 아직 남아 있어서, 페이지 번호만 보면 앞 검색어 1페이지를 새 검색어 1페이지로 읽는다.
+  try {
+    const q = new URLSearchParams(location.search).get("query");
+    if (q != null) out.query = q;
+  } catch (e) {}
   const body = document.body ? (document.body.innerText || "") : "";
   for (const phrase of ["보안 확인을 완료", "일시적으로 제한", "자동 입력 방지", "비정상적인 검색"]) {
     if (body.indexOf(phrase) >= 0) { out.reason = phrase; return out; }

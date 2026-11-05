@@ -199,12 +199,16 @@ async function readPage(keyword, page, cfg, log) {
     } catch (e) { continue; }          // 아직 문서 교체 중
     const r = res && res.result;
     if (!r) continue;
+    // 이전 검색어 문서가 아직 남아 있으면 기다린다(앞 검색어 결과를 이 검색어 순위로 기록하던 문제)
+    if (r.query != null && normQuery(r.query) !== normQuery(keyword)) continue;
     last = r;
     if (r.ok && (!r.page || r.page === page)) return r;   // 준비 완료
     if (r.reason && !/__NEXT_DATA__ 없음|상품 0개/.test(r.reason)) return r;  // 캡차·차단은 즉시 반환
   }
   return last;
 }
+
+function normQuery(v) { return String(v || "").replace(/\s+/g, " ").trim().toLowerCase(); }
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
