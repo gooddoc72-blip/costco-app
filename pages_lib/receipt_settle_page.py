@@ -3642,10 +3642,10 @@ def _render_reconcile(receipt_items, alloc, goods_total, d_day):
     # 그날 영수증분을 재고로 넣은 돈도 '대기'가 아니다 — 이미 정한 돈이다
     try:
         import db_inventory as _inv7
-        _stk_in7 = sum(int(l.get('unit_cost') or 0) * int(l.get('qty_in') or 0)
-                       for l in _inv7.find_receipt_lots(str(d_day), str(d_day)))
+        _lots7 = _inv7.find_receipt_lots(str(d_day), str(d_day))
     except Exception:
-        _stk_in7 = 0
+        _lots7 = []
+    _stk_in7 = sum(int(l.get('unit_cost') or 0) * int(l.get('qty_in') or 0) for l in _lots7)
     _wait = _rest - _ret_amt - _stk_in7
 
     st.markdown("##### 🧮 영수증 ↔ 배치 대조")
@@ -3670,13 +3670,46 @@ def _render_reconcile(receipt_items, alloc, goods_total, d_day):
             st.rerun()
     if st.session_state.get(_wk):
         with st.container(border=True):
-            st.markdown("##### ⏳ 배정 대기 — 영수증 남은 물건")
-            st.caption(f"위 금액({fmt(_wait)}원)은 **{d_day} 하루** 영수증 기준이고, 아래 목록은 "
-                       "정산 기준일 이후 **전체 기간**의 남은 물건입니다. 여기서 바로 재고로 넘기거나 "
-                       "반품요청으로 뺄 수 있습니다(재고 관리 › ⏳ 배정 대기와 같은 화면).")
-            if _wait < 0:
-                st.caption(f"⚠️ 이 날은 영수증분 청구가 영수증보다 {fmt(-_wait)}원 많아 남은 물건이 "
-                           "없습니다 — 아래 경고와 배치 상세에서 영수증보다 많이 나간 주문을 확인하세요.")
+            # ① 위 금액이 어느 물건 때문인지 — 그날 하루, 품목별로.
+            #   예전엔 금액 하나 밑에 '전체 기간' 남은 물건 목록만 있어서, 11/5 -41,990원이
+            #   무엇인지(이디야모카블렌드 1개가 영수증보다 더 청구됨) 화면에서 알 수 없었다.
+            st.markdown(f"##### 📅 {d_day} 하루 — 배정 대기 {fmt(_wait)}원의 품목별 내역")
+            st.caption("품목마다 **영수증 − 청구 − 재고로 넘김 − 반품요청** 입니다. 합이 위 금액과 같습니다. "
+                       "**마이너스** = 이날 영수증보다 많이 청구된 물건(전에 산 물건이 나갔거나 다른 상품이 "
+                       "이 번호로 잘못 붙음) · **플러스** = 이날 산 것 중 아직 안 나간 물건.")
+            try:
+                _bd = _rs.day_wait_breakdown(receipt_items, alloc.get('rows') or [],
+                                             _lots7, _rr.by_date(str(d_day)))
+            except Exception as _e:
+                _bd = []
+                st.caption(f"⚠️ 품목별 내역을 계산하지 못했습니다: {_e}")
+            if _bd:
+                _bd_sum = sum(d['diff'] for d in _bd)
+                st.dataframe(pd.DataFrame([{
+                    '구분': '🔺 영수증보다 많이 청구' if d['diff'] < 0 else '⏳ 남음',
+                    '코스트코번호': d['costco_no'], '상품명': d['name'],
+                    '영수증': f"{d['rcpt_qty']}개 · {fmt(d['rcpt_amt'])}",
+                    '청구': f"{d['bill_qty']}개 · {fmt(d['bill_amt'])}",
+                    '재고로': f"{d['stock_qty']}개 · {fmt(d['stock_amt'])}" if d['stock_qty'] else '',
+                    '반품요청': f"{d['ret_qty']}개 · {fmt(d['ret_amt'])}" if d['ret_qty'] else '',
+                    '차액(원)': d['diff'],
+                    '청구된 사용자': ', '.join(d['users']),
+                } for d in _bd]), hide_index=True, use_container_width=True,
+                    column_config={'차액(원)': st.column_config.NumberColumn(format='%d')})
+                if _bd_sum != _wait:
+                    st.caption(f"ℹ️ 품목별 합 {fmt(_bd_sum)}원 ≠ 위 금액 {fmt(_wait)}원 — 상품번호 없이 "
+                               "들어간 재고·반품이 있으면 이렇게 됩니다.")
+                if any(d['diff'] < 0 for d in _bd):
+                    st.caption("🔺 줄은 **배치 상세**에서 그 상품의 주문을 찾아 보세요 — 다른 상품(예: 골든블렌드)이 "
+                               "이 번호로 붙었으면 매칭을 고치고, 전에 산 물건이 나간 거라면 정상입니다.")
+            else:
+                st.caption("이날은 품목별 차액이 없습니다.")
+
+            # ② 지금까지 쌓인 남은 물건 — 날짜와 상관없는 전체 목록
+            st.markdown("##### ⏳ 전체 기간 — 아직 안 나간 영수증 물건")
+            st.caption("정산 기준일부터 지금까지 **모든 영수증**에서 아직 주문·재고에 안 붙은 물건입니다. "
+                       "위 하루 금액과는 따로 봐야 합니다. 여기서 바로 재고로 넘기거나 반품요청으로 뺄 수 "
+                       "있습니다(재고 관리 › ⏳ 배정 대기와 같은 화면).")
             _render_wait_pool()
     if _ret_amt:
         st.caption(f"↩️ **반품요청 {_ret['count']}건 · {fmt(_ret_amt)}원**은 배정 대기에서 "

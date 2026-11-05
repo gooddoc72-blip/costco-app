@@ -1373,6 +1373,73 @@ def dispatch_consumption(dispatch_date, receipt_nos, matched_keys=None, users=No
     return used, rows
 
 
+def day_wait_breakdown(receipt_items, rows, lots=None, returns=None):
+    """그날 '배정 대기' 금액을 품목별로 쪼갠다 — 대조 화면의 숫자가 어느 물건 때문인지.
+
+    배정 대기 = 영수증 − 영수증분 청구 − 재고로 넘김 − 반품요청 을 품목마다 계산한다.
+    품목별 합이 화면의 배정 대기 금액과 같다. 마이너스 품목 = 그날 영수증보다
+    많이 청구된 물건(이월분이 나갔거나 다른 상품으로 잘못 붙은 건), 플러스 = 남은 물건.
+    예전엔 금액 하나와 '전체 기간' 남은 물건 목록만 보여 줘서, -41,990원이 무엇인지
+    알 수 없었다(11/5 — 이디야모카블렌드 1개 값).
+
+    rows: 배치행 — 재고 출고(stock)·온라인몰(online)은 그날 영수증 물건이 아니라 뺀다
+          (대조 화면의 '영수증분 청구'와 같은 기준).
+    lots: 그날 영수증으로 재고에 넣은 lot (product_no·unit_cost·qty_in)
+    returns: 그날 반품요청 (costco_no·qty·amount)
+    반환: [{costco_no, name, rcpt_qty, rcpt_amt, bill_qty, bill_amt, stock_qty, stock_amt,
+            ret_qty, ret_amt, diff, users}] — 차액이 0이 아닌 품목만, 차액 작은 순
+    """
+    out = {}
+
+    def _get(key, name=''):
+        d = out.get(key)
+        if d is None:
+            d = out[key] = {'costco_no': key if not key.startswith('#') else '',
+                            'name': name, 'rcpt_qty': 0, 'rcpt_amt': 0,
+                            'bill_qty': 0, 'bill_amt': 0, 'stock_qty': 0, 'stock_amt': 0,
+                            'ret_qty': 0, 'ret_amt': 0, 'users': []}
+        if name and not d['name']:
+            d['name'] = name
+        return d
+
+    for it in (receipt_items or []):
+        c = _norm(it.get('상품번호'))
+        nm = _norm(it.get('상품명'))
+        q = max(1, _int(it.get('수량'), 1))
+        d = _get(c or '#' + nm, nm)
+        d['rcpt_qty'] += q
+        d['rcpt_amt'] += _int(it.get('단가')) * q
+    for r in (rows or []):
+        if str(r.get('via') or '') in ('online', 'stock'):
+            continue
+        c = _norm(r.get('costco_no'))
+        nm = _norm(r.get('product_name'))
+        d = _get(c or '#' + nm, nm)
+        d['bill_qty'] += _int(r.get('qty'))
+        d['bill_amt'] += _int(r.get('amount'))
+        _u = _s(r.get('username'))
+        if _u and _u not in d['users']:
+            d['users'].append(_u)
+    for l in (lots or []):
+        c = _norm(l.get('product_no'))
+        d = _get(c or '#' + _norm(l.get('product_name')), _norm(l.get('product_name')))
+        d['stock_qty'] += _int(l.get('qty_in'))
+        d['stock_amt'] += _int(l.get('unit_cost')) * _int(l.get('qty_in'))
+    for x in (returns or []):
+        c = _norm(x.get('costco_no'))
+        d = _get(c or '#' + _norm(x.get('product_name')), _norm(x.get('product_name')))
+        d['ret_qty'] += _int(x.get('qty'))
+        d['ret_amt'] += _int(x.get('amount'))
+
+    res = []
+    for d in out.values():
+        d['diff'] = d['rcpt_amt'] - d['bill_amt'] - d['stock_amt'] - d['ret_amt']
+        if d['diff']:
+            res.append(d)
+    res.sort(key=lambda d: d['diff'])
+    return res
+
+
 def receipt_overflow(receipt_items, rows):
     """영수증에 산 것보다 **많이 붙은** 품목 — 수량이 안 맞는 지점.
 
