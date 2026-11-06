@@ -55,6 +55,15 @@ def _now():
 
 DEFAULT_SOURCE = 'manual'
 
+#: 무인 자동등록이 11/6 전까지 경로 대신 '카테고리 출처'로 남긴 값 — 읽을 때 auto로 본다.
+#   (auto_register가 resolve_category의 출처로 source 인자를 덮어썼다. 그 경로만 이 값을 쓴다.)
+_LEGACY_AUTO = ('product', 'mapping', 'ai', 'None')
+
+
+def norm_source(src):
+    s = str(src or '')
+    return 'auto' if s in _LEGACY_AUTO else s
+
 
 # ── 테이블 ────────────────────────────────────────────────────────
 
@@ -309,7 +318,7 @@ def naver_reg_summary(date_from='', date_to=''):
         _first = origin not in a['seen']
         a['seen'].add(origin)
         if _first:
-            src = str(src or '')
+            src = norm_source(src)
             a['by_source'][src] = a['by_source'].get(src, 0) + 1
             if str(actor or '') and str(actor) != un:
                 a['agency'] += 1
@@ -362,14 +371,21 @@ def list_naver_registrations(username='', *, source='', limit=300):
             sql += " AND username=?"
             args.append(str(username))
         if str(source or '').strip():
-            sql += " AND source=?"
-            args.append(str(source))
+            if str(source) == 'auto':
+                sql += " AND source IN (%s)" % ",".join("?" * (len(_LEGACY_AUTO) + 1))
+                args.extend(('auto',) + _LEGACY_AUTO)
+            else:
+                sql += " AND source=?"
+                args.append(str(source))
         sql += " ORDER BY id DESC LIMIT ?"
         args.append(int(limit or 300))
         rows = conn.execute(sql, tuple(args)).fetchall()
         keys = ('created_at', 'username', 'product_name', 'origin_no', 'product_no',
                 'sale_price', 'source', 'actor', 'client_tag')
-        return [dict(zip(keys, r)) for r in rows]
+        out = [dict(zip(keys, r)) for r in rows]
+        for d in out:
+            d['source'] = norm_source(d.get('source'))
+        return out
     except Exception:
         return []
     finally:

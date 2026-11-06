@@ -713,7 +713,9 @@ def auto_register(username, api_id, api_secret, *, margin=10, max_count=20,
             break
         processed += 1
 
-        cat_id, cat_full, source = resolve_category(
+        # 카테고리 출처는 cat_src — 예전엔 이 줄이 등록 경로 인자 source('auto')를 덮어써서
+        #   무인 자동등록이 등록 집계에 '무인'이 아니라 product/mapping/ai로 남았다(11/6).
+        cat_id, cat_full, cat_src = resolve_category(
             api_id, api_secret, p, cat_map=cat_map, ai_key=ai_key, open_creds=open_creds)
         if not cat_id:
             out["skipped_no_category"] += 1
@@ -746,9 +748,9 @@ def auto_register(username, api_id, api_secret, *, margin=10, max_count=20,
             out["ok"] += 1
             out["results"].append({
                 "상품명": name, "카테고리": (cat_full or "")[:20],
-                "판매가": sale, "결과": "ok", "내용": f"#{origin_no} ({source})",
+                "판매가": sale, "결과": "ok", "내용": f"#{origin_no} ({cat_src})",
             })
-            log(f"  ✅ {name} → #{origin_no} / {sale}원 / {cat_full or cat_id} ({source})")
+            log(f"  ✅ {name} → #{origin_no} / {sale}원 / {cat_full or cat_id} ({cat_src})")
 
     if _skip_dirty:
         try:
