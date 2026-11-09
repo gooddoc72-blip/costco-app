@@ -375,3 +375,7 @@ app.include_router(_pc_router)
 # ── 일일 주문 수집 (새 화면 /m/orders/collect 백엔드) ──
 from api.orders_collect import router as _oc_router  # noqa: E402
 app.include_router(_oc_router)
+
+# ── 가격표 사진 → 공유 매입가 (새 화면 /m/pricetag 백엔드) ──
+from api.price_tag import router as _ptag_router  # noqa: E402
+app.include_router(_ptag_router)

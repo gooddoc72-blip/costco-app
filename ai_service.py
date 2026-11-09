@@ -860,13 +860,18 @@ def analyze_food_label(api_key, image_bytes, media_type, *, gemini_key=''):
 
 _PRICETAG_SYSTEM = (
     "너는 코스트코 매장 가격표(라벨) 판독 전문가다. 사진 속 가격표를 보고 JSON으로만 출력한다.\n"
-    '출력(JSON만): {"product_no":"상품번호","barcode":"바코드숫자","price":정수,"product_name":"상품명"}\n'
+    '출력(JSON만): {"product_no":"상품번호","barcode":"바코드숫자","price":정수,"product_name":"상품명",'
+    '"list_price":정수,"discount":정수,"sale_end":"YYYY-MM-DD"}\n'
     "규칙:\n"
     "- product_no: 라벨 좌측 상단의 코스트코 상품번호(보통 6자리 숫자, 예: 713160). 숫자만.\n"
     "- barcode: 라벨 하단 바코드 **아래에 인쇄된 숫자**를 그대로 읽는다. 상품번호와 다를 수 있다. 숫자만. 안 보이면 ''.\n"
     "- price: 실제 지불 가격 = **가장 큰 최종 가격**(할인 적용가). 정가/할인액이 같이 있으면 "
     "맨 아래 큰 숫자(최종가)를 쓴다. 숫자만(콤마·원 제거).\n"
     "- product_name: 라벨의 영문/한글 상품명.\n"
+    "- list_price: 할인 전 정가. 할인 표시가 없으면 price와 같은 값. 숫자만.\n"
+    "- discount: 할인 금액(정가 − 최종가). 할인이 없으면 0.\n"
+    "- sale_end: 할인 기간의 **끝 날짜**(예: '2026.11.03 ~ 2026.11.16' → '2026-11-16'). "
+    "연도가 안 보이면 ''. 할인이 없거나 기간이 안 보이면 ''.\n"
     "숫자를 지어내지 말 것. 안 보이면 product_no는 '' , price는 0."
 )
 
@@ -883,11 +888,27 @@ def _parse_price_tag_json(txt):
         _price = int(float(str(_d.get("price", 0)).replace(",", "") or 0))
     except Exception:
         _price = 0
+    def _num(v):
+        try:
+            return max(0, int(float(str(v or 0).replace(",", "") or 0)))
+        except Exception:
+            return 0
+    _list = max(_num(_d.get("list_price")), _price)   # 정가가 최종가보다 작으면 읽기 실수
+    _disc = _num(_d.get("discount")) or (_list - _price)
+    _end = str(_d.get("sale_end", "") or "").strip().replace(".", "-").replace("/", "-")
+    import re as _re
+    if not _re.fullmatch(r"\d{4}-\d{2}-\d{2}", _end):
+        _end = ""
     return {
         "product_no": "".join(ch for ch in str(_d.get("product_no", "") or "") if ch.isdigit()),
         "barcode": "".join(ch for ch in str(_d.get("barcode", "") or "") if ch.isdigit()),
         "price": _price,
         "product_name": str(_d.get("product_name", "") or "").strip(),
+        # 정가·할인·종료일 — 판매가는 정가 기준으로 잡는다. 할인은 기간 한정이라
+        #   판매가로 굳히면 할인이 끝난 날부터 손해가 난다.
+        "list_price": _list,
+        "discount": _disc,
+        "sale_end": _end,
     }
 
 
