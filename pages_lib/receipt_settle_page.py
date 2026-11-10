@@ -775,8 +775,10 @@ def _render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         # 이제 표에만 채우고, 저장은 사람이 확인한 뒤에만 한다.
         st.session_state['_rs_unsaved'] = True
         st.session_state['_rs_fkey'] = _fkey
-        st.session_state.pop('_rs_rsigs', None)
-        st.session_state.pop('_rs_pseen', None)   # 표가 PDF 것으로 바뀌었다 — 사진은 다시 읽어 합친다
+        # 표가 PDF 것으로 바뀌었다 — 이게 사진 판독의 바탕이 되고, 올라 있는 사진은
+        # (다시 읽지 않고) 그 위에 다시 덮어쓴다
+        st.session_state['_rs_photo_base'] = list(merged.values())
+        st.session_state.pop('_rs_pcomp', None)
         st.session_state['_rs_fails'] = fails
         st.session_state.pop('rs_alloc', None)   # 새 업로드 → 이전 미리보기 초기화
         # 정산일은 화면 맨 위에서 사람이 고른다 — 여기서 지우면 위젯 생성 뒤
@@ -800,36 +802,37 @@ def _render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         key="rs_photo_gal", accept_multiple_files=True)
     from pages_lib.receipt_page import inject_native_camera as _inject_cam
     _inject_cam("영수증 촬영")   # 왼쪽만: 탭 → 폰 기본 카메라 → 촬영 → 자동 업로드
-    _ph = list(_ph_cam or []) + list(_ph_gal or [])
-    # 이미 읽은 사진은 다시 읽지 않는다. 폰 카메라는 사진이 **한 장씩** 추가되는데,
-    # 예전엔 추가될 때마다 앞 사진까지 전부 다시 읽어 표에 또 더했다 — 4장을 찍으면
-    # 첫 장 품목 수량이 4배가 됐다. 파일 이름도 폰에서는 전부 'image.jpg'라 못 쓴다.
+    _ph_all = list(_ph_cam or []) + list(_ph_gal or [])
+    # 사진마다 판독 결과를 기억해 두고(_rs_preads), 표는 매번
+    #   (사진 읽기 전 표 _rs_photo_base) + (지금 올라 있는 사진들의 판독)
+    # 으로 **다시 짠다** — compose_photo_reads. 예전엔 읽을 때마다 앞 표에 수량을 더해서,
+    # 같은 영수증을 다시 찍거나 불러온 저장 영수증 위에 읽으면 수량이 두 배가 됐다(11/10).
+    # 이미 읽은 사진은 다시 읽지 않는다 — 폰 카메라는 사진이 한 장씩 추가되고,
+    # 파일 이름도 폰에서는 전부 'image.jpg'라 file_id로 구분한다.
     def _pid(_f):
         return str(getattr(_f, 'file_id', '') or (_f.name, getattr(_f, 'size', 0)))
-    _pseen = set(st.session_state.get('_rs_pseen') or [])
-    _ph_all, _ph = (_ph or []), [f for f in (_ph or []) if _pid(f) not in _pseen]
-    _pkey = tuple(sorted(_pid(f) for f in _ph_all))
-    # 🔄 사진 다시 판독 — 판독이 틀렸을 때 같은 사진을 처음부터 다시 읽는다(10/28 요청).
-    #   그냥 다시 읽으면 앞 판독 수량에 또 더해지므로, 사진을 처음 읽기 직전의 표
-    #   (_rs_photo_base: PDF·불러온 영수증)로 되돌린 뒤 지금 올라 있는 사진을 전부 다시 읽는다.
-    #   사진 판독 뒤 표에서 직접 고친 값은 사라진다. (버튼은 판독 블록 아래에 그린다)
+    _preads = dict(st.session_state.get('_rs_preads') or {})
+    _all_ids = [_pid(f) for f in _ph_all]
+    _ph = [f for f in _ph_all if _pid(f) not in _preads]
+    _pkey = tuple(sorted(_all_ids))
+
     def _photo_reparse_btn():
-        if not (_ph_all and st.session_state.get('_rs_pseen')):
+        if not (_ph_all and _preads):
             return
         if st.button("🔄 사진 다시 판독 (앞 판독값 버리고 새로 읽기)", key="rs_photo_reparse",
-                     help="판독이 틀렸을 때 누르세요. 앞서 사진에서 읽은 값을 빼고 지금 올라 있는 "
-                          "사진을 다시 읽습니다 — 수량이 더해지지 않습니다. 사진 판독 뒤 표에서 "
+                     help="판독이 틀렸을 때 누르세요. 지금 올라 있는 사진을 처음부터 다시 읽어 "
+                          "표를 새로 채웁니다 — 수량이 더해지지 않습니다. 사진 판독 뒤 표에서 "
                           "직접 고친 값은 사라집니다."):
-            st.session_state['rs_receipt_items'] = list(st.session_state.get('_rs_photo_base') or [])
-            st.session_state.pop('_rs_pseen', None)
-            st.session_state.pop('_rs_rsigs', None)
+            st.session_state.pop('_rs_preads', None)
+            st.session_state.pop('_rs_pcomp', None)
             st.session_state.pop('rs_alloc', None)
             st.session_state['_rs_fails'] = [x for x in (st.session_state.get('_rs_fails') or [])
                                               if x[0] not in {f.name for f in _ph_all}]
             st.rerun()
-    if _ph and not _pseen:
-        # 사진을 처음 읽기 직전의 표 — '사진 다시 판독'이 여기로 되돌린다
+    if _ph_all and not _preads:
+        # 사진을 처음 읽기 직전의 표(PDF·불러온 저장 영수증) — 사진 판독은 이 위에 덮어쓴다
         st.session_state['_rs_photo_base'] = list(st.session_state.get('rs_receipt_items') or [])
+    _pfails = []
     if _ph:
         import ai_service
         from pages_lib.receipt_page import _image_for_ai
@@ -837,83 +840,83 @@ def _render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         if not (_ak or _gk):
             st.warning("⚠️ AI 키가 없어 사진 판독을 할 수 없습니다. 설정 탭 > 🤖 AI 설정에서 "
                        "Gemini 또는 Claude 키를 등록하세요.")
-        else:
-            _pparsed, _pfails = [], []
-            _rsigs = set(tuple(x) for x in (st.session_state.get('_rs_rsigs') or []))
-            _pbar = st.progress(0.0, text="영수증 사진 판독 중...")
-            for _pi, _pf in enumerate(_ph, 1):
-                _pbar.progress(_pi / len(_ph), text=f"영수증 사진 판독 중... ({_pi}/{len(_ph)})")
-                _img, _ierr = _image_for_ai(_pf)
-                if _ierr:
-                    _pfails.append((_pf.name, _ierr)); continue
-                _data, _perr = ai_service.parse_receipt_photo(
-                    _ak, _img[0], _img[1], gemini_key=_gk)
-                if _perr or not _data:
-                    _pfails.append((_pf.name, _perr or '판독 실패')); continue
-                # 같은 영수증을 여러 장 찍어 올리면(흔들려서 다시 찍기 등) 수량이 장수만큼
-                # 더해졌다 — 구매일시·결제금액이 같은 영수증은 한 번만 넣는다.
-                _rsig = _rs.receipt_signature(_data)
-                if _rsig and _rsig in _rsigs:
-                    st.info(f"🔁 {_pf.name} — 앞 사진과 같은 영수증({_rsig[0]} {_rsig[1]} · "
-                            f"{fmt(_rsig[2])}원)이라 건너뜁니다. 수량을 더하지 않았습니다.")
-                    continue
-                if _rsig:
-                    _rsigs.add(_rsig)
-                _rdate = _data.get('purchase_date', '') or ''
-                for _it in (_data.get('items') or []):
-                    if not str(_it.get('상품명', '') or '').strip():
-                        continue
-                    _pparsed.append({
-                        '상품번호': str(_it.get('상품번호', '') or ''),
-                        '상품명': _it.get('상품명', ''),
-                        '수량': int(_it.get('수량') or 1),
-                        '단가': int(_it.get('단가') or 0),
-                        '금액': int(_it.get('금액') or 0),
-                        '할인': int(_it.get('할인') or 0),
-                        'receipt_date': _rdate,
-                        '_수정': bool(_it.get('_수정')),
-                    })
-                _da = int(_data.get('discount_amount') or 0)
-                _di = sum(int(x.get('할인') or 0) for x in (_data.get('items') or []))
-                if _da and _da > _di:
-                    st.warning(
-                        f"⚠️ {_pf.name} — 할인 **{fmt(_da)}원**을 읽었지만 어느 품목 "
-                        f"것인지 가르지 못했습니다(품목별 합계 {fmt(_di)}원). "
-                        "아래 표의 **할인** 칸에 직접 넣어 주세요 — 안 넣으면 "
-                        "할인 전 가격으로 청구됩니다.")
-                _note = []
-                if _data.get('_tiled'):
-                    _note.append("세로로 잘라 다시 읽음")
-                if _data.get('_repaired'):
-                    _note.append(f"단가 {_data['_repaired']}줄 보정")
-                if _note:
-                    st.caption(f"🔍 {_pf.name} — " + " · ".join(_note))
-                if not _data.get('_verified', True):
-                    _pfails.append((_pf.name,
-                                    "금액·수량 자가검증 불일치 — 아래 표에서 값을 확인하세요: "
-                                    + " / ".join((_data.get('_check') or [])[:2])))
-            _pbar.empty()
-            # 이미 산 적 있는 상품 목록을 정답지로 삼아 번호 오독을 바로잡는다
-            _pparsed, _snap = _rs.snap_items_to_catalog(_pparsed)
+            _ph = []
+        _pbar = st.progress(0.0, text="영수증 사진 판독 중...") if _ph else None
+        for _pi, _pf in enumerate(_ph, 1):
+            _pbar.progress(_pi / len(_ph), text=f"영수증 사진 판독 중... ({_pi}/{len(_ph)})")
+            _img, _ierr = _image_for_ai(_pf)
+            if _ierr:
+                _pfails.append((_pf.name, _ierr))
+                _preads[_pid(_pf)] = {'name': _pf.name, 'sig': '', 'date': '', 'lines': []}
+                continue
+            _data, _perr = ai_service.parse_receipt_photo(_ak, _img[0], _img[1], gemini_key=_gk)
+            if _perr or not _data:
+                _pfails.append((_pf.name, _perr or '판독 실패'))
+                _preads[_pid(_pf)] = {'name': _pf.name, 'sig': '', 'date': '', 'lines': []}
+                continue
+            _rdate = _data.get('purchase_date', '') or ''
+            _lines = [{'상품번호': str(_it.get('상품번호', '') or ''),
+                       '상품명': _it.get('상품명', ''),
+                       '수량': int(_it.get('수량') or 1),
+                       '단가': int(_it.get('단가') or 0),
+                       '금액': int(_it.get('금액') or 0),
+                       '할인': int(_it.get('할인') or 0),
+                       'receipt_date': _rdate,
+                       '_수정': bool(_it.get('_수정'))}
+                      for _it in (_data.get('items') or [])
+                      if str(_it.get('상품명', '') or '').strip()]
+            # 이미 산 적 있는 상품 목록을 정답지로 삼아 번호·수량·이름 오독을 바로잡는다
+            _lines, _snap = _rs.snap_items_to_catalog(_lines)
             if _snap:
-                with st.expander(f"🔧 상품번호 자동 교정 {len(_snap)}건", expanded=False):
+                with st.expander(f"🔧 {_pf.name} — 자동 교정 {len(_snap)}건", expanded=False):
                     for _l in _snap:
                         st.caption("· " + _l)
-            if _pparsed:
-                # 이미 올린 것(PDF 등)과 합친다. 키 규칙이 다르면 같은 품목이
-                # 두 번 들어가므로 양쪽 다 _merge_receipt_lines로 만든다.
-                _prev = _rs.merge_receipt_lines(
-                    (st.session_state.get('rs_receipt_items') or []) + _pparsed)
-                _merged_p = _rs.merge_receipt_lines(_pparsed)
-                st.session_state['rs_receipt_items'] = list(_prev.values())
-                st.session_state['_rs_unsaved'] = True   # 저장은 사람이 확인한 뒤에
-                st.session_state.pop('rs_alloc', None)
-                # (정산일은 rs_day_val이 정본 — 위젯 생성 뒤라 여기선 안 건드린다)
-                st.success(f"📱 사진 {len(_ph)}장에서 {len(_merged_p)}품목 인식")
-            st.session_state['_rs_pkey'] = _pkey
-            st.session_state['_rs_pseen'] = sorted(_pseen | {_pid(f) for f in _ph})
-            st.session_state['_rs_rsigs'] = sorted(_rsigs)
-            st.session_state['_rs_fails'] = (st.session_state.get('_rs_fails') or []) + _pfails
+            _sig = _rs.receipt_signature(_data)
+            _preads[_pid(_pf)] = {'name': _pf.name, 'sig': '|'.join(map(str, _sig)) if _sig else '',
+                                  'date': _rdate[:10], 'lines': _lines}
+            _da = int(_data.get('discount_amount') or 0)
+            _di = sum(int(x.get('할인') or 0) for x in (_data.get('items') or []))
+            if _da and _da > _di:
+                st.warning(
+                    f"⚠️ {_pf.name} — 할인 **{fmt(_da)}원**을 읽었지만 어느 품목 "
+                    f"것인지 가르지 못했습니다(품목별 합계 {fmt(_di)}원). "
+                    "아래 표의 **할인** 칸에 직접 넣어 주세요 — 안 넣으면 "
+                    "할인 전 가격으로 청구됩니다.")
+            _note = []
+            if _data.get('_tiled'):
+                _note.append("세로로 잘라 다시 읽음")
+            if _data.get('_repaired'):
+                _note.append(f"단가 {_data['_repaired']}줄 보정")
+            if _note:
+                st.caption(f"🔍 {_pf.name} — " + " · ".join(_note))
+            if not _data.get('_verified', True):
+                _pfails.append((_pf.name,
+                                "금액·수량 자가검증 불일치 — 아래 표에서 값을 확인하세요: "
+                                + " / ".join((_data.get('_check') or [])[:2])))
+        if _pbar:
+            _pbar.empty()
+        st.session_state['_rs_fails'] = (st.session_state.get('_rs_fails') or []) + _pfails
+    # 올라 있는 사진이 바뀌었으면(추가·삭제) 표를 다시 짠다 — 내린 사진의 품목도 빠진다
+    _preads = {k: v for k, v in _preads.items() if k in _all_ids}
+    st.session_state['_rs_preads'] = _preads
+    if _preads and st.session_state.get('_rs_pcomp') != _pkey:
+        _items, _pnotes = _rs.compose_photo_reads(
+            st.session_state.get('_rs_photo_base') or [],
+            [_preads[k] for k in _all_ids if k in _preads and not _preads[k].get('absorbed')])
+        st.session_state['rs_receipt_items'] = _items
+        st.session_state['_rs_pcomp'] = _pkey
+        st.session_state['_rs_unsaved'] = True   # 저장은 사람이 확인한 뒤에
+        st.session_state.pop('rs_alloc', None)
+        for _n0 in _pnotes:
+            st.info(_n0)
+        _cnt = sum(len(v['lines']) for v in _preads.values())
+        st.success(f"📱 사진 {len(_preads)}장 판독 {_cnt}줄 → 표 {len(_items)}품목 "
+                   "(같은 영수증을 다시 읽으면 수량을 더하지 않고 덮어씁니다)")
+    elif not _ph_all and st.session_state.get('_rs_pcomp'):
+        # 사진을 모두 내렸다 — 사진 읽기 전 표로 되돌린다
+        st.session_state['rs_receipt_items'] = list(st.session_state.get('_rs_photo_base') or [])
+        st.session_state.pop('_rs_pcomp', None)
+        st.session_state.pop('rs_alloc', None)
     _photo_reparse_btn()
 
     for fn, em in st.session_state.get('_rs_fails', []):
@@ -1047,6 +1050,11 @@ def _render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         if _ec1.button("💾 영수증 저장", key="rs_items_save", use_container_width=True,
                        type="primary" if _unsaved else "secondary"):
             st.session_state['rs_receipt_items'] = list(receipt_items)
+            # 저장한 표(표에서 고친 값 포함)가 이제 바탕이다 — 이미 읽은 사진은 여기에 들어
+            # 있으니 다음 사진을 읽을 때 다시 얹지 않는다(고친 값이 판독값으로 되돌아가지 않게)
+            st.session_state['_rs_photo_base'] = list(receipt_items)
+            for _rv in (st.session_state.get('_rs_preads') or {}).values():
+                _rv['absorbed'] = True
             _s2, _u2, _rm2, _p2, _pd2 = _rs.persist_receipt(USERNAME, list(receipt_items))
             if _pd2['error']:
                 st.caption(f"⚠️ 영수증 DB 저장 실패: {_pd2['error']}")

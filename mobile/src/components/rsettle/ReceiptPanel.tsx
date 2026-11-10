@@ -20,6 +20,18 @@ const blank = (d: string): ReceiptRow => ({ receipt_date: d, costco_no: '', name
 type Read = { files: string[]; sig: string; rows: ReceiptRow[] };
 const same = (a: ReceiptRow, b: ReceiptRow) => !!a.costco_no && a.costco_no === b.costco_no && a.receipt_date === b.receipt_date;
 const sigOf = (rs: ReceiptRow[]) => rs.map(r => `${r.costco_no}|${r.receipt_date}|${r.qty}`).sort().join(',');
+/** 상품번호 묶음 — date를 주면 그 날짜(또는 날짜 빈) 줄만 */
+const nosOf = (rs: ReceiptRow[], date?: string) =>
+  new Set(rs.filter(r => r.costco_no && (!date || !r.receipt_date || r.receipt_date === date)).map(r => r.costco_no));
+/** 같은 영수증인가 — 작은 쪽의 절반 이상(최소 2개, 1품목이면 1개)이 겹치면 같은 영수증을 다시 찍은 것.
+ *  파이썬 receipt_settle.same_receipt_nos와 같은 기준. 같은 날 두 번 장 본 영수증은 한두 개만 겹친다. */
+function sameReceipt(a: Set<string>, b: Set<string>) {
+  if (!a.size || !b.size) return false;
+  let n = 0; a.forEach(x => { if (b.has(x)) n++; });
+  const m = Math.min(a.size, b.size);
+  return n >= Math.min(2, m) && n * 2 >= m;
+}
+const dateOf = (rs: ReceiptRow[]) => (rs.find(r => r.receipt_date)?.receipt_date || '');
 function addRows(base: ReceiptRow[], got: ReceiptRow[]) {
   const out = [...base];
   for (const g of got) {
@@ -110,17 +122,31 @@ export default function ReceiptPanel({ day, count, onSaved, onErr }: {
         // 다른 영수증이면 표에 있는 것과 합친다(같은 상품·같은 날짜는 수량을 더한다).
         // 같은 영수증을 다시 읽은 것(같은 파일이거나 품목·수량이 똑같음)이면 앞 판독을 빼고
         // 새 값으로 바꾼다 — 판독을 두 번 해서 수량이 두 배가 되던 것(10/28).
+        // ⚠️ 11/10: 같은 영수증으로 보는 기준이 '품목·수량이 똑같음'뿐이라, 다시 찍어 한 줄만
+        //    다르게 읽혀도 수량이 더해졌다. 이제 같은 날짜에 상품번호가 절반 이상 겹치면 같은
+        //    영수증으로 보고 덮어쓴다 — 앞 판독이면 그 판독을 빼고, 불러온 저장 영수증이면 겹친
+        //    품목 줄을 새 값으로 바꾼다.
         const sig = sigOf(got);
-        const dup = reads.current.find(r => (sig && r.sig === sig) || r.files.some(f => fkeys.includes(f)));
-        reads.current = [...reads.current.filter(r => r !== dup), { files: fkeys, sig, rows: got }];
-        const prevRows = (rows || []).filter(r => r.costco_no || r.name);
-        const base = dup ? subRows(prevRows, dup.rows) : prevRows;
+        const gd = dateOf(got), gn = nosOf(got);
+        const dups = reads.current.filter(r => (sig && r.sig === sig) || r.files.some(f => fkeys.includes(f))
+          || ((!gd || !dateOf(r.rows) || dateOf(r.rows) === gd) && sameReceipt(gn, nosOf(r.rows))));
+        reads.current = [...reads.current.filter(r => !dups.includes(r)), { files: fkeys, sig, rows: got }];
+        let base = (rows || []).filter(r => r.costco_no || r.name);
+        for (const d of dups) base = subRows(base, d.rows);
+        const bn = nosOf(base, gd || undefined);
+        let over = 0;
+        if (!dups.length && sameReceipt(gn, bn)) {
+          base = base.filter(r => {
+            const hit = gn.has(r.costco_no) && (!gd || !r.receipt_date || r.receipt_date === gd);
+            if (hit) over++;
+            return !hit;
+          });
+        }
         const out = addRows(base, got);
         setRows(out.length ? out : [blank(day)]);
         setUnsaved(true); setChk(null); setAsk(false);
-        if (dup) setNote({ ok: true, text: '🔁 같은 영수증을 다시 읽어 앞 판독값을 새 값으로 바꿨습니다 — 수량을 더하지 않았습니다.' });
-        // 처음 읽는 판독인데 표(불러온 저장 영수증 등)에 같은 품목이 이미 다 있으면 같은 영수증일 수 있다
-        else if (got.length && got.every(g => base.some(r => same(r, g) && r.qty >= g.qty))) setOverlap(got);
+        if (dups.length) setNote({ ok: true, text: '🔁 같은 영수증을 다시 읽어 앞 판독값을 새 값으로 바꿨습니다 — 수량을 더하지 않았습니다.' });
+        else if (over) setNote({ ok: true, text: `🔁 표에 있던 같은 영수증 ${over}품목을 새 판독값으로 덮어썼습니다 — 수량을 더하지 않았습니다.` });
         break;
       }
     } catch (e: any) { fail('영수증 읽기 실패: ' + (e.message || e)); }

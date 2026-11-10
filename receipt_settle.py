@@ -1679,6 +1679,62 @@ def _int(v, default=0):
     return default if f != f else int(f)
 
 
+def _receipt_nos(lines, date=None):
+    return {str(x.get('상품번호') or '').strip() for x in (lines or [])
+            if str(x.get('상품번호') or '').strip()
+            and (not date or str(x.get('receipt_date') or '')[:10] in ('', date))}
+
+
+def same_receipt_nos(a, b):
+    """두 판독의 상품번호 묶음이 같은 영수증인가 — 작은 쪽의 절반 이상(최소 2개, 1품목
+    영수증이면 1개)이 겹치면 같은 영수증을 다시 찍은 것으로 본다. 다른 영수증이 한두
+    품목 겹치는 것(같은 날 두 번 장 봄)은 이 기준에 안 걸린다."""
+    if not a or not b:
+        return False
+    n = len(a & b)
+    m = min(len(a), len(b))
+    return n >= min(2, m) and n * 2 >= m
+
+
+def compose_photo_reads(base, reads):
+    """사진 판독 결과를 표에 **덮어쓴다** — 반환: (표 줄 목록, 알림[]).
+
+    예전엔 사진을 읽을 때마다 앞 표에 수량을 더했다. 같은 영수증인지는
+    구매일·시각·결제금액이 똑같을 때만 알아봐서, 같은 영수증을 다시 찍어 한 군데만
+    다르게 읽혀도(시각·합계 오독) 수량이 두 배가 됐고, 불러온 저장 영수증 위에 사진을
+    읽어도 더해졌다(11/10 '덮어쓰지 않고 합쳐진다').
+
+    base:  사진을 읽기 전의 표(PDF·불러온 저장 영수증)
+    reads: 지금 올라 있는 사진의 판독 [{name, sig, date, lines}] — 올린 순서
+    · 같은 영수증(서명이 같거나 상품번호가 절반 이상 겹침)을 두 번 읽었으면 나중 것만 쓴다.
+    · base에 같은 날짜·같은 영수증이 있으면 그 상품 줄을 사진 값으로 바꾼다.
+    · 다른 영수증이면 그대로 더한다(하루에 영수증이 여러 장인 경우).
+    """
+    notes, kept = [], []
+    for r in reads or []:
+        rn = _receipt_nos(r.get('lines'))
+        for k in list(kept):
+            if r.get('date') and k.get('date') and r['date'] != k['date']:
+                continue
+            if (r.get('sig') and r.get('sig') == k.get('sig')) or same_receipt_nos(rn, _receipt_nos(k.get('lines'))):
+                kept.remove(k)
+                notes.append(f"🔁 {r.get('name')} — 앞 사진({k.get('name')})과 같은 영수증이라 새 판독으로 바꿨습니다(수량을 더하지 않음)")
+        kept.append(r)
+    base = list(base or [])
+    for r in kept:
+        rn = _receipt_nos(r.get('lines'))
+        bn = _receipt_nos(base, r.get('date'))
+        if rn and same_receipt_nos(rn, bn):
+            _d = r.get('date') or ''
+            _cut = rn & bn
+            base = [x for x in base
+                    if not (str(x.get('상품번호') or '').strip() in _cut
+                            and (not _d or str(x.get('receipt_date') or '')[:10] in ('', _d)))]
+            notes.append(f"🔁 {r.get('name')} — 표에 있던 같은 영수증 {len(_cut)}품목을 새 판독값으로 덮어썼습니다")
+    lines = base + [x for r in kept for x in (r.get('lines') or [])]
+    return list(merge_receipt_lines(lines).values()), notes
+
+
 def merge_receipt_lines(parsed):
     """영수증 줄들을 (상품번호, 날짜)로 합친다. 반환: {키: 품목}
 
@@ -1697,18 +1753,21 @@ def merge_receipt_lines(parsed):
         k = (_s(p.get('상품번호')) or _s(p.get('상품명')), _s(p.get('receipt_date')))
         _q = max(1, int(p.get('수량') or 1))
         _u = int(p.get('단가') or 0)
-        _a = int(p.get('금액') or 0) or _u * _q
+        # 이미 합친 줄·DB에서 불러온 줄은 '단가'가 실단가(할인 뺀 값)다 — 정가는 '정가단가'.
+        # 그걸 정가로 다시 쓰면 할인이 두 번 빠지고 정가가 쿠폰가로 굳는다.
+        _lp = int(p.get('정가단가') or 0) or _u
+        _a = int(p.get('금액') or 0) or _lp * _q
         _d = int(p.get('할인') or 0)
         e = out.get(k)
         if e is None:
             out[k] = {'상품번호': p.get('상품번호', ''), '상품명': p.get('상품명', ''),
-                      '수량': _q, '금액': _a, '할인': _d, '정가단가': _u,
+                      '수량': _q, '금액': _a, '할인': _d, '정가단가': _lp,
                       'receipt_date': p.get('receipt_date', '')}
         else:
             e['수량'] += _q
             e['금액'] += _a
             e['할인'] += _d
-            e['정가단가'] = e['정가단가'] or _u
+            e['정가단가'] = e['정가단가'] or _lp
     for e in out.values():
         _q = max(1, int(e['수량']))
         e['단가'] = max(0, int(e['금액']) - int(e['할인'])) // _q
