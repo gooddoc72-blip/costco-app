@@ -694,10 +694,49 @@ def _render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         "각 주문 구입가에 **영수증 실단가**를 반영합니다. 사용자별 구매금액 정산표도 만들어집니다."
     )
 
+    # ── 0) 🧹 영수증 초기화 — 표·사진 판독·올린 파일을 전부 비우고 처음부터 (11/10 요청)
+    #   업로드 칸은 Streamlit이 직접 비울 수 없어 키에 번호를 붙여 새 칸으로 바꾼다.
+    _upn = int(st.session_state.get('_rs_up_nonce') or 0)
+    _ups = f"_{_upn}" if _upn else ""
+    _rst_msg = st.session_state.pop('_rs_clear_msg', None)
+    if _rst_msg:
+        st.success(_rst_msg)
+    with st.expander("🧹 영수증 초기화 (표·판독·올린 파일 비우고 처음부터)", expanded=False):
+        try:
+            _mine = get_receipt_items_by_date(USERNAME, str(d_day), owner=USERNAME) or []
+        except Exception:
+            _mine = []
+        st.caption("판독이 엉켰을 때 씁니다. 화면의 영수증 표, 사진 판독 결과, 올린 PDF·사진을 "
+                   "모두 비웁니다. 저장된 영수증은 아래를 체크했을 때만 지웁니다.")
+        _del_saved = st.checkbox(
+            f"{d_day} 에 내가 저장한 영수증도 삭제 ({len(_mine)}줄) — 되돌릴 수 없음",
+            key=f"rs_clear_del{_ups}", disabled=not _mine,
+            help="체크하면 그날 내가 올린 영수증 줄을 DB에서 지웁니다. 다른 사람이 올린 영수증은 "
+                 "그대로입니다. 지운 뒤 새로 올려 저장하고 정산 매칭을 다시 하세요.")
+        if st.button("🧹 초기화", key=f"rs_clear_btn{_ups}",
+                     type="primary" if _del_saved else "secondary"):
+            for _k in ('rs_receipt_items', '_rs_preads', '_rs_pcomp', '_rs_photo_base',
+                       '_rs_pdf_items', '_rs_fkey', '_rs_fails', 'rs_alloc', '_rs_unsaved',
+                       '_rs_reset_dates', '_rs_reparse', '_rs_price_detail'):
+                st.session_state.pop(_k, None)
+            st.session_state['_rs_up_nonce'] = _upn + 1
+            _gone = 0
+            if _del_saved:
+                try:
+                    _gone = delete_receipt_items_by_date(USERNAME, str(d_day), owner=USERNAME) or 0
+                except Exception as _e:
+                    st.session_state['_rs_clear_msg'] = f"⚠️ 표는 비웠지만 저장된 영수증 삭제 실패: {_e}"
+                    st.rerun()
+            st.session_state['_rs_clear_msg'] = (
+                "🧹 영수증 표·판독·올린 파일을 비웠습니다"
+                + (f" · {d_day} 저장된 내 영수증 {_gone}줄 삭제 — 새로 올려 저장한 뒤 정산 매칭을 다시 하세요"
+                   if _del_saved else " (저장된 영수증은 그대로)"))
+            st.rerun()
+
     # ── 1) 영수증 업로드 (선택) — 자동 인식 시도 후 표에 채움 ──
     files = st.file_uploader(
         "코스트코 영수증 PDF (여러 개 가능)", type=['pdf'],
-        key="rs_pdf", accept_multiple_files=True
+        key=f"rs_pdf{_ups}", accept_multiple_files=True
     )
     # 파일 이름만으로 키를 만들면, 판독 로직을 고친 뒤 같은 파일을 다시 올려도
     # '이미 읽은 파일'로 보고 건너뛴다. 크기와 '다시 읽기' 횟수를 함께 넣는다.
@@ -796,11 +835,11 @@ def _render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     _ph_cam = _phc1.file_uploader(
         "📷 영수증 촬영 (누르면 카메라 · 여러 장)",
         type=['jpg', 'jpeg', 'png', 'webp', 'heic', 'heif'],
-        key="rs_photo", accept_multiple_files=True)
+        key=f"rs_photo{_ups}", accept_multiple_files=True)
     _ph_gal = _phc2.file_uploader(
         "🖼 갤러리·파일에서 선택",
         type=['jpg', 'jpeg', 'png', 'webp', 'heic', 'heif'],
-        key="rs_photo_gal", accept_multiple_files=True)
+        key=f"rs_photo_gal{_ups}", accept_multiple_files=True)
     from pages_lib.receipt_page import inject_native_camera as _inject_cam
     _inject_cam("영수증 촬영")   # 왼쪽만: 탭 → 폰 기본 카메라 → 촬영 → 자동 업로드
     _ph_all = list(_ph_cam or []) + list(_ph_gal or [])
