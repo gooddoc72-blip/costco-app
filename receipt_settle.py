@@ -183,6 +183,10 @@ def _fix_by_catalog(it, no, db_name, db_price, log, by_no=None):
             it['수량'], it['단가'] = k, a // k
             u = a // k
     nm = str(it.get('상품명') or '').strip()
+    # ⚠️ 이름은 **바꾸지 않는다**(11/10 배포 직후 '상품명이 맞지 않는다'). 공유DB 상품명은
+    #    영수증을 저장할 때마다 그때 판독한 이름으로 덮어쓰여(persist_receipt →
+    #    upsert_shared_store_price) 예전 오독이 그대로 남아 있을 수 있다. 그걸 정답으로 믿고
+    #    덮으면 맞게 읽은 이름까지 틀린 DB 이름이 됐다. 의심스러우면 알리기만 한다.
     if (db_name and db_name != nm and db_price > 0 and u
             and abs(u - db_price) <= db_price * 0.20 and _token_score(nm, db_name) < 0.6):
         # 읽은 이름이 **다른 상품**과 뚜렷이 맞으면 이름이 아니라 번호가 한 줄 밀린 것이다
@@ -194,8 +198,6 @@ def _fix_by_catalog(it, no, db_name, db_price, log, by_no=None):
             log.append(f"⚠️ {no} '{nm[:18]}' — 번호는 '{db_name[:14]}'인데 이름은 {_other[1]} "
                        f"'{(by_no or {}).get(_other[1], '')[:14]}' 같음: 번호가 한 줄 밀렸을 수 있어 확인 필요")
             return
-        log.append(f"{no} 이름 '{nm[:18]}' → '{db_name[:18]}' (번호·단가가 DB와 같음)")
-        it['상품명'] = db_name
 
 
 def snap_items_to_catalog(items, min_score=0.55):
