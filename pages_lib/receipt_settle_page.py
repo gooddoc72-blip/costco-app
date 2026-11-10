@@ -779,6 +779,7 @@ def _render(USERNAME: str, IS_ADMIN: bool, settings: dict):
         # (다시 읽지 않고) 그 위에 다시 덮어쓴다
         st.session_state['_rs_photo_base'] = list(merged.values())
         st.session_state.pop('_rs_pcomp', None)
+        st.session_state['_rs_pdf_items'] = list(merged.values())
         st.session_state['_rs_fails'] = fails
         st.session_state.pop('rs_alloc', None)   # 새 업로드 → 이전 미리보기 초기화
         # 정산일은 화면 맨 위에서 사람이 고른다 — 여기서 지우면 위젯 생성 뒤
@@ -819,10 +820,21 @@ def _render(USERNAME: str, IS_ADMIN: bool, settings: dict):
     def _photo_reparse_btn():
         if not (_ph_all and _preads):
             return
-        if st.button("🔄 사진 다시 판독 (앞 판독값 버리고 새로 읽기)", key="rs_photo_reparse",
-                     help="판독이 틀렸을 때 누르세요. 지금 올라 있는 사진을 처음부터 다시 읽어 "
-                          "표를 새로 채웁니다 — 수량이 더해지지 않습니다. 사진 판독 뒤 표에서 "
-                          "직접 고친 값은 사라집니다."):
+        if st.button("🔄 사진 다시 판독 (표 비우고 새로 읽기)", key="rs_photo_reparse",
+                     help="판독이 틀렸을 때 누르세요. 표를 **비우고**(올려 둔 PDF 품목만 남김) 지금 "
+                          "올라 있는 사진을 처음부터 다시 읽습니다. 저장하면 그날 저장된 영수증도 "
+                          "새 판독값으로 통째로 바뀌고, 앞 판독이 엉뚱한 날짜로 저장한 줄도 지웁니다. "
+                          "표에서 직접 고친 값은 사라집니다."):
+            # 11/10 요청: 재판독은 '초기화 후 새로' — 예전엔 사진 읽기 전 표(불러온 저장
+            # 영수증·저장한 표)를 바탕으로 남겨, 틀린 번호로 읽힌 줄이 그대로 남았다.
+            # 지울 후보는 **사진 판독이 남긴 날짜만** — 불러온 다른 날 영수증은 건드리지 않는다
+            _old_dates = {str(v.get('date') or '') for v in _preads.values() if v.get('date')}
+            st.session_state['_rs_reset_dates'] = sorted(
+                set(st.session_state.get('_rs_reset_dates') or []) | _old_dates)
+            _base0 = list(st.session_state.get('_rs_pdf_items') or []) if files else []
+            st.session_state['_rs_photo_base'] = _base0
+            st.session_state['rs_receipt_items'] = list(_base0)
+            st.session_state['_rs_unsaved'] = True
             st.session_state.pop('_rs_preads', None)
             st.session_state.pop('_rs_pcomp', None)
             st.session_state.pop('rs_alloc', None)
@@ -1056,6 +1068,18 @@ def _render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             for _rv in (st.session_state.get('_rs_preads') or {}).values():
                 _rv['absorbed'] = True
             _s2, _u2, _rm2, _p2, _pd2 = _rs.persist_receipt(USERNAME, list(receipt_items))
+            # 재판독 뒤 저장 — 앞 판독이 남긴 날짜 중 이번 표에 없는 날짜는 지운다(초기화 후 저장).
+            # 이번 표에 있는 날짜는 persist_receipt가 이미 통째로 바꿨다. 내가 올린 것만 지운다.
+            _keep_d = {str(x.get('receipt_date') or '')[:10] for x in receipt_items}
+            _gone = 0
+            for _od in (st.session_state.pop('_rs_reset_dates', None) or []):
+                if _od and _od not in _keep_d:
+                    try:
+                        _gone += delete_receipt_items_by_date(USERNAME, _od, owner=USERNAME) or 0
+                    except Exception:
+                        pass
+            if _gone:
+                st.caption(f"🧹 앞 판독이 다른 날짜로 저장했던 {_gone}줄을 지웠습니다")
             if _pd2['error']:
                 st.caption(f"⚠️ 영수증 DB 저장 실패: {_pd2['error']}")
             st.session_state['_rs_price_detail'] = _pd2

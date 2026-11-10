@@ -68,6 +68,8 @@ export default function ReceiptPanel({ day, count, onSaved, onErr }: {
   const fileRef = useRef<HTMLInputElement>(null);
   const noteRef = useRef<HTMLDivElement>(null);
   const reads = useRef<Read[]>([]);
+  // 🔄 다시 판독 — 이번 판독은 표를 비우고 새로 채운다(저장하면 그날 영수증이 새 값으로 통째로 바뀐다)
+  const fresh = useRef(false);
   // 저장된 영수증에 이미 다 있는 품목을 또 읽어 더했을 때 — 되돌릴 수 있게 그 판독을 들고 있는다
   const [overlap, setOverlap] = useState<ReceiptRow[] | null>(null);
   const [askDel, setAskDel] = useState(false);
@@ -126,12 +128,14 @@ export default function ReceiptPanel({ day, count, onSaved, onErr }: {
         //    다르게 읽혀도 수량이 더해졌다. 이제 같은 날짜에 상품번호가 절반 이상 겹치면 같은
         //    영수증으로 보고 덮어쓴다 — 앞 판독이면 그 판독을 빼고, 불러온 저장 영수증이면 겹친
         //    품목 줄을 새 값으로 바꾼다.
+        const isFresh = fresh.current; fresh.current = false;
+        if (isFresh) reads.current = [];
         const sig = sigOf(got);
         const gd = dateOf(got), gn = nosOf(got);
         const dups = reads.current.filter(r => (sig && r.sig === sig) || r.files.some(f => fkeys.includes(f))
           || ((!gd || !dateOf(r.rows) || dateOf(r.rows) === gd) && sameReceipt(gn, nosOf(r.rows))));
         reads.current = [...reads.current.filter(r => !dups.includes(r)), { files: fkeys, sig, rows: got }];
-        let base = (rows || []).filter(r => r.costco_no || r.name);
+        let base = isFresh ? [] : (rows || []).filter(r => r.costco_no || r.name);
         for (const d of dups) base = subRows(base, d.rows);
         const bn = nosOf(base, gd || undefined);
         let over = 0;
@@ -145,7 +149,8 @@ export default function ReceiptPanel({ day, count, onSaved, onErr }: {
         const out = addRows(base, got);
         setRows(out.length ? out : [blank(day)]);
         setUnsaved(true); setChk(null); setAsk(false);
-        if (dups.length) setNote({ ok: true, text: '🔁 같은 영수증을 다시 읽어 앞 판독값을 새 값으로 바꿨습니다 — 수량을 더하지 않았습니다.' });
+        if (isFresh) setNote({ ok: true, text: '🔄 표를 비우고 새로 읽었습니다 — 확인 후 💾 저장하면 그날 저장된 영수증이 이 값으로 통째로 바뀝니다.' });
+        else if (dups.length) setNote({ ok: true, text: '🔁 같은 영수증을 다시 읽어 앞 판독값을 새 값으로 바꿨습니다 — 수량을 더하지 않았습니다.' });
         else if (over) setNote({ ok: true, text: `🔁 표에 있던 같은 영수증 ${over}품목을 새 판독값으로 덮어썼습니다 — 수량을 더하지 않았습니다.` });
         break;
       }
@@ -211,12 +216,13 @@ export default function ReceiptPanel({ day, count, onSaved, onErr }: {
       {open && (
         <div className="px-3 pb-3 space-y-2">
           <div className="flex flex-wrap items-center gap-2">
-            <label className={clsx('px-3 py-2 rounded-lg bg-primary text-white text-sm font-bold cursor-pointer', busy && 'opacity-50 pointer-events-none')}>
+            <label onClick={() => { fresh.current = false; }} className={clsx('px-3 py-2 rounded-lg bg-primary text-white text-sm font-bold cursor-pointer', busy && 'opacity-50 pointer-events-none')}>
               📄 PDF·사진 올리기 (여러 장)
               <input ref={fileRef} type="file" multiple accept=".pdf,image/*" className="hidden" onChange={e => upload(e.target.files)} />
             </label>
             <button onClick={loadSaved} disabled={busy} className="px-3 py-2 rounded-lg border text-sm disabled:opacity-50">📂 저장된 영수증 불러오기</button>
             {rows && <button onClick={() => { setRows(rs => [...(rs || []), blank(day)]); setUnsaved(true); }} className="px-3 py-2 rounded-lg border text-sm">➕ 줄 추가</button>}
+            {rows && <button onClick={() => { fresh.current = true; fileRef.current?.click(); }} disabled={busy} className="px-3 py-2 rounded-lg border border-amber-400 text-amber-800 text-sm disabled:opacity-50">🔄 다시 판독 (표 비우고 읽기)</button>}
             {rows && <button onClick={clearTable} disabled={busy} className="px-3 py-2 rounded-lg border text-sm disabled:opacity-50">🧹 표 비우기</button>}
             {count > 0 && <button onClick={() => setAskDel(true)} disabled={busy || askDel} className="px-3 py-2 rounded-lg border border-red-300 text-red-700 text-sm disabled:opacity-50">🗑 저장된 영수증 삭제</button>}
           </div>
