@@ -171,12 +171,16 @@ def snap_items_to_catalog(items, min_score=0.55):
         _rows = get_shared_products() or []
     except Exception:
         return items, []
-    _by_no, _cands = {}, []
+    _by_no, _cands, _price = {}, [], {}
     for _r in _rows:
         _no = str(_r.get('product_no') or '').strip()
         _nm = str(_r.get('costco_name') or '').strip()
         if _no and is_costco_pno(_no):
             _by_no[_no] = _nm
+            try:
+                _price[_no] = int(_r.get('store_price') or _r.get('unit_price') or 0)
+            except (TypeError, ValueError):
+                _price[_no] = 0
         if _nm:
             _cands.append({'no': _no, 'name': _nm})
     if not _by_no:
@@ -189,7 +193,20 @@ def snap_items_to_catalog(items, min_score=0.55):
         if not _nm:
             continue
         if _no and _no in _by_no:
-            continue                                  # 이미 아는 번호 — 손대지 않는다
+            # 번호는 맞게 읽고 **이름만 지어내는** 오독이 있다(11/5: 976839 롯데 빼빼로 →
+            # 'LOTTE 포도주스'). 이름이 DB와 한 글자도 안 겹치는데 단가가 DB 매입가와
+            # 가까우면 번호가 맞은 것이니 DB 이름으로 바꾼다. 단가까지 다르면 번호를
+            # 잘못 읽었을 수 있어 그대로 둔다(사람이 표에서 보고 고친다).
+            _dbn, _dbp = _by_no[_no], _price.get(_no, 0)
+            try:
+                _up = int(_it.get('단가') or 0)
+            except (TypeError, ValueError):
+                _up = 0
+            if (_dbn and _dbn != _nm and _token_score(_nm, _dbn) == 0
+                    and _dbp and _up and abs(_up - _dbp) <= _dbp * 0.25):
+                _log.append(f"{_no} 이름 '{_nm[:18]}' → '{_dbn[:18]}' (번호·단가가 DB와 같음)")
+                _it['상품명'] = _dbn
+            continue                                  # 이미 아는 번호 — 번호는 손대지 않는다
         if _no and is_costco_pno(_no):
             _hits = [_c for _c in _digit_neighbors(_no) if _c in _by_no]
             _best, _bs = '', 0.0

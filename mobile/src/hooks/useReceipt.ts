@@ -10,6 +10,7 @@ export function useReceipt() {
   const [applied, setApplied] = useState<ApplyResult | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [progress, setProgress] = useState('');
 
   const onUpload = async (files: FileList) => {
     if (files.length === 0) return;
@@ -27,12 +28,13 @@ export function useReceipt() {
     if (files.length === 0) return;
     setBusy(true); setError(null); setApplied(null); setChecks(null);
     try {
-      const r = await parseReceiptPhotos(Array.from(files));
+      setProgress('');
+      const r = await parseReceiptPhotos(Array.from(files), setProgress);
       setParsed({ items: r.items, errors: r.errors });
       setChecks(r.checks || null);
     } catch (e: any) {
       setError(e?.message);
-    } finally { setBusy(false); }
+    } finally { setBusy(false); setProgress(''); }
   };
 
   const onApply = async () => {
@@ -48,5 +50,5 @@ export function useReceipt() {
 
   const reset = () => { setParsed(null); setApplied(null); setError(null); setChecks(null); };
 
-  return { parsed, checks, applied, busy, error, onUpload, onUploadPhotos, onApply, reset };
+  return { parsed, checks, applied, busy, error, progress, onUpload, onUploadPhotos, onApply, reset };
 }

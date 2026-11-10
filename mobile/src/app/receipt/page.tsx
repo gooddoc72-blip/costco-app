@@ -38,7 +38,7 @@ export default function ReceiptPage() {
           <p className="text-[11px] text-gray-500">
             영수증이 화면에 꽉 차게, 구겨짐 없이 찍어주세요. 여러 장 한번에 올릴 수 있습니다.
           </p>
-          {r.busy && <p className="text-xs text-gray-500">⏳ AI 판독 중… (장당 10~30초)</p>}
+          {r.busy && <p className="text-xs text-gray-500">⏳ AI 판독 중… (장당 20초~2분){r.progress ? ` — ${r.progress}` : ''}</p>}
         </section>
 
         <section className="bg-white rounded-xl p-3 border space-y-2">

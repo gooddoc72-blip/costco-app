@@ -379,3 +379,7 @@ app.include_router(_oc_router)
 # ── 가격표 사진 → 공유 매입가 (새 화면 /m/pricetag 백엔드) ──
 from api.price_tag import router as _ptag_router  # noqa: E402
 app.include_router(_ptag_router)
+
+# ── 영수증 사진 판독 (/m/receipt 📷 — 영수증 정산과 같은 파이썬 판독기) ──
+from api.receipt_photo import router as _rphoto_router  # noqa: E402
+app.include_router(_rphoto_router)
