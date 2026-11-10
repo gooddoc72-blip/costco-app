@@ -154,6 +154,41 @@ def _digit_neighbors(no):
     return _out
 
 
+def _fix_by_catalog(it, no, db_name, db_price, log):
+    """번호를 아는 줄의 **수량·이름**을 DB 매입가로 검산해 바로잡는다.
+
+    · 수량: 판독 직후 산술 보정(repair_receipt_math)은 단가×수량≠금액이면 둘 중
+      하나를 금액에 맞춰 고치는데, **어느 쪽이 틀렸는지 모르고** 고친다.
+      `1개 15,490 / 금액 15,490` 을 수량 2로 읽으면 단가가 7,745로 '보정'되고,
+      단가를 5,000으로 잘못 읽으면 `15,000 ÷ 5,000` = 수량 3이 된다.
+      DB 매입가가 있으면 금액 ÷ 매입가가 정답 수량이다 — 보정된 줄에서 단가가 매입가와 30% 넘게
+      어긋나는데 금액이 매입가의 정수배(±8%)로 떨어지면 그 배수로 수량·단가를 고친다.
+    · 이름: 번호는 맞게 읽고 이름만 지어내는 오독(11/5: 976839 롯데 빼빼로 →
+      'LOTTE 포도주스'). 단가가 DB 매입가와 20% 안이면 번호가 맞은 것 → DB 이름으로.
+      단가까지 다르면 번호를 잘못 읽었을 수 있어 그대로 둔다(사람이 표에서 고친다).
+    """
+    try:
+        q = int(it.get('수량') or 0)
+        u = int(it.get('단가') or 0)
+        a = int(it.get('금액') or 0)
+    except (TypeError, ValueError):
+        return
+    # 판독이 스스로 맞아떨어진 줄(수량×단가=금액, 보정 안 함)은 건드리지 않는다 — DB 매입가가
+    # 카톤가로 저장된 상품이 있어(naver-register-pricing 함정) 그걸 정답으로 믿으면 안 된다.
+    doubtful = bool(it.get('_수정')) or (q and u and a and q * u != a)
+    if doubtful and db_price > 0 and a > 0 and (not u or abs(u - db_price) > db_price * 0.30):
+        k = round(a / db_price)
+        if 1 <= k <= 60 and abs(a - k * db_price) <= db_price * k * 0.08 and k != q:
+            log.append(f"{no} 수량 {q}→{k}개 (금액 {a:,} ÷ 매입가 {db_price:,})")
+            it['수량'], it['단가'] = k, a // k
+            u = a // k
+    nm = str(it.get('상품명') or '').strip()
+    if (db_name and db_name != nm and db_price > 0 and u
+            and abs(u - db_price) <= db_price * 0.20 and _token_score(nm, db_name) < 0.6):
+        log.append(f"{no} 이름 '{nm[:18]}' → '{db_name[:18]}' (번호·단가가 DB와 같음)")
+        it['상품명'] = db_name
+
+
 def snap_items_to_catalog(items, min_score=0.55):
     """영수증 품목의 상품번호를 이미 아는 코스트코 상품에 맞춘다.
 
@@ -192,22 +227,7 @@ def snap_items_to_catalog(items, min_score=0.55):
         _nm = str(_it.get('상품명') or '').strip()
         if not _nm:
             continue
-        if _no and _no in _by_no:
-            # 번호는 맞게 읽고 **이름만 지어내는** 오독이 있다(11/5: 976839 롯데 빼빼로 →
-            # 'LOTTE 포도주스'). 이름이 DB와 한 글자도 안 겹치는데 단가가 DB 매입가와
-            # 가까우면 번호가 맞은 것이니 DB 이름으로 바꾼다. 단가까지 다르면 번호를
-            # 잘못 읽었을 수 있어 그대로 둔다(사람이 표에서 보고 고친다).
-            _dbn, _dbp = _by_no[_no], _price.get(_no, 0)
-            try:
-                _up = int(_it.get('단가') or 0)
-            except (TypeError, ValueError):
-                _up = 0
-            if (_dbn and _dbn != _nm and _token_score(_nm, _dbn) == 0
-                    and _dbp and _up and abs(_up - _dbp) <= _dbp * 0.25):
-                _log.append(f"{_no} 이름 '{_nm[:18]}' → '{_dbn[:18]}' (번호·단가가 DB와 같음)")
-                _it['상품명'] = _dbn
-            continue                                  # 이미 아는 번호 — 번호는 손대지 않는다
-        if _no and is_costco_pno(_no):
+        if _no and _no not in _by_no and is_costco_pno(_no):
             _hits = [_c for _c in _digit_neighbors(_no) if _c in _by_no]
             _best, _bs = '', 0.0
             for _c in _hits:
@@ -216,15 +236,17 @@ def snap_items_to_catalog(items, min_score=0.55):
                     _best, _bs = _c, _sc
             if _best and _bs >= min_score:
                 _log.append(f"{_nm[:18]} · {_no} → {_best} (한 자리 오독, 이름 일치 {_bs:.2f})")
-                _it['상품번호'] = _best
-            continue
-        if not _no:
+                _it['상품번호'] = _no = _best
+        elif not _no:
             # best_name_match는 (후보, 정보)를 돌려준다 — 통째로 받아 .get을 부르면
             # 번호 못 읽은 줄이 하나만 있어도 판독 전체가 'tuple' 오류로 죽었다(10/28).
             _m, _ = best_name_match(_nm, _cands, name_key='name')
             if _m and str(_m.get('no') or '').strip():
                 _log.append(f"{_nm[:18]} · 번호 없음 → {_m['no']} (이름으로 찾음)")
                 _it['상품번호'] = str(_m['no']).strip()
+            continue
+        if _no in _by_no:
+            _fix_by_catalog(_it, _no, _by_no[_no], _price.get(_no, 0), _log)
     return items, _log
 
 
@@ -1830,7 +1852,8 @@ def parse_receipt_uploads(pdfs, photos, settings):
             items.append({'상품번호': _s(_it.get('상품번호')), '상품명': _it.get('상품명', ''),
                           '수량': _int(_it.get('수량')) or 1, '단가': _int(_it.get('단가')),
                           '금액': _int(_it.get('금액')), '할인': _int(_it.get('할인')),
-                          'receipt_date': _rd})
+                          'receipt_date': _rd,
+                          '_수정': bool(_it.get('_수정'))})
 
     for f in (pdfs or []):
         try:

@@ -1301,6 +1301,17 @@ _TILE_USER = (
 )
 
 
+def _same_line(a, b):
+    """조각 겹침 구간에서 같은 영수증 줄인가 — 번호가 둘 다 있으면 번호+금액, 없으면 이름+금액."""
+    _na, _nb = str(a.get("상품번호") or ""), str(b.get("상품번호") or "")
+    _aa, _ab = int(a.get("금액") or 0), int(b.get("금액") or 0)
+    if _aa and _ab and _aa != _ab:
+        return False
+    if _na and _nb:
+        return _na == _nb
+    return str(a.get("상품명") or "").replace(" ", "") == str(b.get("상품명") or "").replace(" ", "")
+
+
 def _merge_tile_results(parts):
     """조각별 판독 결과를 하나로 합친다. 겹친 구간의 중복 품목은 지운다.
 
@@ -1311,7 +1322,6 @@ def _merge_tile_results(parts):
     if not parts:
         return None
     _out = {"items": []}
-    _seen_tail = set()
     for _idx, _d in enumerate(parts):
         if not _d:
             continue
@@ -1323,18 +1333,24 @@ def _merge_tile_results(parts):
                    "total_qty", "item_kinds"):
             if not _out.get(_k) and int(_d.get(_k) or 0):
                 _out[_k] = int(_d[_k])
-        _new = []
-        for _it in (_d.get("items") or []):
-            _key = (str(_it.get("상품번호") or ""), str(_it.get("상품명") or "").strip(),
-                    int(_it.get("수량") or 0), int(_it.get("금액") or 0))
-            if _idx and _key in _seen_tail:
-                continue                        # 앞 조각과 겹친 줄
-            _new.append(_it)
-        _out["items"].extend(_new)
-        # 다음 조각과 겹칠 수 있는 건 이 조각의 뒤쪽 절반
-        _tail = (_d.get("items") or [])[len(_d.get("items") or []) // 2:]
-        _seen_tail = {(str(i.get("상품번호") or ""), str(i.get("상품명") or "").strip(),
-                       int(i.get("수량") or 0), int(i.get("금액") or 0)) for i in _tail}
+        _its = list(_d.get("items") or [])
+        if _idx and _out["items"]:
+            # 앞 조각 꼬리 ↔ 이 조각 머리(겹친 구간)에서 같은 줄을 1:1로 지운다.
+            # ⚠️ 전에는 상품명까지 같아야 같은 줄로 봤다 — 두 조각에서 이름을 조금만
+            #    다르게 읽어도('LOTTE 빼빼로'/'롯데빼빼로') 중복이 안 지워져 그 품목
+            #    수량이 두 배가 됐다. 번호가 있으면 번호+금액으로만 맞춘다.
+            #    한 번 짝지은 줄은 다시 쓰지 않아, 같은 상품을 따로 두 줄 산 것은 남는다.
+            _win = max(3, int(round(len(_its) * 0.35)))
+            _tail = list(range(max(0, len(_out["items"]) - _win), len(_out["items"])))
+            _used, _drop = set(), set()
+            for _j, _it in enumerate(_its[:_win]):
+                for _t in _tail:
+                    if _t not in _used and _same_line(_out["items"][_t], _it):
+                        _used.add(_t)
+                        _drop.add(_j)
+                        break
+            _its = [x for _j, x in enumerate(_its) if _j not in _drop]
+        _out["items"].extend(_its)
     return _out if _out["items"] else None
 
 
@@ -1361,13 +1377,16 @@ def repair_receipt_math(data, tolerance=1):
         # 이걸 놓치면 단가가 배로 뛰어 그 사용자에게 두 배로 청구된다.
         if _q == 1 and _u and _a > _u and _a % _u == 0:
             _i["수량"] = _a // _u
-            _n += 1
         elif _a % _q == 0:
             _i["단가"] = _a // _q
-            _n += 1
         elif _u and _a == 0:
             _i["금액"] = _q * _u
-            _n += 1
+        else:
+            continue
+        # 어느 쪽이 틀렸는지 모르고 고친 줄 — 상품DB 매입가로 한 번 더 검산한다
+        # (receipt_settle._fix_by_catalog)
+        _i["_수정"] = True
+        _n += 1
     return _n
 
 

@@ -871,6 +871,7 @@ def _render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         '금액': int(_it.get('금액') or 0),
                         '할인': int(_it.get('할인') or 0),
                         'receipt_date': _rdate,
+                        '_수정': bool(_it.get('_수정')),
                     })
                 _da = int(_data.get('discount_amount') or 0)
                 _di = sum(int(x.get('할인') or 0) for x in (_data.get('items') or []))
