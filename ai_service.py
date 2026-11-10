@@ -971,7 +971,7 @@ _RECEIPT_SYSTEM = (
     "휴대폰으로 찍은 영수증 사진을 보고 JSON으로만 출력한다(설명·마크다운 금지).\n"
     "출력 형식:\n"
     '{"purchase_date":"YYYY-MM-DD","purchase_time":"HH:MM","store_type":"코스트코|트레이더스",'
-    '"store_name":"지점 포함 매장명","total_qty":정수,"item_kinds":정수,"total_amount":정수,'
+    '"store_name":"지점 포함 매장명","total_qty":정수,"qty_subtotals":[정수],"item_kinds":정수,"total_amount":정수,'
     '"discount_amount":정수,"coupon_total":정수,"card_last4":"1234","cash_receipt_no":"승인번호",'
     '"items":[{"product_no":"상품번호","name":"상품명","qty":정수,"unit_price":정수,'
     '"amount":정수,"discount":정수}]}\n'
@@ -997,6 +997,14 @@ _RECEIPT_SYSTEM = (
     "`2×`·`1x` 로 찍히기도 한다 — ×/x 앞 숫자가 수량이다(qty에는 숫자만).\n"
     "  `** Begin Bottom Of Basket`, `** Bottom Of Basket Item Count 4`, `---- 상품수 소계 : 9` 같은 줄은 "
     "품목이 아니다. 넣지 마라(그 사이에 있는 품목 줄은 평소대로 넣는다).\n"
+    "  ⚠️ **'상품수 소계'는 영수증에 여러 번 나올 수 있다** — 바로 위 구간(앞 소계 줄 다음부터)의 "
+    "수량 합이다. 예: `소계 : 4` 다음 품목들 뒤에 `소계 : 32` 면 총수량은 4+32=36이다. "
+    "소계 값은 나온 순서대로 qty_subtotals에 넣고, **소계를 total_qty로 쓰지 마라**. "
+    "소계에 맞추려고 품목 줄을 빼거나 수량을 바꾸지 마라 — 찍힌 그대로 읽는다.\n"
+    "  ⚠️ **사진이 기울거나 종이가 휘면** 상품번호가 같은 줄의 수량·금액보다 아래로 처져 "
+    "다음 상품명 높이에 보인다. 높이가 아니라 **순서**로 묶어라: 상품명 → 그 아래 첫 상품번호와 "
+    "그 오른쪽 수량·단가·금액이 한 품목이다. 상품번호는 품목마다 하나씩 순서대로이고 하나도 "
+    "건너뛰거나 밀리지 않는다(마지막 품목 번호가 남거나 첫 품목 번호가 비면 한 칸 밀린 것이다).\n"
     "  상품명은 영수증에 찍힌 글자 그대로 옮긴다 — 아는 다른 상품명으로 바꾸거나 다듬지 마라.\n"
     "  같은 상품이 **따로 두 줄**로 찍히기도 한다(각각 수량 1). 합치지 말고 **줄마다 그대로** 넣어라.\n"
     "- ⚠️ **할인(쿠폰) 줄**: `*** CPN` 이라는 줄이 나오면 **그 다음 두 줄이 할인**이다.\n"
@@ -1018,7 +1026,7 @@ _RECEIPT_SYSTEM = (
     "  · 줄마다 **수량 × 단가 = 금액**. 안 맞으면 수량을 놓친 것이다.\n"
     "  · (품목 금액 합계) − (할인 합계) = **'합계 (VAT 포함)'** 금액.\n"
     "  · 할인 합계 = 영수증 하단 **'쿠폰합계'**.\n"
-    "  · 수량 합계 = 영수증 하단 **'총 판매 상품 수'**.\n"
+    "  · 수량 합계 = 영수증 하단 **'총 판매 상품 수'**(없으면 모든 '상품수 소계'의 합).\n"
     "  안 맞으면 줄을 다시 세어라 — 특히 같은 상품의 두 번째 줄을 빠뜨렸는지 확인.\n"
     "- coupon_total: 영수증 하단 **'쿠폰합계'**(또는 COUPON TOTAL) 옆의 **할인 합계 금액**(개수 아님). 예 `쿠폰합계 62,000` → 62000. 없으면 0.\n"
     "- item_kinds: 영수증에 '총 품목 수 : 20'처럼 적혀 있으면 그 숫자를 그대로.\n"
@@ -1027,7 +1035,9 @@ _RECEIPT_SYSTEM = (
     "- store_type: 로고/상호에 COSTCO·코스트코면 '코스트코', TRADERS·트레이더스면 '트레이더스'. "
     "판단 불가면 ''.\n"
     "- store_name: '코스트코 상봉점'처럼 매장명+지점. 지점 안 보이면 매장명만.\n"
-    "- total_qty: 영수증 하단 **'총 판매 상품 수'**(또는 총수량/수량합계). 없으면 품목 수량의 합.\n"
+    "- total_qty: 영수증 하단 **'총 판매 상품 수'**(또는 총수량/수량합계)가 찍혀 있을 때만 그 값. "
+    "없으면 0. ('상품수 소계'는 total_qty가 아니다 — qty_subtotals)\n"
+    "- qty_subtotals: '상품수 소계 : N' 줄의 N을 나온 순서대로. 없으면 [].\n"
     "- item_kinds: 품목 종수(줄 수).\n"
     "- total_amount: **'합계 (VAT 포함)'** 옆의 최종 결제금액(할인 반영 후). 숫자만.\n"
     "- discount_amount: 할인·쿠폰·즉시할인 합계. 없으면 0. 양수로.\n"
@@ -1145,6 +1155,8 @@ def _parse_receipt_json(txt):
         "store_type": _store,
         "store_name": str(_d.get("store_name", "") or "").strip(),
         "total_qty": _num(_d.get("total_qty")) or sum(i["수량"] for i in _items),
+        "qty_subtotals": ([_num(x) for x in _d.get("qty_subtotals") if _num(x) > 0]
+                          if isinstance(_d.get("qty_subtotals"), list) else []),
         "item_kinds": _num(_d.get("item_kinds")) or len(_items),
         "total_amount": _num(_d.get("total_amount")),
         "discount_amount": abs(_num(_d.get("discount_amount"))) + _extra_discount,
@@ -1192,8 +1204,18 @@ def validate_receipt(data, tolerance=1):
         _critical = True
 
     _tq = int(data.get("total_qty") or 0)
-    if _tq and _sum_qty and _tq != _sum_qty:
-        _issues.append(f"수량 불일치 — 품목합 {_sum_qty}개 vs 총수량 {_tq}개")
+    # '상품수 소계'가 여러 번 찍힌 영수증(11/10 부산점: 소계 4 + 소계 32 = 36개)은 AI가 소계 하나를
+    # 총수량으로 쓰기 쉽다 — 그러면 맞게 읽어도 매번 불일치로 떠 재판독·조각 판독을 돌고, 더 나쁜
+    # 결과로 바뀌기도 했다. 소계들의 합이 품목 수량 합과 맞으면 그걸 정답으로 본다.
+    _subs = [int(x or 0) for x in (data.get("qty_subtotals") or []) if int(x or 0) > 0]
+    _sub_ok = bool(_subs) and sum(_subs) == _sum_qty
+    if _tq and _sum_qty and _tq != _sum_qty and not _sub_ok:
+        _issues.append(f"수량 불일치 — 품목합 {_sum_qty}개 vs 총수량 {_tq}개"
+                       + (f"(소계 {'+'.join(map(str, _subs))}={sum(_subs)})" if _subs else ""))
+        _critical = True
+    elif _subs and _sum_qty and not _sub_ok:
+        _issues.append(f"수량 불일치 — 품목합 {_sum_qty}개 vs 상품수 소계 합 "
+                       f"{'+'.join(map(str, _subs))}={sum(_subs)}개")
         _critical = True
 
     _kinds = int(data.get("item_kinds") or 0)
@@ -1524,6 +1546,11 @@ def parse_receipt_photo(api_key, image_bytes, media_type, max_tokens=4000, *, ge
                    "total_qty", "item_kinds"):
             if not int(_merged.get(_k) or 0) and int(_data.get(_k) or 0):
                 _merged[_k] = int(_data[_k])
+        # 수량 기준(총수량·소계)은 영수증 전체를 본 통판독 값을 쓴다 — 조각은 '소계 : 4' 같은
+        # 구간 소계를 총수량으로 들고 오기 쉽다
+        if _data.get("qty_subtotals"):
+            _merged["qty_subtotals"] = list(_data["qty_subtotals"])
+            _merged["total_qty"] = int(_data.get("total_qty") or 0)
     _mfix = repair_receipt_math(_merged)
     _mok, _miss = validate_receipt(_merged)
     _merged.update({"_provider": "gemini" if gemini_key else "claude",

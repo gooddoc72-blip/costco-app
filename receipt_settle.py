@@ -154,7 +154,7 @@ def _digit_neighbors(no):
     return _out
 
 
-def _fix_by_catalog(it, no, db_name, db_price, log):
+def _fix_by_catalog(it, no, db_name, db_price, log, by_no=None):
     """번호를 아는 줄의 **수량·이름**을 DB 매입가로 검산해 바로잡는다.
 
     · 수량: 판독 직후 산술 보정(repair_receipt_math)은 단가×수량≠금액이면 둘 중
@@ -185,6 +185,15 @@ def _fix_by_catalog(it, no, db_name, db_price, log):
     nm = str(it.get('상품명') or '').strip()
     if (db_name and db_name != nm and db_price > 0 and u
             and abs(u - db_price) <= db_price * 0.20 and _token_score(nm, db_name) < 0.6):
+        # 읽은 이름이 **다른 상품**과 뚜렷이 맞으면 이름이 아니라 번호가 한 줄 밀린 것이다
+        # (기운 사진에서 번호가 아래로 처져 다음 품목에 붙음 — 11/10 부산점 영수증).
+        # 그때 DB 이름으로 바꾸면 틀린 줄이 맞아 보이게 숨는다 → 바꾸지 않고 알린다.
+        _other = max(((_token_score(nm, _n2), _c2) for _c2, _n2 in (by_no or {}).items()
+                      if _c2 != no and _n2), default=(0.0, ''))
+        if _other[0] >= 0.6:
+            log.append(f"⚠️ {no} '{nm[:18]}' — 번호는 '{db_name[:14]}'인데 이름은 {_other[1]} "
+                       f"'{(by_no or {}).get(_other[1], '')[:14]}' 같음: 번호가 한 줄 밀렸을 수 있어 확인 필요")
+            return
         log.append(f"{no} 이름 '{nm[:18]}' → '{db_name[:18]}' (번호·단가가 DB와 같음)")
         it['상품명'] = db_name
 
@@ -246,7 +255,7 @@ def snap_items_to_catalog(items, min_score=0.55):
                 _it['상품번호'] = str(_m['no']).strip()
             continue
         if _no in _by_no:
-            _fix_by_catalog(_it, _no, _by_no[_no], _price.get(_no, 0), _log)
+            _fix_by_catalog(_it, _no, _by_no[_no], _price.get(_no, 0), _log, _by_no)
     return items, _log
 
 
