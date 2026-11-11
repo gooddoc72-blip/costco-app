@@ -972,7 +972,7 @@ _RECEIPT_SYSTEM = (
     "출력 형식:\n"
     '{"rotate":0,"purchase_date":"YYYY-MM-DD","purchase_time":"HH:MM","store_type":"코스트코|트레이더스",'
     '"store_name":"지점 포함 매장명","total_qty":정수,"qty_subtotals":[정수],"item_kinds":정수,"total_amount":정수,'
-    '"discount_amount":정수,"coupon_total":정수,"card_last4":"1234","cash_receipt_no":"승인번호",'
+    '"discount_amount":정수,"coupon_total":정수,"card_last4":"1234","cash_receipt_no":"승인번호","txn_no":"거래번호",'
     '"items":[{"product_no":"상품번호","name":"상품명","qty":정수,"unit_price":정수,'
     '"amount":정수,"discount":정수}]}\n'
     "규칙:\n"
@@ -1046,6 +1046,9 @@ _RECEIPT_SYSTEM = (
     "- discount_amount: 할인·쿠폰·즉시할인 합계. 없으면 0. 양수로.\n"
     "- card_last4: 카드번호 마스킹의 **끝 4자리 숫자만**. 현금결제면 ''.\n"
     "- cash_receipt_no: 현금영수증 승인번호(숫자). 없으면 ''.\n"
+    "- txn_no: 바코드 옆 `MM/DD/YYYY 13:46 856 9 159 211` 줄에서 **시각 뒤의 숫자 전부**(공백 없이, "
+    "예 '8569159211'). 그 줄이 안 보이면 카드 '승인번호:' 뒤 숫자. 둘 다 없으면 ''. "
+    "같은 시각에 결제한 다른 영수증을 가려내는 번호다.\n"
     "- items: 품목 줄마다 1개. 상품번호(보통 6~7자리)가 있으면 넣고 없으면 ''. "
     "unit_price=단가, amount=금액. 안 보이는 값은 0.\n"
     "- 흐리거나 잘려서 안 보이는 값은 절대 지어내지 말고 빈 문자열/0으로 둔다."
@@ -1107,12 +1110,14 @@ def _parse_receipt_json(txt):
         _upper = _name.upper()
         _pno = "".join(ch for ch in str(_it.get("product_no", "") or "") if ch.isdigit())
         _is_disc = (any(_w in _name or _w in _upper for _w in _DISCOUNT_WORDS)
-                    or _amt < 0 or _up < 0 or (_pno and len(_pno) <= 4))
+                    or _amt < 0 or _up < 0)
         # 11/10 부산점: 쿠폰코드가 5자리(18351·20686)이고 이름도 IRC 없이 위 품목과 같게
         # 찍혔다(`용담삼면900G / 20686 1x 2,400 2,400-T`). AI가 마이너스를 빠뜨리면 없는
         # 상품이 된다. 5자리 상품번호(43607 케이크 등)도 진짜로 있으니, **바로 위 품목과
         # 이름 앞 3글자가 같고 금액이 더 작을 때만** 할인으로 본다.
-        if not _is_disc and _pno and len(_pno) == 5 and _items:
+        # 11/11: 4자리도 같은 규칙 — 예전엔 4자리면 무조건 쿠폰으로 봐서 진짜 상품
+        # `CHOCMOD 트러플 / 3379 1x 26,490`이 위 품목(한우불고기)의 할인 26,490원이 됐다.
+        if not _is_disc and _pno and len(_pno) <= 5 and _items:
             _pv = _items[-1]
             _k = lambda x: "".join(ch for ch in str(x) if ch.isalnum())[:3]
             if (_k(_name) and _k(_name) == _k(_pv["상품명"])
@@ -1179,6 +1184,7 @@ def _parse_receipt_json(txt):
                               if ch.isdigit())[-4:],
         "cash_receipt_no": "".join(ch for ch in str(_d.get("cash_receipt_no", "") or "")
                                    if ch.isdigit()),
+        "txn_no": "".join(ch for ch in str(_d.get("txn_no", "") or "") if ch.isdigit()),
         "items": _items,
     }
 
@@ -1444,7 +1450,7 @@ def _merge_tile_results(parts):
         if not _d:
             continue
         for _k in ("purchase_date", "purchase_time", "store_type", "store_name",
-                   "card_last4", "cash_receipt_no"):
+                   "card_last4", "cash_receipt_no", "txn_no"):
             if not _out.get(_k) and _d.get(_k):
                 _out[_k] = _d[_k]
         for _k in ("total_amount", "discount_amount", "coupon_total",
@@ -1788,7 +1794,7 @@ def _read_receipt_image(api_key, _b, _mt, max_tokens, gemini_key, allow_rotate=T
     # 조각에는 합계/일자가 안 보일 수 있다 — 통판독에서 읽은 헤더로 채운다
     if _data:
         for _k in ("purchase_date", "purchase_time", "store_type", "store_name",
-                   "card_last4", "cash_receipt_no"):
+                   "card_last4", "cash_receipt_no", "txn_no"):
             if not _merged.get(_k) and _data.get(_k):
                 _merged[_k] = _data[_k]
         for _k in ("total_amount", "discount_amount", "coupon_total",

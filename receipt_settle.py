@@ -1762,7 +1762,37 @@ def same_receipt_nos(a, b):
         return False
     n = len(a & b)
     m = min(len(a), len(b))
+    if m == 1 and max(len(a), len(b)) > 1:
+        # 1품목 영수증 하나가 긴 영수증의 한 품목과 겹치는 건 '같은 영수증'의 증거가 아니다
+        # (11/11 요거트 1품목 영수증이 첫 줄이 요거트인 긴 영수증을 덮어씀)
+        return False
     return n >= min(2, m) and n * 2 >= m
+
+
+def _sig_parts(r):
+    """reads의 sig 문자열 'date|time|total|txn' → (total, txn). 없으면 (0, '')."""
+    p = str(r.get('sig') or '').split('|')
+    try:
+        t = int(p[2]) if len(p) > 2 else 0
+    except ValueError:
+        t = 0
+    return t, (p[3] if len(p) > 3 else '')
+
+
+def _maybe_same_receipt(a, b):
+    """둘 다 읽힌 결제금액이나 거래번호가 **다르면** 절대 같은 영수증이 아니다.
+
+    11/11: 요거트 1품목 영수증(25,580원)과 긴 영수증(533,180원 · 첫 줄이 같은 요거트)이
+    상품번호가 '겹친다'는 이유로 같은 영수증이 돼 덮어써졌고, 같은 시각·같은 금액의
+    요거트 영수증 2장도 하나로 합쳐졌다(51,160원 누락).
+    """
+    ta, xa = _sig_parts(a)
+    tb, xb = _sig_parts(b)
+    if xa and xb and xa != xb:
+        return False
+    if ta and tb and ta != tb:
+        return False
+    return True
 
 
 def compose_photo_reads(base, reads):
@@ -1784,6 +1814,8 @@ def compose_photo_reads(base, reads):
         rn = _receipt_nos(r.get('lines'))
         for k in list(kept):
             if r.get('date') and k.get('date') and r['date'] != k['date']:
+                continue
+            if not _maybe_same_receipt(r, k):
                 continue
             if (r.get('sig') and r.get('sig') == k.get('sig')) or same_receipt_nos(rn, _receipt_nos(k.get('lines'))):
                 kept.remove(k)
@@ -1957,7 +1989,10 @@ def receipt_signature(data):
         _t = 0
     if not _d or _t <= 0:
         return None
-    return (_d, str((data or {}).get('purchase_time') or '').strip()[:5], _t)
+    # 11/11: 같은 시각(13:46)에 같은 금액(요거트 2개 25,580원)을 두 회원카드로 따로 결제한
+    # 영수증 2장이 '같은 영수증'으로 잡혀 한 장이 빠졌다 → 거래번호까지 키에 넣는다.
+    _txn = str((data or {}).get('txn_no') or '').strip()
+    return (_d, str((data or {}).get('purchase_time') or '').strip()[:5], _t, _txn)
 
 
 def parse_receipt_uploads(pdfs, photos, settings, use_cache=True):
