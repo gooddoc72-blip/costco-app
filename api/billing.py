@@ -10,6 +10,7 @@
   · 미입금자
 관리자 전용.
 """
+import re
 from datetime import date, timedelta
 from typing import Optional
 
@@ -137,7 +138,79 @@ def day_items(settle_date: str, username: str, admin: dict = Depends(require_adm
     return {'date': ds, 'username': username, 'items': out,
             'goods_total': sum(r['amount'] for r in out),
             'invoice_total': _i(inv.get('total_amount')),
-            'status': inv.get('status') or ''}
+            'status': inv.get('status') or '',
+            'money': _day_money(ds, username, inv)}
+
+
+_ORDER_RE = re.compile(r"\[주문 ([^\]]+)\]")
+_DATE_RE = re.compile(r"(\d{4}-\d{2}-\d{2})")
+_CREDIT_RE = re.compile(r"·\s*(.+?)\s+(\d+)개\s*·\s*판매자\s+(\S+)")
+
+
+def _stock_credits_by_day(username: str) -> dict:
+    """{정산일: [{order_no, product_name, qty, buyer, amount}]} — 내 재고를 남이 써서 받은 돈.
+
+    원장에는 주문 1건이 '적립 → 정산 취소(−) → 보정 재적립'처럼 여러 줄로 남는다.
+    주문번호로 묶어 **남은 합**만 본다(0이면 결국 안 받은 것).
+    어느 날 정산분인지: 정산일 칸 → 없으면 메모의 날짜(보정 줄) → 없으면 기록일.
+    """
+    rows = [r for r in (_dep.ledger(username=username, limit=5000) or [])
+            if r.get('kind') == 'stock_credit']
+    rows.sort(key=lambda x: (str(x['tx_date']), int(x['id'])))
+    by_order = {}
+    for r in rows:
+        m = _ORDER_RE.search(str(r.get('memo') or ''))
+        if not m:
+            continue
+        o = by_order.setdefault(m.group(1).strip(), {'amount': 0, 'last': None})
+        o['amount'] += _i(r['amount'])
+        if _i(r['amount']) > 0:
+            o['last'] = r
+    out = {}
+    for ono, o in by_order.items():
+        r = o['last']
+        if o['amount'] <= 0 or r is None:
+            continue
+        memo = str(r.get('memo') or '')
+        d = str(r.get('settle_date') or '')[:10]
+        if not d:
+            md = _DATE_RE.search(_ORDER_RE.sub('', memo))
+            d = md.group(1) if md else str(r['tx_date'])[:10]
+        mc = _CREDIT_RE.search(memo)
+        out.setdefault(d, []).append({
+            'order_no': ono, 'amount': o['amount'],
+            'product_name': mc.group(1).strip() if mc else '',
+            'qty': int(mc.group(2)) if mc else 1,
+            'buyer': mc.group(3).strip() if mc else '',
+        })
+    return out
+
+
+def _day_money(ds: str, username: str, inv: dict) -> dict:
+    """청구서 아래 '돈 정리' — 이 날 낸 돈 · 내 재고 판매 적립 · 이날 결과 · 지금 잔액.
+
+    계산은 원장 값을 그대로 모으기만 한다(새 금액을 만들지 않는다).
+    """
+    total = _i(inv.get('total_amount'))
+    status = str(inv.get('status') or '')
+    dep = _i(_dep.deducted_map(ds).get(username))
+    acct = _i(inv.get('paid_amount')) if (status == 'paid' and not dep) else 0
+    try:
+        credits = _stock_credits_by_day(username).get(ds, [])
+    except Exception:
+        credits = []
+    names = _names()
+    for c in credits:
+        c['buyer_name'] = names.get(c['buyer'], c['buyer'])
+    credit_sum = sum(c['amount'] for c in credits)
+    return {
+        'total': total, 'status': status,
+        'deposit_paid': dep, 'account_paid': acct,
+        'left': max(0, total - dep - acct) if status != 'draft' else total,
+        'credits': credits, 'credit_sum': credit_sum,
+        'day_net': credit_sum - dep,
+        'balance_now': _i(_dep.balances().get(username, 0)),
+    }
 
 
 class BillReq(BaseModel):

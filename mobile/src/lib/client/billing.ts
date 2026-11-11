@@ -92,7 +92,15 @@ export interface Item {
   list_price: number; discount_per_pack: number; unit_price: number; amount: number;
   order_no: string; memo: string;
 }
-export interface ItemsResp { items: Item[]; goods_total: number; invoice_total: number; status: string }
+export interface StockCredit {
+  order_no: string; amount: number; product_name: string; qty: number; buyer: string; buyer_name: string;
+}
+/** 청구서 아래 '돈 정리' — 파이썬 원장 값을 모은 것(화면에서 새로 계산하지 않는다). */
+export interface DayMoney {
+  total: number; status: string; deposit_paid: number; account_paid: number; left: number;
+  credits: StockCredit[]; credit_sum: number; day_net: number; balance_now: number;
+}
+export interface ItemsResp { date: string; items: Item[]; goods_total: number; invoice_total: number; status: string; money?: DayMoney }
 
 export interface DepRow {
   username: string; name: string; charged: number; spent: number; adjusted: number;

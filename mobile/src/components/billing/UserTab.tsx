@@ -13,6 +13,7 @@ import { ChevronDown, ChevronRight, RefreshCw } from 'lucide-react';
 import { billing, ItemsResp, UserInvRow, UserResp } from '@/lib/client/billing';
 import { num } from '@/lib/fmt';
 import { Btn } from './DayTab';
+import InvoiceMoney from './InvoiceMoney';
 
 const ST_LABEL: Record<string, string> = { draft: '청구 전', billed: '청구됨', paid: '입금완료' };
 const ST_CLS: Record<string, string> = {
@@ -268,6 +269,7 @@ function ItemList({ it }: { it: ItemsResp }) {
         </tbody>
       </table>
       <div className="text-xs text-gray-600 mt-1">물건값 합계 {num(it.goods_total)}원 · 청구액 {num(it.invoice_total)}원</div>
+      <div className="mt-2"><InvoiceMoney it={it} /></div>
     </div>
   );
 }

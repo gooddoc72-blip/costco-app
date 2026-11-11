@@ -10,6 +10,7 @@ import clsx from 'clsx';
 import { ChevronDown, ChevronRight, RefreshCw } from 'lucide-react';
 import { billing, DayResp, DayRow, ItemsResp } from '@/lib/client/billing';
 import { num } from '@/lib/fmt';
+import InvoiceMoney from './InvoiceMoney';
 
 const ST_LABEL: Record<string, string> = { draft: '정산완료(청구 전)', billed: '청구됨', paid: '입금완료' };
 const ST_CLS: Record<string, string> = {
@@ -276,6 +277,7 @@ function Items({ it }: { it: ItemsResp }) {
           고치는 일은 아직 기존 화면(정산·청구)에서 합니다.
         </div>
       )}
+      <InvoiceMoney it={it} />
     </div>
   );
 }
