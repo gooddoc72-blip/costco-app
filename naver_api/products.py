@@ -53,6 +53,102 @@ def load_naver_category_cache(client_id, client_secret, force_refresh=False):
 
 
 
+_MODEL_CAT_CACHE = {}
+
+
+def _model_queries(name):
+    """모델 검색어 — 긴 코스트코 상품명은 그대로는 안 걸리므로 점점 줄여 본다."""
+    _n = _re_mod.sub(r"\s+", " ", str(name or "")).strip()
+    _core = _re_mod.sub(r"[0-9]+(\.[0-9]+)?\s*(g|kg|ml|l|매|개|입|팩|롤|ea|x|×)\b", " ", _n, flags=_re_mod.I)
+    _core = _re_mod.sub(r"[\[\]()/,+*×xX]", " ", _core)
+    _core = _re_mod.sub(r"\s+", " ", _core).strip()
+    _toks = [t for t in _core.split() if len(t) >= 2]
+    out = []
+    for q in (_n, _core, " ".join(_toks[:4]), " ".join(_toks[:3]), " ".join(_toks[:2])):
+        q = q.strip()
+        if len(q) >= 2 and q not in out:
+            out.append(q)
+    return out
+
+
+def search_product_models(client_id, client_secret, name, size=20):
+    """네이버 가격비교 모델 검색 — GET /v1/product-models?name= (commerce-api #720).
+
+    모델에는 **네이버가 직접 정한 카테고리**가 붙어 있다. 반환: ([{id, name, category_id,
+    category_name}], error). 응답 모양이 문서마다 달라 키 이름을 넓게 받는다.
+    """
+    token, err = get_token(client_id, client_secret)
+    if not token:
+        return [], err
+    try:
+        r = requests.get("https://api.commerce.naver.com/external/v1/product-models",
+                         headers={"Authorization": f"Bearer {token}"},
+                         params={"name": str(name)[:100], "page": 1, "size": int(size)}, timeout=15)
+    except Exception as e:
+        return [], str(e)
+    if r.status_code != 200:
+        return [], f"모델 검색 실패({r.status_code}) {r.text[:120]}"
+    try:
+        j = r.json()
+    except Exception:
+        return [], "모델 검색 응답 해석 실패"
+    rows = j if isinstance(j, list) else (j.get("contents") or j.get("content") or j.get("data")
+                                          or j.get("productModels") or j.get("models") or [])
+    out = []
+    for m in rows if isinstance(rows, list) else []:
+        if not isinstance(m, dict):
+            continue
+        _cat = m.get("category") if isinstance(m.get("category"), dict) else {}
+        cid = str(m.get("categoryId") or m.get("leafCategoryId") or _cat.get("id") or "").strip()
+        if not cid:
+            continue
+        out.append({"id": str(m.get("id") or ""), "name": str(m.get("name") or m.get("modelName") or ""),
+                    "category_id": cid,
+                    "category_name": str(m.get("wholeCategoryName") or _cat.get("wholeCategoryName")
+                                         or m.get("categoryName") or "")})
+    return out, None
+
+
+def category_from_models(name, client_id, client_secret):
+    """상품명 → 네이버 모델 검색 → 상위 결과가 가장 많이 쓰는 카테고리.
+
+    반환: (category_id, full_name, model_name) — 못 찾으면 (None, '', '').
+    근거가 약하면(결과 1개인데 이름이 거의 안 겹침) 쓰지 않는다 — 틀린 확신보다 다음 단계가 낫다.
+    """
+    _key = str(name or "").strip()
+    if not _key:
+        return None, "", ""
+    if _key in _MODEL_CAT_CACHE:
+        return _MODEL_CAT_CACHE[_key]
+    _want = set(_category_terms(_key)) | {t.lower() for t in _re_mod.findall(r"[A-Za-z]{3,}", _key)}
+    res = (None, "", "")
+    for q in _model_queries(_key):
+        models, err = search_product_models(client_id, client_secret, q)
+        if err:
+            break                                   # 권한·API 오류 — 다음 단계로
+        if not models:
+            continue
+        votes = {}
+        for m in models[:10]:
+            mn = str(m["name"])
+            ov = sum(1 for t in _want if t and t.lower() in mn.lower())
+            v = votes.setdefault(m["category_id"], {"n": 0, "ov": 0, "full": m["category_name"], "model": mn})
+            v["n"] += 1
+            v["ov"] = max(v["ov"], ov)
+        best_id, b = max(votes.items(), key=lambda kv: (kv[1]["ov"] > 0, kv[1]["n"], kv[1]["ov"]))
+        if b["ov"] >= 1 and (b["n"] >= 2 or b["ov"] >= 2):
+            full = b["full"]
+            if not full:
+                for c in (load_naver_category_cache(client_id, client_secret)[0] or []):
+                    if c["id"] == best_id:
+                        full = c["full_name"]
+                        break
+            res = (best_id, full, b["model"])
+            break
+    _MODEL_CAT_CACHE[_key] = res
+    return res
+
+
 def search_naver_categories(client_id, client_secret, keyword):
     """캐시에서 키워드로 카테고리 검색 (부분 일치, 대소문자 무시).
     반환: ([{"id": str, "full_name": str}], error_msg)
@@ -89,7 +185,24 @@ def _category_terms(name):
 
 
 def suggest_category_for_name(name, client_id, client_secret,
-                              ai_key=None, gemini_key=None, extra_terms=None):
+                              ai_key=None, gemini_key=None, extra_terms=None, info=None):
+    """① 네이버 모델(가격비교) 검색 → ② AI 추정. info(dict)를 주면 근거를 적는다:
+    info['source'] ∈ {'model','ai','score'}, info['model'] = 찾은 모델명."""
+    info = info if isinstance(info, dict) else {}
+    try:
+        _mid, _mfull, _mname = category_from_models(name, client_id, client_secret)
+    except Exception:
+        _mid = None
+    if _mid:
+        info['source'], info['model'] = 'model', _mname
+        return _mid, _mfull, None
+    info['source'] = 'ai' if (ai_key or gemini_key) else 'score'
+    return _suggest_category_ai(name, client_id, client_secret, ai_key=ai_key,
+                                gemini_key=gemini_key, extra_terms=extra_terms)
+
+
+def _suggest_category_ai(name, client_id, client_secret,
+                         ai_key=None, gemini_key=None, extra_terms=None):
     """상품명으로 네이버 카테고리를 추정한다. 반환: (category_id, full_name, error)
 
     기존에는 쇼핑검색 API(shop.json)로 유사 상품의 category1~4를 모아 후보로 썼으나,

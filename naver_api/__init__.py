@@ -29,6 +29,8 @@ from .products import (
     load_naver_category_cache,
     search_naver_categories,
     suggest_category_for_name,
+    category_from_models,
+    search_product_models,
     upload_product_image,
     update_product_benefits, get_product_benefits,
     build_customer_benefit, BENEFIT_KEYS, BENEFIT_LABELS,

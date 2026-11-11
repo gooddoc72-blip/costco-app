@@ -314,6 +314,18 @@ def resolve_category(api_id, api_secret, product, cat_map=None, ai_key="", open_
     if cid:
         return cid, "", "product"
 
+    # ①-b 네이버 모델(가격비교) 검색 — 네이버가 직접 정한 카테고리. 기본 매핑보다 앞에 둔다
+    #   (11/11: 코스트코 분류 하나에 네이버 카테고리 하나를 통째로 붙이는 매핑이
+    #    면류 상품을 전부 '소바'로 보내는 식의 오류가 많았다).
+    _nm0 = product.get("costco_name") or ""
+    if _nm0:
+        try:
+            _mid, _mfull, _ = naver_api.category_from_models(_nm0, api_id, api_secret)
+        except Exception:
+            _mid = None
+        if _mid:
+            return _mid, _mfull, "model"
+
     # ② 코스트코 카테고리 → 네이버 기본 매핑
     cat_map = cat_map or {}
     ccat = str(product.get("category") or "").strip()

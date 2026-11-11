@@ -690,14 +690,44 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             # 어긋났다. 실측: 매입가 10,000 마진 10%에서 위 식은 11,640원(역마진 -1,300),
             # 계산기는 14,560원(정상 +1,459). 두 숫자가 다르면 어느 쪽이 맞는지 알 수 없다.
             _ph_margin = int(_gs('cafe24_naver_margin') or 10)
+            # 등록이 끝나면 사진 칸을 비운다(11/11 '등록한 사진이 그대로 남아 일일이 삭제').
+            #   Streamlit 업로더는 값을 지울 수 없어 key 뒤 번호를 바꿔 새 칸으로 만든다.
+            _ph_done = st.session_state.pop('_ph_done_msg', None)
+            if _ph_done:
+                st.success(_ph_done + " — 사진·입력칸을 비웠습니다. 다음 상품을 올리세요.")
+            _phn = int(st.session_state.get('_ph_up_n', 0))
             _uc1, _uc2 = st.columns(2)
             _prod_imgs = _uc1.file_uploader("① 제품 사진들 (여러 장 — 첫 장이 대표이미지)",
-                                            accept_multiple_files=True, key="ph_prod")
-            _price_img = _uc2.file_uploader("② 가격 사진 (코스트코 가격표)", accept_multiple_files=False, key="ph_price")
+                                            accept_multiple_files=True, key=f"ph_prod_{_phn}")
+            _price_img = _uc2.file_uploader("② 가격 사진 (코스트코 가격표)", accept_multiple_files=False,
+                                            key=f"ph_price_{_phn}")
             _label_img = st.file_uploader("③ 표시사항(라벨) 사진 — 식품 상세정보(내용량·원재료·보관·영양성분) 자동입력용 (선택)",
-                                          accept_multiple_files=False, key="ph_label")
+                                          accept_multiple_files=False, key=f"ph_label_{_phn}")
+            if _prod_imgs and len(_prod_imgs) > 1:
+                # 🔀 사진 순서 — 끌어서 바꾼다. 맨 앞이 대표이미지. 이후 미리보기·등록 모두 이 순서.
+                _lbl = [f"{i + 1}. {im.name}" for i, im in enumerate(_prod_imgs)]
+                _order = None
+                try:
+                    from streamlit_sortables import sort_items
+                    with _uc1:
+                        st.caption("🔀 끌어서 순서를 바꾸세요 — 맨 앞이 대표이미지")
+                        _order = sort_items(_lbl, key=f"ph_sort_{_phn}_{len(_lbl)}")
+                except Exception:
+                    # 부품이 없으면 번호로 정한다
+                    _ord_txt = _uc1.text_input("사진 순서 (번호를 쉼표로, 예: 3,1,2)", key=f"ph_ord_{_phn}",
+                                               placeholder=",".join(str(i + 1) for i in range(len(_lbl))))
+                    try:
+                        _ix = [int(x) - 1 for x in _ord_txt.replace(' ', '').split(',') if x]
+                        if sorted(_ix) == list(range(len(_lbl))):
+                            _order = [_lbl[i] for i in _ix]
+                    except ValueError:
+                        _order = None
+                if _order and len(_order) == len(_lbl):
+                    _by = dict(zip(_lbl, _prod_imgs))
+                    _prod_imgs = [_by[x] for x in _order if x in _by]
             if _prod_imgs:
-                _uc1.image([im for im in _prod_imgs[:9]], width=90)
+                _uc1.image([im for im in _prod_imgs[:9]], width=90,
+                           caption=["대표"] + [str(i + 2) for i in range(len(_prod_imgs[:9]) - 1)])
                 if _uc1.checkbox("🔲 1000×1000 변환 미리보기 (네이버에 올라가는 실제 형태)", key="ph_sq_prev"):
                     _sq_imgs = []
                     for _im in _prod_imgs[:9]:
@@ -729,12 +759,13 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     _sale = pricing.sale_for_margin(
                         _cost, _ph_margin, int(_gs('shipping_cost') or 2000),
                         int(_gs('box_cost') or 300))
-                    _cid = None; _cfull = ''
+                    _cid = None; _cfull = ''; _cinfo = {}
                     if _nm:
-                        # 쇼핑검색 API 폐지 → AI 검색어 추정 + 로컬 카테고리 캐시로 대체
+                        # ① 네이버 모델 검색(브랜드+상품명) → ② AI 추정 + 로컬 카테고리 캐시
+                        _mq = " ".join(x for x in [(_i1.get('brand') or '').strip(), _nm] if x)
                         _cid, _cfull, _ = naver_api.suggest_category_for_name(
-                            _nm, api_id, api_secret, ai_key=_ph_aikey,
-                            extra_terms=[_i1.get('category') or ''])
+                            _mq, api_id, api_secret, ai_key=_ph_aikey,
+                            extra_terms=[_i1.get('category') or ''], info=_cinfo)
                     if not _cid and _i1.get('category'):
                         _cr2, _ = naver_api.search_naver_categories(api_id, api_secret, _i1['category'])
                         if _cr2:
@@ -747,6 +778,9 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     st.session_state['_ph_pv'] = {
                         'name': _nm, 'cost': _cost, 'sale': _sale,
                         'cat_id': str(_cid or ''), 'cat_full': _cfull or '',
+                        'cat_src': (f"🔍 네이버 모델 '{_cinfo.get('model', '')[:30]}'에서 가져옴"
+                                    if _cinfo.get('source') == 'model'
+                                    else ("⚠️ AI 추정 — 맞는지 확인하세요" if _cid else "")),
                         'origin': _i1.get('origin', '국산'), 'brand': _i1.get('brand', ''),
                         'costco_no': str((_i2 or {}).get('product_no', '') or ''),
                         # 네이버 '속성'(브랜드·제조사·모델명)·용량 — 사진 판독값
@@ -949,7 +983,29 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                 _ec = _ecols[0].text_input("카테고리ID (자동판단)", value=_pv['cat_id'],
                                            key="ph_ec", help=f"{_pv['cat_full'] or '카테고리 자동판단 실패 — 직접 입력'}")
                 if _pv['cat_full']:
-                    st.caption(f"📂 {_pv['cat_full']}")
+                    st.caption(f"📂 {_pv['cat_full']}"
+                               + (f"  ·  {_pv['cat_src']}" if _pv.get('cat_src') else ""))
+                # 틀렸으면 여기서 검색해 바로 고른다(카테고리ID를 외워 칠 필요 없음)
+                _csc1, _csc2 = _ecols[1].columns([3, 1])
+                _ckw = _csc1.text_input("카테고리 검색", key="ph_catkw", placeholder="예: 장갑, 우동, 소바",
+                                        label_visibility="collapsed")
+                if _csc2.button("🔍", key="ph_catbtn") and _ckw.strip():
+                    st.session_state['_ph_catres'] = naver_api.search_naver_categories(
+                        api_id, api_secret, _ckw.strip())[0] or []
+                _ccr = st.session_state.get('_ph_catres') or []
+                if _ccr:
+                    _copts = ["— 고르면 카테고리ID에 들어갑니다 —"] + [f"{c['id']} — {c['full_name']}" for c in _ccr]
+                    _csel = _ecols[1].selectbox("검색 결과", _copts, key="ph_catsel",
+                                                label_visibility="collapsed")
+                    if _csel != _copts[0]:
+                        _nid, _nfull = _csel.split(" — ", 1)
+                        if _nid.strip() != _pv['cat_id']:
+                            _pv['cat_id'], _pv['cat_full'] = _nid.strip(), _nfull.strip()
+                            _pv['cat_src'] = "✋ 직접 고름"
+                            st.session_state.pop('ph_ec', None)
+                            st.session_state.pop('_ph_catres', None)
+                            st.session_state.pop('ph_catsel', None)
+                            st.rerun()
 
                 # ── 코스트코 상품번호 = 판매자 자체코드(sellerManagementCode) — 필수 ──
                 _costco_no = st.text_input(
@@ -1162,6 +1218,19 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                 st.session_state.pop('_ph_tags', None)
                                 st.session_state.pop('_ph_tags_info', None)
                                 st.session_state.pop('_ph_food', None)
+                                # 등록건 초기화 — 사진 칸·편집값을 비우고 새 화면으로
+                                for _rk in ('ph_en', 'ph_es', 'ph_ec', 'ph_costco_no', 'ph_desc',
+                                            'ph_sq_prev', 'ph_tag_editor', '_ph_seo', '_ph_en_pending',
+                                            'ph_catkw', '_ph_catres', 'ph_catsel',
+                                            f"ph_prod_{_phn}", f"ph_price_{_phn}", f"ph_label_{_phn}"):
+                                    st.session_state.pop(_rk, None)
+                                st.session_state['_ph_up_n'] = _phn + 1
+                                st.session_state['_ph_done_msg'] = (
+                                    f"✅ 네이버 등록 완료 (origin #{_res.get('origin_product_no') or '번호 미수신'}) "
+                                    f"— {_name_final[:20]} / {fmt(int(_es))}원"
+                                    + (f" · {_pr_msg}" if _pr_msg else "")
+                                    + (f" · ⚠️ {_res['warning']}" if _res.get('warning') else ""))
+                                st.rerun()
                             else:
                                 st.error(f"❌ 등록 실패: {_re2}")
         st.divider()
@@ -1649,7 +1718,11 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                                     (_res or {}).get('origin_product_no', ''),
                                                     _full.get('product_name', ''), source='cafe24-one')
                                                 st.success(f"✅ 네이버 등록 완료! (origin #{_res.get('origin_product_no')}) "
-                                                           f"— 스마트스토어에서 확인하세요.")
+                                                           f"— 스마트스토어에서 확인하세요. 다음에 화면을 누르면 목록에서 빠집니다.")
+                                                # 등록건은 목록에서 뺀다(일괄 등록과 같은 규칙)
+                                                st.session_state['_cf2n_prods'] = [
+                                                    x for x in _cf2n_list
+                                                    if str(x.get('product_no')) != str(_pno)]
                     else:
                         st.caption("네이버 카테고리를 검색·선택하면 '네이버 등록' 버튼이 나타납니다.")
         st.divider()
