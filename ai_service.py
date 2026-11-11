@@ -1288,6 +1288,62 @@ def prep_receipt_image(image_bytes, media_type):
         return image_bytes, media_type
 
 
+def crop_receipt_paper(image_bytes, media_type):
+    """사진에서 **영수증 종이만** 잘라 낸다. 반환: (bytes, media_type) — 못 찾으면 원본.
+
+    11/11 '상품명이 엉망': 폰 사진(3213×5712)을 긴 변 1568px로 줄여 AI에 보내는데,
+    나무 책상·자·키보드까지 함께 찍혀 영수증은 가로의 절반뿐이었다. 한글 한 글자가
+    10px 남짓으로 뭉개져 AI가 모양만 비슷한 글자로 지어냈다('파마산치즈'→'바나나 라 질',
+    '미니당근'→'마니쉬드'). 숫자는 단순해서 읽혔고 검산은 숫자만 보니 그대로 통과했다.
+    종이만 남기면 같은 크기로 줄여도 글자가 두 배쯤 커진다.
+
+    종이는 사진에서 가장 넓게 이어진 **밝은 세로 띠**다(감열지는 거의 흰색).
+    """
+    try:
+        from PIL import Image, ImageOps
+        import io as _io
+        with Image.open(_io.BytesIO(image_bytes)) as im0:
+            im = ImageOps.exif_transpose(im0) or im0
+            g = ImageOps.autocontrast(im.convert("L"), cutoff=2)
+            W, H = g.size
+            sw = 240
+            sh = max(1, round(H * sw / W))
+            s = g.resize((sw, sh))
+            px = s.load()
+
+            def band(vals, lo=0.55):
+                best, cur = (0, 0), None
+                for i, v in enumerate(vals + [0]):
+                    if v >= lo and cur is None:
+                        cur = i
+                    elif v < lo and cur is not None:
+                        if i - cur > best[1] - best[0]:
+                            best = (cur, i)
+                        cur = None
+                return best
+            # 기준 150·30%: 종이 가장자리는 자·손 그림자로 어둡다 — 200으로 잡으면 상품번호가 찍힌
+            # 왼쪽 끝이 잘렸다(11/11 실사진). 나무 책상(중앙값 40~100)과는 충분히 갈린다.
+            cols = [sum(1 for y in range(sh) if px[x, y] >= 150) / sh for x in range(sw)]
+            x0, x1 = band(cols, 0.3)
+            if x1 - x0 < sw * 0.15:
+                return image_bytes, media_type
+            rows = [sum(1 for x in range(x0, x1) if px[x, y] >= 150) / (x1 - x0) for y in range(sh)]
+            y0, y1 = band(rows, 0.3)
+            if y1 - y0 < sh * 0.2:
+                y0, y1 = 0, sh
+            padx, pady = (x1 - x0) * 0.08, (y1 - y0) * 0.02
+            box = (max(0, int((x0 - padx) * W / sw)), max(0, int((y0 - pady) * H / sh)),
+                   min(W, int((x1 + padx) * W / sw)), min(H, int((y1 + pady) * H / sh)))
+            if (box[2] - box[0]) * (box[3] - box[1]) > W * H * 0.85:
+                return image_bytes, media_type            # 이미 종이가 대부분 — 그대로
+            out = im.convert("RGB").crop(box)
+            buf = _io.BytesIO()
+            out.save(buf, "JPEG", quality=92)
+            return buf.getvalue(), "image/jpeg"
+    except Exception:
+        return image_bytes, media_type
+
+
 def rotate_receipt_image(image_bytes, media_type, deg):
     """사진을 시계 방향으로 deg도 돌린다. 반환: (bytes, media_type) 또는 실패 시 None.
 
@@ -1364,7 +1420,13 @@ def _same_line(a, b):
     if _aa and _ab and _aa != _ab:
         return False
     if _na and _nb:
-        return _na == _nb
+        if _na == _nb:
+            return True
+        # 두 조각에서 번호를 한 자리 다르게 읽은 같은 줄(11/11: 이어진 세 줄이 수량 2로
+        # 나옴 — 겹친 줄이 안 지워진 뒤 번호 교정으로 같은 번호가 돼 수량이 더해졌다).
+        # 금액까지 같을 때만 같은 줄로 본다.
+        return bool(_aa and _ab and len(_na) == len(_nb)
+                    and sum(x != y for x, y in zip(_na, _nb)) <= 1)
     return str(a.get("상품명") or "").replace(" ", "") == str(b.get("상품명") or "").replace(" ", "")
 
 
@@ -1552,11 +1614,14 @@ def in_user_thread(fn):
 #   검산을 통과한 결과만 둔다. '🔄 다시 판독'은 use_cache=False로 새로 읽는다.
 #   프롬프트가 바뀌면 키가 달라져 옛 결과를 쓰지 않는다.
 _RCACHE_DAYS = 14
+_RCACHE_VER = 'crop-tiles-1111'
 
 
 def _rcache_key(image_bytes):
     import hashlib
-    return hashlib.sha1(bytes(image_bytes) + _RECEIPT_SYSTEM.encode('utf-8')).hexdigest()
+    # 판독 방식이 바뀌면 _RCACHE_VER를 올려 옛 결과를 버린다
+    return hashlib.sha1(bytes(image_bytes) + _RECEIPT_SYSTEM.encode('utf-8')
+                        + _RCACHE_VER.encode()).hexdigest()
 
 
 def _rcache_conn():
@@ -1663,24 +1728,51 @@ def _parse_receipt_photo_core(api_key, image_bytes, media_type, max_tokens=4000,
     부가 키: _provider · _check(경고) · _verified · _tiled(조각판독 여부) · _repaired(보정 줄 수)
     """
     _b, _mt = prep_receipt_image(image_bytes, media_type)
+    # 영수증 종이만 남긴다 — 책상·자까지 보내면 글자가 반 크기로 뭉개져 상품명을 지어냈다(11/11)
+    _b, _mt = crop_receipt_paper(_b, _mt)
+    return _read_receipt_image(api_key, _b, _mt, max_tokens, gemini_key, allow_rotate=True)
 
-    _data, _err = _parse_receipt_whole(api_key, _b, _mt, max_tokens, gemini_key=gemini_key)
-    # 사진이 거꾸로/옆으로 찍혔다고 AI가 알려 주면 바로 세워 **처음부터 다시** 읽는다.
-    # 검산을 통과했어도 다시 읽는다 — 뒤집힌 채 읽으면 금액 합은 맞아도 할인이
-    # 다른 품목에 붙는다. 돌린 사진도 0이 아니라고 하면(오판) 경고가 적은 쪽을 쓴다.
-    _rot = int((_data or {}).get("_rotate") or 0)
-    if _rot:
-        _rb = rotate_receipt_image(_b, _mt, _rot)
-        if _rb:
-            _d2, _e2 = _parse_receipt_whole(api_key, _rb[0], _rb[1], max_tokens,
-                                            gemini_key=gemini_key)
-            if _d2 is not None and (not int(_d2.get("_rotate") or 0)
-                                    or _d2.get("_verified")
-                                    or len(_d2.get("_check") or [])
-                                    <= len(_data.get("_check") or [])):
-                _data, _err = _d2, _e2
-                _b, _mt = _rb
-                _data["_rotated"] = _rot
+
+def _read_receipt_image(api_key, _b, _mt, max_tokens, gemini_key, allow_rotate=True):
+    """통판독과 (긴 영수증이면) 조각 판독을 **동시에** 돌려 나은 쪽을 쓴다.
+
+    11/11: 예전엔 통판독이 검산을 통과하면 거기서 끝냈다. 그런데 검산은 숫자만 본다 —
+    긴 영수증 통판독은 글자가 작아 한글 상품명을 지어내도(숫자는 맞음) 통과했다.
+    조각은 글자가 2~3배 커서 이름을 제대로 읽는다. 그래서 긴 영수증은 처음부터 조각도
+    함께 읽고, 조각 결과가 검산을 통과하면 **조각 결과를 우선** 쓴다(동시에 돌려 기다림은
+    거의 같다). 짧은 영수증은 예전처럼 통판독만 한다.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+    _tiles = receipt_tiles(_b, _mt, max_edge=1568) if (api_key or gemini_key) else []
+    _ex = ThreadPoolExecutor(max_workers=1 + len(_tiles))
+    try:
+        _fw = _ex.submit(in_user_thread(_parse_receipt_whole), api_key, _b, _mt, max_tokens,
+                         gemini_key=gemini_key)
+        _one = in_user_thread(_read_one_tile)
+        _ft = [_ex.submit(_one, api_key, gemini_key, _tb, _tm, max_tokens) for _tb, _tm in _tiles]
+        _data, _err = _fw.result()
+        # 사진이 거꾸로/옆으로 찍혔다고 AI가 알려 주면 바로 세워 **처음부터 다시** 읽는다.
+        # 검산을 통과했어도 다시 읽는다 — 뒤집힌 채 읽으면 금액 합은 맞아도 할인이
+        # 다른 품목에 붙는다. 뒤집힌 사진의 조각 판독은 기다리지 않고 버린다.
+        _rot = int((_data or {}).get("_rotate") or 0)
+        if _rot and allow_rotate:
+            _rb = rotate_receipt_image(_b, _mt, _rot)
+            if _rb:
+                _ex.shutdown(wait=False, cancel_futures=True)
+                _d2, _e2 = _read_receipt_image(api_key, _rb[0], _rb[1], max_tokens, gemini_key,
+                                               allow_rotate=False)
+                if _d2 is not None:
+                    _d2["_rotated"] = _rot
+                    return _d2, _e2
+        _parts = []
+        for _f in _ft:
+            try:
+                _parts.append(_f.result())
+            except Exception:
+                _parts.append(None)
+    finally:
+        _ex.shutdown(wait=False)
+
     if _data is not None:
         _fix = repair_receipt_math(_data)
         if _fix:
@@ -1688,20 +1780,8 @@ def _parse_receipt_photo_core(api_key, image_bytes, media_type, max_tokens=4000,
             _data["_verified"], _data["_check"] = _ok, _iss
         _data["_repaired"] = _fix
         _data["_tiled"] = False
-        if _data.get("_verified"):
-            return _data, None
 
-    # ── 3단: 조각 판독 ────────────────────────────────────────
-    _tiles = receipt_tiles(_b, _mt, max_edge=1568)
-    if not _tiles or not (api_key or gemini_key):
-        return (_data, None) if _data is not None else (None, _err)
-
-    # 조각은 서로 상관없으니 **동시에** 읽는다 — 4조각이면 기다림이 약 1/4 (11/11)
-    from concurrent.futures import ThreadPoolExecutor
-    _one = in_user_thread(_read_one_tile)
-    with ThreadPoolExecutor(max_workers=min(4, len(_tiles))) as _ex:
-        _parts = list(_ex.map(lambda t: _one(api_key, gemini_key, t[0], t[1], max_tokens), _tiles))
-    _merged = _merge_tile_results([x for x in _parts if x])
+    _merged = _merge_tile_results([x for x in _parts if x]) if _parts else None
     if not _merged:
         return (_data, None) if _data is not None else (None, _err)
 
@@ -1720,16 +1800,20 @@ def _parse_receipt_photo_core(api_key, image_bytes, media_type, max_tokens=4000,
         if _data.get("qty_subtotals"):
             _merged["qty_subtotals"] = list(_data["qty_subtotals"])
             _merged["total_qty"] = int(_data.get("total_qty") or 0)
+        # 합계는 영수증 맨 아래 한 번 — 통판독 값을 기준으로 검산한다
+        if int(_data.get("total_amount") or 0):
+            _merged["total_amount"] = int(_data["total_amount"])
     _mfix = repair_receipt_math(_merged)
     _mok, _miss = validate_receipt(_merged)
     _merged.update({"_provider": "gemini" if gemini_key else "claude",
                     "_check": _miss, "_verified": _mok,
                     "_tiled": True, "_repaired": _mfix})
 
-    if _data is None:
-        return _merged, None
-    # 조각 결과가 검산을 통과했거나 경고가 더 적을 때만 바꾼다
-    if _mok or len(_miss) < len(_data.get("_check") or []):
+    if _data is None or _mok:
+        return _merged, None                  # 조각이 검산 통과 → 이름까지 더 정확한 조각 결과
+    if _data.get("_verified"):
+        return _data, None
+    if len(_miss) < len(_data.get("_check") or []):
         return _merged, None
     return _data, None
 
