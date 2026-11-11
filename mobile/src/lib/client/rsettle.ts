@@ -31,6 +31,7 @@ export interface RsView {
   undecided?: number; total?: number; notes?: Record<string, number>; receipt_changed?: string;
   unmatched_detail?: { orders: RsUnmatchedDetail[]; owners: RsOwner[]; error?: string };
   assign?: { rows: RsAssignRow[]; error: string };
+  manual_dup?: { username: string; name: string; order_no: string; product_name: string; costco_no: string; amount: number }[];
 }
 export interface RsUnmatchedDetail {
   username: string; name: string; order_no: string; recipient: string; product_name: string;
@@ -38,6 +39,7 @@ export interface RsUnmatchedDetail {
   auto_owner: string; auto_amount: number; receipt_price: number;
   stock: { owner: string; name: string; qty: number; cost: number }[];
   candidate: { costco_no: string; name: string; price: number } | null;
+  guess_no: string; guess_unit: number; guess_src: string; split_qty: number;
 }
 export interface RsOwner { username: string; name: string; in_ledger: boolean }
 export interface RsAssignRow {
@@ -45,8 +47,8 @@ export interface RsAssignRow {
   packs_left: number; split_qty: number; kind: string; requester: string; requester_name: string;
 }
 export interface UnmatchedDecision {
-  username: string; order_no: string; how: 'stock' | 'amount' | 'link' | 'skip';
-  owner?: string; qty?: number; amount?: number; memo?: string;
+  username: string; order_no: string; how: 'stock' | 'amount' | 'receipt' | 'link' | 'skip';
+  owner?: string; qty?: number; amount?: number; memo?: string; costco_no?: string;
 }
 export interface ReceiptRow {
   receipt_date: string; costco_no: string; name: string; qty: number;

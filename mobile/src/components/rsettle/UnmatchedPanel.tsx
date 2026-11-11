@@ -9,7 +9,8 @@ import { rsettle, RsView, UnmatchedDecision } from '@/lib/client/rsettle';
 import { num } from '@/lib/fmt';
 
 type How = '' | 'stock' | 'amount' | 'link' | 'skip';
-interface D { how: How; owner: string; qty?: number; amount?: number; memo: string }
+interface D { how: How; owner: string; qty?: number; amount?: number; memo: string;
+  reason?: 'receipt' | 'none'; unit?: number; cno?: string }
 const k = (r: { username: string; order_no: string }) => `${r.username}\t${r.order_no}`;
 
 export default function UnmatchedPanel({ v, day, busy, setBusy, onDone, onErr }: {
@@ -27,6 +28,7 @@ export default function UnmatchedPanel({ v, day, busy, setBusy, onDone, onErr }:
 
   // 화면에서 미리 보는 금액 — 확정 금액은 저장할 때 파이썬이 다시 계산한다
   const preview = (o: (typeof orders)[number], d: D) => {
+    if (d.how === 'amount') return d.amount ?? (d.unit ?? o.guess_unit) * (d.qty ?? o.qty);
     if (d.amount) return d.amount;
     if (d.how === 'link') return o.candidate?.price ? o.candidate.price * (d.qty ?? o.qty) : 0;
     if (d.how !== 'stock') return 0;
@@ -36,6 +38,9 @@ export default function UnmatchedPanel({ v, day, busy, setBusy, onDone, onErr }:
     const ow = d.owner || o.auto_owner;
     return o.stock.some(s => s.owner === ow) ? -1 : 0;   // -1: 저장 때 계산 · 0: 장부에 없음 → 금액 필수
   };
+  // 상품번호를 모르면 영수증에 줄을 더할 수 없다 — 그때는 '영수증 없음'만
+  const reasonOf = (o: (typeof orders)[number], d: D) =>
+    ((d.cno ?? o.guess_no).trim() ? (d.reason || 'receipt') : 'none') as 'receipt' | 'none';
   const picked = useMemo(() => orders.filter(o => get(o).how), [orders, dec]);  // eslint-disable-line react-hooks/exhaustive-deps
   const nCarry = orders.filter(o => o.carried_from).length;
   // 지난 날짜 발송건은 접어 둔다 — 오늘 예외가 그 밑에 묻히지 않게
@@ -50,6 +55,13 @@ export default function UnmatchedPanel({ v, day, busy, setBusy, onDone, onErr }:
   const apply = async () => {
     const ds: UnmatchedDecision[] = picked.map(o => {
       const d = get(o);
+      if (d.how === 'amount') {
+        // ✏️ 직접 입력 — 판독 누락이면 영수증에 줄을 더해 붙이고, 영수증 없음이면 따로 청구
+        const cno = (d.cno ?? o.guess_no).trim();
+        const reason = reasonOf(o, d);
+        return { username: o.username, order_no: o.order_no, how: reason === 'receipt' ? 'receipt' : 'amount',
+          qty: d.qty, amount: preview(o, d), costco_no: cno || undefined, memo: d.memo || undefined };
+      }
       return { username: o.username, order_no: o.order_no, how: d.how as UnmatchedDecision['how'], owner: d.owner || undefined,
         qty: d.qty, amount: d.amount, memo: d.memo || undefined };
     });
@@ -101,7 +113,7 @@ export default function UnmatchedPanel({ v, day, busy, setBusy, onDone, onErr }:
                 <select value={d.how} onChange={e => put(o, { how: e.target.value as How })} className="border rounded px-1 py-1 bg-white">
                   <option value="">— 미처리 —</option>
                   <option value="stock">📦 재고 출고</option>
-                  <option value="amount">✍️ 금액 지정</option>
+                  <option value="amount">✏️ 직접 입력</option>
                   {o.candidate && <option value="link">🔗 후보로 연결</option>}
                   <option value="skip">🚫 청구 안 함</option>
                 </select>
@@ -110,7 +122,31 @@ export default function UnmatchedPanel({ v, day, busy, setBusy, onDone, onErr }:
               <td className="p-2"><span className="font-mono">{o.order_no}</span><div className="text-gray-500">{o.recipient}</div></td>
               <td className="p-2 min-w-[160px]">{o.product_name}
                 {o.candidate && <div className="text-blue-700">🔗 후보: {o.candidate.name} {num(o.candidate.price)}원</div>}
-                {!!o.receipt_price && <div className="text-gray-400">참고·영수증가 {num(o.receipt_price)}원</div>}</td>
+                {!!o.receipt_price && <div className="text-gray-400">참고·영수증가 {num(o.receipt_price)}원</div>}
+                {d.how === 'amount' && (() => {
+                  const rs = reasonOf(o, d);
+                  return (
+                    <div className="mt-1 p-2 rounded bg-white border space-y-1">
+                      <div className="flex flex-wrap items-center gap-1">
+                        단가 <input type="number" min={0} step={10} value={d.unit ?? o.guess_unit}
+                          onChange={e => put(o, { unit: Math.max(0, Number(e.target.value)), amount: undefined })}
+                          className={clsx('w-24 border rounded px-1 py-0.5 text-right', !(d.unit ?? o.guess_unit) && 'border-orange-400')} />원
+                        × {d.qty ?? o.qty} = <b>{num(preview(o, d))}원</b>
+                        {o.guess_src && d.unit === undefined && <span className="text-gray-400">({o.guess_src})</span>}
+                      </div>
+                      <label className="flex items-center gap-1">
+                        <input type="radio" checked={rs === 'receipt'} disabled={!(d.cno ?? o.guess_no).trim()}
+                          onChange={() => put(o, { reason: 'receipt' })} /> 영수증 판독 누락 — 영수증에 줄 추가
+                      </label>
+                      <label className="flex items-center gap-1">
+                        <input type="radio" checked={rs === 'none'} onChange={() => put(o, { reason: 'none' })} /> 영수증 분실·다른 날 구매 — 영수증 없이 청구
+                      </label>
+                      <div className="flex items-center gap-1 text-gray-500">
+                        상품번호 <input value={d.cno ?? o.guess_no} onChange={e => put(o, { cno: e.target.value.replace(/\D/g, '') })}
+                          className="w-24 border rounded px-1 py-0.5 font-mono" placeholder="코스트코 번호" />
+                      </div>
+                    </div>);
+                })()}</td>
               <td className="p-1 text-right"><input type="number" min={1} value={d.qty ?? o.qty}
                 onChange={e => put(o, { qty: Number(e.target.value) === o.qty ? undefined : Math.max(1, Number(e.target.value)) })}
                 className="w-12 border rounded px-1 py-1 text-right" /></td>
@@ -126,9 +162,9 @@ export default function UnmatchedPanel({ v, day, busy, setBusy, onDone, onErr }:
                 ? (pv === -1 ? <span className="text-gray-400">저장 때 계산</span> : pv === -2 ? <span className="text-gray-500">0 (본인 결제 재고)</span>
                   : pv ? num(pv) : <span className="text-orange-600">금액 필수</span>)
                 : d.how === 'link' ? num(pv) : (o.auto_amount ? <span className="text-gray-400">{num(o.auto_amount)}</span> : '')}</td>
-              <td className="p-1 text-right"><input type="number" min={0} step={100} value={d.amount ?? ''} placeholder={d.how === 'amount' ? '필수' : '0=자동'}
+              <td className="p-1 text-right"><input type="number" min={0} step={100} value={d.amount ?? ''} placeholder={d.how === 'amount' ? String(pv || '필수') : '0=자동'}
                 onChange={e => put(o, { amount: e.target.value === '' ? undefined : Math.max(0, Number(e.target.value)) })}
-                className={clsx('w-24 border rounded px-1 py-1 text-right', d.how === 'amount' && !d.amount && 'border-orange-400')} /></td>
+                className={clsx('w-24 border rounded px-1 py-1 text-right', d.how === 'amount' && !pv && 'border-orange-400')} /></td>
               <td className="p-1"><input value={d.memo} onChange={e => put(o, { memo: e.target.value })} className="w-36 border rounded px-1 py-1" /></td>
             </tr>);
         })}</tbody>
@@ -138,7 +174,8 @@ export default function UnmatchedPanel({ v, day, busy, setBusy, onDone, onErr }:
           📦 재고 출고: 본인 재고면 아직 안 낸 몫만(이미 낸 재고는 0원), 남의 재고면 할인가로 산 재고는 할인가+1,000원·정상가 재고는 산 값 —
           <b>남의 재고는 처리하는 즉시</b> 보유자 재고에서 빠지고 판매자 청구서에 들어가고 보유자 예치금에 적립됩니다(본인 재고는 확정 때 차감).
           ‘장부에 재고 없음’인 사람을 고르면 <b>금액을 직접 적으세요</b> — 그 사람 재고로 등록한 뒤 바로 빌려 출고합니다. 매칭 수정에서 끊으면 모두 되돌아갑니다.
-          ✍️ 금액 지정: 금액을 꼭 적습니다. 🚫 청구 안 함: 취소·무상 재발송 — 다시 뜨지 않습니다. 0원 청구는 넣지 않습니다.
+          ✏️ 직접 입력: 단가는 오늘 영수증 → 최근 영수증 → 상품DB 매장가 순으로 미리 채웁니다. <b>판독 누락</b>이면 그날 영수증에 줄을 더해 붙이고(영수증 합계에 들어감),
+          <b>영수증 없음</b>이면 영수증과 따로 '직접 입력'으로 청구합니다. 🚫 청구 안 함: 취소·무상 재발송 — 다시 뜨지 않습니다. 0원 청구는 넣지 않습니다.
         </div>
         <button onClick={apply} disabled={busy || !picked.length}
           className="w-full py-2 rounded-lg bg-primary text-white font-bold text-sm disabled:opacity-40">

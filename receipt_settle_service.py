@@ -72,6 +72,33 @@ def receipt_items(d):
     return get_receipt_items_by_date('', str(d)) or []
 
 
+def _add_receipt_line(d, pno, name, qty, unit, by):
+    """그날 영수증에 한 줄 더한다(판독 누락 직접 입력). 같은 번호가 이미 있으면 수량만 늘린다.
+
+    표시용 이름에 [판독누락 추가]를 붙여 영수증 표에서 사람이 넣은 줄인 걸 알 수 있게 한다.
+    ⚠️ 그날 영수증을 다시 올려 저장하면(날짜 통째 교체) 이 줄도 지워진다 — 다시 읽은
+       영수증에 그 줄이 있으면 그게 맞는 것이고, 없으면 다시 매칭 때 예외로 돌아온다.
+    """
+    from db_stats import _receipt_conn
+    d, pno, by = str(d)[:10], str(pno), str(by or '')
+    conn = _receipt_conn()
+    try:
+        r = conn.execute("SELECT id FROM receipt_items WHERE receipt_date=? AND product_no=? "
+                         "AND COALESCE(uploaded_by,'')=? AND unit_price=?",
+                         (d, pno, by, int(unit))).fetchone()
+        if r:
+            conn.execute("UPDATE receipt_items SET qty=qty+? WHERE id=?", (int(qty), r[0]))
+        else:
+            conn.execute(
+                "INSERT INTO receipt_items (receipt_date, product_no, product_name, qty, unit_price, "
+                "discount, list_price, uploaded_by, created_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                (d, pno, (str(name or '')[:60] + ' [판독누락 추가]').strip(), int(qty), int(unit),
+                 0, int(unit), by, datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def _key(r):
     return (str(r.get('username') or ''), str(r.get('order_no') or ''))
 
@@ -371,7 +398,7 @@ def money_flow(items, alloc, d):
 VIA_LABEL = {
     'order': '주문 코스트코번호', 'shopping': '장보기 목록', 'shopping-name': '장보기 상품명',
     'number': '제품DB 번호', 'name': '상품명 유사', 'stock': '재고 출고', 'online': '온라인몰',
-    'manual': '금액 지정', 'memo': '배정 청구', 'ai': 'AI 매칭',
+    'manual': '직접 입력(영수증 없음)', 'memo': '배정 청구', 'ai': 'AI 매칭',
 }
 
 
@@ -437,6 +464,13 @@ def view(d):
     except Exception:
         late = []
     undecided = [r for r in out_rows if r['flag'] and not r['ok']]
+    # 영수증 없이 직접 입력했는데 그날 영수증에 같은 번호가 있다 — 이중 청구 의심
+    _rnos = {_rs._norm(x.get('상품번호')) for x in items if _rs._norm(x.get('상품번호'))}
+    out['manual_dup'] = [{'username': _key(r)[0], 'name': names.get(_key(r)[0], _key(r)[0]),
+                          'order_no': _key(r)[1], 'product_name': str(r.get('product_name') or ''),
+                          'costco_no': str(r.get('manual_no') or ''), 'amount': int(r.get('amount') or 0)}
+                         for r in rows if str(r.get('via') or '') == 'manual'
+                         and str(r.get('manual_no') or '') in _rnos]
     out.update({
         'receipt_changed': alloc.get('_receipt_changed', ''),
         'matched_at': alloc.get('_matched_at', ''), 'updated_at': alloc.get('_updated_at', ''),
@@ -518,6 +552,49 @@ class _Unmatched:
                     pass
         self.left_r = [(_rs._norm(x.get('상품번호')), str(x.get('상품명') or ''))
                        for x in (alloc.get('unmatched_receipt') or []) if _rs._norm(x.get('상품번호'))]
+        self._last = None
+        self._db = None
+
+    def _load_prices(self):
+        """직접 입력 단가를 미리 채울 값 — 최근 영수증 단가·상품DB 매장가(한 번만 읽는다)."""
+        if self._last is not None:
+            return
+        self._last, self._db = {}, {}
+        try:
+            from db_stats import get_recent_receipt_items
+            for it in get_recent_receipt_items('', days=180) or []:     # 최신 날짜부터
+                c = _rs._norm(it.get('상품번호'))
+                if c and c not in self._last and int(it.get('단가') or 0) > 0:
+                    self._last[c] = (int(it['단가']), str(it.get('receipt_date') or '')[:10])
+        except Exception:
+            pass
+        try:
+            from db_products import get_shared_products
+            for p in get_shared_products() or []:
+                c = _rs._norm(p.get('product_no'))
+                if c and int(p.get('store_price') or 0) > 0:
+                    self._db[c] = int(p['store_price'])
+        except Exception:
+            pass
+
+    def guess(self, o, cno):
+        """✏️ 직접 입력의 기본값 — (코스트코 번호, 팩 단가, 출처). 못 찾으면 단가 0.
+
+        순서: 그날 영수증 → 최근 영수증(180일) → 상품DB 매장가. 사람이 보고 고친다.
+        """
+        nos = [c for c in (_rs._norm(o.get('costco_no')), _rs._norm(cno)) if c]
+        for c in nos:
+            if self.price_by.get(c):
+                return c, self.price_by[c], '오늘 영수증'
+        self._load_prices()
+        for c in nos:
+            if c in self._last:
+                p, dt = self._last[c]
+                return c, p, f'{dt[5:]} 영수증'
+        for c in nos:
+            if self._db.get(c):
+                return c, self._db[c], '상품DB 매장가'
+        return (nos[0] if nos else ''), 0, ''
 
     def stock_pn(self, o):
         """이 주문이 쓸 재고 상품번호 — 번호가 없으면 판매자 본인 입고분 이름부터 찾는다."""
@@ -584,7 +661,12 @@ def unmatched_view(alloc, items, names):
         own = U.auto_owner(cno, me)
         cand = U.candidate(o)
         have = U.stock.get(cno) or {}
+        g_no, g_pack, g_src = U.guess(o, cno)
+        sq = max(1, int(o.get('split_qty') or 1))
         out.append({
+            # ✏️ 직접 입력 기본값 — 주문 1개 단가(묶음을 나눠 판 상품이면 팩 단가 ÷ 나눔 수)
+            'guess_no': g_no, 'guess_unit': g_pack // sq if g_pack else 0, 'guess_src': g_src,
+            'split_qty': sq,
             'username': me, 'name': names.get(me, me), 'order_no': str(o.get('order_no') or ''),
             'recipient': str(o.get('recipient') or ''), 'product_name': str(o.get('product_name') or ''),
             'qty': qty, 'carried_from': str(o.get('carried_from') or ''), 'pre': str(o.get('_pre') or ''),
@@ -625,7 +707,7 @@ def apply_unmatched(d, decisions, by=''):
         k = (str(a.get('username') or ''), str(a.get('order_no') or ''))
         o = un.get(k)
         how = str(a.get('how') or '')
-        if not o or how not in ('stock', 'amount', 'link', 'skip'):
+        if not o or how not in ('stock', 'amount', 'receipt', 'link', 'skip'):
             continue
         if how == 'skip':
             skip_keys.append(k)
@@ -636,6 +718,28 @@ def apply_unmatched(d, decisions, by=''):
         memo = str(a.get('memo') or '').strip()
         amt = max(0, int(a.get('amount') or 0))
         me = k[0]
+        if how == 'receipt':
+            # ✏️ 직접 입력 · 영수증 판독 누락 — 영수증엔 찍혀 있는데 AI가 못 읽은 줄.
+            #   그날 영수증에 그 줄을 더하고 이 주문을 거기에 붙인다. 그래야 영수증 합계에도
+            #   들어가 '영수증 = 청구 + 재고' 검증이 그대로 맞는다.
+            cc = _rs._norm(a.get('costco_no')) or U.guess(o, U.stock_pn(o))[0]
+            if not cc or amt <= 0:
+                zero += 1
+                continue
+            sq = max(1, int(o.get('split_qty') or 1))
+            pack_price = int(round(amt / qty)) * sq
+            packs = -(-qty // sq)
+            _add_receipt_line(d, cc, str(o.get('product_name') or ''), packs, pack_price, by)
+            items.append({'상품번호': cc, '상품명': str(o.get('product_name') or ''),
+                          '수량': packs, '단가': pack_price})
+            U.price_by[cc] = pack_price
+            lr = _rs.build_manual_rows([{'order': o, 'costco_no': cc, 'unit_price': pack_price,
+                                         'via': 'number'}])[0]
+            lr['amount'] = amt
+            lr['memo'] = memo or '영수증 판독 누락 · 영수증에 줄 추가'
+            lr['confirmed'] = True
+            new_rows.append(lr)
+            continue
         if how == 'link':
             _, cc, cnm = U.candidate(o)
             if not cc or not U.price_by.get(cc):
@@ -689,13 +793,17 @@ def apply_unmatched(d, decisions, by=''):
                 zero += 1
                 continue
             via = 'manual'
+            memo = memo or '영수증 없음 · 직접 입력'
         new_rows.append({
             'username': me, 'order_no': o.get('order_no', ''), 'order_date': o.get('order_date', '') or d,
             'costco_no': (str(cno or '') if stk_owner else str(o.get('costco_no') or '')),
             'naver_no': o.get('naver_no', ''), 'product_name': o.get('product_name', ''),
             'qty': qty, 'unit_price': amt, 'amount': amt, 'prev_cost': int(o.get('prev_cost') or 0),
             'via': via, 'split_qty': 1, 'pack': 1, 'memo': memo, 'stock_owner': stk_owner,
-            'loan_owner': (str(a.get('owner') or '') if loan else ''), 'cost_basis': cost_basis})
+            'loan_owner': (str(a.get('owner') or '') if loan else ''), 'cost_basis': cost_basis,
+            # 영수증 없이 직접 입력한 건의 상품번호 — 나중에 그날 영수증에 같은 번호가
+            #   나오면 '이중 청구 의심'으로 알린다(costco_no엔 넣지 않는다: 재고 계산에 쓰임)
+            'manual_no': (_rs._norm(a.get('costco_no')) if via == 'manual' else '')})
     if skip_keys:
         _rs.dismiss_carry(skip_keys, note=f'{d} 영수증 정산에서 청구 안 함')
         sk = set(skip_keys)

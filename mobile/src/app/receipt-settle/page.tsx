@@ -12,7 +12,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import clsx from 'clsx';
 import { RefreshCw, Search } from 'lucide-react';
 import Header from '@/components/Header';
-import { rsettle, RsView, RsRow, RowAction } from '@/lib/client/rsettle';
+import { rsettle, RsView, RsRow, RowAction, RsMoney } from '@/lib/client/rsettle';
 import { num } from '@/lib/fmt';
 import UnmatchedPanel from '@/components/rsettle/UnmatchedPanel';
 import AssignPanel from '@/components/rsettle/AssignPanel';
@@ -180,13 +180,38 @@ export default function ReceiptSettlePage() {
               <Warn tone="red">매칭한 뒤에 새로 발송된 주문 {v.late_dispatch.length}건 — {v.late_dispatch.slice(0, 4).map(x => `${x.name} ${x.order_no}`).join(' · ')}. {' '}
                 <button onClick={() => doMatch()} className="underline font-bold">다시 매칭</button></Warn>)}
 
-            {/* KPI */}
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-              <Kpi label="청구 합계(물건값)" value={v.total || 0} sub={`${(v.users || []).filter(u => u.count).length}명 · ${rows.length}건`} />
-              <Kpi label="③ 영수증에 없는 발송건" value={(v.unmatched_orders || []).length} unit="건" warn={!!v.unmatched_orders?.length} ok={!v.unmatched_orders?.length} sub="정하기 전에는 청구 안 됨" />
-              <Kpi label="③ 남은 영수증 품목" value={(v.assign?.rows || []).length} unit="건" warn={!!v.assign?.rows?.length} ok={!v.assign?.rows?.length} sub="누구에게 청구·재고·반품" />
-              <Kpi label="③ 일부만 넘친 주문" value={v.undecided || 0} unit="건" warn={!!v.undecided} ok={!v.undecided} sub="아래 자동 매칭 내역에서 정함" />
-            </div>
+            {/* 한눈에 — 사용자별 청구 · 검증 한 줄 · 확인 필요 건수 */}
+            <section className="bg-white rounded-xl shadow-sm p-3 space-y-2">
+              <div className="flex flex-wrap gap-2">
+                {(v.users || []).filter(u => u.count || u.unmatched).map(u => (
+                  <span key={u.username} className="px-2 py-1 rounded-lg bg-gray-50 border text-sm">
+                    {u.name} <b>{num(u.amount)}</b>원{u.unmatched ? <span className="text-orange-600"> · 확인 {u.unmatched}</span> : null}
+                  </span>))}
+              </div>
+              {m && <Check m={m} />}
+              {(() => {
+                const nq = (v.unmatched_orders || []).length + (v.undecided || 0);
+                return nq
+                  ? <div className="text-sm font-bold text-orange-700">❓ 확인 필요 {nq}건 — 아래에서 정하면 확정 버튼이 켜집니다
+                      {(v.unmatched_orders || []).length ? ' (정하지 않은 영수증에 없는 발송건은 다음 정산으로 넘어갑니다)' : ''}</div>
+                  : <div className="text-sm font-bold text-green-700">✅ 확인 필요 없음 — 맨 아래 확정을 누르면 끝</div>;
+              })()}
+            </section>
+            {!!v.manual_dup?.length && (
+              <Warn tone="red">⚠️ <b>이중 청구 의심</b> — 영수증 없이 직접 입력한 건인데 그날 영수증에 같은 상품번호가 있습니다:{' '}
+                {v.manual_dup.map(x => `${x.name} ${x.product_name}(${x.costco_no}) ${num(x.amount)}원`).join(' · ')}.
+                맞으면 자동 매칭 내역에서 그 줄을 ✂️ 끊고 다시 매칭하세요.</Warn>)}
+
+            {/* ❓ 영수증보다 많이 나간 주문 — 버튼 하나로 */}
+            <OverPanel rows={rows.filter(r => r.flag && !r.ok)} busy={busy} onAct={async (r, action) => {
+              setBusy(true); setErr('');
+              try {
+                const nv = await rsettle.rows(day, [{ username: r.username, order_no: r.order_no, action }]);
+                setV(nv); setPend({});
+                setMsg(action === 'ok' ? `✅ ${r.name} ${r.product_name} — 영수증가로 청구` : `📦 ${r.name} ${r.product_name} — 재고에서 나간 것으로 옮김(아래 영수증에 없는 발송건에서 보유자 선택)`);
+              } catch (e: any) { setErr('처리 실패: ' + (e.message || e)); }
+              finally { setBusy(false); }
+            }} />
 
             {/* ③ 예외만 — 자동으로 못 정한 것 */}
             <UnmatchedPanel v={v} day={day} busy={busy} setBusy={setBusy} onErr={setErr}
@@ -321,6 +346,43 @@ export default function ReceiptSettlePage() {
 
 function Warn({ tone, children }: { tone: 'red' | 'yellow'; children: React.ReactNode }) {
   return <div className={clsx('p-3 rounded-lg text-sm', tone === 'red' ? 'bg-red-50 text-red-800' : 'bg-yellow-50 text-yellow-900')}>{children}</div>;
+}
+
+/** 검증 한 줄 — 영수증 돈 = 청구 + 재고 입고 + 반품 + 남은 영수증(배정 대기). 직접 입력은 따로. */
+function Check({ m }: { m: RsMoney }) {
+  const bad = m.undecided < 0;
+  return (
+    <div className={clsx('text-sm rounded-lg px-3 py-2', bad ? 'bg-red-50 text-red-800' : 'bg-green-50 text-green-900')}>
+      {bad ? '❌' : '✅'} 영수증 <b>{num(m.receipt_total)}</b> = 청구 <b>{num(m.receipt_bill)}</b>
+      {m.stock_in ? <> + 재고 입고 {num(m.stock_in)}</> : null}
+      {m.returned ? <> + 반품 {num(m.returned)}</> : null}
+      {m.undecided > 0 ? <> + 남은 영수증(배정 대기) {num(m.undecided)}</> : null}
+      {bad && <> — 영수증보다 <b>{num(-m.undecided)}원 더</b> 청구됐습니다. 위 ❓ 줄을 확인하세요.</>}
+      {(m.self_stock + m.other_stock + m.manual + m.online) > 0 && (
+        <div className="text-xs text-gray-600 mt-0.5">영수증 밖 청구: {[
+          m.self_stock && `본인 재고 ${num(m.self_stock)}`, m.other_stock && `남의 재고 ${num(m.other_stock)}`,
+          m.manual && `직접 입력(영수증 없음) ${num(m.manual)}`, m.online && `온라인몰 ${num(m.online)}`,
+        ].filter(Boolean).join(' · ')}</div>)}
+    </div>
+  );
+}
+
+function OverPanel({ rows, busy, onAct }: { rows: RsRow[]; busy: boolean; onAct: (r: RsRow, a: 'ok' | 'stock') => void }) {
+  if (!rows.length) return null;
+  return (
+    <section className="bg-white rounded-xl shadow-sm border-2 border-orange-200">
+      <div className="px-3 py-2 border-b font-bold text-sm">❓ 영수증보다 많이 나간 주문 {rows.length}건 — 일부만 넘쳐 자동으로 못 나눈 건</div>
+      <div className="divide-y">{rows.map(r => (
+        <div key={k(r)} className="px-3 py-2 flex flex-wrap items-center gap-2 text-sm">
+          <span className="font-semibold">{r.name}</span>
+          <span className="min-w-[160px] flex-1">{r.product_name} × {r.qty} <span className="text-orange-600 text-xs">({r.flag})</span></span>
+          <span className="text-gray-600">{num(r.amount)}원</span>
+          <button disabled={busy} onClick={() => onAct(r, 'ok')} className="px-2 py-1 rounded border bg-white disabled:opacity-40">✅ 영수증가로 청구</button>
+          <button disabled={busy} onClick={() => onAct(r, 'stock')} className="px-2 py-1 rounded border bg-white disabled:opacity-40">📦 재고에서 나감</button>
+        </div>))}
+      </div>
+    </section>
+  );
 }
 
 function Kpi({ label, value, sub, warn, ok, unit = '원' }: { label: string; value: number; sub?: string; warn?: boolean; ok?: boolean; unit?: string }) {

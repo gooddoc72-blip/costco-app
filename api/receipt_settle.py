@@ -55,8 +55,9 @@ class FinalizeReq(BaseModel):
 class UnmatchedDecision(BaseModel):
     username: str
     order_no: str
-    how: str                    # stock | amount | link | skip
+    how: str                    # stock | amount(영수증 없음 직접 입력) | receipt(판독 누락) | link | skip
     owner: str = ''
+    costco_no: str = ''         # 직접 입력 — 상품번호(판독 누락이면 영수증에 이 번호로 줄 추가)
     qty: int | None = None
     amount: int | None = None
     memo: str = ''
