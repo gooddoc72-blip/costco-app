@@ -83,7 +83,7 @@ export const rsettle = {
     call<RsView & { result: { mode: string; count: number; amount: number; skipped?: number; failed?: string[]; dupe?: { name: string; owner: string; have: number }[] } }>(
       'POST', `${B}/day/${d}/assign`, { mode, username, picks, bill_stock }),
   receipt: (d: string) => call<{ rows: ReceiptRow[] }>('GET', `${B}/day/${d}/receipt`),
-  parseStart: (files: { name: string; content_b64: string }[]) => call<{ job: string }>('POST', `${B}/receipt/parse`, { files }),
+  parseStart: (files: { name: string; content_b64: string }[], fresh = false) => call<{ job: string }>('POST', `${B}/receipt/parse`, { files, fresh }),
   parseStatus: (job: string) => call<ParseJob>('GET', `${B}/receipt/parse/${job}`),
   receiptCheck: (d: string, rows: ReceiptRow[]) => call<ReceiptCheck>('POST', `${B}/day/${d}/receipt/check`, { rows }),
   receiptSave: (d: string, rows: ReceiptRow[]) =>

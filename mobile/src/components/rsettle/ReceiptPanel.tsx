@@ -112,7 +112,7 @@ export default function ReceiptPanel({ day, count, onSaved, onErr }: {
     try {
       const fkeys = Array.from(fl).map(f => `${f.name}|${f.size}`);
       const files = await Promise.all(Array.from(fl).map(async f => ({ name: f.name, content_b64: await fileToB64(f) })));
-      const { job } = await rsettle.parseStart(files);
+      const { job } = await rsettle.parseStart(files, fresh.current);
       for (;;) {
         await new Promise(r => setTimeout(r, 2000));
         const s = await rsettle.parseStatus(job);

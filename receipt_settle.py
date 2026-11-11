@@ -1902,7 +1902,7 @@ def receipt_signature(data):
     return (_d, str((data or {}).get('purchase_time') or '').strip()[:5], _t)
 
 
-def parse_receipt_uploads(pdfs, photos, settings):
+def parse_receipt_uploads(pdfs, photos, settings, use_cache=True):
     """PDF·사진 → 영수증 줄 목록. 반환: (items, fails)
 
     관리자 화면과 같은 판독 경로다. 글자 없는 스캔 PDF는 그림으로 바꿔 AI로 읽는다.
@@ -1951,12 +1951,17 @@ def parse_receipt_uploads(pdfs, photos, settings):
         fails.append(('사진', 'AI 키가 없어 사진 판독을 할 수 없습니다 — 관리자에게 문의하세요'))
     elif photos:
         _sigs = set()
+        # 사진은 동시에 읽는다(ai_service.parse_receipt_photos) — 순서·중복 판정은 그대로
+        _okp, _oki = [], []
         for _pf in photos:
             _img, _ierr = _image_for_ai(_pf)
             if _ierr:
                 fails.append((_pf.name, _ierr))
                 continue
-            _d, _de = _ais.parse_receipt_photo(_ak, _img[0], _img[1], gemini_key=_gk)
+            _okp.append(_pf)
+            _oki.append(_img)
+        for _pf, (_d, _de) in zip(_okp, _ais.parse_receipt_photos(_ak, _oki, gemini_key=_gk,
+                                                                      use_cache=use_cache)):
             if _de or not _d:
                 fails.append((_pf.name, _de or '판독 실패'))
                 continue

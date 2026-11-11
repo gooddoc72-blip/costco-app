@@ -954,26 +954,39 @@ def _to_rows(items):
     return out
 
 
-def parse_files(files, log=None):
+def parse_files(files, log=None, fresh=False):
     """files: [(파일이름, bytes)] → {'rows', 'fails'} — 저장하지 않는다.
 
     파일마다 따로 읽어 진행을 알리고, 끝에 같은 상품 줄을 합친다(PDF와 사진을 같이 올려도
     같은 품목이 두 번 들어가지 않게 — 화면과 같은 merge_receipt_lines).
     """
     from auto_settle import _as_file, _PDF, _IMG
-    items, fails = [], []
+    items, fails, photos = [], [], []
     files = list(files or [])
     for i, (name, data) in enumerate(files, 1):
         ext = '.' + name.rpartition('.')[2].lower()
         if ext not in _PDF + _IMG:
             fails.append((name, 'PDF·사진(jpg·png·webp·heic)만 읽습니다'))
             continue
+        f = _as_file(name, data)
+        if ext in _IMG:
+            photos.append(f)          # 사진은 모아서 한 번에 — 동시에 읽는다(11/11)
+            continue
         if log:
             log(f'{i}/{len(files)} {name} 읽는 중')
-        f = _as_file(name, data)
-        got, fl = _rs.parse_receipt_uploads([f] if ext in _PDF else [], [f] if ext in _IMG else [], None)
+        got, fl = _rs.parse_receipt_uploads([f], [], None, use_cache=not fresh)
         items += got
         fails += fl
+    if photos:
+        if log:
+            log(f'사진 {len(photos)}장 동시에 읽는 중' + (' (저장해 둔 결과 안 씀)' if fresh else ''))
+        import time as _t
+        _t0 = _t.time()
+        got, fl = _rs.parse_receipt_uploads([], photos, None, use_cache=not fresh)
+        items += got
+        fails += fl
+        if log:
+            log(f'사진 판독 {int(_t.time() - _t0)}초')
     merged = list(_rs.merge_receipt_lines(items).values())
     return {'rows': _to_rows(merged), 'fails': [{'file': a, 'error': b} for a, b in fails]}
 

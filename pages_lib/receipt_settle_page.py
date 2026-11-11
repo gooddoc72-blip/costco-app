@@ -1,6 +1,7 @@
 """🧾 영수증 정산 (관리자) — 코스트코 영수증을 각 사용자 주문에 자동배치하고
 각 주문 구입가에 실단가를 반영 + 사용자별 정산표 생성."""
 import hashlib
+import time
 from datetime import date, datetime, timedelta
 
 import streamlit as st
@@ -877,6 +878,7 @@ def _render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             st.session_state.pop('_rs_preads', None)
             st.session_state.pop('_rs_pcomp', None)
             st.session_state.pop('rs_alloc', None)
+            st.session_state['_rs_nocache'] = True     # 저장해 둔 판독 결과 말고 새로 읽는다
             st.session_state['_rs_fails'] = [x for x in (st.session_state.get('_rs_fails') or [])
                                               if x[0] not in {f.name for f in _ph_all}]
             st.rerun()
@@ -892,15 +894,25 @@ def _render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             st.warning("⚠️ AI 키가 없어 사진 판독을 할 수 없습니다. 설정 탭 > 🤖 AI 설정에서 "
                        "Gemini 또는 Claude 키를 등록하세요.")
             _ph = []
-        _pbar = st.progress(0.0, text="영수증 사진 판독 중...") if _ph else None
-        for _pi, _pf in enumerate(_ph, 1):
-            _pbar.progress(_pi / len(_ph), text=f"영수증 사진 판독 중... ({_pi}/{len(_ph)})")
+        _pbar = st.progress(0.0, text=f"영수증 사진 {len(_ph)}장 판독 중... (동시에 읽습니다)") if _ph else None
+        # 사진은 **동시에** 읽는다(11/11) — 예전엔 한 장씩이라 3장이면 3배를 기다렸다.
+        #   '🔄 사진 다시 판독'을 누른 뒤에는 저장해 둔 판독 결과를 쓰지 않고 새로 읽는다.
+        _ok_ph, _ok_img = [], []
+        for _pf in _ph:
             _img, _ierr = _image_for_ai(_pf)
             if _ierr:
                 _pfails.append((_pf.name, _ierr))
                 _preads[_pid(_pf)] = {'name': _pf.name, 'sig': '', 'date': '', 'lines': []}
                 continue
-            _data, _perr = ai_service.parse_receipt_photo(_ak, _img[0], _img[1], gemini_key=_gk)
+            _ok_ph.append(_pf)
+            _ok_img.append(_img)
+        _t0 = time.time()
+        _res = ai_service.parse_receipt_photos(
+            _ak, _ok_img, gemini_key=_gk,
+            use_cache=not st.session_state.pop('_rs_nocache', False),
+            on_done=lambda n, t: _pbar.progress(n / t, text=f"영수증 사진 판독 중... ({n}/{t}장 끝)"))
+        _secs = int(time.time() - _t0)
+        for _pf, (_data, _perr) in zip(_ok_ph, _res):
             if _perr or not _data:
                 _pfails.append((_pf.name, _perr or '판독 실패'))
                 _preads[_pid(_pf)] = {'name': _pf.name, 'sig': '', 'date': '', 'lines': []}
@@ -933,7 +945,8 @@ def _render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     f"것인지 가르지 못했습니다(품목별 합계 {fmt(_di)}원). "
                     "아래 표의 **할인** 칸에 직접 넣어 주세요 — 안 넣으면 "
                     "할인 전 가격으로 청구됩니다.")
-            _note = []
+            _note = ["저장해 둔 판독 결과(같은 사진)" if _data.get('_cached')
+                     else f"{_data.get('_secs', 0)}초"]
             if _data.get('_rotated'):
                 _note.append(f"사진이 기울어/뒤집혀 {_data['_rotated']}° 돌려 다시 읽음")
             if _data.get('_tiled'):
@@ -948,6 +961,8 @@ def _render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                 + " / ".join((_data.get('_check') or [])[:2])))
         if _pbar:
             _pbar.empty()
+        if _ok_ph:
+            st.caption(f"⏱ 사진 {len(_ok_ph)}장 판독 {_secs}초")
         st.session_state['_rs_fails'] = (st.session_state.get('_rs_fails') or []) + _pfails
     # 올라 있는 사진이 바뀌었으면(추가·삭제) 표를 다시 짠다 — 내린 사진의 품목도 빠진다
     _preads = {k: v for k, v in _preads.items() if k in _all_ids}

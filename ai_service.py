@@ -1480,6 +1480,10 @@ def _parse_receipt_whole(api_key, image_bytes, media_type, max_tokens=4000, *, g
                 _g_err = _g_err or f"{_gm}: 응답이 JSON이 아님"
                 continue
             _cok, _ciss = validate_receipt(_cand)
+            if int(_cand.get("_rotate") or 0):
+                # 사진이 뒤집혀/누워 있다 — 이 사진으로 flash·Claude를 더 돌려 봐야 헛수고다.
+                #   바로 돌려주고 parse_receipt_photo가 세워서 다시 읽는다(11/11 속도 개선).
+                return _tag(_cand, 'gemini', _ciss, _cok), None
             if _cok:
                 return _tag(_cand, 'gemini', _ciss, True), None
             if _g_data is None or len(_ciss) < len(_g_iss or []):
@@ -1534,7 +1538,119 @@ def _read_one_tile(api_key, gemini_key, b, mt, max_tokens):
     return None
 
 
-def parse_receipt_photo(api_key, image_bytes, media_type, max_tokens=4000, *, gemini_key=''):
+def in_user_thread(fn):
+    """스레드로 돌릴 함수 — 부른 스레드의 AI 사용자(사용량 귀속)를 새 스레드에도 넘긴다."""
+    _u = current_user()
+
+    def _run(*a, **k):
+        set_current_user(_u)
+        return fn(*a, **k)
+    return _run
+
+
+# ── 판독 결과 캐시 — 같은 사진을 다시 올리면(초기화·재업로드) 바로 돌려준다 ──
+#   검산을 통과한 결과만 둔다. '🔄 다시 판독'은 use_cache=False로 새로 읽는다.
+#   프롬프트가 바뀌면 키가 달라져 옛 결과를 쓰지 않는다.
+_RCACHE_DAYS = 14
+
+
+def _rcache_key(image_bytes):
+    import hashlib
+    return hashlib.sha1(bytes(image_bytes) + _RECEIPT_SYSTEM.encode('utf-8')).hexdigest()
+
+
+def _rcache_conn():
+    from db_core import get_auth_db
+    c = get_auth_db()
+    c.execute("CREATE TABLE IF NOT EXISTS receipt_parse_cache (k TEXT PRIMARY KEY, "
+              "data_json TEXT NOT NULL, created_at TEXT DEFAULT '')")
+    return c
+
+
+def _rcache_get(key):
+    try:
+        c = _rcache_conn()
+        try:
+            cut = (datetime.now() - timedelta(days=_RCACHE_DAYS)).strftime('%Y-%m-%d %H:%M:%S')
+            r = c.execute("SELECT data_json FROM receipt_parse_cache WHERE k=? AND created_at>=?",
+                          (key, cut)).fetchone()
+        finally:
+            c.close()
+        return json.loads(r[0]) if r else None
+    except Exception:
+        return None
+
+
+def _rcache_put(key, data):
+    try:
+        c = _rcache_conn()
+        try:
+            now = datetime.now()
+            c.execute("INSERT OR REPLACE INTO receipt_parse_cache (k, data_json, created_at) VALUES (?,?,?)",
+                      (key, json.dumps(data, ensure_ascii=False, default=str),
+                       now.strftime('%Y-%m-%d %H:%M:%S')))
+            c.execute("DELETE FROM receipt_parse_cache WHERE created_at<?",
+                      ((now - timedelta(days=_RCACHE_DAYS)).strftime('%Y-%m-%d %H:%M:%S'),))
+            c.commit()
+        finally:
+            c.close()
+    except Exception:
+        pass
+
+
+def parse_receipt_photos(api_key, imgs, *, gemini_key='', use_cache=True, on_done=None,
+                         max_workers=3):
+    """사진 여러 장을 **동시에** 판독한다. imgs: [(bytes, media_type)] → [(data, err)] (같은 순서).
+
+    예전엔 한 장씩 차례로 읽어 3장이면 3배를 기다렸다(11/11). 장마다 조각을 또 4개까지
+    동시에 읽으므로 동시 판독은 3장으로 묶는다(AI 요청 한도).
+    on_done(끝난 수, 전체 수)는 **부른 스레드에서** 불린다 — Streamlit 진행 표시를 그대로 쓴다.
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    imgs = list(imgs or [])
+    out = [(None, '판독 안 함')] * len(imgs)
+    if not imgs:
+        return out
+    _one = in_user_thread(parse_receipt_photo)
+    with ThreadPoolExecutor(max_workers=max(1, min(max_workers, len(imgs)))) as ex:
+        futs = {ex.submit(_one, api_key, b, mt, gemini_key=gemini_key, use_cache=use_cache): i
+                for i, (b, mt) in enumerate(imgs)}
+        for n, f in enumerate(as_completed(futs), 1):
+            i = futs[f]
+            try:
+                out[i] = f.result()
+            except Exception as e:
+                out[i] = (None, f'판독 예외: {e}')
+            if on_done:
+                try:
+                    on_done(n, len(imgs))
+                except Exception:
+                    pass
+    return out
+
+
+def parse_receipt_photo(api_key, image_bytes, media_type, max_tokens=4000, *, gemini_key='',
+                        use_cache=True):
+    """영수증 사진 판독 + 캐시·걸린 시간(_secs). 실제 판독은 _parse_receipt_photo_core."""
+    import time as _t
+    _key = _rcache_key(image_bytes)
+    if use_cache:
+        _c = _rcache_get(_key)
+        if _c:
+            _c["_cached"] = True
+            _c["_secs"] = 0
+            return _c, None
+    _t0 = _t.time()
+    _data, _err = _parse_receipt_photo_core(api_key, image_bytes, media_type, max_tokens,
+                                            gemini_key=gemini_key)
+    if _data is not None:
+        _data["_secs"] = int(round(_t.time() - _t0))
+        if _data.get("_verified"):
+            _rcache_put(_key, _data)
+    return _data, _err
+
+
+def _parse_receipt_photo_core(api_key, image_bytes, media_type, max_tokens=4000, *, gemini_key=''):
     """코스트코/트레이더스 영수증 사진 → 매입 정보 dict. 반환: (dict, error).
 
     정확도 3단: 값이 맞을 때까지만 비용을 더 쓴다.
@@ -1580,8 +1696,11 @@ def parse_receipt_photo(api_key, image_bytes, media_type, max_tokens=4000, *, ge
     if not _tiles or not (api_key or gemini_key):
         return (_data, None) if _data is not None else (None, _err)
 
-    _parts = [_read_one_tile(api_key, gemini_key, _tb, _tm, max_tokens)
-              for _tb, _tm in _tiles]
+    # 조각은 서로 상관없으니 **동시에** 읽는다 — 4조각이면 기다림이 약 1/4 (11/11)
+    from concurrent.futures import ThreadPoolExecutor
+    _one = in_user_thread(_read_one_tile)
+    with ThreadPoolExecutor(max_workers=min(4, len(_tiles))) as _ex:
+        _parts = list(_ex.map(lambda t: _one(api_key, gemini_key, t[0], t[1], max_tokens), _tiles))
     _merged = _merge_tile_results([x for x in _parts if x])
     if not _merged:
         return (_data, None) if _data is not None else (None, _err)

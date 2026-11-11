@@ -47,15 +47,21 @@ def parse_photos(files, log=None):
     if not (ak or gk):
         raise ValueError('AI 키가 없습니다 — 관리자에게 문의하세요')
     raw, errors, checks, sigs = [], [], [], set()
-    for i, (name, data) in enumerate(files, 1):
-        if log:
-            log(f'{i}/{len(files)} {name} 읽는 중')
+    # 사진은 동시에 읽는다(11/11) — 순서·중복 판정은 아래에서 원래 순서대로
+    okn, oki = [], []
+    for name, data in files:
         try:
-            img, mt = _image(base64.b64encode(data).decode(), name)
+            okn.append(name)
+            oki.append(_image(base64.b64encode(data).decode(), name))
         except ValueError as e:
+            okn.pop()
             errors.append({'file': name, 'error': str(e)})
-            continue
-        d, err = ai_service.parse_receipt_photo(ak, img, mt, gemini_key=gk)
+    if log:
+        log(f'사진 {len(oki)}장 동시에 읽는 중')
+    res = ai_service.parse_receipt_photos(
+        ak, oki, gemini_key=gk,
+        on_done=(lambda n, t: log(f'{n}/{t}장 끝')) if log else None)
+    for name, (d, err) in zip(okn, res):
         if err or not d:
             errors.append({'file': name, 'error': err or '판독 실패'})
             continue
@@ -74,6 +80,7 @@ def parse_photos(files, log=None):
             errors.append({'file': name, 'error': '품목을 읽지 못했습니다 (더 밝고 반듯하게 다시 촬영)'})
             continue
         iss = list(d.get('_check') or [])
+        iss.append('저장해 둔 판독 결과(같은 사진)' if d.get('_cached') else f"{d.get('_secs', 0)}초")
         if d.get('_rotated'):
             iss.append(f"사진이 기울어/뒤집혀 {d['_rotated']}° 돌려 다시 읽음")
         if d.get('_tiled'):

@@ -91,6 +91,7 @@ class UpFile(BaseModel):
 
 class ParseReq(BaseModel):
     files: list[UpFile]
+    fresh: bool = False         # 🔄 다시 판독 — 저장해 둔 판독 결과를 쓰지 않는다
 
 
 class ReceiptRow(BaseModel):
@@ -124,7 +125,7 @@ def receipt_parse(req: ParseReq, admin: dict = Depends(require_admin)):
             raise HTTPException(status_code=400, detail=f"{f.name}: base64가 아닙니다")
     if not files:
         raise HTTPException(status_code=400, detail="파일이 없습니다")
-    return {'job': _start_job(lambda log: svc.parse_files(files, log=log), admin)}
+    return {'job': _start_job(lambda log: svc.parse_files(files, log=log, fresh=req.fresh), admin)}
 
 
 def _start_job(fn, admin):
