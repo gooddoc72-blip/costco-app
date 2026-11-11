@@ -258,7 +258,65 @@ def snap_items_to_catalog(items, min_score=0.55):
             continue
         if _no in _by_no:
             _fix_by_catalog(_it, _no, _by_no[_no], _price.get(_no, 0), _log, _by_no)
+    try:
+        _fix_name_shift(items or [], _by_no, _log)
+    except Exception:
+        pass
     return items, _log
+
+
+def _fix_name_shift(items, by_no, log, min_lines=3):
+    """상품명이 **한 줄씩 통째로 밀린** 판독을 바로잡는다(11/11 '상품명이 다 틀려').
+
+    코스트코 영수증은 `상품명` 줄 아래 `번호 수량 단가 금액` 줄이 온다. 사진이 기울면
+    AI가 번호 줄을 그 **아래** 품목 이름과 짝지어, 모든 줄 이름이 옆 품목 것이 된다
+    (금액·번호는 맞아서 검산도 통과한다).
+
+    한 줄만 보고 판단하지 않는다 — 공유DB 이름에도 옛 오독이 남아 있을 수 있다.
+    읽은 이름이 **제 번호의 DB 이름보다 옆 줄 번호의 DB 이름과** 뚜렷이 맞는 줄이
+    3줄 이상이고, 비교할 수 있는 줄의 60% 이상이며, 제자리에 맞는 줄보다 2배 넘게 많을 때만
+    영수증 전체를 한 칸 옮긴다. 밀려서 이름이 비는 끝 줄은 DB 이름을 넣는다.
+    """
+    n = len(items)
+    if n < min_lines:
+        return
+
+    def nm(i):
+        return str(items[i].get('상품명') or '').strip()
+
+    def db(i):
+        if 0 <= i < n:
+            return by_no.get(str(items[i].get('상품번호') or '').strip(), '')
+        return ''
+
+    own = votes_next = votes_prev = comparable = 0
+    for i in range(n):
+        if not nm(i):
+            continue
+        s0 = _token_score(nm(i), db(i)) if db(i) else 0.0
+        sn = _token_score(nm(i), db(i + 1)) if db(i + 1) else 0.0
+        sp = _token_score(nm(i), db(i - 1)) if db(i - 1) else 0.0
+        if not (db(i) or db(i + 1) or db(i - 1)):
+            continue
+        comparable += 1
+        best = max(s0, sn, sp)
+        if best < 0.6:
+            continue
+        if s0 == best:
+            own += 1
+        elif sn == best:
+            votes_next += 1          # 이 이름은 다음 줄 번호의 것 → 이름이 한 칸 위로 밀림
+        else:
+            votes_prev += 1          # 이 이름은 앞 줄 번호의 것 → 이름이 한 칸 아래로 밀림
+    for votes, step in ((votes_next, 1), (votes_prev, -1)):
+        if votes >= min_lines and votes >= comparable * 0.6 and votes > own * 2:
+            names = [nm(i) for i in range(n)]
+            for i in range(n):
+                src = i - step              # step=1: i번 줄의 이름은 i-1번 줄에 읽혀 있다
+                items[i]['상품명'] = names[src] if 0 <= src < n and names[src] else (db(i) or names[i])
+            log.append(f"⚠️ 상품명이 한 줄씩 {'위' if step == 1 else '아래'}로 밀려 읽혀 "
+                       f"{votes}/{comparable}줄 기준으로 제자리로 옮겼습니다 — 끝 줄 이름을 확인하세요")
+            return
 
 
 def _settled_split_map(conn, date_upto, start=''):
