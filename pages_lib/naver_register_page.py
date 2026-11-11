@@ -393,6 +393,23 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                       if IS_ADMIN else ""))
         st.stop()
 
+    # 🏷 인증대상 아님 — 카페24 대행등록과 같은 전역 설정(naver_cert_exclude). 이 메뉴의
+    #   모든 등록(상품DB·사진 등록·카페24 연동)이 naver_api.register_product에서 이 값을 따른다.
+    _nr_cert_cur = (get_global_setting('naver_cert_exclude') or '1') == '1'
+    if IS_ADMIN:
+        _nr_cert = st.checkbox(
+            "🏷 인증 대상 카테고리면 '인증대상 아님'으로 표시해 등록 (KC·어린이·친환경·생활화학)",
+            value=_nr_cert_cur, key="nr_cert_ex",
+            help="네이버가 '인증정보 필요'로 거부한 상품만 '인증대상 아님'을 표시해 한 번 더 "
+                 "등록합니다(스마트스토어센터의 '대상 아님' 체크와 같음). 인증과 무관한 상품에는 "
+                 "붙지 않고, 생활화학 신고번호가 있는 세제류는 신고번호로 등록합니다. "
+                 "⚠️ 실제 인증 대상 상품을 '아님'으로 표시하면 판매자 책임입니다. "
+                 "카페24 대행등록·대기열 등록과 같은 설정입니다.")
+        if _nr_cert != _nr_cert_cur:
+            set_global_setting('naver_cert_exclude', '1' if _nr_cert else '0')
+    elif _nr_cert_cur:
+        st.caption("🏷 인증 대상 카테고리 상품은 '인증대상 아님'으로 표시해 등록됩니다 (관리자 설정).")
+
     import json as _nr_json, re as _nr_re
     _nr_all   = cached_merged(USERNAME)
     _nr_unreg = [p for p in _nr_all if not p.get("naver_product_no")]

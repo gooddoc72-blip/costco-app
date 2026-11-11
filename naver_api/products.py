@@ -875,7 +875,17 @@ def register_product(client_id, client_secret, product_info):
         #     kc = 문자열 "TRUE"(대상 아님) / 나머지는 boolean true
         #   (commerce-api-naver discussions #704)
         # 신고번호가 있는 상품(=실제 생활화학 인증 대상)은 '대상 아님'으로 우회하지 않는다
-        if (_err and product_info.get("cert_exclude") and _is_cert_error(_err)
+        # 호출부가 정하지 않았으면 전역 설정(대행등록 화면의 '🏷 인증대상 아님' 체크, 기본 켜짐)을 따른다.
+        #   예전엔 카페24 대행등록만 넘겨서 네이버 등록 메뉴(상품DB·사진 등록 등)는 인증 대상
+        #   카테고리에서 그냥 실패했다(11/11).
+        _cx = product_info.get("cert_exclude")
+        if _cx is None and _err and _is_cert_error(_err):
+            try:
+                from db import get_global_setting as _ggs
+                _cx = (_ggs('naver_cert_exclude') or '1') == '1'
+            except Exception:
+                _cx = False
+        if (_err and _cx and _is_cert_error(_err)
                 and not _chem_nos):
             payload["originProduct"]["detailAttribute"][
                 "certificationTargetExcludeContent"] = dict(CERT_EXCLUDE_ALL)
