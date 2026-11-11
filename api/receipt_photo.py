@@ -74,6 +74,8 @@ def parse_photos(files, log=None):
             errors.append({'file': name, 'error': '품목을 읽지 못했습니다 (더 밝고 반듯하게 다시 촬영)'})
             continue
         iss = list(d.get('_check') or [])
+        if d.get('_rotated'):
+            iss.append(f"사진이 기울어/뒤집혀 {d['_rotated']}° 돌려 다시 읽음")
         if d.get('_tiled'):
             iss.append('세로로 잘라 다시 읽음')
         if d.get('_repaired'):

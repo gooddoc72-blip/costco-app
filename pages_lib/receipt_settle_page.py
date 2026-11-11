@@ -934,6 +934,8 @@ def _render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     "아래 표의 **할인** 칸에 직접 넣어 주세요 — 안 넣으면 "
                     "할인 전 가격으로 청구됩니다.")
             _note = []
+            if _data.get('_rotated'):
+                _note.append(f"사진이 기울어/뒤집혀 {_data['_rotated']}° 돌려 다시 읽음")
             if _data.get('_tiled'):
                 _note.append("세로로 잘라 다시 읽음")
             if _data.get('_repaired'):

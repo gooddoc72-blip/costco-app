@@ -970,12 +970,15 @@ _RECEIPT_SYSTEM = (
     "너는 한국 대형마트(코스트코 / 이마트 트레이더스) 영수증 판독 전문가다. "
     "휴대폰으로 찍은 영수증 사진을 보고 JSON으로만 출력한다(설명·마크다운 금지).\n"
     "출력 형식:\n"
-    '{"purchase_date":"YYYY-MM-DD","purchase_time":"HH:MM","store_type":"코스트코|트레이더스",'
+    '{"rotate":0,"purchase_date":"YYYY-MM-DD","purchase_time":"HH:MM","store_type":"코스트코|트레이더스",'
     '"store_name":"지점 포함 매장명","total_qty":정수,"qty_subtotals":[정수],"item_kinds":정수,"total_amount":정수,'
     '"discount_amount":정수,"coupon_total":정수,"card_last4":"1234","cash_receipt_no":"승인번호",'
     '"items":[{"product_no":"상품번호","name":"상품명","qty":정수,"unit_price":정수,'
     '"amount":정수,"discount":정수}]}\n'
     "규칙:\n"
+    "- rotate: 사진 속 글자가 똑바로 서 있으면 0. 영수증이 **거꾸로(위아래 뒤집혀)** 찍혀 글자가 "
+    "뒤집혀 보이면 180, 옆으로 누워 있으면 글자를 바로 세우려고 **시계 방향으로** 돌려야 하는 "
+    "각도(90 또는 270). 0이 아니어도 품목은 평소처럼 읽어 넣는다.\n"
     "- purchase_date: **영수증 하단/상단의 '거래일시'(결제한 날짜)**. 2자리 연도는 20xx로. 안 보이면 ''.\n"
     "  ⚠️ 회원카드 만료일(유효기간·만료일·EXPIRE·MEMBER EXP 등)을 구매일자로 쓰면 절대 안 된다. "
     "미래 날짜는 거래일자가 아니다. 거래일시와 만료일이 함께 보이면 **과거/오늘 날짜 쪽**을 쓴다.\n"
@@ -1105,6 +1108,16 @@ def _parse_receipt_json(txt):
         _pno = "".join(ch for ch in str(_it.get("product_no", "") or "") if ch.isdigit())
         _is_disc = (any(_w in _name or _w in _upper for _w in _DISCOUNT_WORDS)
                     or _amt < 0 or _up < 0 or (_pno and len(_pno) <= 4))
+        # 11/10 부산점: 쿠폰코드가 5자리(18351·20686)이고 이름도 IRC 없이 위 품목과 같게
+        # 찍혔다(`용담삼면900G / 20686 1x 2,400 2,400-T`). AI가 마이너스를 빠뜨리면 없는
+        # 상품이 된다. 5자리 상품번호(43607 케이크 등)도 진짜로 있으니, **바로 위 품목과
+        # 이름 앞 3글자가 같고 금액이 더 작을 때만** 할인으로 본다.
+        if not _is_disc and _pno and len(_pno) == 5 and _items:
+            _pv = _items[-1]
+            _k = lambda x: "".join(ch for ch in str(x) if ch.isalnum())[:3]
+            if (_k(_name) and _k(_name) == _k(_pv["상품명"])
+                    and 0 < _amt < (_pv["금액"] or 0)):
+                _is_disc = True
         if _is_disc:
             _dv = abs(_amt) or abs(_up) * max(1, _q)
             # AI가 위 품목 discount에도 넣고 할인 줄도 따로 낸 경우는 두 번 빼지 않는다
@@ -1148,7 +1161,9 @@ def _parse_receipt_json(txt):
                 _date = _cand.strftime("%Y-%m-%d")
     except ValueError:
         pass
+    _rot = _num(_d.get("rotate"))
     return {
+        "_rotate": _rot if _rot in (90, 180, 270) else 0,
         "purchase_date": _date,
         "_date_fixed_from": _date_note,   # 만료일을 읽었던 원본값 (있으면 검증에서 알림)
         "purchase_time": str(_d.get("purchase_time", "") or "").strip()[:5],
@@ -1271,6 +1286,25 @@ def prep_receipt_image(image_bytes, media_type):
             return buf.getvalue(), "image/jpeg"
     except Exception:
         return image_bytes, media_type
+
+
+def rotate_receipt_image(image_bytes, media_type, deg):
+    """사진을 시계 방향으로 deg도 돌린다. 반환: (bytes, media_type) 또는 실패 시 None.
+
+    11/10 부산점 영수증이 종이째 **거꾸로** 찍혀 왔다. EXIF 회전은 폰이 기록한 방향만
+    고치므로 이런 사진은 뒤집힌 채 AI에 갔고, AI가 아래→위로 읽어 쿠폰 할인이 엉뚱한
+    품목에 붙고(할인 줄은 품목 '다음'에 오는데 순서가 뒤집힘) 조각 판독도 순서가 꼬였다.
+    """
+    try:
+        from PIL import Image
+        import io as _io
+        with Image.open(_io.BytesIO(image_bytes)) as im0:
+            im = im0.convert("RGB").rotate(-int(deg), expand=True)   # PIL은 반시계
+            buf = _io.BytesIO()
+            im.save(buf, "JPEG", quality=92)
+            return buf.getvalue(), "image/jpeg"
+    except Exception:
+        return None
 
 
 def receipt_tiles(image_bytes, media_type, max_edge=1568, overlap=0.14, max_tiles=4):
@@ -1515,6 +1549,22 @@ def parse_receipt_photo(api_key, image_bytes, media_type, max_tokens=4000, *, ge
     _b, _mt = prep_receipt_image(image_bytes, media_type)
 
     _data, _err = _parse_receipt_whole(api_key, _b, _mt, max_tokens, gemini_key=gemini_key)
+    # 사진이 거꾸로/옆으로 찍혔다고 AI가 알려 주면 바로 세워 **처음부터 다시** 읽는다.
+    # 검산을 통과했어도 다시 읽는다 — 뒤집힌 채 읽으면 금액 합은 맞아도 할인이
+    # 다른 품목에 붙는다. 돌린 사진도 0이 아니라고 하면(오판) 경고가 적은 쪽을 쓴다.
+    _rot = int((_data or {}).get("_rotate") or 0)
+    if _rot:
+        _rb = rotate_receipt_image(_b, _mt, _rot)
+        if _rb:
+            _d2, _e2 = _parse_receipt_whole(api_key, _rb[0], _rb[1], max_tokens,
+                                            gemini_key=gemini_key)
+            if _d2 is not None and (not int(_d2.get("_rotate") or 0)
+                                    or _d2.get("_verified")
+                                    or len(_d2.get("_check") or [])
+                                    <= len(_data.get("_check") or [])):
+                _data, _err = _d2, _e2
+                _b, _mt = _rb
+                _data["_rotated"] = _rot
     if _data is not None:
         _fix = repair_receipt_math(_data)
         if _fix:
