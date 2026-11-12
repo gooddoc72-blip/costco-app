@@ -62,7 +62,26 @@ def find(code):
         sp = find_shared_by_code(pno)
         if sp:
             return sp
-    return find_shared_by_code(c)
+    sp = find_shared_by_code(c)
+    if sp:
+        return sp
+    # 코스트코 가격표 바코드는 상품번호를 앞 0으로 자릿수를 채우고 끝에 한 자리를 더 붙인다
+    # (예: 상품번호 859695 → 바코드 08596950). 그대로는 못 찾으므로 감싼 자리를 벗겨 본다.
+    for cand in _pno_candidates(c):
+        sp = find_shared_by_code(cand)
+        if sp and str(sp.get('product_no') or '') == cand:
+            return sp
+    return None
+
+
+def _pno_candidates(c):
+    """가격표 바코드 → 상품번호 후보(순서대로). 4~7자리만 — 상품번호 길이."""
+    out = []
+    for s in (c[:-1], c.lstrip('0')[:-1], c.lstrip('0'), c[1:-1]):
+        s = s.lstrip('0')
+        if 4 <= len(s) <= 7 and s != c and s not in out:
+            out.append(s)
+    return out
 
 
 def link(code, product_no, username, is_admin=False, kind='box'):
