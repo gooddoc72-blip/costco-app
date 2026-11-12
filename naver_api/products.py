@@ -726,6 +726,23 @@ def _is_cert_error(err):
                                  "인증대상", "인증 대상", "어린이인증", "생활화학", "인증정보"))
 
 
+def _barcode_for(seller_code, barcode=None):
+    """등록에 쓸 바코드 — 넘겨받은 값이 우선, 없으면 제품가격 DB(shared_products)에서
+    코스트코 상품번호로 찾는다. 숫자만 돌려준다. 못 찾으면 ''."""
+    _b = "".join(ch for ch in str(barcode or "") if ch.isdigit())
+    if _b:
+        return _b
+    _sc = str(seller_code or "").strip()
+    if not _sc:
+        return ""
+    try:
+        from db_products import find_shared_by_code
+        _sp = find_shared_by_code(_sc) or {}
+        return "".join(ch for ch in str(_sp.get("barcode") or "") if ch.isdigit())
+    except Exception:
+        return ""
+
+
 def register_product(client_id, client_secret, product_info):
     """
     네이버 스마트스토어 상품 등록.
@@ -851,12 +868,18 @@ def register_product(client_id, client_secret, product_info):
             "channelProductDisplayStatusType": "ON",
         },
     }
-    # 판매자 상품코드(코스트코 번호 등) — 있으면 sellerCodeInfo에 설정
+    # 판매자 상품코드(코스트코 번호) + 판매자 바코드 — sellerCodeInfo
+    #   바코드를 안 넘긴 경로(자동등록·카페24→네이버 등)도 제품가격 DB에 저장된
+    #   바코드를 찾아 함께 올린다. 나중에 바코드로 재고·주문을 찾을 때 쓴다.
     _seller_code = str(product_info.get("seller_code") or "").strip()
-    if _seller_code:
-        payload["originProduct"]["detailAttribute"]["sellerCodeInfo"] = {
-            "sellerManagementCode": _seller_code[:50],
-        }
+    _barcode = _barcode_for(_seller_code, product_info.get("barcode"))
+    if _seller_code or _barcode:
+        _sci = {}
+        if _seller_code:
+            _sci["sellerManagementCode"] = _seller_code[:50]
+        if _barcode:
+            _sci["sellerBarcode"] = _barcode[:50]
+        payload["originProduct"]["detailAttribute"]["sellerCodeInfo"] = _sci
 
     # ── 네이버쇼핑 검색정보(속성) — 브랜드·제조사·모델명 ────────────────
     #   상품 '속성' 영역에 노출되고 쇼핑 검색·카탈로그 매칭에 쓰인다.
@@ -2176,6 +2199,10 @@ def update_product_full(client_id, client_secret, product_no, updates):
             if _sc:
                 _sci = _da.get('sellerCodeInfo') if isinstance(_da.get('sellerCodeInfo'), dict) else {}
                 _sci['sellerManagementCode'] = _sc[:50]
+                if not str(_sci.get('sellerBarcode') or '').strip():
+                    _bc = _barcode_for(_sc, updates.get('barcode'))
+                    if _bc:
+                        _sci['sellerBarcode'] = _bc[:50]
                 _da['sellerCodeInfo'] = _sci
 
         # 연관태그(SEO sellerTags) — 검증된 [{code,text}] (sanitize가 지운 뒤 새로 주입)

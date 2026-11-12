@@ -1167,6 +1167,8 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                 "image_url": _cdns[0], "extra_image_urls": _cdns[1:],
                                 "category_id": _ec.strip(),
                                 "seller_code": _costco_no.strip(),
+                                # 가격사진에서 읽은 바코드 → 네이버 '판매자 바코드'
+                                "barcode": str(_pv.get('barcode') or ''),
                                 "seller_tags": _sel_tags,
                                 # 라벨 정보는 상세페이지 표로 들어간다(아래 detail_html).
                                 # 고시는 기타(ETC)로 나가 '상품 상세페이지 참조'로 표기된다
@@ -1805,6 +1807,10 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                             "stock": _nr_stock, "shipping_fee": _nr_fee,
                             "after_service_tel": _nr_as or "1588-1234",
                             "extra_image_urls": _nr_xcdn, "detail_html": _nr_det,
+                            # 코스트코 상품번호·바코드 — 예전엔 이 경로만 빠져 있어
+                            # 주문이 들어와도 번호로 상품을 못 찾았다
+                            "seller_code": str(_nr_prod.get("product_no") or "").strip(),
+                            "barcode": str(_nr_prod.get("barcode") or ""),
                         })
                         if _e2 or not _nr_res:
                             st.error(f"등록 실패: {_e2}")
