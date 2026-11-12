@@ -394,6 +394,12 @@ with st.sidebar:
         </div>
     """, unsafe_allow_html=True)
 
+    # 바코드 스캔(휴대폰 카메라) — 새 화면 /m/scan. 로그인(sid)을 넘겨 다시 로그인하지 않게 한다.
+    _scan_sid = str(st.session_state.get('_sid') or '')
+    st.link_button("📷 바코드 스캔 (휴대폰)",
+                   "/m/scan" + (f"?sid={_scan_sid}" if _scan_sid else ""),
+                   use_container_width=True)
+
     if st.button("🚪 로그아웃", use_container_width=True):
         _sid = st.session_state.get('_sid')
         if _sid:
