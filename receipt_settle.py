@@ -1770,13 +1770,14 @@ def same_receipt_nos(a, b):
 
 
 def _sig_parts(r):
-    """reads의 sig 문자열 'date|time|total|txn' → (total, txn). 없으면 (0, '')."""
+    """reads의 sig 문자열 'date|time|total|txn|승인|회원' → (total, (txn, 승인, 회원)).
+    없는 칸은 0/''."""
     p = str(r.get('sig') or '').split('|')
     try:
         t = int(p[2]) if len(p) > 2 else 0
     except ValueError:
         t = 0
-    return t, (p[3] if len(p) > 3 else '')
+    return t, tuple(p[i] if len(p) > i else '' for i in (3, 4, 5))
 
 
 def _maybe_same_receipt(a, b):
@@ -1788,7 +1789,7 @@ def _maybe_same_receipt(a, b):
     """
     ta, xa = _sig_parts(a)
     tb, xb = _sig_parts(b)
-    if xa and xb and xa != xb:
+    if _ids_differ(xa, xb):
         return False
     if ta and tb and ta != tb:
         return False
@@ -1991,14 +1992,41 @@ def receipt_signature(data):
         return None
     # 11/11: 같은 시각(13:46)에 같은 금액(요거트 2개 25,580원)을 두 회원카드로 따로 결제한
     # 영수증 2장이 '같은 영수증'으로 잡혀 한 장이 빠졌다 → 거래번호까지 키에 넣는다.
-    _txn = str((data or {}).get('txn_no') or '').strip()
-    return (_d, str((data or {}).get('purchase_time') or '').strip()[:5], _t, _txn)
+    # 11/12: 그래도 또 빠졌다(13:35 요거트 2장, 거래번호 856 6 135 186 / 856 6 134 186 —
+    # 한 자리 차이라 AI가 같게 읽거나 못 읽는다) → 카드 승인번호·회원번호도 넣는다.
+    _g = lambda k: str((data or {}).get(k) or '').strip()
+    return (_d, _g('purchase_time')[:5], _t, _g('txn_no'), _g('approval_no'), _g('member_no'))
 
 
-def parse_receipt_uploads(pdfs, photos, settings, use_cache=True):
+def _ids_differ(xa, xb):
+    """(거래번호, 승인번호, 회원번호) 두 벌 → 다른 영수증이 확실하면 True.
+
+    승인번호·회원번호는 자릿수가 길고 영수증마다 크게 달라 오독에 강하다 — 둘 다 읽힌
+    칸이 하나라도 다르면 다른 영수증, 같으면 같은 영수증(거래번호 한 자리 오독은 무시).
+    둘 다 못 읽었을 때만 거래번호로 가린다. 아무것도 못 읽었으면 False(같을 수 있음).
+    """
+    xa, xb = tuple(xa) + ('',) * 3, tuple(xb) + ('',) * 3
+    strong = [(a, b) for a, b in ((xa[1], xb[1]), (xa[2], xb[2])) if a and b]
+    if any(a != b for a, b in strong):
+        return True
+    if strong:
+        return False
+    return bool(xa[0] and xb[0] and xa[0] != xb[0])
+
+
+def same_receipt_sig(a, b):
+    """receipt_signature 두 개 → 같은 영수증인가. 날짜·시각·금액이 같고 번호가 어긋나지 않을 때."""
+    if not a or not b or tuple(a[:3]) != tuple(b[:3]):
+        return False
+    return not _ids_differ(a[3:], b[3:])
+
+
+def parse_receipt_uploads(pdfs, photos, settings, use_cache=True, sigs_out=None):
     """PDF·사진 → 영수증 줄 목록. 반환: (items, fails)
 
     관리자 화면과 같은 판독 경로다. 글자 없는 스캔 PDF는 그림으로 바꿔 AI로 읽는다.
+    sigs_out(list)을 주면 사진마다 읽은 영수증 키(receipt_signature)를 담아 준다 —
+    /m 화면이 따로 올린 사진끼리 '같은 영수증'인지 가릴 때 쓴다.
     """
     from services import parse_costco_receipt_pdf, render_pdf_to_images
     import ai_service as _ais
@@ -2043,7 +2071,7 @@ def parse_receipt_uploads(pdfs, photos, settings, use_cache=True):
     if photos and not (_ak or _gk):
         fails.append(('사진', 'AI 키가 없어 사진 판독을 할 수 없습니다 — 관리자에게 문의하세요'))
     elif photos:
-        _sigs = set()
+        _sigs = []
         # 사진은 동시에 읽는다(ai_service.parse_receipt_photos) — 순서·중복 판정은 그대로
         _okp, _oki = [], []
         for _pf in photos:
@@ -2059,12 +2087,14 @@ def parse_receipt_uploads(pdfs, photos, settings, use_cache=True):
                 fails.append((_pf.name, _de or '판독 실패'))
                 continue
             _sig = receipt_signature(_d)
-            if _sig and _sig in _sigs:
+            if _sig and any(same_receipt_sig(_sig, _s) for _s in _sigs):
                 fails.append((_pf.name, f"앞 사진과 같은 영수증({_sig[0]} {_sig[1]} · {_sig[2]:,}원)이라 "
                                         "건너뜀 — 수량을 더하지 않았습니다"))
                 continue
             if _sig:
-                _sigs.add(_sig)
+                _sigs.append(_sig)
+                if sigs_out is not None:
+                    sigs_out.append('|'.join(map(str, _sig)))
             _from_ai(_d)
             if not _d.get('_verified', True):
                 fails.append((_pf.name, "금액·수량 자가검증 불일치 — 표에서 값을 확인하세요"))

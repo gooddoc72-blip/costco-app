@@ -46,7 +46,7 @@ def parse_photos(files, log=None):
     ak, gk = ai_service.get_ai_keys()
     if not (ak or gk):
         raise ValueError('AI 키가 없습니다 — 관리자에게 문의하세요')
-    raw, errors, checks, sigs = [], [], [], set()
+    raw, errors, checks, sigs = [], [], [], []
     # 사진은 동시에 읽는다(11/11) — 순서·중복 판정은 아래에서 원래 순서대로
     okn, oki = [], []
     for name, data in files:
@@ -66,11 +66,11 @@ def parse_photos(files, log=None):
             errors.append({'file': name, 'error': err or '판독 실패'})
             continue
         sig = rs.receipt_signature(d)
-        if sig and sig in sigs:
+        if sig and any(rs.same_receipt_sig(sig, s) for s in sigs):
             errors.append({'file': name, 'error': f'앞 사진과 같은 영수증({sig[0]} {sig[1]})이라 건너뜀'})
             continue
         if sig:
-            sigs.add(sig)
+            sigs.append(sig)
         rd = str(d.get('purchase_date') or '')
         n0 = len(raw)
         for it in (d.get('items') or []):

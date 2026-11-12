@@ -55,7 +55,9 @@ export interface ReceiptRow {
   list_price: number; discount: number; unit_price: number;
 }
 export interface ParseJob { running: boolean; lines: string[]; error: string; started: string;
-  result: { rows: ReceiptRow[]; fails: { file: string; error: string }[] } | null }
+  result: { rows: ReceiptRow[]; fails: { file: string; error: string }[];
+            /** 읽은 사진 영수증 키 'date|time|total|txn|승인|회원' — 따로 올린 영수증끼리 같은지 가린다 */
+            receipts?: string[] } | null }
 export interface ReceiptCheck {
   count: number; dropped: number; filled: number; fill_date: string; dates: string[]; qty: number; amount: number;
   outliers: { name: string; qty: number; unit_price: number; amount: number; why: string }[];

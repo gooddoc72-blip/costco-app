@@ -17,7 +17,21 @@ import { num } from '@/lib/fmt';
 const blank = (d: string): ReceiptRow => ({ receipt_date: d, costco_no: '', name: '', qty: 1, list_price: 0, discount: 0, unit_price: 0 });
 
 /** 한 번 읽은 결과 — 같은 영수증을 다시 읽으면 이걸 빼고 새 값으로 바꾼다(수량을 더하지 않게). */
-type Read = { files: string[]; sig: string; rows: ReceiptRow[] };
+type Read = { files: string[]; sig: string; rows: ReceiptRow[]; ids: string[] };
+/** 영수증 키 두 개('date|time|total|txn|승인|회원')가 **다른 영수증이 확실한가** — 파이썬
+ *  receipt_settle.same_receipt_sig의 반대. 승인·회원번호가 읽혔으면 그걸로, 아니면 거래번호로.
+ *  11/12: 같은 시각(13:35)·같은 금액(25,580) 요거트 영수증 2장이 하나로 덮어써져 6개가 4개가 됐다. */
+function idDiffer(a: string, b: string) {
+  const p = a.split('|'), q = b.split('|');
+  if (p[0] !== q[0] || (p[1] || '') !== (q[1] || '') || p[2] !== q[2]) return true;
+  const strong = [4, 5].filter(i => p[i] && q[i]);
+  if (strong.some(i => p[i] !== q[i])) return true;
+  if (strong.length) return false;
+  return !!(p[3] && q[3] && p[3] !== q[3]);
+}
+/** 두 판독의 영수증이 서로 전부 다른 영수증인가(키가 없으면 모른다 → false) */
+const allDiffer = (a: string[], b: string[]) =>
+  a.length > 0 && b.length > 0 && a.every(x => b.every(y => idDiffer(x, y)));
 const same = (a: ReceiptRow, b: ReceiptRow) => !!a.costco_no && a.costco_no === b.costco_no && a.receipt_date === b.receipt_date;
 const sigOf = (rs: ReceiptRow[]) => rs.map(r => `${r.costco_no}|${r.receipt_date}|${r.qty}`).sort().join(',');
 /** 상품번호 묶음 — date를 주면 그 날짜(또는 날짜 빈) 줄만 */
@@ -29,6 +43,8 @@ function sameReceipt(a: Set<string>, b: Set<string>) {
   if (!a.size || !b.size) return false;
   let n = 0; a.forEach(x => { if (b.has(x)) n++; });
   const m = Math.min(a.size, b.size);
+  // 1품목 영수증이 긴 영수증의 한 품목과 겹치는 건 같은 영수증의 증거가 아니다(파이썬과 같게, 11/11)
+  if (m === 1 && Math.max(a.size, b.size) > 1) return false;
   return n >= Math.min(2, m) && n * 2 >= m;
 }
 const dateOf = (rs: ReceiptRow[]) => (rs.find(r => r.receipt_date)?.receipt_date || '');
@@ -132,19 +148,30 @@ export default function ReceiptPanel({ day, count, onSaved, onErr }: {
         if (isFresh) reads.current = [];
         const sig = sigOf(got);
         const gd = dateOf(got), gn = nosOf(got);
-        const dups = reads.current.filter(r => (sig && r.sig === sig) || r.files.some(f => fkeys.includes(f))
-          || ((!gd || !dateOf(r.rows) || dateOf(r.rows) === gd) && sameReceipt(gn, nosOf(r.rows))));
-        reads.current = [...reads.current.filter(r => !dups.includes(r)), { files: fkeys, sig, rows: got }];
+        const ids = s.result?.receipts || [];
+        // 같은 파일이면 무조건 같은 영수증. 아니면 영수증 번호(승인·회원·거래번호)가 전부 다르면
+        // 품목·수량이 똑같아도 다른 영수증이다(두 사람이 같은 요거트를 같은 시각에 산 영수증).
+        const dups = reads.current.filter(r => r.files.some(f => fkeys.includes(f))
+          || (!allDiffer(ids, r.ids) && ((sig && r.sig === sig)
+            || ((!gd || !dateOf(r.rows) || dateOf(r.rows) === gd) && sameReceipt(gn, nosOf(r.rows))))));
+        const others = reads.current.filter(r => !dups.includes(r));
+        reads.current = [...others, { files: fkeys, sig, rows: got, ids }];
         let base = isFresh ? [] : (rows || []).filter(r => r.costco_no || r.name);
         for (const d of dups) base = subRows(base, d.rows);
-        const bn = nosOf(base, gd || undefined);
+        // 덮어쓰기 비교는 **불러온 저장 영수증 몫**만 — 이번에 앞서 읽은 다른 영수증 줄은 뺀다
+        // (안 그러면 앞서 읽은 요거트 영수증 줄을 '표에 있던 같은 영수증'으로 보고 덮어쓴다)
+        let saved = base;
+        for (const o of others) saved = subRows(saved, o.rows);
+        const bn = nosOf(saved, gd || undefined);
         let over = 0;
         if (!dups.length && sameReceipt(gn, bn)) {
-          base = base.filter(r => {
+          saved = saved.filter(r => {
             const hit = gn.has(r.costco_no) && (!gd || !r.receipt_date || r.receipt_date === gd);
             if (hit) over++;
             return !hit;
           });
+          base = saved;
+          for (const o of others) base = addRows(base, o.rows);
         }
         const out = addRows(base, got);
         setRows(out.length ? out : [blank(day)]);

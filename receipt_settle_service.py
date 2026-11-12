@@ -961,7 +961,7 @@ def parse_files(files, log=None, fresh=False):
     같은 품목이 두 번 들어가지 않게 — 화면과 같은 merge_receipt_lines).
     """
     from auto_settle import _as_file, _PDF, _IMG
-    items, fails, photos = [], [], []
+    items, fails, photos, sigs = [], [], [], []
     files = list(files or [])
     for i, (name, data) in enumerate(files, 1):
         ext = '.' + name.rpartition('.')[2].lower()
@@ -982,13 +982,16 @@ def parse_files(files, log=None, fresh=False):
             log(f'사진 {len(photos)}장 동시에 읽는 중' + (' (저장해 둔 결과 안 씀)' if fresh else ''))
         import time as _t
         _t0 = _t.time()
-        got, fl = _rs.parse_receipt_uploads([], photos, None, use_cache=not fresh)
+        got, fl = _rs.parse_receipt_uploads([], photos, None, use_cache=not fresh, sigs_out=sigs)
         items += got
         fails += fl
         if log:
             log(f'사진 판독 {int(_t.time() - _t0)}초')
     merged = list(_rs.merge_receipt_lines(items).values())
-    return {'rows': _to_rows(merged), 'fails': [{'file': a, 'error': b} for a, b in fails]}
+    # receipts: 이번에 읽은 사진 영수증 키 'date|time|total|txn|승인|회원' — 화면이 따로 올린
+    # 영수증끼리 같은 것인지 가린다(같은 시각·같은 금액 요거트 영수증 2장이 하나로 덮어써지던 것, 11/12)
+    return {'rows': _to_rows(merged), 'fails': [{'file': a, 'error': b} for a, b in fails],
+            'receipts': sigs}
 
 
 def saved_receipt(d):
