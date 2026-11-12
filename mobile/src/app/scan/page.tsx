@@ -129,21 +129,51 @@ function FoundCard({ it, admin, onSaved }: {
   const d = parseInt(disc.replace(/\D/g, '') || '0', 10);
   const pct = it.cur_price && p ? Math.round((p - it.cur_price) / it.cur_price * 1000) / 10 : null;
 
-  const save = async (newPrice: number, same: boolean) => {
+  const save = async (newPrice: number, same: boolean, discount = d, saleEnd = end) => {
     if (newPrice <= 0) return;
-    if (!same && pct !== null && Math.abs(pct) > 30
-        && !confirm(`지난 매입가 ${num(it.cur_price)}원보다 ${pct}% 바뀝니다. 맞나요?`)) return;
+    const pc = it.cur_price ? Math.round((newPrice - it.cur_price) / it.cur_price * 1000) / 10 : null;
+    if (!same && pc !== null && Math.abs(pc) > 30
+        && !confirm(`지난 매입가 ${num(it.cur_price)}원보다 ${pc}% 바뀝니다. 맞나요?`)) return;
     setBusy(true); setErr(''); setMsg('');
     try {
       const r = await scan.price({
         code: it.code, product_no: it.product_no, name: it.name, label_barcode: it.label_barcode,
-        new_price: newPrice, final_price: d ? Math.max(0, newPrice - d) : newPrice, discount: d, sale_end: end,
+        new_price: newPrice, final_price: discount ? Math.max(0, newPrice - discount) : newPrice,
+        discount, sale_end: saleEnd,
       });
       const note = same || r.same ? '✅ 가격 같음' : `💰 ${num(it.cur_price)} → ${num(newPrice)}`;
-      setMsg(note + (d ? ` · 할인 ${num(d)}원${end ? ` (~${end})` : ''} 기록` : ''));
+      setMsg(note + (discount ? ` · 할인 ${num(discount)}원${saleEnd ? ` (~${saleEnd})` : ''} 기록` : ''));
       if (r.item.found) onSaved(r.item, note);
     } catch (e: any) { setErr(e.message || String(e)); }
     finally { setBusy(false); }
+  };
+
+  /**
+   * 가격표 사진 → 가격 자동 수정. 바코드엔 가격이 없어서 가격은 사진(AI 판독)으로 읽는다.
+   * 같은 상품번호이고 변동이 30% 이내면 바로 저장, 아니면 칸에 채워 두고 확인을 받는다.
+   */
+  const readTag = async (f: File | undefined) => {
+    if (!f) return;
+    setBusy(true); setErr(''); setMsg('⏳ 가격표 판독 중…');
+    let r: Awaited<ReturnType<typeof ptag.read>>;
+    try {
+      r = await ptag.read(f.name, await shrinkJpegB64(f));
+    } catch (e: any) { setErr(e.message || String(e)); setMsg(''); setBusy(false); return; }
+    setBusy(false); setMsg('');
+    if (!r.ok) { setErr(r.error); return; }
+    if (!r.new_price) { setErr('가격표에서 가격을 못 읽었습니다 — 다시 찍거나 직접 넣어 주세요'); return; }
+    setPrice(String(r.new_price)); setDisc(r.discount ? String(r.discount) : ''); setEnd(r.sale_end || '');
+    const other = r.product_no && r.product_no !== it.product_no;
+    const pc = it.cur_price ? Math.abs((r.new_price - it.cur_price) / it.cur_price) : 0;
+    if (other) {
+      setErr(`사진의 상품번호(${r.product_no})가 찍은 상품(${it.product_no})과 다릅니다 — 가격만 칸에 넣었습니다. 맞으면 저장하세요.`);
+      return;
+    }
+    if (pc > 0.3) {
+      setErr(`읽은 정가 ${num(r.new_price)}원이 지난 매입가와 30% 넘게 다릅니다 — 칸을 확인하고 저장하세요.`);
+      return;
+    }
+    await save(r.new_price, r.new_price === it.cur_price, r.discount || 0, r.sale_end || '');
   };
 
   return (
@@ -158,6 +188,11 @@ function FoundCard({ it, admin, onSaved }: {
           </div>
         </div>
       </div>
+      {it.auto_linked && (
+        <div className="bg-blue-50 text-blue-700 p-2 rounded text-xs">
+          🔗 바코드 {it.code}를 상품번호 {it.product_no}에 자동 등록했습니다 — 다음부터 바로 찾습니다.
+        </div>
+      )}
       <div className="flex items-baseline justify-between">
         <span className="text-xs text-gray-500">지난 매입가{it.price_at ? ` (${it.price_at} 확인)` : ''}</span>
         <span className="text-lg font-bold">{it.cur_price ? `${num(it.cur_price)}원` : '없음'}</span>
@@ -176,6 +211,12 @@ function FoundCard({ it, admin, onSaved }: {
               ✅ 가격 같음 ({num(it.cur_price)}원)
             </button>
           )}
+          <label className={clsx('block text-center border border-blue-300 text-blue-700 rounded-lg py-2.5 cursor-pointer',
+            busy && 'opacity-50 pointer-events-none')}>
+            📸 가격표 찍어 가격 자동 수정
+            <input type="file" accept="image/*" capture="environment" className="hidden"
+              onChange={e => { readTag(e.target.files?.[0]); e.target.value = ''; }} />
+          </label>
           <div className="grid grid-cols-2 gap-2">
             <input value={price} onChange={e => setPrice(e.target.value)} inputMode="numeric"
               placeholder="바뀐 정가" className="border rounded-lg px-3 py-2" />

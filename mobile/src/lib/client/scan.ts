@@ -11,6 +11,8 @@ export type ScanItem =
       found: true; code: string; product_no: string; name: string;
       cur_price: number; online_price: number; price_at: string; split_qty: number;
       image: string; label_barcode: string; barcodes: string[]; stock: ScanStock;
+      /** 가격표 바코드에서 상품번호를 찾아 이번에 바코드를 자동 연결했다 */
+      auto_linked?: boolean;
     };
 export type ScanFound = Extract<ScanItem, { found: true }>;
 

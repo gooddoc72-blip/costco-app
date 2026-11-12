@@ -53,25 +53,33 @@ def barcodes_of(pno):
 
 def find(code):
     """바코드·상품번호 → 공유상품 dict (없으면 None)."""
+    return _find(code)[0]
+
+
+def _find(code):
+    """→ (공유상품 dict|None, 찾은 방법). 방법: linked | exact | stripped | ''
+
+    stripped = 가격표 바코드에서 상품번호를 벗겨 찾은 경우 — 호출 쪽이 자동 연결한다.
+    """
     from db_products import find_shared_by_code
     c = _digits(code)
     if not c:
-        return None
+        return None, ''
     pno = _linked_pno(c)
     if pno:
         sp = find_shared_by_code(pno)
         if sp:
-            return sp
+            return sp, 'linked'
     sp = find_shared_by_code(c)
     if sp:
-        return sp
+        return sp, 'exact'
     # 코스트코 가격표 바코드는 상품번호를 앞 0으로 자릿수를 채우고 끝에 한 자리를 더 붙인다
     # (예: 상품번호 859695 → 바코드 08596950). 그대로는 못 찾으므로 감싼 자리를 벗겨 본다.
     for cand in _pno_candidates(c):
         sp = find_shared_by_code(cand)
         if sp and str(sp.get('product_no') or '') == cand:
-            return sp
-    return None
+            return sp, 'stripped'
+    return None, ''
 
 
 def _pno_candidates(c):
@@ -139,11 +147,20 @@ def _stock(pno, username, is_admin):
 
 def lookup(code, username, is_admin=False):
     c = _digits(code)
-    sp = find(c)
+    sp, how = _find(c)
     if not sp:
         return {'found': False, 'code': c}
     pno = str(sp.get('product_no') or '')
+    # 찍은 바코드가 상품번호와 맞아 찾았으면 그 자리에서 바코드를 연결해 둔다
+    # — 다음부터는 벗기기 없이 바로 찾고, 출고·재고 스캔도 같은 표를 쓴다.
+    auto_linked = False
+    if how == 'stripped' and pno:
+        try:
+            auto_linked = bool(link(c, pno, username, is_admin=False, kind='label').get('linked'))
+        except Exception:
+            auto_linked = False
     return {
+        'auto_linked': auto_linked,
         'found': True,
         'code': c,
         'product_no': pno,
