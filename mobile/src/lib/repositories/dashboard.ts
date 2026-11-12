@@ -2,6 +2,7 @@
  * Dashboard Repository — KPI / 알림용 집계 SQL만 담당.
  */
 import { getUserDb } from '@/lib/db';
+import { ensureOrderHistory } from './orders';
 
 export interface KpiBucket {
   cnt: number;
@@ -59,6 +60,7 @@ export function fetchTrend(username: string, days: number): TrendPoint[] {
 }
 
 export function fetchAlerts(username: string): DashboardAlerts {
+  ensureOrderHistory(username);
   const db = getUserDb(username);
   const unmatched = (db.prepare(`
     SELECT COUNT(*) as c FROM order_history

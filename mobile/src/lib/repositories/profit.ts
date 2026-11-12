@@ -3,10 +3,12 @@
  * 비즈니스 로직 없음. SQL과 결과 매핑만.
  */
 import { getUserDb } from '@/lib/db';
+import { ensureOrderHistory } from './orders';
 import type { ProfitRow } from '@/lib/types';
 
 /** dispatch_log + order_history + products LEFT JOIN으로 한 날짜 모든 발송건 조회 */
 export function fetchDispatchedRows(username: string, date: string): ProfitRow[] {
+  ensureOrderHistory(username);
   const db = getUserDb(username);
   const rows = db.prepare(`
     SELECT

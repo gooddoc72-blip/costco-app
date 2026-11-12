@@ -20,6 +20,20 @@ export interface OrderHistoryInput {
   matchedProductId?: number | null;  // ⭐ 매칭된 products.id (영구 링크)
 }
 
+/** 컬럼 보정은 서버 한 번 뜬 동안 사용자당 한 번만 — 화면마다 ALTER를 다시 시도하지 않는다 */
+const _ensured = new Set<string>();
+
+/**
+ * order_history 테이블·컬럼 보장. 주문 수집을 /m에서 한 번도 안 돌린 사용자 DB에는
+ * matched_product_id가 없어 대시보드·수익·장보기가 'no such column'으로 죽었다.
+ * order_history를 읽는 곳은 먼저 이걸 부른다.
+ */
+export function ensureOrderHistory(username: string): void {
+  if (_ensured.has(username)) return;
+  ensureTable(username);
+  _ensured.add(username);
+}
+
 function ensureTable(username: string): void {
   const db = getUserDb(username);
   db.exec(`
@@ -129,6 +143,7 @@ export interface ShoppingRawRow {
 
 /** 한 날짜의 모든 주문 raw 행 (집계 전, 장보기 목록 생성용) */
 export function fetchOrdersForShopping(username: string, date: string): ShoppingRawRow[] {
+  ensureOrderHistory(username);
   const db = getUserDb(username);
   const rows = db.prepare(`
     SELECT product_no, product_name, option_info,
@@ -162,6 +177,7 @@ export interface OrderRowForDump {
 
 /** 한 날짜의 주문 전체 (daily_orders dump용 — 행 단위 보존) */
 export function fetchOrdersForDailyDump(username: string, date: string): OrderRowForDump[] {
+  ensureOrderHistory(username);
   const db = getUserDb(username);
   const rows = db.prepare(`
     SELECT recipient, product_name, product_no, option_info,
