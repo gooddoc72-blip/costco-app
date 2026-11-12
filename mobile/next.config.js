@@ -11,6 +11,10 @@ const nextConfig = {
   reactStrictMode: true,
   basePath: BASE_PATH || undefined,
   env: { NEXT_PUBLIC_BASE_PATH: BASE_PATH },
+  // nginx 'location /m/'는 '/m' → '/m/'(301)로 보내고, Next는 기본으로 '/m/' → '/m'(308)로
+  // 되돌려서 https://cocobiz.shop/m 이 ERR_TOO_MANY_REDIRECTS로 무한 반복됐다.
+  // Next 쪽 끝 슬래시 리다이렉트를 끈다('/m/'를 그대로 첫 화면으로 연다).
+  skipTrailingSlashRedirect: true,
   // SQLite/bcrypt 네이티브 모듈은 번들에 넣지 않고 런타임 require로 넘긴다.
   // ⚠️ Next 14 키 이름은 experimental.serverComponentsExternalPackages.
   //    (serverExternalPackages는 Next 15부터 — 14에서는 무시돼 빌드가 깨졌다)
