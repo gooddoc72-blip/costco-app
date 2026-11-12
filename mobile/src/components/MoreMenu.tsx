@@ -1,6 +1,6 @@
 'use client';
 import Link from 'next/link';
-import { X, Package, CreditCard, TrendingUp, Settings, Crown, Receipt, Tag } from 'lucide-react';
+import { X, Package, CreditCard, TrendingUp, Settings, Crown, Receipt, Tag, ScanLine } from 'lucide-react';
 
 interface Props { open: boolean; onClose: () => void }
 
@@ -15,6 +15,7 @@ const sections: Array<{
       { href: '/settlement', label: '정산 매칭', icon: CreditCard, desc: 'CSV 업로드 + 매칭' },
       { href: '/rank', label: '키워드 순위', icon: TrendingUp, desc: '검색 노출 추적' },
       { href: '/receipt', label: '영수증', icon: Receipt, desc: 'PDF 매입가 업데이트' },
+      { href: '/scan', label: '바코드 스캔', icon: ScanLine, desc: '찍으면 상품·매입가·재고 — 매장 가격 확인' },
       { href: '/pricetag', label: '가격표 사진', icon: Tag, desc: '매장 가격표로 매입가 수정 (관리자)' },
     ],
   },

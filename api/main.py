@@ -383,3 +383,7 @@ app.include_router(_ptag_router)
 # ── 영수증 사진 판독 (/m/receipt 📷 — 영수증 정산과 같은 파이썬 판독기) ──
 from api.receipt_photo import router as _rphoto_router  # noqa: E402
 app.include_router(_rphoto_router)
+
+# ── 바코드 스캔 (새 화면 /m/scan 백엔드 — 가격 확인·바코드 연결) ──
+from api.scan import router as _scan_router  # noqa: E402
+app.include_router(_scan_router)
