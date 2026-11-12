@@ -17,6 +17,24 @@ def lookup(code: str, user: dict = Depends(require_login)):
     return ss.lookup(code, user["username"], bool(user.get("is_admin")))
 
 
+class PhotoReq(BaseModel):
+    name: str = ""
+    content_b64: str
+
+
+@router.post("/photo-code")
+def photo_code(req: PhotoReq, user: dict = Depends(require_login)):
+    """바코드 무늬로 못 읽은 사진 — AI 가격표 판독으로 상품번호·바코드 숫자만 읽는다(저장 안 함)."""
+    import price_tag_service as pts
+    r = pts.read(req.content_b64, req.name)
+    if not r.get('ok'):
+        raise HTTPException(status_code=422, detail=r.get('error') or '사진에서 번호를 못 읽었습니다')
+    pno, bc = str(r.get('product_no') or ''), str(r.get('barcode') or '')
+    if not (pno or bc):
+        raise HTTPException(status_code=422, detail='사진에서 상품번호·바코드를 못 읽었습니다')
+    return {'code': pno or bc, 'product_no': pno, 'barcode': bc}
+
+
 class LinkReq(BaseModel):
     barcode: str
     product_no: str

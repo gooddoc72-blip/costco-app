@@ -19,6 +19,9 @@ export type ScanFound = Extract<ScanItem, { found: true }>;
 const B = '/api/scan';
 export const scan = {
   lookup: (code: string) => call<ScanItem>('GET', `${B}/lookup/${encodeURIComponent(code)}`),
+  /** 바코드 무늬로 못 읽은 사진 → AI가 가격표 글자에서 상품번호·바코드 숫자를 읽는다 */
+  photoCode: (name: string, content_b64: string) =>
+    call<{ code: string; product_no: string; barcode: string }>('POST', `${B}/photo-code`, { name, content_b64 }),
   link: (barcode: string, product_no: string) => call<ScanItem>('POST', `${B}/link`, { barcode, product_no }),
   price: (p: { code: string; product_no: string; name: string; label_barcode: string;
                new_price: number; final_price?: number; discount?: number; sale_end?: string }) =>

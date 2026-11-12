@@ -8,7 +8,7 @@
  * - 처음 보는 바코드: 상품번호를 넣거나 가격표 사진 1장으로 판독(/m/pricetag와 같은 판독기).
  * 매장 가격 저장은 관리자만 — /m/pricetag의 '최근 저장'에서 되돌릴 수 있다.
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import clsx from 'clsx';
 import Header from '@/components/Header';
 import BottomNav from '@/components/BottomNav';
@@ -46,7 +46,18 @@ export default function ScanPage() {
   const addLog = (code: string, name: string, note: string) =>
     setLog(xs => [{ code, name, note, at: new Date().toTimeString().slice(0, 5) }, ...xs].slice(0, 20));
 
+  // 카드에서 사진을 찍는 동안엔 새 스캔으로 카드를 바꾸지 않는다. 예전엔 사진을 찍고 돌아오면
+  // 켜져 있던 카메라가 같은 바코드를 다시 읽어 판독 중인 카드가 새 카드로 바뀌었다(11/12).
+  const hold = useRef(false);
+  const shown = useRef('');
+  const [stopSig, setStopSig] = useState(0);
+  const photoStart = () => { hold.current = true; setStopSig(n => n + 1); };
+  const photoEnd = () => { hold.current = false; };
+
   const onCode = useCallback(async (code: string) => {
+    if (hold.current || code === shown.current) return;
+    shown.current = code;
+    try { sessionStorage.setItem('scan_last', code); } catch { /* 저장 못 해도 계속 */ }
     setCur({ state: 'loading', code });
     try {
       const item = await scan.lookup(code);
@@ -55,6 +66,19 @@ export default function ScanPage() {
       setCur({ state: 'error', code, error: e.message || String(e) });
     }
   }, []);
+
+  // 아이폰이 사진 촬영 뒤 페이지를 새로 띄우면 보던 상품을 다시 불러온다
+  useEffect(() => {
+    let c = '';
+    try { c = sessionStorage.getItem('scan_last') || ''; } catch { /* 없음 */ }
+    if (c) onCode(c);
+  }, [onCode]);
+
+  const next = () => {
+    shown.current = '';
+    try { sessionStorage.removeItem('scan_last'); } catch { /* 없음 */ }
+    setCur(null);
+  };
 
   return (
     <>
@@ -72,17 +96,25 @@ export default function ScanPage() {
         </div>
 
         <div className="bg-white rounded-xl border border-gray-100 p-3">
-          <BarcodeScanner onCode={onCode} paused={cur?.state === 'loading'} />
+          <BarcodeScanner onCode={onCode} paused={cur?.state === 'loading'} stopSignal={stopSig}
+            onStart={() => { hold.current = false; }}
+            onPhotoAi={async f => {
+              const r = await scan.photoCode(f.name, await shrinkJpegB64(f));
+              shown.current = '';   // 같은 상품을 다시 찍은 경우에도 새로 보여 준다
+              return r.code;
+            }} />
         </div>
 
         {cur?.state === 'loading' && <div className="text-sm text-gray-400 px-1">⏳ {cur.code} 찾는 중…</div>}
         {cur?.state === 'error' && <div className="bg-red-50 text-red-700 p-3 rounded-lg text-sm">❌ {cur.code} — {cur.error}</div>}
         {cur?.state === 'done' && cur.item.found && (
           <FoundCard key={cur.item.code + cur.item.product_no} it={cur.item} admin={!!me?.is_admin}
+            onPhotoStart={photoStart} onPhotoEnd={photoEnd} onNext={next}
             onSaved={(it, note) => { setCur({ state: 'done', item: it }); addLog(it.code, it.name, note); }} />
         )}
         {cur?.state === 'done' && !cur.item.found && (
           <UnknownCard key={cur.item.code} code={cur.item.code} admin={!!me?.is_admin}
+            onPhotoStart={photoStart} onPhotoEnd={photoEnd} onNext={next}
             onResolved={(it, note) => { setCur({ state: 'done', item: it }); addLog(it.code, it.found ? it.name : '', note); }} />
         )}
 
@@ -115,7 +147,9 @@ function StockLine({ it }: { it: ScanFound }) {
   );
 }
 
-function FoundCard({ it, admin, onSaved }: {
+interface PhotoHooks { onPhotoStart: () => void; onPhotoEnd: () => void; onNext: () => void }
+
+function FoundCard({ it, admin, onSaved, onPhotoStart, onPhotoEnd, onNext }: PhotoHooks & {
   it: ScanFound; admin: boolean; onSaved: (it: ScanItem & { found: true }, note: string) => void;
 }) {
   const [price, setPrice] = useState('');
@@ -215,7 +249,8 @@ function FoundCard({ it, admin, onSaved }: {
             busy && 'opacity-50 pointer-events-none')}>
             📸 가격표 찍어 가격 자동 수정
             <input type="file" accept="image/*" capture="environment" className="hidden"
-              onChange={e => { readTag(e.target.files?.[0]); e.target.value = ''; }} />
+              onClick={onPhotoStart}
+              onChange={async e => { const f = e.target.files?.[0]; e.target.value = ''; await readTag(f); onPhotoEnd(); }} />
           </label>
           <div className="grid grid-cols-2 gap-2">
             <input value={price} onChange={e => setPrice(e.target.value)} inputMode="numeric"
@@ -246,7 +281,7 @@ function FoundCard({ it, admin, onSaved }: {
   );
 }
 
-function UnknownCard({ code, admin, onResolved }: {
+function UnknownCard({ code, admin, onResolved, onPhotoStart, onPhotoEnd, onNext }: PhotoHooks & {
   code: string; admin: boolean; onResolved: (it: ScanItem, note: string) => void;
 }) {
   const [pno, setPno] = useState('');
@@ -309,7 +344,8 @@ function UnknownCard({ code, admin, onResolved }: {
           busy && 'opacity-50 pointer-events-none')}>
           {busy && !row ? '⏳ 가격표 판독 중…' : '📷 가격표 사진으로 찾기 (상품번호·가격 자동)'}
           <input type="file" accept="image/*" capture="environment" className="hidden"
-            onChange={e => { photo(e.target.files?.[0]); e.target.value = ''; }} />
+            onClick={onPhotoStart}
+            onChange={async e => { const f = e.target.files?.[0]; e.target.value = ''; await photo(f); onPhotoEnd(); }} />
         </label>
       )}
 

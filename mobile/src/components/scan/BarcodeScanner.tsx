@@ -18,6 +18,12 @@ interface Props {
   onCode: (code: string) => void;
   /** 결과를 처리하는 동안 인식을 잠시 멈춘다 */
   paused?: boolean;
+  /** 값이 바뀌면 카메라를 끈다 — 사진 촬영 직전에 꺼서 아이폰에서 카메라 두 개가 겹치지 않게 */
+  stopSignal?: number;
+  /** 카메라를 켤 때 — 잠가 둔 스캔을 푼다 */
+  onStart?: () => void;
+  /** 사진 바코드 판독이 모두 실패했을 때 AI로 숫자를 읽는다 → 코드(없으면 '') */
+  onPhotoAi?: (f: File) => Promise<string>;
 }
 
 const NATIVE_FORMATS = ['ean_13', 'ean_8', 'upc_a', 'upc_e', 'code_128', 'code_39', 'code_93',
@@ -50,7 +56,7 @@ async function zxingReader() {
 /** 바코드 값 → 숫자만. 숫자가 없으면(QR 글자 등) 원문을 그대로. */
 const clean = (raw: string) => (raw.replace(/\D/g, '') || raw.trim());
 
-export default function BarcodeScanner({ onCode, paused }: Props) {
+export default function BarcodeScanner({ onCode, paused, stopSignal, onStart, onPhotoAi }: Props) {
   const video = useRef<HTMLVideoElement>(null);
   const stream = useRef<MediaStream | null>(null);
   const zx = useRef<{ stop: () => void } | null>(null);
@@ -86,6 +92,7 @@ export default function BarcodeScanner({ onCode, paused }: Props) {
 
   const start = async () => {
     setErr('');
+    onStart?.();
     if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
       setErr('이 브라우저는 카메라를 쓸 수 없습니다 — 「📸 사진으로 읽기」나 아래 칸을 써 주세요.');
       return;
@@ -171,16 +178,34 @@ export default function BarcodeScanner({ onCode, paused }: Props) {
           if (r && r.length) { emit(String(r[0].rawValue || '')); return; }
         } catch { /* zxing으로 */ }
       }
+      // zxing — 여러 크기 × (전체·가운데 확대) × (0°·90°). 아이폰 원본(4000px+)을 한 크기로만
+      // 줄이면 작은 바코드가 뭉개져 못 읽었다(11/12).
       const reader = await zxingReader();
-      const k = Math.min(1, 2000 / Math.max(img.naturalWidth, img.naturalHeight));
-      const w = Math.round(img.naturalWidth * k), h = Math.round(img.naturalHeight * k);
-      for (const rot of [0, 90]) {
-        const c = document.createElement('canvas');
-        c.width = rot ? h : w; c.height = rot ? w : h;
-        const g = c.getContext('2d')!;
-        if (rot) { g.translate(h, 0); g.rotate(Math.PI / 2); }
-        g.drawImage(img, 0, 0, w, h);
-        try { const r = reader.decodeFromCanvas(c); emit(r.getText()); return; } catch { /* 다음 */ }
+      const W = img.naturalWidth, H = img.naturalHeight;
+      const tries: { crop: number; edge: number }[] = [
+        { crop: 1, edge: 1600 }, { crop: 0.6, edge: 1600 }, { crop: 1, edge: 2600 },
+        { crop: 0.4, edge: 1400 }, { crop: 1, edge: 1000 },
+      ];
+      for (const t of tries) {
+        const cw = Math.round(W * t.crop), ch = Math.round(H * t.crop);
+        const sx = Math.round((W - cw) / 2), sy = Math.round((H - ch) / 2);
+        const k = Math.min(1, t.edge / Math.max(cw, ch));
+        const w = Math.round(cw * k), h = Math.round(ch * k);
+        for (const rot of [0, 90]) {
+          const c = document.createElement('canvas');
+          c.width = rot ? h : w; c.height = rot ? w : h;
+          const g = c.getContext('2d')!;
+          if (rot) { g.translate(h, 0); g.rotate(Math.PI / 2); }
+          g.drawImage(img, sx, sy, cw, ch, 0, 0, w, h);
+          try { const r = reader.decodeFromCanvas(c); emit(r.getText()); return; } catch { /* 다음 */ }
+        }
+      }
+      // 마지막: AI가 가격표에서 상품번호·바코드 숫자를 글자로 읽는다(가격표 사진일 때)
+      if (onPhotoAi) {
+        setErr('⏳ 바코드 무늬로는 못 읽어 AI로 숫자를 읽는 중…');
+        const code = await onPhotoAi(f).catch(() => '');
+        setErr('');
+        if (code) { emit(code); return; }
       }
       setErr('사진에서 바코드를 못 읽었습니다 — 바코드만 크게, 흔들림 없이 다시 찍거나 번호를 직접 넣어 주세요.');
     } catch (e: any) {
@@ -191,6 +216,7 @@ export default function BarcodeScanner({ onCode, paused }: Props) {
   };
 
   useEffect(() => () => stop(), []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (stopSignal) stop(); }, [stopSignal]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const submit = () => {
     const c = typed.trim();
@@ -236,6 +262,7 @@ export default function BarcodeScanner({ onCode, paused }: Props) {
         <label className={`border border-gray-300 text-sm font-medium rounded-lg py-3 text-center cursor-pointer ${reading ? 'opacity-50 pointer-events-none' : ''}`}>
           {reading ? '⏳ 읽는 중…' : '📸 사진으로 읽기'}
           <input type="file" accept="image/*" capture="environment" className="hidden"
+            onClick={() => stop()}
             onChange={e => { readPhoto(e.target.files?.[0]); e.target.value = ''; }} />
         </label>
       </div>
