@@ -122,7 +122,14 @@ export default function ReceiptPanel({ day, count, onSaved, onErr }: {
     finally { setBusy(false); }
   };
 
-  const upload = async (fl: FileList | null) => {
+  // 고른 파일을 먼저 배열로 복사하고 입력칸을 비운다 — 같은 사진을 다시 골라도 onChange가 오게
+  const pick = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const fl = Array.from(e.target.files || []);
+    e.target.value = '';
+    upload(fl);
+  };
+
+  const upload = async (fl: File[] | null) => {
     if (!fl?.length) return;
     setBusy(true); setLines([]); setFails([]); setNote(null); setOverlap(null);
     try {
@@ -243,9 +250,19 @@ export default function ReceiptPanel({ day, count, onSaved, onErr }: {
       {open && (
         <div className="px-3 pb-3 space-y-2">
           <div className="flex flex-wrap items-center gap-2">
+            {/* 11/13: 'PDF·사진'을 한 버튼(accept=".pdf,image/*")으로 받으면 휴대폰에서 사진첩·카메라
+                대신 '파일' 창이 열려 사진을 못 붙였다 → 촬영·사진첩·PDF 버튼을 나눈다(다른 화면과 같게). */}
             <label onClick={() => { fresh.current = false; }} className={clsx('px-3 py-2 rounded-lg bg-primary text-white text-sm font-bold cursor-pointer', busy && 'opacity-50 pointer-events-none')}>
-              📄 PDF·사진 올리기 (여러 장)
-              <input ref={fileRef} type="file" multiple accept=".pdf,image/*" className="hidden" onChange={e => upload(e.target.files)} />
+              📷 촬영
+              <input type="file" accept="image/*" capture="environment" className="hidden" onChange={pick} />
+            </label>
+            <label onClick={() => { fresh.current = false; }} className={clsx('px-3 py-2 rounded-lg bg-primary text-white text-sm font-bold cursor-pointer', busy && 'opacity-50 pointer-events-none')}>
+              🖼 사진 고르기 (여러 장)
+              <input ref={fileRef} type="file" multiple accept="image/*" className="hidden" onChange={pick} />
+            </label>
+            <label onClick={() => { fresh.current = false; }} className={clsx('px-3 py-2 rounded-lg border text-sm cursor-pointer', busy && 'opacity-50 pointer-events-none')}>
+              📄 PDF
+              <input type="file" multiple accept=".pdf,application/pdf" className="hidden" onChange={pick} />
             </label>
             <button onClick={loadSaved} disabled={busy} className="px-3 py-2 rounded-lg border text-sm disabled:opacity-50">📂 저장된 영수증 불러오기</button>
             {rows && <button onClick={() => { setRows(rs => [...(rs || []), blank(day)]); setUnsaved(true); }} className="px-3 py-2 rounded-lg border text-sm">➕ 줄 추가</button>}
