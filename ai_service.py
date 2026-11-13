@@ -480,6 +480,10 @@ def claude_vision(api_key, image_bytes, media_type, system, user_text,
         _b64 = base64.standard_b64encode(image_bytes).decode("ascii")
         return _claude_post(api_key, {
             "model": model or VISION_MODEL, "max_tokens": max_tokens, "system": system,
+            # 11/13: 사고(thinking)를 안 끄면 사고가 출력 한도를 다 써 JSON이 비었다
+            # (영수증 판독 '빈 응답(출력 한도 초과)', Gemini 한도 초과로 Claude만 남았을 때).
+            # 글자를 읽어 옮기는 일이라 사고가 필요 없다 — claude_complete처럼 끈다.
+            "thinking": {"type": "disabled"},
             "messages": [{"role": "user", "content": [
                 {"type": "image", "source": {"type": "base64",
                                              "media_type": media_type, "data": _b64}},
