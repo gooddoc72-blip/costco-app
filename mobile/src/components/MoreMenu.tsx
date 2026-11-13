@@ -1,6 +1,9 @@
 'use client';
 import Link from 'next/link';
-import { X, Package, CreditCard, TrendingUp, Settings, Crown, Receipt, Tag, ScanLine } from 'lucide-react';
+import { useState } from 'react';
+import { useRouter } from 'next/navigation';
+import { X, Package, CreditCard, TrendingUp, Settings, Crown, Receipt, Tag, ScanLine, LogOut, User } from 'lucide-react';
+import { logout } from '@/lib/logout';
 
 interface Props { open: boolean; onClose: () => void }
 
@@ -22,6 +25,7 @@ const sections: Array<{
   {
     title: '시스템',
     links: [
+      { href: '/me', label: '내 정보', icon: User, desc: '계정 확인·로그아웃' },
       { href: '/settings', label: '설정', icon: Settings },
       { href: '/admin', label: '관리자', icon: Crown, desc: '장보기 제출 + DB 정리' },
       { href: '/stock', label: '재고 조회', icon: Package, desc: '사용자별 재고·출고 내역·이상 점검' },
@@ -33,7 +37,16 @@ const sections: Array<{
 ];
 
 export default function MoreMenu({ open, onClose }: Props) {
+  const router = useRouter();
+  const [out, setOut] = useState(false);
   if (!open) return null;
+  const doLogout = async () => {
+    if (out || !confirm('로그아웃할까요?')) return;
+    setOut(true);
+    await logout();
+    onClose();
+    router.push('/login');
+  };
   return (
     <div className="fixed inset-0 z-50 flex items-end" onClick={onClose}>
       <div className="absolute inset-0 bg-black/40" />
@@ -62,6 +75,11 @@ export default function MoreMenu({ open, onClose }: Props) {
             </ul>
           </div>
         ))}
+        <button onClick={doLogout} disabled={out}
+          className="w-full flex items-center justify-center gap-2 border border-red-200 text-red-600 rounded-lg py-3 disabled:opacity-50">
+          <LogOut size={16} />
+          <span className="text-sm font-medium">{out ? '로그아웃 중...' : '로그아웃'}</span>
+        </button>
       </div>
     </div>
   );

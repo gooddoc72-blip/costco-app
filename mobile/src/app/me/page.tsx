@@ -4,7 +4,8 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Header from '@/components/Header';
 import BottomNav from '@/components/BottomNav';
-import { apiGet, apiPost } from '@/lib/api';
+import { apiGet } from '@/lib/api';
+import { logout as doLogout } from '@/lib/logout';
 import { LogOut, ExternalLink } from 'lucide-react';
 
 interface Me {
@@ -24,9 +25,7 @@ export default function MePage() {
 
   async function logout() {
     setLoading(true);
-    try {
-      await apiPost('/api/auth/logout', {});
-    } catch {}
+    await doLogout();
     router.push('/login');
   }
 
