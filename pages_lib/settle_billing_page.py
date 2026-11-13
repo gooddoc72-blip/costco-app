@@ -344,12 +344,49 @@ def _tab_user(USERNAME, dmap, fixed_user=None):
     _unpaid = sum(int(i['total_amount'] or 0) for i in _billed)
     _draft_amt = sum(int(i['total_amount'] or 0) for i in invs if i['status'] == 'draft')
 
-    m1, m2, m3, m4 = st.columns(4)
+    # ── 결론 한 줄 — '그래서 얼마를 받아야/돌려줘야 하나' (11/13) ──
+    #   미입금(예치금에서 아직 안 뺀 청구)과 예치금 잔액(이미 뺀 날들 반영)은 서로 겹치지
+    #   않는다. 둘을 따로만 보여 줘서 '미입금 174,010 · 잔액 −17,480'이 무슨 뜻인지
+    #   몰랐다 → 기간과 상관없이 **전체** 미입금으로 받을 돈을 한 줄로 낸다.
+    try:
+        _unpaid_all = sum(int(i['total_amount'] or 0) for i in
+                          _ds.list_invoices('2000-01-01', str(date.today()), username=_u, status='billed'))
+    except Exception:
+        _unpaid_all = _unpaid
+    _owe = _unpaid_all - _bal          # + 받을 돈 / − 남는 예치금
+    _bal_txt = (f"예치금 부족분 {fmt(-_bal)}원" if _bal < 0 else f"예치금 남은 돈 {fmt(_bal)}원")
+    if _owe > 0:
+        st.error(f"💰 **{_name} 님 — 보내야 할 돈 {fmt(_owe)}원**  \n"
+                 f"= 미입금 청구 {fmt(_unpaid_all)}원 "
+                 + (f"+ {_bal_txt}" if _bal < 0 else (f"− {_bal_txt}" if _bal else "")))
+    elif _owe < 0:
+        st.success(f"✅ **{_name} 님 — 예치금 {fmt(-_owe)}원이 남습니다**  \n"
+                   + (f"= {_bal_txt} − 미입금 청구 {fmt(_unpaid_all)}원" if _unpaid_all
+                      else "미입금 청구 없음"))
+    else:
+        st.success(f"✅ **{_name} 님 — 주고받을 돈 없음** (미입금 0원 · 예치금 0원)")
+    if _unpaid_all != _unpaid:
+        st.caption(f"※ 미입금은 기간과 상관없이 전체로 셌습니다(이 기간 안 {fmt(_unpaid)}원 · "
+                   f"기간 밖 {fmt(_unpaid_all - _unpaid)}원).")
+
+    try:
+        _dsum = _dep.summary(_u)
+    except Exception:
+        _dsum = {'charged': 0}
+    _chg_period = sum(v for k, v in _chg_day.items() if str(_f) <= k <= str(_t))
+    m1, m2, m3, m4, m5 = st.columns(5)
     m1.metric("청구액 합계", f"{fmt(_tot)}원", f"{len(invs)}일")
-    m2.metric("입금완료", f"{fmt(_paid_amt)}원")
+    m2.metric("입금완료", f"{fmt(_paid_amt)}원",
+              help="계좌입금 + 예치금 차감으로 처리된 날의 청구액")
     m3.metric("미입금 (청구됨)", f"{fmt(_unpaid)}원", f"{len(_billed)}일",
-              delta_color="inverse" if _unpaid else "off")
-    m4.metric("예치금 잔액", f"{fmt(_bal)}원")
+              delta_color="inverse" if _unpaid else "off",
+              help="예치금에서 아직 빼지 않았고 입금도 안 된 날의 청구액")
+    m4.metric("예치금 입금 합계", f"{fmt(_chg_period)}원",
+              f"전체 누적 {fmt(int(_dsum.get('charged') or 0))}원", delta_color="off",
+              help="이 기간에 넣은 예치금 합계 (아래 작은 글씨는 처음부터 넣은 전체 합계)")
+    m5.metric("예치금 잔액", f"{fmt(_bal)}원",
+              help="지금까지 넣은 예치금 − 예치금으로 뺀 구매액 (± 적립·조정). "
+                   "마이너스면 그만큼 더 넣어야 합니다.")
     if _draft_amt:
         st.caption(f"⚪ 아직 청구 전 {fmt(_draft_amt)}원 — "
                    + ("관리자가 청구하면 '청구됨'으로 바뀝니다." if _ro
@@ -378,7 +415,9 @@ def _tab_user(USERNAME, dmap, fixed_user=None):
                 + (f" · 입금 {fmt(r['입금액'])}원" if r['입금액'] else "")
                 + (f" · {r['결제']}" if r['결제'] else "")
                 + (f" · 💳 예치금 입금 **{fmt(_chg_day[_sd])}원**"
-                   if _chg_day.get(_sd) else ""))
+                   if _chg_day.get(_sd) else "")
+                + (f" → 차감 후 잔액 **{fmt(_bal_after[_sd])}원**"
+                   if _sd in _bal_after and _ded.get(_sd) else ""))
         _box = st.expander(_lbl, expanded=False)
         _meta = " · ".join(x for x in (
             f"청구 {r['청구일시']}" if r['청구일시'] else "",
@@ -409,7 +448,7 @@ def _tab_user(USERNAME, dmap, fixed_user=None):
             _receipt_original(_sd, _u, _name)
 
     # 💳 예치금 입금·차감·적립 — 같은 기간, 같은 사람
-    _dep_rows = _user_deposit_section(_u, _name, _f, _t)
+    _dep_rows = _user_deposit_section(_u, _name, _f, _t, billed=_billed)
 
     # 엑셀 — 청구서 + 구매내역(품목) + 예치금
     #   구매내역은 화면의 날짜 펼침과 같은 내용(정가·할인 포함)을 기간 전체로 편 것.
@@ -531,7 +570,7 @@ def _receipt_original(settle_date, username, name):
                "함께 나옵니다. ✅만 이 판매자 청구에 들어간 품목입니다.")
 
 
-def _user_deposit_section(_u, _name, _f, _t):
+def _user_deposit_section(_u, _name, _f, _t, billed=None):
     """한 사람의 예치금 내역 — 입금(예치)·구매 차감·되돌림·조정·매장반품 적립.
 
     사용자별 화면에 잔액 숫자 하나만 있어 "언제 얼마 넣고 무엇에 빠졌나"를 보려면
@@ -566,20 +605,46 @@ def _user_deposit_section(_u, _name, _f, _t):
     if not _in:
         st.caption(f"{_f} ~ {_t} 기간에 예치금 움직임이 없습니다.")
         return []
-    _rows = [{
-        '날짜': str(r['tx_date'])[:10],
-        '구분': _dep.KIND_LABEL.get(r['kind'], r['kind']),
-        '금액': int(r['amount'] or 0),
-        '잔액': _bal_at.get(int(r['id']), 0),
-        '정산일': r.get('settle_date') or '',
-        '메모': r.get('memo') or '',
-        '처리자': r.get('created_by') or '',
-    } for r in reversed(_in)]
+    # 통장처럼 — 오래된 순, 들어온 돈/나간 돈/그 직후 잔액 (11/13)
+    #   예치금에서 아직 안 뺀 청구(미입금)도 그날 자리에 끼워 '잔액에 안 들어간 돈'임을 보인다.
+    def _what(r):
+        k = r['kind']
+        if k == 'charge':
+            return '💳 예치금 입금'
+        if k == 'spend':
+            return f"🛒 {r.get('settle_date') or str(r['tx_date'])[:10]} 구매분 예치금에서 차감"
+        return _dep.KIND_LABEL.get(k, k)
+    _rows = []
+    for r in _in:
+        a = int(r['amount'] or 0)
+        _rows.append({
+            '날짜': str(r['tx_date'])[:10],
+            '내용': _what(r),
+            '들어온 돈': a if a > 0 else None,
+            '나간 돈': -a if a < 0 else None,
+            '예치금 잔액': _bal_at.get(int(r['id']), 0),
+            '메모': r.get('memo') or '',
+            '처리자': r.get('created_by') or '',
+            '_k': (str(r['tx_date'])[:10], 0, int(r['id'])),
+        })
+    for i in (billed or []):
+        _sd = str(i['settle_date'])
+        _rows.append({
+            '날짜': _sd,
+            '내용': f"🟡 {_sd} 구매 {int(i['item_count'] or 0)}품목 — 미입금 (예치금에서 안 뺌)",
+            '들어온 돈': None, '나간 돈': int(i['total_amount'] or 0), '예치금 잔액': None,
+            '메모': '잔액에 반영 안 됨 — 입금하거나 예치금에서 빼야 함', '처리자': '',
+            '_k': (_sd, 1, 0),
+        })
+    _rows.sort(key=lambda x: x['_k'])
+    for x in _rows:
+        x.pop('_k', None)
     st.dataframe(pd.DataFrame(_rows), use_container_width=True, hide_index=True,
                  column_config={k: st.column_config.NumberColumn(k, format='%d')
-                                for k in ('금액', '잔액')})
-    st.caption(f"{len(_rows)}건 · 최신순 · **잔액 = 그 시점까지 누적** · "
-               "'차감 취소됨'은 아래 '차감 되돌림'과 짝을 이뤄 상쇄됩니다.")
+                                for k in ('들어온 돈', '나간 돈', '예치금 잔액')})
+    st.caption(f"{len(_rows)}건 · 통장처럼 **오래된 순** · 예치금 잔액 = 그 줄까지 누적 · "
+               "🟡 미입금 줄은 예치금에서 빼지 않은 청구라 잔액이 비어 있습니다 · "
+               "'차감 취소됨'은 '차감 되돌림'과 짝을 이뤄 상쇄됩니다.")
     return _rows
 
 
