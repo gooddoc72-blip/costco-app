@@ -10,7 +10,7 @@ import streamlit as st
 import pandas as pd
 
 from db import (
-    get_pl_summary, get_ledger_rows, get_monthly_pl,
+    get_pl_summary, get_ledger_rows, get_monthly_pl, get_sheet_ledger_rows,
     get_setting, set_setting, get_global_setting, set_global_setting, get_user_info,
     save_bank_tx, get_bank_tx, get_tx_category_summary,
     update_tx_category, get_uncategorized_tx,
@@ -315,6 +315,26 @@ def render(USERNAME: str):
                                data=_buf.getvalue(),
                                file_name=f"ledger_{_d_from}_{_d_to}.xlsx",
                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+        # 구글시트 장부(원장 A~E열) 붙여넣기용 — 날짜별 매출·수수료 2줄
+        _srows = get_sheet_ledger_rows(USERNAME, _d_from, _d_to)
+        if _srows:
+            st.markdown("##### 📤 구글시트 장부용 내보내기")
+            st.caption("파일을 열어 2행부터 아래를 복사 → 구글시트 '원장' A열 첫 빈 칸에 붙여넣기 "
+                       "(A~E열만 채움, F열 계정과목은 자동). "
+                       "통장의 네이버·쿠팡 정산 입금 줄은 시트에서 '제외(이체·중복)'로 처리됩니다.")
+            _sdf = pd.DataFrame(_srows)
+            _sbuf = io.BytesIO()
+            with pd.ExcelWriter(_sbuf, engine='xlsxwriter') as _w:
+                _sdf.to_excel(_w, index=False, sheet_name='원장붙여넣기')
+                _w.sheets['원장붙여넣기'].set_column(0, 0, 12)
+                _w.sheets['원장붙여넣기'].set_column(1, 1, 22)
+                _w.sheets['원장붙여넣기'].set_column(2, 4, 14)
+            st.download_button(f"📤 장부용 엑셀 다운로드 ({len(_srows)}줄)",
+                               data=_sbuf.getvalue(),
+                               file_name=f"sheet_ledger_{_d_from}_{_d_to}.xlsx",
+                               mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                               key=f"sheet_ledger_dl_{_d_from}")
 
     # ── 복식부기 (합계잔액시산표 + 손익계산서 + 집계 분개장) ──
     with _tab4:
