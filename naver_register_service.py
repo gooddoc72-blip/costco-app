@@ -553,6 +553,7 @@ def register_one(username, api_id, api_secret, product, cat_id, opts=None):
         # 없으면 화면에서 누른 수동등록(db_naver_reg.DEFAULT_SOURCE).
         "reg_source":        str(opts.get("source") or "manual"),
         "reg_actor":         str(opts.get("actor") or username),
+        "reg_user":          username,       # 수량을 셀 계정(키 추정 대신)
         "name":              name,
         "sale_price":        sale,
         "image_url":         rep_cdn,

@@ -1162,7 +1162,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         if not _cdns:
                             st.error("이미지 업로드 실패 — 대표이미지를 못 올렸습니다.")
                         else:
-                            _res, _re2 = naver_api.register_product(api_id, api_secret, {
+                            _res, _re2 = naver_api.register_product(api_id, api_secret, {"reg_user": USERNAME,  # 수량을 셀 계정
                                 "name": _name_final, "sale_price": int(_es),
                                 "image_url": _cdns[0], "extra_image_urls": _cdns[1:],
                                 "category_id": _ec.strip(),
@@ -1623,7 +1623,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                             _cdn, _ue = naver_api.upload_product_image(api_id, api_secret, _rep)
                             if not _cdn:
                                 _rows.append({'상품': _name[:26], '상태': f'❌ 이미지업로드 실패'}); continue
-                            _res, _re2 = naver_api.register_product(api_id, api_secret, {
+                            _res, _re2 = naver_api.register_product(api_id, api_secret, {"reg_user": USERNAME,  # 수량을 셀 계정
                                 "name": (_full or {}).get('product_name', _name), "sale_price": _sale,
                                 "image_url": _cdn, "category_id": _cat_id,
                                 "detail_html": _cafe24_detail(_cf_dmode,
@@ -1701,7 +1701,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                         if not _cdn:
                                             st.error(f"이미지 업로드 실패: {_ue}")
                                         else:
-                                            _res, _re2 = naver_api.register_product(api_id, api_secret, {
+                                            _res, _re2 = naver_api.register_product(api_id, api_secret, {"reg_user": USERNAME,  # 수량을 셀 계정
                                                 "name": _full.get('product_name', _p['product_name']),
                                                 "sale_price": int(_sale), "image_url": _cdn,
                                                 "category_id": _cat_id,
@@ -1801,7 +1801,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                         _nr_det = ""
                         if _nr_prod.get("has_detail") and _nr_sp_id:
                             _, _nr_det = get_product_detail(_nr_sp_id)
-                        _nr_res, _e2 = naver_api.register_product(api_id, api_secret, {
+                        _nr_res, _e2 = naver_api.register_product(api_id, api_secret, {"reg_user": USERNAME,  # 수량을 셀 계정
                             "name": _nr_name, "sale_price": _nr_price,
                             "image_url": _nr_cdn, "category_id": _nr_cat,
                             "stock": _nr_stock, "shipping_fee": _nr_fee,

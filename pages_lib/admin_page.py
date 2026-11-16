@@ -347,9 +347,9 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                     "네이버 등록 한도 (누적, 0=무제한)", min_value=0, max_value=1000000,
                     step=50, value=int(_nq['limit'] or 0),
                     key=f"nvlim_{u['username']}",
-                    help="이 사용자의 네이버 커머스 API 토큰으로 등록할 수 있는 누적 "
-                         "상품 수. 수동등록·무인자동·카페24 대행을 모두 합산합니다. "
-                         "0이면 제한 없음.")
+                    help="이 사용자가 코코비즈에서 자기 스토어에 올릴 수 있는 누적 "
+                         "상품 수. 수동등록·무인자동만 셉니다 — 관리자가 대신 올려 "
+                         "주는 카페24 대행등록은 세지 않습니다. 0이면 제한 없음.")
                 with _nc2:
                     st.write("")
                     if _nq['limit']:

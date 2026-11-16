@@ -481,6 +481,7 @@ def register_one(creds, save_tokens, product, margin, target, opts,
     _res, _e2 = naver_api.register_product(tid, tsecret, {
         # 등록 집계용 — 토큰 주인(_tu) 몫으로 세되 누가 대행했는지 남긴다
         "reg_source": "cafe24", "reg_actor": str(opts.get('actor') or ''),
+        "reg_user": _tu,
         "name": _final_name, "keep_name": True, "sale_price": sale,
         "image_url": _cdn, "category_id": _cid,
         "detail_html": _detail_html,

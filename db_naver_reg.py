@@ -153,6 +153,10 @@ def _build_id_index():
         users = get_all_users()
     except Exception:
         return idx
+    # 같은 키를 여러 계정이 가진 경우(관리자가 테스트로 사용자 키를 넣는 등) 마지막
+    # 계정이 이겨 기록·한도가 엉뚱한 계정에 잡혔다. 관리자 → 사용자 순으로 훑어
+    # 사용자 계정이 이기게 한다. 등록 경로가 주인을 직접 넘기면(reg_user) 이 추정은 안 쓴다.
+    users = sorted(users, key=lambda u: 0 if u.get('is_admin') else 1)
     for u in users:
         un = str(u.get('username') or '').strip()
         if not un:
@@ -192,11 +196,20 @@ def client_tag(client_id):
     return str(client_id or '')[:10]
 
 
+def owner_of(client_id, reg_user=''):
+    """등록 수량을 셀 계정 — 호출부가 넘긴 주인(reg_user)이 우선, 없으면 키로 추정.
+
+    키로만 추정하면 같은 키를 가진 계정이 둘일 때 틀린다. 등록 경로는 누구 스토어에
+    올리는지 이미 알고 있으므로(화면 사용자·대행 대상) 그걸 넘기는 게 정확하다.
+    """
+    return str(reg_user or '').strip() or resolve_user_by_client_id(client_id)
+
+
 def log_by_client_id(client_id, origin_no, product_info=None):
     """register_product가 부르는 훅 — 토큰으로 주인을 찾아 1건 기록."""
     info = product_info or {}
     return log_naver_registration(
-        resolve_user_by_client_id(client_id), origin_no,
+        owner_of(client_id, info.get('reg_user')), origin_no,
         product_no=str(info.get('seller_code') or ''),
         product_name=str(info.get('name') or ''),
         sale_price=int(info.get('sale_price') or 0),
@@ -263,7 +276,7 @@ def naver_reg_quota(username):
     return {'limit': lim, 'used': used, 'remaining': rem, 'blocked': rem <= 0}
 
 
-def block_reason_by_client_id(client_id, source=''):
+def block_reason_by_client_id(client_id, source='', reg_user=''):
     """등록 전 차단 사유 문자열, 통과면 None.
 
     토큰 주인을 못 찾으면 차단하지 않는다 — 기록이 목적이고, 매칭 실패로
@@ -274,7 +287,7 @@ def block_reason_by_client_id(client_id, source=''):
     """
     if str(source or '') in LIMIT_EXEMPT_SOURCES:
         return None
-    un = resolve_user_by_client_id(client_id)
+    un = owner_of(client_id, reg_user)
     if not un:
         return None
     q = naver_reg_quota(un)

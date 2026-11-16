@@ -962,7 +962,7 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
                                 st.error(f"이미지 업로드 실패: {_err}")
                             else:
                                 with st.spinner("네이버 상품 등록 중..."):
-                                    _result, _err2 = naver_api.register_product(api_id, api_secret, {
+                                    _result, _err2 = naver_api.register_product(api_id, api_secret, {"reg_user": USERNAME,  # 수량을 셀 계정
                                         "name": _reg_name,
                                         "sale_price": _reg_price,
                                         "image_url": _cdn_url,
