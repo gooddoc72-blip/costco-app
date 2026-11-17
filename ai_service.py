@@ -1359,6 +1359,73 @@ def crop_receipt_paper(image_bytes, media_type):
         return image_bytes, media_type
 
 
+def detect_receipt_flip(image_bytes):
+    """영수증이 **위아래 뒤집혀** 찍혔으면 180, 아니면 0 — AI 없이 글줄 정렬로 판단한다.
+
+    11/17 '상품명 오류가 또 많다': 부산점 영수증이 종이째 거꾸로 찍혀 왔다. 뒤집힘은
+    AI가 rotate로 알려 줄 때만 세웠는데, AI가 놓치면 뒤집힌 한글을 그대로 읽어
+    상품명을 지어냈다(숫자는 맞아 검산도 통과). 그래서 AI 전에 사진만 보고 세운다.
+
+    코스트코 영수증의 짧은 줄(상품명)은 **왼쪽 정렬**이고 긴 줄(번호…금액)은 폭을 다 쓴다.
+    뒤집히면 짧은 줄이 오른쪽에 붙는다. 얇은 가로 띠마다 잉크의 왼끝·오른끝을 재서
+    짧은 띠가 근처 긴 띠의 왼끝에 맞는지 오른끝에 맞는지 센다(기울어도 근처끼리만 비교).
+    실사진 10장(뒤집힘 3장 포함)과 그 180° 회전본에서 모두 맞았다. 애매하면 0.
+    """
+    try:
+        from PIL import Image, ImageOps
+        import io as _io
+        with Image.open(_io.BytesIO(image_bytes)) as im0:
+            im = ImageOps.exif_transpose(im0) or im0
+            g = ImageOps.autocontrast(im.convert("L"), cutoff=2)
+        W, H = g.size
+        sw = 900
+        sh = max(1, round(H * sw / W))
+        g = g.resize((sw, sh))
+        # 종이 = 밝은 픽셀이 절반 가까이인 열이 가장 넓게 이어진 띠(자·책상 제외)
+        br = g.point(lambda v: 255 if v >= 200 else 0)
+        cols = [br.crop((x, 0, x + 1, sh)).histogram()[255] / sh for x in range(sw)]
+        best, cur = (0, 0), None
+        for i, v in enumerate(cols + [0]):
+            if v >= 0.45 and cur is None:
+                cur = i
+            elif v < 0.45 and cur is not None:
+                if i - cur > best[1] - best[0]:
+                    best = (cur, i)
+                cur = None
+        x0, x1 = best
+        if x1 - x0 < sw * 0.12:
+            return 0
+        m = int((x1 - x0) * 0.03)               # 종이 가장자리 그림자 제외
+        ink = g.crop((x0 + m, 0, x1 - m, sh)).point(lambda v: 255 if v < 110 else 0)
+        pw = ink.size[0]
+        bands = []
+        for y in range(0, sh - 5, 5):           # 한 줄 높이보다 얇은 띠
+            strip = ink.crop((0, y, pw, y + 5))
+            bb = strip.getbbox()
+            if bb and strip.histogram()[255] >= 6:
+                bands.append((y, bb[0], bb[2]))
+        longs = [b for b in bands if b[2] - b[1] > pw * 0.7]
+        if len(longs) < 10:
+            return 0
+        tol = pw * 0.04
+        la = ra = 0
+        for y, l, r in bands:
+            if r - l > pw * 0.55:
+                continue
+            near = [b for b in longs if abs(b[0] - y) <= 80]
+            if len(near) < 2:
+                continue
+            L = sorted(b[1] for b in near)[len(near) // 2]
+            R = sorted(b[2] for b in near)[len(near) // 2]
+            if abs(l - L) <= tol and abs(r - R) > tol * 3:
+                la += 1
+            elif abs(r - R) <= tol and abs(l - L) > tol * 3:
+                ra += 1
+        return 180 if (ra >= 8 and ra >= 2 * la + 4) else 0
+    except Exception:
+        return 0
+
+
 def rotate_receipt_image(image_bytes, media_type, deg):
     """사진을 시계 방향으로 deg도 돌린다. 반환: (bytes, media_type) 또는 실패 시 None.
 
@@ -1629,7 +1696,7 @@ def in_user_thread(fn):
 #   검산을 통과한 결과만 둔다. '🔄 다시 판독'은 use_cache=False로 새로 읽는다.
 #   프롬프트가 바뀌면 키가 달라져 옛 결과를 쓰지 않는다.
 _RCACHE_DAYS = 14
-_RCACHE_VER = 'crop-tiles-1111'
+_RCACHE_VER = 'flip-1117'   # 11/17: 뒤집힌 채 읽어 검산만 통과한 옛 결과를 버린다
 
 
 def _rcache_key(image_bytes):
@@ -1745,6 +1812,16 @@ def _parse_receipt_photo_core(api_key, image_bytes, media_type, max_tokens=4000,
     _b, _mt = prep_receipt_image(image_bytes, media_type)
     # 영수증 종이만 남긴다 — 책상·자까지 보내면 글자가 반 크기로 뭉개져 상품명을 지어냈다(11/11)
     _b, _mt = crop_receipt_paper(_b, _mt)
+    # 거꾸로 찍힌 영수증은 AI에 보내기 전에 세운다 — AI의 rotate 신호는 놓칠 때가 있다(11/17)
+    if detect_receipt_flip(_b) == 180:
+        _rb = rotate_receipt_image(_b, _mt, 180)
+        if _rb:
+            # 세운 뒤엔 AI의 rotate를 따르지 않는다 — 다시 뒤집어 버리면 원점이다
+            _d, _e = _read_receipt_image(api_key, _rb[0], _rb[1], max_tokens, gemini_key,
+                                         allow_rotate=False)
+            if _d is not None:
+                _d["_rotated"] = 180
+            return _d, _e
     return _read_receipt_image(api_key, _b, _mt, max_tokens, gemini_key, allow_rotate=True)
 
 
