@@ -44,6 +44,9 @@ def render(USERNAME: str, IS_ADMIN: bool = False):
     lmk = kpi['last_month']
     cumul = get_cumulative_sales(USERNAME)  # 어제까지 누적
 
+    # ── 💰 미정산 금액 — 로그인 팝업(하루 한 번·금액 바뀌면 다시) + 맨 위 카드 ──
+    _render_unsettled(USERNAME, IS_ADMIN)
+
     # ── 📢 공지사항 · 🏷 할인제품 (최상단 좌우 배치) ──
     _render_top_boards(USERNAME, IS_ADMIN)
 
@@ -360,6 +363,78 @@ def render(USERNAME: str, IS_ADMIN: bool = False):
     else:
         st.info("이번 달 가격 변동 이력이 없습니다.")
     chart_card_close()
+
+
+def _go(title):
+    """홈 → 다른 메뉴 이동(app.py가 _pending_tab을 페이지 제목으로 바꿔 switch_page)."""
+    st.session_state['_pending_tab'] = title
+    st.rerun()
+
+
+def _render_unsettled(USERNAME: str, IS_ADMIN: bool = False):
+    """💰 미정산 금액 — 청구에서 미정산이 남은 사용자에게만 팝업 + 맨 위 카드.
+
+    미정산 = 미입금 청구 전체 − 예치금 잔액(unsettled.py). 팝업은 로그인 세션마다
+    한 번, '오늘 그만 보기'를 누르면 그날은 안 뜨고 금액이 바뀌면 다시 뜬다.
+    관리자는 본인 팝업 대신 전체 미정산 카드만 본다.
+    """
+    try:
+        import unsettled as _us
+    except Exception:
+        return
+    if IS_ADMIN:
+        _all = _us.unsettled_all()
+        if not _all:
+            return
+        _c1, _c2 = st.columns([5, 1])
+        _c1.error(f"💰 **미정산 {len(_all)}명 · 합계 {fmt(sum(r['amount'] for r in _all))}원**"
+                  "  —  " + " · ".join(f"{r['username']} {fmt(r['amount'])}원" for r in _all[:5])
+                  + (f" 외 {len(_all) - 5}명" if len(_all) > 5 else ""))
+        if _c2.button("정산·청구 ▶", key="unsettled_admin_go", use_container_width=True):
+            _go("정산·청구")
+        return
+
+    r = _us.unsettled(USERNAME)
+    if not r:
+        return
+    _amt = r['amount']
+    _bal = r['balance']
+    _bal_txt = (f" + 예치금 부족분 {fmt(-_bal)}원" if _bal < 0
+                else (f" − 예치금 {fmt(_bal)}원" if _bal > 0 else ""))
+    _since = f" · {r['oldest']}부터" if r['oldest'] else ""
+
+    # 맨 위 카드 — 팝업을 닫아도 늘 보인다
+    _c1, _c2 = st.columns([5, 1])
+    _c1.error(f"💰 **미정산 금액 {fmt(_amt)}원**  "
+              + (f"(미입금 {r['days']}일치{_since})  \n= 미입금 청구 {fmt(r['unpaid'])}원{_bal_txt}"
+                 if r['days'] else
+                 f"  \n= 예치금 부족분 {fmt(-_bal)}원 (차감은 됐는데 예치금이 모자람)"))
+    if _c2.button("상세 보기 ▶", key="unsettled_go", use_container_width=True):
+        _go("내 구매내역 정산")
+
+    # 로그인 팝업 — 이 세션에서 이 금액으로 이미 띄웠거나, 오늘 그만 보기면 생략
+    _sk = f"_unsettled_shown_{_amt}"
+    if st.session_state.get(_sk) or _us.seen_today(USERNAME, _amt):
+        return
+    st.session_state[_sk] = True
+
+    @st.dialog("💰 미정산 금액 안내")
+    def _dlg():
+        st.markdown(f"### 미정산 금액 **{fmt(_amt)}원**")
+        st.markdown(f"- 미입금 청구 **{fmt(r['unpaid'])}원** ({r['days']}일치)"
+                    + (f"\n- 예치금 잔액 **{fmt(_bal)}원**" if _bal else "")
+                    + (f"\n- 가장 오래된 미입금: **{r['oldest']}**" if r['oldest'] else ""))
+        st.caption("입금하시면 관리자가 확인 후 정산 처리합니다.")
+        b1, b2, b3 = st.columns(3)
+        if b1.button("상세 보기", type="primary", use_container_width=True):
+            _go("내 구매내역 정산")
+        if b2.button("오늘 그만 보기", use_container_width=True):
+            _us.mark_seen(USERNAME, _amt)
+            st.rerun()
+        if b3.button("닫기", use_container_width=True):
+            st.rerun()
+
+    _dlg()
 
 
 def _render_top_boards(USERNAME: str, IS_ADMIN: bool = False):

@@ -9,6 +9,7 @@ import BottomNav from '@/components/BottomNav';
 import KpiCard from '@/components/KpiCard';
 import AlertCards from '@/components/dashboard/AlertCards';
 import TrendBars from '@/components/dashboard/TrendBars';
+import UnsettledNotice from '@/components/dashboard/UnsettledNotice';
 import { apiGet } from '@/lib/api';
 import { useDashboard } from '@/hooks/useDashboard';
 
@@ -29,6 +30,7 @@ export default function DashboardPage() {
         subtitle={me ? `${me.display_name} (${me.username})` : '로딩 중...'}
       />
       <main className="px-4 pt-4 pb-20 space-y-4">
+        <UnsettledNotice />
         {error && (
           <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
             {error}

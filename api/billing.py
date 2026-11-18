@@ -505,3 +505,23 @@ def unpaid_detail(username: str, admin: dict = Depends(require_admin)):
     return {'rows': [{'date': i['settle_date'], 'amount': _i(i['total_amount']),
                       'items': _i(i['item_count']), 'billed_at': str(i.get('billed_at') or '')[:16]}
                      for i in rows]}
+
+
+# ── 미정산 금액 — 로그인 팝업·대시보드 카드(/m) ────────────────────
+#   위 API는 관리자 전용이지만 이건 **본인 것**만 돌려준다(관리자는 전체 요약).
+#   계산은 unsettled.py 한 곳 — PC 홈 카드와 숫자가 같아야 한다.
+@router.get("/me/unsettled")
+def my_unsettled(request: Request):
+    username = get_session_user(_token(request))
+    if not username:
+        raise HTTPException(status_code=401, detail="로그인이 필요합니다")
+    import unsettled as _us
+    info = get_user_info(username) or {"is_admin": 0}
+    if info.get("is_admin"):
+        rows = _us.unsettled_all()
+        names = _names()
+        return {"admin": True, "count": len(rows),
+                "total": sum(r['amount'] for r in rows),
+                "rows": [{**r, 'name': names.get(r['username'], r['username'])}
+                         for r in rows[:20]]}
+    return {"admin": False, "item": _us.unsettled(username)}
