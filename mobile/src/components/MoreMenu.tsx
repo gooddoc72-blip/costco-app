@@ -2,7 +2,7 @@
 import Link from 'next/link';
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { X, Package, CreditCard, TrendingUp, Settings, Crown, Receipt, Tag, ScanLine, LogOut, User } from 'lucide-react';
+import { X, Package, CreditCard, TrendingUp, Settings, Crown, Receipt, Tag, ScanLine, LogOut, User, Store } from 'lucide-react';
 import { logout } from '@/lib/logout';
 
 interface Props { open: boolean; onClose: () => void }
@@ -14,6 +14,7 @@ const sections: Array<{
   {
     title: '데이터',
     links: [
+      { href: '/naver-register', label: '네이버 상품등록', icon: Store, desc: '가격표·바코드 찍어 스토어에 등록' },
       { href: '/products', label: '제품 DB', icon: Package, desc: '단가/분할수량 관리' },
       { href: '/settlement', label: '정산 매칭', icon: CreditCard, desc: 'CSV 업로드 + 매칭' },
       { href: '/rank', label: '키워드 순위', icon: TrendingUp, desc: '검색 노출 추적' },

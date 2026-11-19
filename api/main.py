@@ -387,3 +387,7 @@ app.include_router(_rphoto_router)
 # ── 바코드 스캔 (새 화면 /m/scan 백엔드 — 가격 확인·바코드 연결) ──
 from api.scan import router as _scan_router  # noqa: E402
 app.include_router(_scan_router)
+
+# ── 사진으로 네이버 등록 (새 화면 /m/naver-register) ──
+from api.naver_reg import router as _nreg_router  # noqa: E402
+app.include_router(_nreg_router)
