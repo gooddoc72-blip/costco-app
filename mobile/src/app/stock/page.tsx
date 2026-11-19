@@ -11,6 +11,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import clsx from 'clsx';
 import { RefreshCw, Search, ChevronDown, ChevronRight } from 'lucide-react';
 import Header from '@/components/Header';
+import BottomNav from '@/components/BottomNav';
 import { stock, StOverview, StCard, StSearch, StChecks, StLot, StMove } from '@/lib/client/stock';
 import { num } from '@/lib/fmt';
 
@@ -62,6 +63,7 @@ export default function StockPage() {
         {me?.is_admin && tab === 'search' && <SearchTab q={q} setQ={setQ} onErr={setErr} openUser={openUser} />}
         {me?.is_admin && tab === 'checks' && <ChecksTab onErr={setErr} openUser={openUser} openSearch={openSearch} />}
       </main>
+      <BottomNav />
     </>
   );
 }

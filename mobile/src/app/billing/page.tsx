@@ -11,6 +11,7 @@
 import { useState } from 'react';
 import clsx from 'clsx';
 import Header from '@/components/Header';
+import BottomNav from '@/components/BottomNav';
 import DayTab from '@/components/billing/DayTab';
 import DepositTab from '@/components/billing/DepositTab';
 import UnpaidTab from '@/components/billing/UnpaidTab';
@@ -34,7 +35,7 @@ export default function BillingPage() {
       <Header title="💳 정산 · 청구" subtitle="청구액은 물건값만 · 택배·포장비 별도" right={
         <a href="/app/" className="text-xs text-gray-500 underline">기존 화면</a>
       } />
-      <main className="px-3 md:px-6 pt-3 pb-16 space-y-3">
+      <main className="px-3 md:px-6 pt-3 pb-20 space-y-3">
         <div className="flex gap-1 overflow-x-auto">
           {TABS.map(t => (
             <button key={t.key} onClick={() => setTab(t.key)}
@@ -54,6 +55,7 @@ export default function BillingPage() {
           아직 기존 화면에서만 되는 것: 품목 삭제(오매칭) · 청구 전 초기화 · 사용자별 엑셀 · 월별 정리 · 정산 이력 · 예치금 수동 조정/삭제.
         </p>
       </main>
+      <BottomNav />
     </>
   );
 }

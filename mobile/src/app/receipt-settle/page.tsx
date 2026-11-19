@@ -12,6 +12,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import clsx from 'clsx';
 import { RefreshCw, Search } from 'lucide-react';
 import Header from '@/components/Header';
+import BottomNav from '@/components/BottomNav';
 import { rsettle, RsView, RsRow, RowAction, RsMoney } from '@/lib/client/rsettle';
 import { num } from '@/lib/fmt';
 import UnmatchedPanel from '@/components/rsettle/UnmatchedPanel';
@@ -340,6 +341,7 @@ export default function ReceiptSettlePage() {
           </>
         )}
       </main>
+      <BottomNav />
     </>
   );
 }

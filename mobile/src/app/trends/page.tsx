@@ -11,6 +11,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import clsx from 'clsx';
 import { ChevronDown, ChevronRight, Play, RefreshCw } from 'lucide-react';
 import Header from '@/components/Header';
+import BottomNav from '@/components/BottomNav';
 import { trends, Decision, TrendItem, TrendReport, TrendStatus } from '@/lib/client/trends';
 import { num } from '@/lib/fmt';
 
@@ -68,7 +69,7 @@ export default function TrendsPage() {
   return (
     <>
       <Header title="🔥 SNS 트렌드 TOP 30" subtitle="지금 뜨는 코스트코 상품 · 판매 제안 (관리자)" />
-      <main className="px-3 md:px-6 pt-3 pb-16 space-y-4">
+      <main className="px-3 md:px-6 pt-3 pb-20 space-y-4">
         <div className="flex flex-wrap items-center gap-2">
           <button onClick={start} disabled={!!st?.running}
             className="flex items-center gap-1 px-4 py-2 rounded-lg bg-primary text-white text-sm font-bold disabled:opacity-50">
@@ -147,6 +148,7 @@ export default function TrendsPage() {
             </div>
           </>)}
       </main>
+      <BottomNav />
     </>
   );
 }
