@@ -1,9 +1,9 @@
 """바코드 스캔 — Next.js 새 화면(/m/scan)이 부른다.
 
-한 상품에 바코드가 여러 개다. 코스트코 가격표 바코드(shared_products.barcode)와
-상품 박스의 제조사 바코드(880…)가 다르고, 같은 상품도 포장이 바뀌면 박스 바코드가
-바뀐다. 그래서 바코드 ↔ 코스트코 상품번호를 별도 표(product_barcodes)에 쌓는다.
-처음 보는 바코드는 한 번 상품을 골라 주면 그다음부터 바로 찾는다.
+한 상품에 바코드가 여러 개다. 규칙은 barcode_core에 있다:
+🏷 매장 바코드(가격표, shared_products.barcode) = 가격 추이용,
+📦 상품 바코드(포장, product_barcodes kind='box') = 재고용.
+처음 보는 상품 바코드는 한 번 상품을 골라 주면 그다음부터 바로 찾는다.
 
 찾는 순서: product_barcodes → 상품번호 그대로 → 가격표 바코드(shared_products.barcode).
 
@@ -13,6 +13,7 @@
 from datetime import datetime
 
 from db_core import get_auth_db, retry_on_lock
+import barcode_core as bc
 
 
 def _digits(s):
@@ -20,15 +21,7 @@ def _digits(s):
 
 
 def _ensure(conn):
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS product_barcodes (
-            barcode    TEXT PRIMARY KEY,
-            product_no TEXT NOT NULL,
-            kind       TEXT DEFAULT 'box',   -- box(상품 박스) | label(가격표)
-            created_by TEXT DEFAULT '',
-            created_at TEXT DEFAULT ''
-        )""")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_pbc_pno ON product_barcodes(product_no)")
+    bc.ensure(conn)
 
 
 def _linked_pno(code):
@@ -46,7 +39,8 @@ def barcodes_of(pno):
     try:
         _ensure(conn)
         return [str(r[0]) for r in conn.execute(
-            "SELECT barcode FROM product_barcodes WHERE product_no=? ORDER BY created_at", (pno,))]
+            "SELECT barcode FROM product_barcodes WHERE product_no=? AND COALESCE(kind,'box')='box' "
+            "ORDER BY created_at", (pno,))]
     finally:
         conn.close()
 
@@ -83,47 +77,25 @@ def _find(code):
 
 
 def _pno_candidates(c):
-    """가격표 바코드 → 상품번호 후보(순서대로). 4~7자리만 — 상품번호 길이."""
-    out = []
-    for s in (c[:-1], c.lstrip('0')[:-1], c.lstrip('0'), c[1:-1]):
-        s = s.lstrip('0')
-        if 4 <= len(s) <= 7 and s != c and s not in out:
-            out.append(s)
-    return out
+    return bc.pno_candidates(c)
 
 
-def link(code, product_no, username, is_admin=False, kind='box'):
-    """바코드를 상품에 연결. 이미 다른 상품에 붙은 바코드는 관리자만 바꾼다.
-    반환: {'linked': bool, 'product_no', 'prev'}"""
-    from db_products import find_shared_by_code
+def link(code, product_no, username, is_admin=False, kind='box', units=1):
+    """가격 확인 화면에서 바코드를 상품에 연결.
+
+    매장 가격표 바코드면 상품 DB의 매장 바코드 칸(비어 있을 때)에, 아니면 상품 포장
+    바코드(product_barcodes)로 넣는다. 이미 다른 상품에 붙은 바코드는 관리자만 바꾼다.
+    반환: {'linked': bool, 'product_no', 'prev', 'kind'}"""
     c, p = _digits(code), _digits(product_no)
     if not c or not p:
         raise ValueError("바코드와 상품번호가 필요합니다")
     if c == p:
-        return {'linked': False, 'product_no': p, 'prev': ''}   # 상품번호 자체 — 연결할 필요 없음
-    if not find_shared_by_code(p):
-        raise ValueError(f"제품 DB에 상품번호 {p}가 없습니다")
-    prev = _linked_pno(c)
-    if prev == p:
-        return {'linked': False, 'product_no': p, 'prev': prev}
-    if prev and not is_admin:
-        raise PermissionError(f"이 바코드는 이미 {prev}에 연결돼 있습니다 — 관리자에게 바꿔 달라고 하세요")
-
-    def _w():
-        conn = get_auth_db()
-        try:
-            _ensure(conn)
-            conn.execute(
-                "INSERT INTO product_barcodes (barcode, product_no, kind, created_by, created_at) "
-                "VALUES (?,?,?,?,?) ON CONFLICT(barcode) DO UPDATE SET product_no=excluded.product_no, "
-                "kind=excluded.kind, created_by=excluded.created_by, created_at=excluded.created_at",
-                (c, p, kind if kind in ('box', 'label') else 'box', username,
-                 datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
-            conn.commit()
-        finally:
-            conn.close()
-    retry_on_lock(_w)
-    return {'linked': True, 'product_no': p, 'prev': prev}
+        return {'linked': False, 'product_no': p, 'prev': '', 'kind': ''}   # 상품번호 자체
+    if kind == 'label' or bc.is_store(c, p):
+        return {'linked': bool(bc.set_store_barcode(p, c, username)), 'product_no': p,
+                'prev': '', 'kind': 'store'}
+    r = bc.link_box(c, p, username, is_admin=is_admin, units=units)
+    return {**r, 'kind': 'box'}
 
 
 def _stock(pno, username, is_admin):
@@ -179,8 +151,8 @@ def lookup(code, username, is_admin=False):
 def save_price(username, row, code=''):
     """매장 가격 확인 1건 저장 — 같은 값이어도 '확인한 날'(store_updated_at)이 오늘로 바뀐다.
 
-    스캔한 바코드는 shared_products.barcode(가격표 바코드)에 덮어쓰지 않는다 — 박스
-    바코드일 수 있어서다. 대신 product_barcodes에 연결한다.
+    스캔한 바코드는 link()가 갈라 넣는다 — 매장 가격표 바코드면 매장 칸(비었을 때),
+    상품 포장 바코드면 product_barcodes. 매장 칸을 덮어쓰지는 않는다.
     """
     import price_tag_service as pts
     pno = _digits(row.get('product_no'))

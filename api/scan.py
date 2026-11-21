@@ -3,6 +3,8 @@
 조회·바코드 연결은 로그인한 사용자 누구나(포장·출고 때도 쓴다).
 이미 다른 상품에 붙은 바코드를 바꾸는 일과 매장 가격 저장은 관리자만.
 """
+from typing import List
+
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
@@ -70,3 +72,34 @@ def price(req: PriceReq, user: dict = Depends(require_login)):
         raise HTTPException(status_code=400, detail="가격을 넣어 주세요")
     r = ss.save_price(user["username"], req.model_dump(), code=req.code)
     return {**r, 'item': ss.lookup(req.code or req.product_no, user["username"], True)}
+
+
+# ── 바코드 점검 (관리자) — 매장 바코드 칸에 섞인 상품 바코드 등 정리 ──
+def _admin(user):
+    if not user.get("is_admin"):
+        raise HTTPException(status_code=403, detail="관리자만 쓸 수 있습니다")
+
+
+@router.get("/barcode-audit")
+def barcode_audit(user: dict = Depends(require_login)):
+    """읽기 전용 점검 — 아무것도 고치지 않는다."""
+    _admin(user)
+    import barcode_core as bc
+    return bc.audit()
+
+
+class FixItem(BaseModel):
+    action: str          # to_box | clear | to_store
+    product_no: str
+    barcode: str
+
+
+class FixReq(BaseModel):
+    items: List[FixItem]
+
+
+@router.post("/barcode-fix")
+def barcode_fix(req: FixReq, user: dict = Depends(require_login)):
+    _admin(user)
+    import barcode_core as bc
+    return bc.audit_fix(user["username"], [i.model_dump() for i in req.items])

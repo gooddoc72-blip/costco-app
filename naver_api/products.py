@@ -729,18 +729,14 @@ def _is_cert_error(err):
 
 
 def _barcode_for(seller_code, barcode=None):
-    """등록에 쓸 바코드 — 넘겨받은 값이 우선, 없으면 제품가격 DB(shared_products)에서
-    코스트코 상품번호로 찾는다. 숫자만 돌려준다. 못 찾으면 ''."""
-    _b = "".join(ch for ch in str(barcode or "") if ch.isdigit())
-    if _b:
-        return _b
-    _sc = str(seller_code or "").strip()
-    if not _sc:
-        return ""
+    """네이버 판매자 바코드 — 상품 포장 바코드(제조사 880… 등)만 보낸다.
+
+    코스트코 매장 가격표 바코드는 코스트코 안에서만 통해 보내지 않는다(barcode_core 규칙).
+    넘겨받은 값이 포장 바코드면 그 값, 아니면 상품번호에 연결된 포장 바코드(낱개 우선).
+    못 찾으면 ''."""
     try:
-        from db_products import find_shared_by_code
-        _sp = find_shared_by_code(_sc) or {}
-        return "".join(ch for ch in str(_sp.get("barcode") or "") if ch.isdigit())
+        from barcode_core import naver_barcode
+        return naver_barcode(str(seller_code or "").strip(), barcode)
     except Exception:
         return ""
 

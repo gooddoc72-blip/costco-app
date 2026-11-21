@@ -21,6 +21,7 @@ const sections: Array<{
       { href: '/receipt', label: '영수증', icon: Receipt, desc: 'PDF 매입가 업데이트' },
       { href: '/scan', label: '바코드 스캔', icon: ScanLine, desc: '찍으면 상품·매입가·재고 — 매장 가격 확인' },
       { href: '/pricetag', label: '가격표 사진', icon: Tag, desc: '매장 가격표로 신규 상품 등록·매입가 수정' },
+      { href: '/barcodes', label: '바코드 점검', icon: ScanLine, desc: '매장 바코드(가격)·상품 바코드(재고) 정리 (관리자)' },
     ],
   },
   {
