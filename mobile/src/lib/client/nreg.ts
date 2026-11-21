@@ -1,21 +1,50 @@
 /**
- * 사진으로 네이버 등록 API 클라이언트 — 파이썬 API(/api/nreg/*).
- * 판매가 계산·카테고리·등록은 전부 파이썬(naver_register_service)이 한다.
+ * 📷 사진으로 네이버 신상품 등록 API 클라이언트 — 파이썬 API(/api/nreg/*).
+ * 분석·판매가·등록은 전부 파이썬(photo_register_service)이 한다 — PC 사진등록과 같은 함수.
  */
 import { call } from './billing';
 
 export interface NregQuota { limit: number; used: number; remaining: number | null; blocked: boolean }
-export interface NregPreview {
-  product_no: string; name: string; image: string; cost: number; split_qty: number;
-  margin: number; sale_price: number; registered: string; has_image: boolean;
+export interface NregStatus {
+  has_key: boolean; has_ai: boolean; margin: number; ship_cost: number; box_cost: number;
+  customer_ship: number; delivery: string; quota: NregQuota;
 }
-export interface NregJob { status: 'running' | 'ok' | 'fail'; msg: string; origin_no: string }
+export type Food = Record<string, string>;
+export interface NregPreview {
+  name: string; name_raw: string; cost: number; cost_tag: number; cost_db: number;
+  cat_id: string; cat_full: string; cat_src: string;
+  brand: string; manufacturer: string; model_name: string; volume: string;
+  costco_no: string; barcode: string; food: Food | null; seo_front: string[];
+  margin: number; ship_cost: number; box_cost: number; customer_ship: number; delivery: string;
+  sale: number;
+}
+export interface NregResult {
+  origin_no: string; name: string; sale: number; images: number; tags: number;
+  price_msg: string; warning: string;
+}
+export interface Job<T> { status: 'running' | 'ok' | 'fail'; msg: string; result: T | null }
+export interface Img { name: string; content_b64: string }
 
 const B = '/api/nreg';
 export const nreg = {
-  status: () => call<{ has_key: boolean; quota: NregQuota }>('GET', `${B}/status`),
-  preview: (code: string) => call<NregPreview>('GET', `${B}/preview/${encodeURIComponent(code)}`),
-  register: (product_no: string, sale_price: number) =>
-    call<{ job: string }>('POST', `${B}/register`, { product_no, sale_price }),
-  job: (id: string) => call<NregJob>('GET', `${B}/job/${id}`),
+  status: () => call<NregStatus>('GET', `${B}/status`),
+  analyze: (prod: Img, price: Img, label?: Img | null) =>
+    call<{ job: string }>('POST', `${B}/analyze`, { prod, price, label: label || null }),
+  price: (p: { cost: number; margin: number; ship_cost: number; box_cost: number; customer_ship: number; sale?: number }) =>
+    call<{ sale: number; margin: number; margin_rate: number }>('POST', `${B}/price`, p),
+  categories: (q: string) =>
+    call<{ items: { id: string; full_name: string }[] }>('GET', `${B}/categories?q=${encodeURIComponent(q)}`),
+  register: (body: Record<string, unknown>) => call<{ job: string }>('POST', `${B}/register`, body),
+  job: <T>(id: string) => call<Job<T>>('GET', `${B}/job/${id}`),
 };
+
+/** 작업이 끝날 때까지 2초마다 묻는다. 진행 문구는 onMsg로. */
+export async function waitJob<T>(id: string, onMsg: (m: string) => void): Promise<T> {
+  for (;;) {
+    await new Promise(r => setTimeout(r, 2000));
+    const j = await nreg.job<T>(id);
+    if (j.status === 'running') { onMsg(j.msg); continue; }
+    if (j.status === 'fail') throw new Error(j.msg);
+    return j.result as T;
+  }
+}

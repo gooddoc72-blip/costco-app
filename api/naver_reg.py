@@ -1,45 +1,29 @@
-"""사진으로 네이버 등록 — Next.js 새 화면(/m/naver-register)이 부른다.
+"""📷 사진으로 네이버 신상품 등록 — Next.js 새 화면(/m/naver-register)이 부른다.
 
-가격표·바코드 사진(화면의 바코드 스캐너, 못 읽으면 /api/scan/photo-code AI) → 공유 상품 찾기 → 판매가 미리보기 → 등록.
-등록 자체는 PC 장바구니 등록과 같은 naver_register_service.register_one을 쓴다
-(카테고리 자동 판단·이미지 업로드·상세설명·등록 수량 집계가 PC와 똑같다).
-판매가 기본값도 PC 장바구니와 같다: compute_sale_price(상품, 'cafe24_naver_margin'%).
+PC '네이버 등록 › 📷 제품사진(여러 장) + 가격사진으로 신상품 등록'의 모바일판.
+분석·등록 로직은 photo_register_service에 있다(PC와 같은 함수·같은 판매가 공식).
 
-등록은 이미지 업로드·AI 상세설명 때문에 1분을 넘기기도 해 nginx 60초에 끊긴다.
-그래서 백그라운드 스레드로 돌리고 /job/{id}로 결과를 본다(uvicorn workers=1).
-사진 한 장 = 상품 한 개. 각자 본인 스토어 API 키로 올라가고 본인 등록 수량에 잡힌다.
+분석(AI 2~3번 + 카테고리 + SEO)과 등록(사진 업로드 + AI 설명·태그 + 등록)은 둘 다
+1분을 넘기기도 해 nginx에서 끊긴다 → 백그라운드 스레드로 돌리고 /job/{id}로 결과를
+본다(uvicorn workers=1이라 메모리 작업표로 충분). 각자 본인 스토어 API 키로 올라가고
+본인 등록 수량에 잡힌다.
 """
+import base64
 import threading
 import time
 import uuid
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
+import photo_register_service as prs
 from api.stock import require_login
 
 router = APIRouter(prefix="/api/nreg", tags=["naver-register"])
 
-_JOBS = {}            # id → {user, status: running|ok|fail, msg, origin_no, at}
+_JOBS = {}            # id → {user, kind, status: running|ok|fail, msg, result, at}
 _LOCK = threading.Lock()
-
-
-def _settings(username):
-    from db_products import get_all_settings
-    return get_all_settings(username) or {}
-
-
-def _digits(s):
-    return ''.join(ch for ch in str(s or '') if ch.isdigit())
-
-
-def _merged(username, pno):
-    """이 사용자 기준 상품 1건(공유 + 본인 등록 표시). 없으면 None."""
-    from db import get_all_products_merged
-    for p in get_all_products_merged(username):
-        if str(p.get('product_no') or '').strip() == pno:
-            return p
-    return None
 
 
 def _quota(username):
@@ -50,123 +34,151 @@ def _quota(username):
         return {'limit': 0, 'used': 0, 'remaining': None, 'blocked': False}
 
 
+class Img(BaseModel):
+    name: str = ""
+    content_b64: str
+
+
+def _bytes(img: Img):
+    try:
+        b = base64.b64decode(img.content_b64.split(',')[-1])
+    except Exception:
+        raise HTTPException(status_code=400, detail=f"사진을 읽지 못했습니다: {img.name}")
+    n = img.name.lower()
+    mt = 'image/png' if n.endswith('.png') else 'image/webp' if n.endswith('.webp') else 'image/jpeg'
+    return b, mt
+
+
+def _start(user, kind, fn):
+    u = user["username"]
+    with _LOCK:
+        if any(j['user'] == u and j['kind'] == kind and j['status'] == 'running'
+               for j in _JOBS.values()):
+            raise HTTPException(status_code=409, detail='이미 진행 중입니다 — 끝날 때까지 기다려 주세요')
+        for k in [k for k, j in _JOBS.items() if time.time() - j['at'] > 3600]:
+            _JOBS.pop(k, None)
+        jid = uuid.uuid4().hex[:12]
+        _JOBS[jid] = {'user': u, 'kind': kind, 'status': 'running', 'msg': '시작…',
+                      'result': None, 'at': time.time()}
+
+    def log(m):
+        with _LOCK:
+            _JOBS[jid]['msg'] = str(m)
+
+    def run():
+        try:
+            r = fn(log)
+            with _LOCK:
+                _JOBS[jid].update(status='ok', msg='완료', result=r)
+        except Exception as e:     # 스레드 안 오류도 화면에 보여 준다
+            with _LOCK:
+                _JOBS[jid].update(status='fail', msg=str(e) or '실패')
+
+    threading.Thread(target=run, daemon=True).start()
+    return {'job': jid}
+
+
 @router.get("/status")
 def status(user: dict = Depends(require_login)):
-    """등록 가능 여부 — API 키·등록 한도."""
-    s = _settings(user["username"])
-    return {'has_key': bool(s.get('api_client_id') and s.get('api_client_secret')),
-            'quota': _quota(user["username"])}
+    return {**prs.status(user["username"]), 'quota': _quota(user["username"])}
 
 
-@router.get("/preview/{code}")
-def preview(code: str, user: dict = Depends(require_login)):
-    """번호·바코드 → 상품·판매가 미리보기. 등록은 하지 않는다."""
-    import scan_service as ss
-    from naver_register_service import compute_sale_price
-    sp, _how = ss._find(_digits(code))
-    if not sp:
-        raise HTTPException(status_code=404,
-                            detail=f"'{_digits(code)}' 상품이 공유 DB에 없습니다 (먼저 코스트코 수집 필요)")
-    pno = str(sp.get('product_no') or '').strip()
-    p = _merged(user["username"], pno) or sp
-    s = _settings(user["username"])
-    try:
-        margin = float(s.get('cafe24_naver_margin') or 10)
-    except (TypeError, ValueError):
-        margin = 10.0
-    return {
-        'product_no': pno,
-        'name': str(p.get('costco_name') or ''),
-        'image': str(p.get('image_url') or ''),
-        'cost': int(p.get('online_price') or 0) or int(p.get('unit_price') or 0),
-        'split_qty': int(p.get('split_qty') or 1),
-        'margin': margin,
-        'sale_price': compute_sale_price(p, margin),
-        'registered': str(p.get('naver_product_no') or '').strip(),
-        'has_image': bool(p.get('local_image') or p.get('image_url')),
-    }
+class AnalyzeReq(BaseModel):
+    prod: Img
+    price: Img
+    label: Optional[Img] = None
+
+
+@router.post("/analyze")
+def analyze(req: AnalyzeReq, user: dict = Depends(require_login)):
+    """제품사진(대표 1장) + 가격사진 (+ 라벨) → 미리보기. 등록은 하지 않는다."""
+    pb, pm = _bytes(req.prod)
+    qb, qm = _bytes(req.price)
+    lb, lm = _bytes(req.label) if req.label else (None, 'image/jpeg')
+    u = user["username"]
+
+    def fn(log):
+        log('사진 분석 중… (상품명·가격·카테고리)')
+        try:
+            return prs.analyze(u, pb, pm, qb, qm, lb, lm)
+        except ValueError as e:
+            raise RuntimeError(str(e))
+    return _start(user, 'analyze', fn)
+
+
+class PriceReq(BaseModel):
+    cost: int = 0
+    margin: float = 0
+    ship_cost: int = 0
+    box_cost: int = 0
+    customer_ship: int = 0
+    sale: int = 0
+
+
+@router.post("/price")
+def price(req: PriceReq, user: dict = Depends(require_login)):
+    """마진율 → 판매가(sale 0이면), 그리고 그 판매가의 실제 마진. PC 마진계산기와 같은 식."""
+    sale = req.sale or prs.sale_price(req.cost, req.margin, req.ship_cost, req.box_cost,
+                                      req.customer_ship)
+    return {'sale': sale, **prs.margin_info(sale, req.cost, req.ship_cost, req.box_cost,
+                                            req.customer_ship)}
+
+
+@router.get("/categories")
+def categories(q: str, user: dict = Depends(require_login)):
+    import naver_api
+    from db_products import get_all_settings
+    s = get_all_settings(user["username"]) or {}
+    r, err = naver_api.search_naver_categories(s.get('api_client_id', ''),
+                                               s.get('api_client_secret', ''), q.strip())
+    if err and not r:
+        raise HTTPException(status_code=400, detail=str(err))
+    return {'items': (r or [])[:30]}
 
 
 class RegReq(BaseModel):
-    product_no: str
+    images: List[Img]
+    name: str
+    name_raw: str = ""
+    volume: str
     sale_price: int
-
-
-def _run(jid, username, product, sale):
-    import naver_register_service as nrs
-    from db_auth import get_global_setting
-
-    def done(st, msg, origin=''):
-        with _LOCK:
-            _JOBS[jid].update(status=st, msg=msg, origin_no=origin)
-
-    try:
-        s = _settings(username)
-        api_id, api_secret = s.get('api_client_id', ''), s.get('api_client_secret', '')
-        # 코스트코 판매종료·품절이면 올리지 않는다 (PC 장바구니와 같다)
-        try:
-            from costco_crawler import fetch_costco_status
-            cs = fetch_costco_status(str(product.get('product_no') or ''))
-        except Exception:
-            cs = {}
-        if cs.get('exists') is False or cs.get('available') is False:
-            return done('fail', f"코스트코 {cs.get('reason') or '판매종료/품절'} — 등록 안 함")
-        ai_key = get_global_setting('anthropic_api_key') or s.get('anthropic_api_key', '')
-        try:
-            import json
-            cat_map = json.loads(s.get('naver_cat_mappings') or '{}')
-        except Exception:
-            cat_map = {}
-        cat_id, cat_full, _src = nrs.resolve_category(
-            api_id, api_secret, product, cat_map=cat_map, ai_key=ai_key,
-            open_creds=(s.get('naver_open_client_id', ''), s.get('naver_open_client_secret', '')))
-        if not cat_id:
-            return done('fail', '네이버 카테고리를 못 정했습니다 — PC 네이버 등록 화면에서 직접 골라 주세요')
-        origin, err = nrs.register_one(
-            username, api_id, api_secret, product, cat_id,
-            opts={'sale_price': sale, 'as_tel': s.get('naver_as_tel') or '1588-1234',
-                  'stock': 10, 'ai_key': ai_key, 'ai_desc': True, 'with_spec': True,
-                  'cat_full': cat_full or '', 'source': 'manual', 'actor': username})
-        if err or not origin:
-            return done('fail', str(err or '등록 실패'))
-        done('ok', f"등록 완료 · {cat_full or cat_id}", str(origin))
-    except Exception as e:  # 스레드 안 오류도 화면에 보여 준다
-        done('fail', f'오류: {e}')
+    cost_tag: int = 0
+    customer_ship: Optional[int] = None
+    cat_id: str
+    cat_full: str = ""
+    costco_no: str
+    barcode: str = ""
+    brand: str = ""
+    manufacturer: str = ""
+    model_name: str = ""
+    desc: str = ""
+    food: Optional[dict] = None
+    ai_desc: bool = True
+    ai_tags: bool = True
 
 
 @router.post("/register")
 def register(req: RegReq, user: dict = Depends(require_login)):
     u = user["username"]
-    s = _settings(u)
-    if not (s.get('api_client_id') and s.get('api_client_secret')):
+    st = prs.status(u)
+    if not st['has_key']:
         raise HTTPException(status_code=400, detail='네이버 커머스 API 키가 없습니다 (설정에서 먼저 넣어 주세요)')
     q = _quota(u)
     if q.get('blocked'):
         raise HTTPException(status_code=403,
                             detail=f"네이버 등록 한도 소진 ({q.get('used', 0)}/{q.get('limit', 0)})")
-    pno = _digits(req.product_no)
-    p = _merged(u, pno)
-    if not p:
-        raise HTTPException(status_code=404, detail='상품을 찾지 못했습니다')
-    if str(p.get('naver_product_no') or '').strip():
-        raise HTTPException(status_code=409, detail=f"이미 등록된 상품입니다 (#{p['naver_product_no']})")
-    if not (p.get('local_image') or p.get('image_url')):
-        raise HTTPException(status_code=400, detail='상품 이미지가 없어 등록할 수 없습니다')
-    sale = int(req.sale_price or 0)
-    if sale < 1000:
-        raise HTTPException(status_code=400, detail='판매가를 확인해 주세요')
-    with _LOCK:
-        for j in _JOBS.values():
-            if j['user'] == u and j['pno'] == pno and j['status'] == 'running':
-                raise HTTPException(status_code=409, detail='이 상품을 이미 등록하는 중입니다')
-        # 오래된 작업 정리 (1시간)
-        for k in [k for k, j in _JOBS.items() if time.time() - j['at'] > 3600]:
-            _JOBS.pop(k, None)
-        jid = uuid.uuid4().hex[:12]
-        _JOBS[jid] = {'user': u, 'pno': pno, 'status': 'running', 'msg': '등록 중…',
-                      'origin_no': '', 'at': time.time()}
-    threading.Thread(target=_run, args=(jid, u, p, sale), daemon=True).start()
-    return {'job': jid}
+    if not req.images:
+        raise HTTPException(status_code=400, detail='제품 사진이 없습니다')
+    imgs = [_bytes(i) for i in req.images[:10]]
+    f = req.model_dump(exclude={'images'})
+    is_admin = bool(user.get("is_admin"))
+
+    def fn(log):
+        try:
+            return prs.register(u, is_admin, imgs, f, log=log)
+        except ValueError as e:
+            raise RuntimeError(str(e))
+    return _start(user, 'register', fn)
 
 
 @router.get("/job/{jid}")
@@ -175,4 +187,4 @@ def job(jid: str, user: dict = Depends(require_login)):
         j = _JOBS.get(jid)
         if not j or j['user'] != user["username"]:
             raise HTTPException(status_code=404, detail='작업을 찾지 못했습니다')
-        return {k: j[k] for k in ('status', 'msg', 'origin_no')}
+        return {k: j[k] for k in ('status', 'msg', 'result')}
