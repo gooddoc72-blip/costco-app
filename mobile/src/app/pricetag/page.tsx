@@ -1,6 +1,7 @@
 'use client';
 /**
- * 🏷 가격표 사진 → 공유 매입가 (관리자).
+ * 🏷 가격표 사진 → 공유 매입가 (관리자). 가격·상품번호·바코드를 갈라 보여 주고,
+ * 처음 보는 상품번호는 상품 DB(shared_products)에 새로 등록된다(바코드 함께).
  *
  * 매장에서 가격표를 여러 장 찍으면 한 장씩 판독해(파이썬 /api/ptag — Streamlit 제품 DB의
  * '바코드·사진으로 매입가 수정'과 같은 판독기) 현재 매입가와 나란히 보여 준다.
@@ -192,7 +193,7 @@ export default function PriceTagPage() {
                 </div>
               )}
               {it.state === 'done' && <RowCard it={it} onPick={p => setRow(it.key, {}, p)}
-                onPrice={v => setRow(it.key, { new_price: v })} onName={v => setRow(it.key, { name: v })}
+                onPrice={v => setRow(it.key, { new_price: v })} onName={v => setRow(it.key, { name: v })} onBarcode={v => setRow(it.key, { barcode: v })}
                 onNo={v => fixNo(it.key, v)} />}
             </div>
           ))}
@@ -238,9 +239,9 @@ export default function PriceTagPage() {
   );
 }
 
-function RowCard({ it, onPick, onPrice, onName, onNo }: {
+function RowCard({ it, onPick, onPrice, onName, onNo, onBarcode }: {
   it: Extract<Item, { state: 'done' }>; onPick: (v: boolean) => void; onPrice: (v: number) => void;
-  onName: (v: string) => void; onNo: (v: string) => void;
+  onName: (v: string) => void; onNo: (v: string) => void; onBarcode: (v: string) => void;
 }) {
   const r = it.row;
   const [no, setNo] = useState(r.product_no);
@@ -261,6 +262,12 @@ function RowCard({ it, onPick, onPrice, onName, onNo }: {
           ? <input value={r.name} onChange={e => onName(e.target.value)} placeholder="상품명"
               className="flex-1 border border-gray-200 rounded px-2 py-1 text-xs" />
           : <span className="flex-1 truncate font-medium">{r.name}</span>}
+      </div>
+      <div className="flex items-center gap-2">
+        <span className="text-[11px] text-gray-500 w-12 shrink-0">바코드</span>
+        <input value={r.barcode || ''} onChange={e => onBarcode(e.target.value.replace(/\D/g, ''))}
+          inputMode="numeric" placeholder="가격표 바코드 (못 읽었으면 비워 둠)"
+          className="flex-1 border border-gray-200 rounded px-2 py-1 text-xs" />
       </div>
       <div className="flex items-center gap-2 flex-wrap">
         <span className="text-gray-500">현재 {r.cur_price ? `${num(r.cur_price)}원` : '—'}</span>
