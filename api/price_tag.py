@@ -1,7 +1,8 @@
 """가격표 사진 API — Next.js 새 화면(/m/pricetag)이 부른다.
 
-판독·비교·저장·되돌리기는 price_tag_service가 한다. 공유 매입가를 바꾸는 일이라
-관리자만 쓴다(Streamlit 제품 DB의 같은 기능도 관리자 전용).
+판독·비교·저장·되돌리기는 price_tag_service가 한다. 판독과 신규 상품 등록은 누구나,
+이미 있는 상품의 매입가 변경과 저장 기록·되돌리기는 관리자만(잘못 읽은 가격이
+모두의 공유 매입가를 바꾸지 않게).
 사진은 한 장씩 보낸다 — 여러 장을 한 요청에 담으면 판독이 길어져 nginx 60초에 끊긴다.
 """
 from typing import List, Optional
@@ -27,12 +28,12 @@ class ReadReq(BaseModel):
 
 
 @router.post("/read")
-def read(req: ReadReq, user: dict = Depends(_admin)):
+def read(req: ReadReq, user: dict = Depends(require_login)):
     return pts.read(req.content_b64, req.name)
 
 
 @router.get("/lookup/{code}")
-def lookup(code: str, user: dict = Depends(_admin)):
+def lookup(code: str, user: dict = Depends(require_login)):
     r = pts.lookup(code)
     if not r:
         raise HTTPException(status_code=404, detail=f"공유DB에 {code}가 없습니다")
@@ -55,8 +56,9 @@ class SaveReq(BaseModel):
 
 
 @router.post("/save")
-def save(req: SaveReq, user: dict = Depends(_admin)):
-    return pts.save(user["username"], [r.model_dump() for r in req.rows])
+def save(req: SaveReq, user: dict = Depends(require_login)):
+    return pts.save(user["username"], [r.model_dump() for r in req.rows],
+                    new_only=not user.get("is_admin"))
 
 
 @router.get("/history")

@@ -146,10 +146,12 @@ def lookup(code):
             'online_price': int(sp.get('online_price') or 0)}
 
 
-def save(username, rows):
+def save(username, rows, new_only=False):
     """고른 줄을 공유 매입가에 저장. 반환: {batch, saved, same, skipped[]}.
 
     같은 상품이 여러 장이면 마지막 줄만 쓴다(같은 가격표를 두 번 찍은 경우).
+    new_only=True(일반 사용자): 공유DB에 없는 상품번호만 새로 등록하고, 이미 있는
+    상품의 매입가·바코드는 건드리지 않는다 — 잘못 읽은 가격이 모두의 매입가를 바꾸지 않게.
     """
     from db_products import upsert_shared_store_price
     last = {}
@@ -166,6 +168,10 @@ def save(username, rows):
     logs, saved, same = [], 0, 0
     for pno, r in last.items():
         sp = _shared(pno)
+        if new_only and sp:
+            skipped.append({'name': str(sp.get('costco_name') or pno),
+                            'why': '이미 있는 상품 — 가격 변경은 관리자만'})
+            continue
         name = str((sp or {}).get('costco_name') or r.get('name') or pno)
         prev = int((sp or {}).get('store_price') or (sp or {}).get('unit_price') or 0)
         res = upsert_shared_store_price(

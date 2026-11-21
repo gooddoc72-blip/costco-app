@@ -1,7 +1,8 @@
 'use client';
 /**
- * 🏷 가격표 사진 → 공유 매입가 (관리자). 가격·상품번호·바코드를 갈라 보여 주고,
+ * 🏷 가격표 사진 → 공유 매입가. 가격·상품번호·바코드를 갈라 보여 주고,
  * 처음 보는 상품번호는 상품 DB(shared_products)에 새로 등록된다(바코드 함께).
+ * 일반 사용자는 신규 상품 등록만, 기존 상품 가격 변경·되돌리기는 관리자만(서버도 막는다).
  *
  * 매장에서 가격표를 여러 장 찍으면 한 장씩 판독해(파이썬 /api/ptag — Streamlit 제품 DB의
  * '바코드·사진으로 매입가 수정'과 같은 판독기) 현재 매입가와 나란히 보여 준다.
@@ -112,8 +113,10 @@ export default function PriceTagPage() {
     }
   };
 
+  const isAdmin = !!me?.is_admin;
+  const can = (r: PtRow) => isAdmin || r.status === 'new';
   const done = items.filter((x): x is Extract<Item, { state: 'done' }> => x.state === 'done');
-  const picked = done.filter(x => x.pick && x.row.product_no && x.row.new_price > 0);
+  const picked = done.filter(x => x.pick && can(x.row) && x.row.product_no && x.row.new_price > 0);
   const reading = items.filter(x => x.state === 'reading').length;
 
   const save = async () => {
@@ -145,13 +148,10 @@ export default function PriceTagPage() {
     finally { setBusy(false); }
   };
 
-  if (me && !me.is_admin) {
-    return (<><Header title="🏷 가격표 사진" /><main className="p-4 text-sm text-gray-500">관리자만 쓸 수 있는 화면입니다.</main><BottomNav /></>);
-  }
-
   return (
     <>
-      <Header title="🏷 가격표 사진 → 매입가" subtitle="매장 가격표를 찍으면 공유 매입가(정가)를 고칩니다" />
+      <Header title="🏷 가격표 사진 → 매입가"
+        subtitle={isAdmin ? '매장 가격표를 찍으면 공유 매입가(정가)를 고칩니다' : '처음 보는 상품을 가격표 사진으로 상품 DB에 등록합니다'} />
       <main className="px-3 md:px-6 pt-3 pb-24 space-y-3">
         {err && <div className="bg-red-50 text-red-700 p-3 rounded-lg text-sm">❌ {err}</div>}
         {msg && <div className="bg-green-50 text-green-700 p-3 rounded-lg text-sm">{msg}</div>}
@@ -173,6 +173,11 @@ export default function PriceTagPage() {
             가격표의 <b>좌측 상단 상품번호</b>와 <b>가격</b>이 선명하게 나오도록 가까이 찍어 주세요.
             할인 중이면 <b>정가</b>를 매입가로 저장하고, 할인가·종료일은 기록만 남깁니다.
           </p>
+          {me && !isAdmin && (
+            <p className="text-xs text-amber-700 bg-amber-50 rounded p-2">
+              <b>신규 상품</b>만 등록됩니다. 이미 있는 상품의 가격이 다르면 관리자에게 알려 주세요.
+            </p>
+          )}
         </div>
 
         {!!items.length && (
@@ -192,7 +197,7 @@ export default function PriceTagPage() {
                   <button onClick={() => retry(it)} className="border rounded px-2 py-1 text-xs">🔄 다시</button>
                 </div>
               )}
-              {it.state === 'done' && <RowCard it={it} onPick={p => setRow(it.key, {}, p)}
+              {it.state === 'done' && <RowCard it={it} can={can(it.row)} onPick={p => setRow(it.key, {}, p)}
                 onPrice={v => setRow(it.key, { new_price: v })} onName={v => setRow(it.key, { name: v })} onBarcode={v => setRow(it.key, { barcode: v })}
                 onNo={v => fixNo(it.key, v)} />}
             </div>
@@ -202,11 +207,11 @@ export default function PriceTagPage() {
         {!!done.length && (
           <button disabled={busy || !picked.length || reading > 0} onClick={save}
             className="w-full bg-blue-600 text-white rounded-lg py-3 text-sm font-medium disabled:opacity-40">
-            💾 체크한 {picked.length}건 공유 매입가에 저장{reading ? ' (판독이 끝나면)' : ''}
+            💾 체크한 {picked.length}건 {isAdmin ? '공유 매입가에 저장' : '상품 DB에 신규 등록'}{reading ? ' (판독이 끝나면)' : ''}
           </button>
         )}
 
-        <div className="pt-4">
+        {isAdmin && <div className="pt-4">
           <div className="text-sm font-bold text-gray-700 mb-2">🕘 최근 저장 (묶음째 되돌리기)</div>
           {!hist && <div className="text-xs text-gray-400">불러오는 중…</div>}
           {hist && !hist.length && <div className="text-xs text-gray-400">아직 저장한 기록이 없습니다.</div>}
@@ -232,15 +237,15 @@ export default function PriceTagPage() {
               </details>
             ))}
           </div>
-        </div>
+        </div>}
       </main>
       <BottomNav />
     </>
   );
 }
 
-function RowCard({ it, onPick, onPrice, onName, onNo, onBarcode }: {
-  it: Extract<Item, { state: 'done' }>; onPick: (v: boolean) => void; onPrice: (v: number) => void;
+function RowCard({ it, can, onPick, onPrice, onName, onNo, onBarcode }: {
+  it: Extract<Item, { state: 'done' }>; can: boolean; onPick: (v: boolean) => void; onPrice: (v: number) => void;
   onName: (v: string) => void; onNo: (v: string) => void; onBarcode: (v: string) => void;
 }) {
   const r = it.row;
@@ -250,9 +255,10 @@ function RowCard({ it, onPick, onPrice, onName, onNo, onBarcode }: {
   return (
     <div className="space-y-1.5">
       <div className="flex items-center gap-2">
-        <input type="checkbox" checked={it.pick} disabled={!r.product_no || r.new_price <= 0}
+        <input type="checkbox" checked={it.pick && can} disabled={!can || !r.product_no || r.new_price <= 0}
           onChange={e => onPick(e.target.checked)} className="w-4 h-4" />
         <span className={clsx('px-2 py-0.5 rounded-full text-[11px]', cls)}>{lab}</span>
+        {!can && <span className="text-[11px] text-gray-400">기존 상품 · 가격 변경은 관리자만</span>}
         <span className="text-[11px] text-gray-400 truncate">{it.photo}</span>
       </div>
       <div className="flex gap-2 items-center">
