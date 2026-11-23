@@ -154,7 +154,9 @@ GEMINI_MODEL = "gemini-flash-latest"   # 현행 flash 별칭. thinking 끄고 �
 #  2.5-flash를 3.7보다 앞에 둔다 — 2026-10-13 실측: 3.7-flash는 과부하로 응답에
 #  176초가 걸리거나 시간초과였고(사진 한 장에 3분), 2.5-flash는 2~10초였다. 새 키에서
 #  2.5가 404여도 0.3초 만에 떨어져 3.7로 넘어가므로 손해가 없다.
-GEMINI_FALLBACK_MODELS = ("gemini-flash-latest", "gemini-2.5-flash", "gemini-3.7-flash")
+# 2026-11-23: 새 키는 2.5-flash가 404("no longer available to new users … use
+#  gemini-3.8-flash")라 3.8을 앞에 둔다. 옛 키는 2.5가 여전히 되므로 뒤에 남긴다.
+GEMINI_FALLBACK_MODELS = ("gemini-flash-latest", "gemini-3.8-flash", "gemini-2.5-flash")
 #: 후보 모델(2번째부터)에 주는 대기 상한(초). 과부하 모델은 끊지 않고 몇 분씩 끈다.
 GEMINI_FALLBACK_TIMEOUT = 60
 # 영수증처럼 깨알글씨·부호(-T)·검산이 필요한 판독은 flash가 자주 틀린다.
@@ -213,6 +215,7 @@ def _gemini_post(api_key, model, body, timeout=60, feature=''):
         return None, f"[중지] Gemini 잠시 쉬는 중 — {_paused}"
     import copy as _copy
     tried, last_err, _bumped = [], None, False
+    _errs = []                                  # [(모델, 사유)] — 화면에 모델별로 보여 준다
     queue = [model] + [m for m in GEMINI_FALLBACK_MODELS if m != model]
     _ktag = str(api_key or '').strip()[-6:]
     import time as _time
@@ -241,6 +244,7 @@ def _gemini_post(api_key, model, body, timeout=60, feature=''):
             except Exception as e:
                 # 시간초과·연결 끊김은 그 모델 사정이다 — [503]으로 표시해 다음 후보로 넘긴다
                 last_err = f"[503] {_m} 응답 없음({type(e).__name__})"
+                _errs.append((_m, f"응답 없음({type(e).__name__})"))
                 break
             if r.status_code == 200:
                 data = r.json()
@@ -284,6 +288,10 @@ def _gemini_post(api_key, model, body, timeout=60, feature=''):
             except Exception:
                 _msg = r.text[:200]
             last_err = f"[{r.status_code}] {_msg}"
+            _errs.append((_m, f"[{r.status_code}] {str(_msg)[:90]}"))
+            if r.status_code == 404:
+                # 이 키로는 닫힌 모델 — 하루 동안 건너뛴다(사진마다 헛호출 방지)
+                _GEMINI_SKIP[(_ktag, _m)] = _time.time() + 86400
             if r.status_code in _GEMINI_PAUSE_SECS:
                 _why = {402: '결제 필요(구글 지출 한도·결제 확인)',
                         401: 'API 키 오류', 403: 'API 키 권한 없음'}[r.status_code]
@@ -301,6 +309,10 @@ def _gemini_post(api_key, model, body, timeout=60, feature=''):
             # 그 밖(키 오류 401/403 등)은 모델을 바꿔도 소용없다.
             if not (str(last_err).startswith("[400]") and "model" in str(last_err).lower()):
                 break
+    if len(_errs) > 1:
+        # 첫 글자 코드는 호출측 분기용으로 마지막 오류 것을 유지한다
+        _code = str(last_err or '')[:5] if str(last_err or '').startswith('[') else ''
+        return None, (_code + ' ' if _code else '') + ' / '.join(f"{m}: {e}" for m, e in _errs)
     return None, last_err or "빈 응답"
 
 
