@@ -165,6 +165,8 @@ GEMINI_FALLBACK_TIMEOUT = 60
 #    (flash도 같은 이유로 별칭으로 되돌렸다 — 'gemini-flash-latest' 400은 옛 이야기이고
 #     2026-09 실측에서 thinkingBudget=0을 포함해도 200이다)
 GEMINI_VISION_MODEL = "gemini-pro-latest"
+#: pro 판독의 사고(thinking) 토큰 상한 — 사고 토큰도 출력 단가로 과금된다(11/23 비용 점검).
+GEMINI_THINK_BUDGET = 3000
 
 
 #: 이 키로는 못 쓰는 모델 — {(키 끝 6자, 모델): 다시 시도할 시각}. 프로세스 안 캐시.
@@ -566,7 +568,11 @@ def gemini_vision(api_key, image_bytes, media_type, system, user_text,
             # 다 먹고 JSON이 중간에 잘려, pro 판독이 매번 버려지고 flash로 넘어갔다
             # (10/17 영수증: pro 출력 3996/4000 4회 연속 → 전부 flash 결과 채택).
             # 본문 예산은 그대로 두고 사고 몫을 따로 얹는다.
-            body["generationConfig"]["maxOutputTokens"] = max_tokens + 12000
+            # 11/23 비용: 예전엔 사고를 12000까지 열어 둬 pro 한 번이 비쌌다 → 사고 상한
+            #   GEMINI_THINK_BUDGET. 모델이 thinkingBudget을 거부(400)하면 _gemini_post가
+            #   thinkingConfig를 빼고 다시 부르므로, 그때를 위해 여유를 조금 더 둔다.
+            body["generationConfig"]["thinkingConfig"] = {"thinkingBudget": GEMINI_THINK_BUDGET}
+            body["generationConfig"]["maxOutputTokens"] = max_tokens + GEMINI_THINK_BUDGET + 2000
         return _gemini_post(api_key, model, body, timeout=180 if thinking else 90,
                            feature=feature)
     except Exception as e:
@@ -1658,10 +1664,11 @@ def _parse_receipt_whole(api_key, image_bytes, media_type, max_tokens=4000, *, g
 
     _g_data, _g_err = None, ''
     if gemini_key:
-        # pro(정확·thinking) → flash(빠름) 순으로 시도. 검산을 통과하면 거기서 끝낸다.
+        # 11/23 비용: flash(싸고 빠름) → pro(정확·thinking) 순. 예전엔 pro를 먼저 불러
+        #   영수증 한 장이 pro thinking 여러 번이 됐다. 검산을 통과하면 거기서 끝낸다.
         # 둘 다 검산을 못 넘기면 '경고가 더 적은 쪽'을 후보로 남긴다.
         _g_iss = None
-        for _gm, _think in ((GEMINI_VISION_MODEL, True), (GEMINI_MODEL, False)):
+        for _gm, _think in ((GEMINI_MODEL, False), (GEMINI_VISION_MODEL, True)):
             _gt, _e = gemini_vision(gemini_key, image_bytes, media_type, _RECEIPT_SYSTEM,
                                     _RECEIPT_USER, max_tokens=max_tokens, max_edge=1568,
                                     model=_gm, thinking=_think, feature='receipt')
@@ -1723,9 +1730,10 @@ def _parse_receipt_whole(api_key, image_bytes, media_type, max_tokens=4000, *, g
 def _read_one_tile(api_key, gemini_key, b, mt, max_tokens):
     """조각 1장 판독 — Gemini 우선, 없거나 실패하면 Claude."""
     if gemini_key:
+        # 11/23 비용: 조각은 글자가 2~3배 커서 flash로 충분하다(예전엔 조각마다 pro thinking)
         _t, _e = gemini_vision(gemini_key, b, mt, _RECEIPT_SYSTEM, _TILE_USER,
                                max_tokens=max_tokens, max_edge=1568,
-                               model=GEMINI_VISION_MODEL, thinking=True,
+                               model=GEMINI_MODEL, thinking=False,
                                feature='receipt')
         _d = _parse_receipt_json(_t) if _t else None
         if _d:
@@ -1889,15 +1897,18 @@ def _read_receipt_image(api_key, _b, _mt, max_tokens, gemini_key, allow_rotate=T
     함께 읽고, 조각 결과가 검산을 통과하면 **조각 결과를 우선** 쓴다(동시에 돌려 기다림은
     거의 같다). 짧은 영수증은 예전처럼 통판독만 한다.
     """
+    # 11/23 비용: 통판독과 조각을 늘 동시에 돌리면 긴 영수증 한 장에 호출이 5번(뒤집히면
+    #   10번)이었다. 이제 통판독을 먼저 하고, 검산을 못 넘겼을 때만 조각을 읽는다.
+    #   뒤집힌 사진은 세운 뒤에만 조각을 읽는다(헛조각 없음).
     from concurrent.futures import ThreadPoolExecutor
-    _tiles = receipt_tiles(_b, _mt, max_edge=1568) if (api_key or gemini_key) else []
-    _ex = ThreadPoolExecutor(max_workers=1 + len(_tiles))
+    _data, _err = _parse_receipt_whole(api_key, _b, _mt, max_tokens, gemini_key=gemini_key)
+    _rot0 = int((_data or {}).get("_rotate") or 0)
+    _need_tiles = (_data is None or not _data.get("_verified")) and not (_rot0 and allow_rotate)
+    _tiles = receipt_tiles(_b, _mt, max_edge=1568) if (_need_tiles and (api_key or gemini_key)) else []
+    _ex = ThreadPoolExecutor(max_workers=max(1, len(_tiles)))
     try:
-        _fw = _ex.submit(in_user_thread(_parse_receipt_whole), api_key, _b, _mt, max_tokens,
-                         gemini_key=gemini_key)
         _one = in_user_thread(_read_one_tile)
         _ft = [_ex.submit(_one, api_key, gemini_key, _tb, _tm, max_tokens) for _tb, _tm in _tiles]
-        _data, _err = _fw.result()
         # 사진이 거꾸로/옆으로 찍혔다고 AI가 알려 주면 바로 세워 **처음부터 다시** 읽는다.
         # 검산을 통과했어도 다시 읽는다 — 뒤집힌 채 읽으면 금액 합은 맞아도 할인이
         # 다른 품목에 붙는다. 뒤집힌 사진의 조각 판독은 기다리지 않고 버린다.
