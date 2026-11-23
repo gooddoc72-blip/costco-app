@@ -149,9 +149,11 @@ GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:ge
 # ⚠️ 버전을 박으면 구글이 그 모델을 '신규 사용자에게만' 닫을 때 **새로 키를 발급한
 #    사용자만** 404가 난다(2026-09 실측: gemini-2.5-flash가 그렇게 막혔고, 기존 키인
 #    oxo·baremi542는 계속 됐다). 그래서 별칭을 기본으로 쓴다.
-GEMINI_MODEL = "gemini-3.8-flash"
-# 11/23: 'gemini-flash-latest' 별칭은 새 키(cocobiz)에서 404/429가 대부분이고 3.8-flash만
-#  성공했다(구글 사용량 화면). 옛 키도 3.8은 된다 → 3.8을 기본으로, 별칭은 예비로 내린다.
+# 11/23 비용: 사진·글 기본은 3.1 Flash Lite(3.8 Flash의 약 1/6 단가). 정확도가 중요한
+#  영수증·가격표·라벨은 Lite 결과가 검산/이상값 검사를 못 넘길 때만 GEMINI_VISION_MODEL(3.8)로
+#  다시 읽는다. Lite가 막히면(404/429) _gemini_post가 예비 모델(3.8 …)로 넘어간다.
+GEMINI_MODEL = "gemini-3.1-flash-lite"
+# 참고: 'gemini-flash-latest' 별칭은 새 키(cocobiz)에서 404/429가 대부분이었다 → 예비 뒤쪽.
 #: 글만 다루는 가벼운 일(키워드·상품명·태그 등 ai_complete) — 3.8 Flash보다 약 1/6 단가
 #  (입력 $0.25 / 출력 $1.5 per 1M, SNS 자동화 단가표 기준). 막히면 아래 예비 모델로 넘어간다.
 GEMINI_TEXT_MODEL = "gemini-3.1-flash-lite"
@@ -169,7 +171,8 @@ GEMINI_FALLBACK_TIMEOUT = 60
 # ⚠️ 'gemini-2.5-pro'는 신규 사용자에게 404다. 버전이 바뀌어도 안 깨지도록 별칭을 쓴다.
 #    (flash도 같은 이유로 별칭으로 되돌렸다 — 'gemini-flash-latest' 400은 옛 이야기이고
 #     2026-09 실측에서 thinkingBudget=0을 포함해도 200이다)
-GEMINI_VISION_MODEL = "gemini-pro-latest"
+# 11/23: pro-latest는 새 키에서 404/429로 헛호출만 했고 비싸다 → 두 번째 시도는 3.8 Flash.
+GEMINI_VISION_MODEL = "gemini-3.8-flash"
 #: pro 판독의 사고(thinking) 토큰 상한 — 사고 토큰도 출력 단가로 과금된다(11/23 비용 점검).
 GEMINI_THINK_BUDGET = 3000
 
@@ -906,10 +909,21 @@ def analyze_food_label(api_key, image_bytes, media_type, *, gemini_key=''):
     if _err or not _txt:
         return None, _err or "빈 응답"
     _d = _extract_json(_txt, where='label(식품 라벨 분석)')
-    if _d is None:
-        return None, f"JSON 파싱 실패: {_txt[:120]}"
     _keys = ("food_type", "volume", "ingredients", "storage", "origin",
              "manufacturer", "importer", "calories", "nutrition", "expiration")
+    # Lite가 깨알글씨를 못 읽어 빈 칸이 많으면(JSON 실패 포함) 3.8로 한 번 더 읽는다
+    if gemini_key and _prov == 'gemini' and (
+            _d is None or sum(1 for _k in _keys if str(_d.get(_k, "") or "").strip()) < 3):
+        _t2, _e2 = gemini_vision(gemini_key, image_bytes, media_type, _FOODLABEL_SYSTEM,
+                                 "이 식품 표시사항 사진을 분석해 JSON으로 출력해줘.",
+                                 max_tokens=700, max_edge=1568, model=GEMINI_VISION_MODEL,
+                                 feature='label')
+        _d2 = _extract_json(_t2, where='label(식품 라벨 분석)') if _t2 else None
+        if _d2 is not None and (_d is None or sum(1 for _k in _keys if str(_d2.get(_k, "") or "").strip())
+                                > sum(1 for _k in _keys if str(_d.get(_k, "") or "").strip())):
+            _d, _txt = _d2, _t2
+    if _d is None:
+        return None, f"JSON 파싱 실패: {_txt[:120]}"
     # ⚠️ 반환 dict는 상세페이지 제품정보 표(_food_info_html)로 그대로 흘러가므로
     #    _provider 같은 부가 키를 넣지 않는다 (표에 노출됨).
     return {_k: str(_d.get(_k, "") or "").strip() for _k in _keys}, None
