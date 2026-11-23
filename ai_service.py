@@ -149,14 +149,19 @@ GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:ge
 # ⚠️ 버전을 박으면 구글이 그 모델을 '신규 사용자에게만' 닫을 때 **새로 키를 발급한
 #    사용자만** 404가 난다(2026-09 실측: gemini-2.5-flash가 그렇게 막혔고, 기존 키인
 #    oxo·baremi542는 계속 됐다). 그래서 별칭을 기본으로 쓴다.
-GEMINI_MODEL = "gemini-flash-latest"   # 현행 flash 별칭. thinking 끄고 사용(아래).
+GEMINI_MODEL = "gemini-3.8-flash"
+# 11/23: 'gemini-flash-latest' 별칭은 새 키(cocobiz)에서 404/429가 대부분이고 3.8-flash만
+#  성공했다(구글 사용량 화면). 옛 키도 3.8은 된다 → 3.8을 기본으로, 별칭은 예비로 내린다.
+#: 글만 다루는 가벼운 일(키워드·상품명·태그 등 ai_complete) — 3.8 Flash보다 약 1/6 단가
+#  (입력 $0.25 / 출력 $1.5 per 1M, SNS 자동화 단가표 기준). 막히면 아래 예비 모델로 넘어간다.
+GEMINI_TEXT_MODEL = "gemini-3.1-flash-lite"
 #: 모델이 막혔을 때(404/모델 없음) 순서대로 다시 시도할 후보.
 #  2.5-flash를 3.7보다 앞에 둔다 — 2026-10-13 실측: 3.7-flash는 과부하로 응답에
 #  176초가 걸리거나 시간초과였고(사진 한 장에 3분), 2.5-flash는 2~10초였다. 새 키에서
 #  2.5가 404여도 0.3초 만에 떨어져 3.7로 넘어가므로 손해가 없다.
 # 2026-11-23: 새 키는 2.5-flash가 404("no longer available to new users … use
 #  gemini-3.8-flash")라 3.8을 앞에 둔다. 옛 키는 2.5가 여전히 되므로 뒤에 남긴다.
-GEMINI_FALLBACK_MODELS = ("gemini-flash-latest", "gemini-3.8-flash", "gemini-2.5-flash")
+GEMINI_FALLBACK_MODELS = ("gemini-3.8-flash", "gemini-flash-latest", "gemini-2.5-flash")
 #: 후보 모델(2번째부터)에 주는 대기 상한(초). 과부하 모델은 끊지 않고 몇 분씩 끈다.
 GEMINI_FALLBACK_TIMEOUT = 60
 # 영수증처럼 깨알글씨·부호(-T)·검산이 필요한 판독은 flash가 자주 틀린다.
@@ -353,7 +358,7 @@ def ai_complete(system: str, user_msg: str, *, gemini_key: str = '',
 
     if gemini_key:
         txt, err = gemini_complete(gemini_key, system, user_msg, max_tokens=max_tokens,
-                                   feature=feature)
+                                   model=GEMINI_TEXT_MODEL, feature=feature)
         if txt:
             return txt, '', 'gemini'
         if anthropic_key:
