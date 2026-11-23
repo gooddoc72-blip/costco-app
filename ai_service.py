@@ -170,6 +170,26 @@ GEMINI_VISION_MODEL = "gemini-pro-latest"
 #  한 시간은 건너뛰어 사진마다 헛호출 한 번씩을 아낀다.
 _GEMINI_SKIP = {}
 
+#: 키 전체 일시 중지 — {키 끝 6자: (다시 시도할 시각, 사유)}.
+#  402(결제 필요·지출 한도)·401/403(키 오류)은 모델을 바꿔도 똑같이 실패한다. 예전엔
+#  사진 한 장마다 모델 4개 × (pro·flash) × 조각 판독으로 헛요청이 수십 번 나갔다
+#  (2026-11 구글 화면: 성공률 0% 근처, 402·429가 대부분). 한 번 확인되면 잠시 쉬고
+#  바로 Claude로 넘긴다.
+_GEMINI_KEY_PAUSE = {}
+_GEMINI_PAUSE_SECS = {402: 600, 401: 600, 403: 600}
+#: 일반 429(분당 한도)는 그 모델만 잠깐 쉰다 — 한도가 0인 모델(limit: 0)은 위처럼 한 시간.
+_GEMINI_429_SECS = 60
+
+
+def gemini_pause_status(api_key):
+    """(쉬는 중이면) '사유 · n분 남음' 문자열, 아니면 ''."""
+    import time as _t
+    _k = str(api_key or '').strip()[-6:]
+    _p = _GEMINI_KEY_PAUSE.get(_k)
+    if not _p or _p[0] <= _t.time():
+        return ''
+    return f"{_p[1]} · {max(1, int((_p[0] - _t.time()) // 60))}분 뒤 다시 시도"
+
 
 def _gemini_post(api_key, model, body, timeout=60, feature=''):
     """Gemini 호출 1회 + 자가복구 재시도. 반환: (text, error).
@@ -188,6 +208,9 @@ def _gemini_post(api_key, model, body, timeout=60, feature=''):
     _blocked = _usage_gate()
     if _blocked:
         return None, _blocked
+    _paused = gemini_pause_status(api_key)
+    if _paused:
+        return None, f"[중지] Gemini 잠시 쉬는 중 — {_paused}"
     import copy as _copy
     tried, last_err, _bumped = [], None, False
     queue = [model] + [m for m in GEMINI_FALLBACK_MODELS if m != model]
@@ -197,7 +220,7 @@ def _gemini_post(api_key, model, body, timeout=60, feature=''):
         if _m in tried:
             continue
         if _GEMINI_SKIP.get((_ktag, _m), 0) > _time.time():
-            last_err = last_err or f"[429] {_m} — 이 키로는 사용 한도가 없는 모델(무료 키)"
+            last_err = last_err or f"[429] {_m} — 한도 초과로 잠시 건너뜀"
             continue
         # 첫 모델은 호출측 대기시간 그대로, 넘어간 후보는 짧게 끊는다
         _to = timeout if not tried else min(timeout, GEMINI_FALLBACK_TIMEOUT)
@@ -261,8 +284,15 @@ def _gemini_post(api_key, model, body, timeout=60, feature=''):
             except Exception:
                 _msg = r.text[:200]
             last_err = f"[{r.status_code}] {_msg}"
-            if r.status_code == 429 and "limit: 0" in str(_msg):
-                _GEMINI_SKIP[(_ktag, _m)] = _time.time() + 3600
+            if r.status_code in _GEMINI_PAUSE_SECS:
+                _why = {402: '결제 필요(구글 지출 한도·결제 확인)',
+                        401: 'API 키 오류', 403: 'API 키 권한 없음'}[r.status_code]
+                _GEMINI_KEY_PAUSE[_ktag] = (_time.time() + _GEMINI_PAUSE_SECS[r.status_code],
+                                            f"[{r.status_code}] {_why}")
+                return None, f"[{r.status_code}] {_why}: {str(_msg)[:120]}"
+            if r.status_code == 429:
+                _GEMINI_SKIP[(_ktag, _m)] = _time.time() + (
+                    3600 if "limit: 0" in str(_msg) else _GEMINI_429_SECS)
             if r.status_code == 400 and not _drop_think:
                 continue                        # thinking 빼고 한 번 더
             break                               # 그 외에는 다음 모델로
@@ -1668,7 +1698,13 @@ def _parse_receipt_whole(api_key, image_bytes, media_type, max_tokens=4000, *, g
         _gok, _giss = validate_receipt(_g_data)
         if _gok or len(_giss) < len(_ciss):
             return _tag(_g_data, 'gemini', _giss, _gok), None
-    return _tag(_c_data, 'claude', _ciss, _cok), None
+    _d = _tag(_c_data, 'claude', _ciss, _cok)
+    if gemini_key:
+        # 왜 Gemini가 아니라 Claude로 읽었는지 화면에 남긴다(검증만 못 넘긴 경우 포함)
+        _why = _g_err or ('Gemini 판독이 검산을 못 넘김' if _g_data is not None else '')
+        if _why:
+            _d["_check"] = list(_d.get("_check") or []) + [f"Gemini 대신 Claude로 읽음 — {str(_why)[:160]}"]
+    return _d, None
 
 
 
