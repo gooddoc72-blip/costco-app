@@ -17,7 +17,11 @@ export interface NregPreview {
   costco_no: string; barcode: string; food: Food | null; seo_front: string[];
   margin: number; ship_cost: number; box_cost: number; customer_ship: number; delivery: string;
   sale: number;
+  /** 한글표시사항 표 [[항목, 값]] — costco: 코스트코 사이트, label: 라벨 사진 판독 */
+  spec_rows: [string, string][]; spec_src: '' | 'costco' | 'label';
+  desc: string; desc_err: string; tags: Tag[]; tags_err: string; label_err: string;
 }
+export interface Tag { code: number | null; text: string; volume?: number }
 export interface NregResult {
   origin_no: string; name: string; sale: number; images: number; tags: number;
   price_msg: string; warning: string;
@@ -36,6 +40,10 @@ export const nreg = {
     call<{ items: { id: string; full_name: string }[] }>('GET', `${B}/categories?q=${encodeURIComponent(q)}`),
   register: (body: Record<string, unknown>) => call<{ job: string }>('POST', `${B}/register`, body),
   job: <T>(id: string) => call<Job<T>>('GET', `${B}/job/${id}`),
+  desc: (image: Img, name: string, cat_full: string) => call<{ job: string }>('POST', `${B}/desc`, { image, name, cat_full }),
+  label: (image: Img) => call<{ job: string }>('POST', `${B}/label`, { image }),
+  spec: (costco_no: string) => call<{ rows: [string, string][] }>('GET', `${B}/spec/${encodeURIComponent(costco_no)}`),
+  tags: (name: string, cat_full: string) => call<{ job: string }>('POST', `${B}/tags`, { name, cat_full }),
 };
 
 /** 작업이 끝날 때까지 2초마다 묻는다. 진행 문구는 onMsg로. */

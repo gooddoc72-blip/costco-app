@@ -4,8 +4,9 @@
  * 신상품 등록'의 모바일판.
  *
  * ① 제품 사진(여러 장, 첫 장이 대표) ② 가격표 사진 ③ 라벨 사진(선택)
- * → 🔎 사진 분석 (상품명·코스트코가·상품번호·카테고리·SEO 상품명·판매가)
- * → 확인·수정 → 🛍 네이버 등록.
+ * → 사진이 갖춰지면 자동 분석(상품명·상품번호·카테고리·SEO 상품명·판매가·
+ *   한글표시사항(코스트코 사이트 → 없으면 라벨)·상세설명·연관태그)
+ * → 확인·수정 → 🛍 네이버 등록(이것만 사용자가 누른다).
  *
  * 분석·판매가·등록은 PC와 같은 서버 함수(photo_register_service)다. 둘 다 1분 넘게
  * 걸릴 수 있어 서버가 백그라운드로 돌리고 화면은 2초마다 진행을 묻는다.
@@ -16,7 +17,7 @@ import Header from '@/components/Header';
 import BottomNav from '@/components/BottomNav';
 import { num } from '@/lib/fmt';
 import { shrinkJpegB64 } from '@/lib/client/ptag';
-import { nreg, waitJob, NregStatus, NregPreview, NregResult, Img } from '@/lib/client/nreg';
+import { nreg, waitJob, NregStatus, NregPreview, NregResult, Img, Tag } from '@/lib/client/nreg';
 
 async function toImg(f: File, i: number): Promise<Img> {
   return { name: `p${i}.jpg`, content_b64: await shrinkJpegB64(f, 1600) };
@@ -52,6 +53,10 @@ function PickBtn({ label, multiple, onPick }: { label: string; multiple?: boolea
   );
 }
 
+function blockedNow(st: NregStatus) {
+  return !st.has_key || !st.has_ai || !!st.quota?.blocked;
+}
+
 export default function NaverRegisterPage() {
   const [st, setSt] = useState<NregStatus | null>(null);
   const [prod, setProd] = useState<File[]>([]);
@@ -66,6 +71,18 @@ export default function NaverRegisterPage() {
   const loadStatus = () => nreg.status().then(setSt).catch(e => setErr(e.message));
   useEffect(() => { loadStatus(); }, []);
 
+  // 사진만 올리면 끝까지 자동 — 제품·가격표가 갖춰지면 2초 뒤(라벨 추가 여유) 분석 시작.
+  // 분석이 상품명·카테고리·판매가·한글표시사항·상세설명·연관태그까지 다 채운다. 등록만 확인.
+  const autoKey = useRef('');
+  useEffect(() => {
+    if (!prod.length || !price || pv || busy || !st || blockedNow(st)) return;
+    const k = `${prod[0].name}${prod[0].size}|${price.name}${price.size}`;
+    if (autoKey.current === k) return;
+    const t = setTimeout(() => { autoKey.current = k; analyze(); }, 2000);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prod, price, label, pv, busy, st]);
+
   async function analyze() {
     if (!prod.length || !price) return;
     setBusy(true); setErr(''); setDone(''); setPv(null); setMsg('사진 올리는 중…');
@@ -78,15 +95,16 @@ export default function NaverRegisterPage() {
   }
 
   function reset(note: string) {
+    autoKey.current = '';
     setProd([]); setPrice(null); setLabel(null); setPv(null); setDone(note); loadStatus();
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }
 
   const q = st?.quota;
-  const blocked = !!st && (!st.has_key || !st.has_ai || !!q?.blocked);
+  const blocked = !!st && blockedNow(st);
   return (
     <>
-      <Header title="📷 사진으로 네이버 등록" subtitle="제품 사진 + 가격표 사진 → 신상품 등록" />
+      <Header title="📷 사진으로 네이버 등록" subtitle="사진만 올리면 자동으로 채웁니다 — 등록만 확인" />
       <main className="px-4 pt-3 pb-20 space-y-3">
         {st && !st.has_key && <div className="bg-red-50 text-red-700 p-3 rounded-lg text-sm">네이버 커머스 API 키가 없습니다. 설정에서 먼저 넣어 주세요.</div>}
         {st && !st.has_ai && <div className="bg-red-50 text-red-700 p-3 rounded-lg text-sm">AI 키가 없어 사진을 분석할 수 없습니다. 관리자에게 공용 AI 키 설정을 요청하세요.</div>}
@@ -120,16 +138,19 @@ export default function NaverRegisterPage() {
           {label && <Thumb f={label} label="라벨" onDel={() => setLabel(null)} />}
           {!label && <PickBtn label="라벨" onPick={fs => setLabel(fs[0])} />}
 
-          <button onClick={analyze} disabled={busy || blocked || !prod.length || !price}
-            className="w-full mt-2 bg-primary text-white rounded-lg py-3 font-medium disabled:opacity-40">
-            {busy && !pv ? '⏳ 분석 중…' : '🔎 사진 분석 (미리보기)'}
-          </button>
+          <p className="text-xs text-gray-500 pt-1">
+            제품·가격표 사진이 갖춰지면 <b>자동으로</b> 상품명·카테고리·판매가·한글표시사항·상세설명·태그까지 만듭니다.
+          </p>
+          {pv && !busy && (
+            <button onClick={() => { setPv(null); analyze(); }} disabled={blocked || !prod.length || !price}
+              className="w-full mt-1 border rounded-lg py-2 text-sm disabled:opacity-40">🔄 처음부터 다시 분석</button>
+          )}
         </section>
 
         {msg && <div className="text-sm text-gray-500 px-1">⏳ {msg}</div>}
         {err && <div className="bg-red-50 text-red-700 p-3 rounded-lg text-sm">❌ {err}</div>}
 
-        {pv && <PreviewForm key={pv.costco_no + pv.name} pv={pv} prod={prod} busy={busy} setBusy={setBusy}
+        {pv && <PreviewForm key={pv.costco_no + pv.name} pv={pv} prod={prod} labelFile={label} busy={busy} setBusy={setBusy}
           setMsg={setMsg} setErr={setErr} blocked={blocked}
           onDone={r => reset(`✅ 네이버 등록 완료 #${r.origin_no || '번호 미수신'} — ${r.name} / ${num(r.sale)}원 · 사진 ${r.images}장`
             + (r.tags ? ` · 태그 ${r.tags}개` : '') + (r.price_msg ? ` · ${r.price_msg}` : '')
@@ -151,8 +172,8 @@ function Field({ label, children, hint }: { label: string; children: React.React
 }
 const inp = 'mt-1 w-full border rounded-lg px-3 py-2 text-sm';
 
-function PreviewForm({ pv, prod, busy, setBusy, setMsg, setErr, blocked, onDone }: {
-  pv: NregPreview; prod: File[]; busy: boolean; blocked: boolean;
+function PreviewForm({ pv, prod, labelFile, busy, setBusy, setMsg, setErr, blocked, onDone }: {
+  pv: NregPreview; prod: File[]; labelFile: File | null; busy: boolean; blocked: boolean;
   setBusy: (b: boolean) => void; setMsg: (m: string) => void; setErr: (e: string) => void;
   onDone: (r: NregResult) => void;
 }) {
@@ -170,9 +191,63 @@ function PreviewForm({ pv, prod, busy, setBusy, setMsg, setErr, blocked, onDone 
   const [cship, setCship] = useState(pv.customer_ship);
   const [sale, setSale] = useState(pv.sale);
   const [mi, setMi] = useState<{ margin: number; margin_rate: number } | null>(null);
-  const [desc, setDesc] = useState('');
-  const [aiDesc, setAiDesc] = useState(true);
-  const [aiTags, setAiTags] = useState(true);
+  const [desc, setDesc] = useState(pv.desc || '');
+  const [rows, setRows] = useState<[string, string][]>(pv.spec_rows || []);
+  const [rowsSrc, setRowsSrc] = useState<string>(pv.spec_src || '');
+  const [food, setFood] = useState(pv.food);
+  const [tags, setTags] = useState<Tag[]>(pv.tags || []);
+  const [newTag, setNewTag] = useState('');
+  const [sub, setSub] = useState('');          // 상세설명·태그·라벨 다시 만들기 진행 중 표시
+  const [note, setNote] = useState([pv.label_err, pv.desc_err, pv.tags_err].filter(Boolean).join(' · '));
+
+  // 분석이 끝난 뒤 라벨 사진을 넣으면 그 자리에서 읽어 표를 채운다(코스트코 표가 없을 때)
+  const labelSeen = useRef<File | null>(null);
+  useEffect(() => {
+    if (!labelFile || labelSeen.current === labelFile) return;
+    labelSeen.current = labelFile;
+    if (pv.food) return;                       // 분석 때 이미 읽음
+    (async () => {
+      setSub('🍱 라벨 읽는 중…');
+      try {
+        const { job } = await nreg.label(await toImg(labelFile, 0));
+        const r = await waitJob<{ food: Record<string, string>; rows: [string, string][] }>(job, () => {});
+        setFood(r.food);
+        if (rowsSrc !== 'costco' || !rows.length) { setRows(r.rows); setRowsSrc('label'); }
+        if (r.food.volume && !vol.trim()) setVol(r.food.volume);
+      } catch (e) { setNote((e as Error).message); }
+      finally { setSub(''); }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [labelFile]);
+
+  async function redoDesc() {
+    setSub('📝 상세설명 쓰는 중…'); setNote('');
+    try {
+      const { job } = await nreg.desc(await toImg(prod[0], 0), name, cat.full);
+      setDesc((await waitJob<{ desc: string }>(job, () => {})).desc);
+    } catch (e) { setNote((e as Error).message); }
+    finally { setSub(''); }
+  }
+  async function redoTags() {
+    setSub('🏷 태그 만드는 중…'); setNote('');
+    try {
+      const { job } = await nreg.tags(name, cat.full);
+      setTags((await waitJob<{ tags: Tag[] }>(job, () => {})).tags);
+    } catch (e) { setNote((e as Error).message); }
+    finally { setSub(''); }
+  }
+  async function costcoSpec() {
+    if (!cno.trim()) return;
+    setSub('🌐 코스트코 표시사항 가져오는 중…'); setNote('');
+    try { const r = await nreg.spec(cno.trim()); setRows(r.rows); setRowsSrc('costco'); }
+    catch (e) { setNote((e as Error).message); }
+    finally { setSub(''); }
+  }
+  function addTag() {
+    const t = newTag.trim().replace(/^#/, '');
+    if (!t || tags.length >= 10 || tags.some(x => x.text === t)) return;
+    setTags([...tags, { code: null, text: t }]); setNewTag('');
+  }
   const tm = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const base = { cost, ship_cost: pv.ship_cost, box_cost: pv.box_cost, customer_ship: cship, margin };
@@ -191,7 +266,7 @@ function PreviewForm({ pv, prod, busy, setBusy, setMsg, setErr, blocked, onDone 
   }, [sale, cost, cship]);
 
   const volInName = !vol.trim() || name.replace(/\s/g, '').includes(vol.replace(/\s/g, ''));
-  const can = !busy && !blocked && !!prod.length && !!name.trim() && !!vol.trim() && !!cno.trim()
+  const can = !busy && !sub && !blocked && !!prod.length && !!name.trim() && !!vol.trim() && !!cno.trim()
     && !!cat.id.trim() && sale > 0;
 
   async function register() {
@@ -204,7 +279,8 @@ function PreviewForm({ pv, prod, busy, setBusy, setMsg, setErr, blocked, onDone 
         images, name: name.trim(), name_raw: pv.name_raw || pv.name, volume: vol.trim(), sale_price: sale,
         cost_tag: pv.cost_tag, customer_ship: cship, cat_id: cat.id.trim(), cat_full: cat.full,
         costco_no: cno.trim(), barcode: pv.barcode, brand, manufacturer: maker, model_name: model,
-        desc, food: pv.food, ai_desc: aiDesc, ai_tags: aiTags,
+        desc, food, spec_rows: rows.filter(([k, v]) => k.trim() && v.trim()),
+        tags: tags.map(t => ({ code: t.code, text: t.text })), ai_desc: true, ai_tags: true,
       });
       onDone(await waitJob<NregResult>(job, setMsg));
     } catch (e) { setErr('등록 실패: ' + (e as Error).message); }
@@ -292,17 +368,62 @@ function PreviewForm({ pv, prod, busy, setBusy, setMsg, setErr, blocked, onDone 
         </div>
       </details>
 
-      {pv.food && Object.values(pv.food).some(Boolean) && (
-        <div className="text-xs text-gray-600 bg-gray-50 rounded-lg p-2">🍱 라벨 정보가 상세페이지 표로 들어갑니다
-          {pv.food.food_type ? ` · ${pv.food.food_type}` : ''}{pv.food.volume ? ` · ${pv.food.volume}` : ''}</div>
-      )}
+      {sub && <div className="text-xs text-blue-700 bg-blue-50 rounded-lg p-2">⏳ {sub}</div>}
+      {note && <div className="text-xs text-amber-800 bg-amber-50 rounded-lg p-2">⚠️ {note}</div>}
 
-      <Field label="제품 설명 (비우면 AI가 사진을 보고 씁니다)">
-        <textarea value={desc} onChange={e => setDesc(e.target.value)} rows={3} className={inp} />
-      </Field>
-      <div className="flex gap-4 text-sm">
-        <label className="flex items-center gap-1"><input type="checkbox" checked={aiDesc} onChange={e => setAiDesc(e.target.checked)} /> AI 상세설명</label>
-        <label className="flex items-center gap-1"><input type="checkbox" checked={aiTags} onChange={e => setAiTags(e.target.checked)} /> AI 연관태그</label>
+      {/* 📝 상세설명 */}
+      <div className="border rounded-lg p-2 space-y-1">
+        <div className="flex items-center justify-between">
+          <span className="text-xs font-semibold">📝 상세설명 <span className="font-normal text-gray-500">(상세페이지 상품명 아래)</span></span>
+          <button onClick={redoDesc} disabled={!!sub || busy} className="text-xs border rounded px-2 py-1 disabled:opacity-40">🤖 다시 쓰기</button>
+        </div>
+        <textarea value={desc} onChange={e => setDesc(e.target.value)} rows={5} className={inp}
+          placeholder="비워 두면 등록할 때 AI가 사진을 보고 씁니다" />
+      </div>
+
+      {/* 🇰🇷 한글표시사항 */}
+      <div className="border rounded-lg p-2 space-y-1">
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-xs font-semibold">🇰🇷 한글표시사항 <span className="font-normal text-gray-500">
+            ({rowsSrc === 'costco' ? '코스트코 사이트' : rowsSrc === 'label' ? '라벨 사진 판독' : '없음'} · 상세페이지 표)</span></span>
+          <button onClick={costcoSpec} disabled={!!sub || busy || !cno.trim()} className="text-xs border rounded px-2 py-1 disabled:opacity-40">🌐 코스트코에서</button>
+        </div>
+        {!rows.length && <div className="text-xs text-gray-500">코스트코 사이트에 표시사항이 없습니다. 위 ③에 라벨 사진을 넣으면 읽어서 채웁니다.</div>}
+        {rows.map(([k, v], i) => (
+          <div key={i} className="flex gap-1 items-start">
+            <input value={k} onChange={e => setRows(rs => rs.map((r, j) => j === i ? [e.target.value, r[1]] : r))}
+              className="w-24 shrink-0 border border-gray-200 rounded px-1.5 py-1 text-xs bg-gray-50" />
+            <textarea value={v} rows={Math.min(4, Math.max(1, Math.ceil(v.length / 28)))}
+              onChange={e => setRows(rs => rs.map((r, j) => j === i ? [r[0], e.target.value] : r))}
+              className="flex-1 border border-gray-200 rounded px-1.5 py-1 text-xs" />
+            <button onClick={() => setRows(rs => rs.filter((_, j) => j !== i))} className="text-xs text-gray-400 px-1">✕</button>
+          </div>
+        ))}
+        <button onClick={() => setRows(rs => [...rs, ['', '']])} className="text-xs underline text-blue-700">+ 항목 추가</button>
+      </div>
+
+      {/* 🏷 연관태그 */}
+      <div className="border rounded-lg p-2 space-y-1">
+        <div className="flex items-center justify-between">
+          <span className="text-xs font-semibold">🏷 연관태그 <span className="font-normal text-gray-500">({tags.length}/10 · 검색 노출용)</span></span>
+          <button onClick={redoTags} disabled={!!sub || busy} className="text-xs border rounded px-2 py-1 disabled:opacity-40">🤖 다시 만들기</button>
+        </div>
+        <div className="flex flex-wrap gap-1">
+          {tags.map(t => (
+            <span key={t.text} className={clsx('text-xs rounded-full px-2 py-0.5 flex items-center gap-1',
+              t.code ? 'bg-green-50 text-green-800' : 'bg-gray-100 text-gray-700')}>
+              #{t.text}{t.volume ? <span className="text-[10px] text-gray-500">{num(t.volume)}</span> : null}
+              <button onClick={() => setTags(ts => ts.filter(x => x.text !== t.text))} className="text-gray-400">✕</button>
+            </span>
+          ))}
+          {!tags.length && <span className="text-xs text-gray-500">비워 두면 등록할 때 AI가 만듭니다</span>}
+        </div>
+        <form className="flex gap-1" onSubmit={e => { e.preventDefault(); addTag(); }}>
+          <input value={newTag} onChange={e => setNewTag(e.target.value)} placeholder="직접 추가 (예: 캠핑간식)"
+            className="flex-1 border border-gray-200 rounded px-2 py-1 text-xs" />
+          <button disabled={tags.length >= 10} className="text-xs border rounded px-2 disabled:opacity-40">추가</button>
+        </form>
+        <div className="text-[11px] text-gray-400">초록 = 네이버 태그사전에 있는 태그(검색 반영), 회색 = 직접 입력</div>
       </div>
 
       <button onClick={register} disabled={!can}

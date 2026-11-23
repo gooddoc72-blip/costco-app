@@ -87,8 +87,97 @@ def sale_price(cost, margin, ship, box, cship):
                                    int(box or 0), int(cship or 0))
 
 
-def analyze(username, prod, prod_mt, price, price_mt, label=None, label_mt='image/jpeg'):
-    """사진 분석 → 미리보기 dict. 실패면 ValueError(사유)."""
+# ── 한글표시사항(제품 상세정보 표) ────────────────────────────────
+FOOD_LABELS = [('food_type', '식품유형'), ('volume', '내용량'), ('ingredients', '원재료명'),
+               ('storage', '보관방법'), ('origin', '원산지'), ('manufacturer', '제조사'),
+               ('importer', '수입원'), ('expiration', '소비기한'), ('calories', '열량'),
+               ('nutrition', '영양성분')]
+
+
+def food_rows(fd):
+    """라벨 판독 dict → [[항목, 값]] (빈 값 제외)."""
+    return [[lbl, str(fd.get(k) or '').strip()] for k, lbl in FOOD_LABELS
+            if fd and str(fd.get(k) or '').strip()]
+
+
+def costco_spec_rows(costco_no):
+    """코스트코 사이트의 한글표시사항(상품번호로 조회) → [[항목, 값]]. 없으면 []."""
+    cno = ''.join(ch for ch in str(costco_no or '') if ch.isdigit())
+    if not cno:
+        return []
+    try:
+        import costco_crawler as cc
+        spec = cc.fetch_costco_spec(cno) or {}
+    except Exception:
+        spec = {}
+    return [[str(k), str(v)] for k, v in spec.items() if str(v or '').strip()]
+
+
+def spec_table_html(rows):
+    rows = [[str(k).strip(), str(v).strip()] for k, v in (rows or [])
+            if str(k).strip() and str(v).strip()]
+    if not rows:
+        return ''
+    import costco_crawler as cc
+    return cc.build_spec_table_html(dict(rows))
+
+
+def _row_val(rows, *keys):
+    for k, v in rows or []:
+        if str(k).strip() in keys and str(v).strip():
+            return str(v).strip()
+    return ''
+
+
+def gen_desc(username, img, mt, name, cat_full=''):
+    """🤖 상세설명 초안 — PC 'AI 상세설명 생성' 버튼과 같은 함수."""
+    import ai_service
+    s, ak, gk = _keys(username)
+    if not (ak or gk):
+        raise ValueError('AI 키가 없습니다')
+    d, e = ai_service.generate_product_description(ak, img, mt, str(name or '').strip(),
+                                                   cat_full or '', gemini_key=gk)
+    if not (d or '').strip():
+        raise ValueError(f'상세설명 생성 실패: {e or "빈 응답"}')
+    return d.strip()
+
+
+def gen_label(username, img, mt):
+    """🍱 표시사항(라벨) 사진 → {'food': dict, 'rows': [[항목, 값]]}."""
+    import ai_service
+    s, ak, gk = _keys(username)
+    if not (ak or gk):
+        raise ValueError('AI 키가 없습니다')
+    fd, e = ai_service.analyze_food_label(ak, img, mt, gemini_key=gk)
+    if not fd or not any(fd.values()):
+        raise ValueError(f'라벨 분석 실패: {e or "읽은 내용 없음"}')
+    return {'food': fd, 'rows': food_rows(fd)}
+
+
+def gen_tags(username, name, cat_full=''):
+    """🏷 연관태그 10개 — PC 'AI 태그 10개 생성'과 같다(후보 → 태그사전 검증 → 제한태그 제거).
+    반환 [{code, text, volume}]."""
+    s, ak, gk = _keys(username)
+    if not (ak or gk):
+        raise ValueError('AI 키가 없습니다')
+    api_id, api_secret = s.get('api_client_id', ''), s.get('api_client_secret', '')
+    adc = (s.get('naver_ad_api_key'), s.get('naver_ad_secret'), s.get('naver_ad_customer_id'))
+    nm = str(name or '').strip()
+    t, info = naver_api.build_seller_tags(api_id, api_secret, ak, nm, cat_full or '', nm,
+                                          ad_creds=adc if all(adc) else None, gemini_key=gk)
+    vols = (info or {}).get('volumes') or {}
+    out = [{'code': x.get('code'), 'text': x['text'], 'volume': int(vols.get(x['text'], 0) or 0)}
+           for x in (t or [])]
+    if not out:
+        why = (info or {}).get('err') or f"검증된 사전 태그 없음 (후보 {(info or {}).get('candidates', 0)}개)"
+        raise ValueError(f'태그를 못 만들었습니다 — {why}. 직접 입력할 수 있습니다.')
+    return out
+
+
+def analyze(username, prod, prod_mt, price, price_mt, label=None, label_mt='image/jpeg', log=None):
+    """사진 분석 → 미리보기 dict. 실패면 ValueError(사유).
+    모바일은 여기서 한글표시사항·상세설명·연관태그까지 모두 만든다(사진만 올리면 끝까지)."""
+    log = log or (lambda m: None)
     import ai_service
     s, ak, gk = _keys(username)
     if not (ak or gk):
@@ -97,6 +186,7 @@ def analyze(username, prod, prod_mt, price, price_mt, label=None, label_mt='imag
     i1, e1 = ai_service.analyze_product_photo(ak, prod, prod_mt, gemini_key=gk)
     if e1 or not i1:
         raise ValueError(f'제품사진 분석 실패: {e1}')
+    log('가격표 읽는 중…')
     i2, e2 = ai_service.analyze_price_tag(ak, price, price_mt, gemini_key=gk)
     if e2 or not i2:
         raise ValueError(f'가격사진 분석 실패: {e2}')
@@ -105,6 +195,7 @@ def analyze(username, prod, prod_mt, price, price_mt, label=None, label_mt='imag
     cost_tag = int(i2.get('price') or 0)
     cno = str(i2.get('product_no') or '')
 
+    log('카테고리 고르는 중…')
     cid, cfull, cinfo = None, '', {}
     if name:
         mq = " ".join(x for x in [(i1.get('brand') or '').strip(), name] if x)
@@ -148,15 +239,49 @@ def analyze(username, prod, prod_mt, price, price_mt, label=None, label_mt='imag
         except Exception:
             pass
 
+    out['label_err'] = ''
     if label:
+        log('표시사항(라벨) 읽는 중…')
         try:
             fd, _fe = ai_service.analyze_food_label(ak, label, label_mt, gemini_key=gk)
             if fd and any(fd.values()):
                 out['food'] = fd
                 out['volume'] = fd.get('volume') or out['volume']
                 out['manufacturer'] = fd.get('manufacturer') or out['manufacturer']
-        except Exception:
-            pass
+            else:
+                out['label_err'] = f'라벨 분석 실패: {_fe or "읽은 내용 없음"}'
+        except Exception as e:
+            out['label_err'] = f'라벨 분석 실패: {e}'
+
+    # 🇰🇷 한글표시사항 — 코스트코 사이트(상품번호) 우선, 없으면 라벨 사진 판독
+    log('한글표시사항 가져오는 중… (코스트코 사이트)')
+    rows = costco_spec_rows(cno)
+    out['spec_src'] = 'costco' if rows else ''
+    if not rows and out['food']:
+        rows, out['spec_src'] = food_rows(out['food']), 'label'
+    out['spec_rows'] = rows
+    if out['spec_src'] == 'costco':
+        out['manufacturer'] = (_row_val(rows, '제조자/수입자', '제조원/수입원', '제조원', '수입원', '제조사')
+                               or out['manufacturer'])
+        out['volume'] = out['volume'] or _row_val(rows, '내용량', '용량', '중량', '총 중량')
+
+    # 📝 상세설명 · 🏷 연관태그 — 모바일은 사진만 올리면 끝까지 자동으로 채운다
+    out['desc'], out['desc_err'] = '', ''
+    if name:
+        log('상세설명 쓰는 중…')
+        try:
+            out['desc'] = gen_desc(username, prod, prod_mt,
+                                   ai_service.ensure_volume_in_name(out['name'], out['volume'] or ''),
+                                   out['cat_full'])
+        except Exception as e:
+            out['desc_err'] = str(e)
+    out['tags'], out['tags_err'] = [], ''
+    if name:
+        log('연관태그 만드는 중… (AI 후보 → 태그사전 검증)')
+        try:
+            out['tags'] = gen_tags(username, out['name'], out['cat_full'])
+        except Exception as e:
+            out['tags_err'] = str(e)
 
     st = status(username)
     out['cost_db'] = db_cost(cno)
@@ -308,15 +433,14 @@ def register(username, is_admin, imgs, f, log=None):
         except Exception:
             desc = ''
 
-    tags = []
-    if f.get('ai_tags') and ak:
+    # 화면에서 고른 태그가 있으면 그대로(직접 입력 태그는 code 없음), 없으면 AI로 만든다
+    tags = [{'code': x.get('code'), 'text': str(x.get('text') or '').strip()}
+            for x in (f.get('tags') or []) if str(x.get('text') or '').strip()][:10]
+    if not tags and f.get('ai_tags') and (ak or gk):
         log('연관태그 만드는 중…')
-        adc = (s.get('naver_ad_api_key'), s.get('naver_ad_secret'), s.get('naver_ad_customer_id'))
         try:
-            t, _ = naver_api.build_seller_tags(api_id, api_secret, ak, name_final,
-                                               f.get('cat_full', ''), name_final,
-                                               ad_creds=adc if all(adc) else None)
-            tags = [{'code': x.get('code'), 'text': x['text']} for x in (t or [])]
+            tags = [{'code': x.get('code'), 'text': x['text']}
+                    for x in gen_tags(username, name_final, f.get('cat_full', ''))]
         except Exception:
             tags = []
 
@@ -341,7 +465,8 @@ def register(username, is_admin, imgs, f, log=None):
         "barcode": str(f.get('barcode') or ''),
         "seller_tags": tags,
         "food_notice": ({**food, 'volume': vol} if food else None),
-        "detail_html": build_detail(s, name_final, cdns, desc, food_info_html(food)),
+        "detail_html": build_detail(s, name_final, cdns, desc,
+                                    spec_table_html(f.get('spec_rows')) or food_info_html(food)),
         "delivery": dlv, "delivery_company": dlv['company'],
         "benefits": benefits or None,
         "shipping_fee": 0, "origin_code": "03",

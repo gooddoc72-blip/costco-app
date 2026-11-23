@@ -98,9 +98,9 @@ def analyze(req: AnalyzeReq, user: dict = Depends(require_login)):
     u = user["username"]
 
     def fn(log):
-        log('사진 분석 중… (상품명·가격·카테고리)')
+        log('제품 사진 분석 중…')
         try:
-            return prs.analyze(u, pb, pm, qb, qm, lb, lm)
+            return prs.analyze(u, pb, pm, qb, qm, lb, lm, log=log)
         except ValueError as e:
             raise RuntimeError(str(e))
     return _start(user, 'analyze', fn)
@@ -153,8 +153,10 @@ class RegReq(BaseModel):
     model_name: str = ""
     desc: str = ""
     food: Optional[dict] = None
-    ai_desc: bool = True
-    ai_tags: bool = True
+    spec_rows: Optional[List[List[str]]] = None   # 한글표시사항 표 [[항목, 값]] (화면에서 고친 그대로)
+    tags: Optional[List[dict]] = None             # 화면에서 고른 연관태그 [{code, text}]
+    ai_desc: bool = True                          # 설명이 비었으면 등록 때 AI가 쓴다
+    ai_tags: bool = True                          # 태그가 비었으면 등록 때 AI가 만든다
 
 
 @router.post("/register")
@@ -179,6 +181,76 @@ def register(req: RegReq, user: dict = Depends(require_login)):
         except ValueError as e:
             raise RuntimeError(str(e))
     return _start(user, 'register', fn)
+
+
+# ── 미리보기에서 다시 만들기 (PC의 🤖 버튼들과 같다) ──
+class DescReq(BaseModel):
+    image: Img
+    name: str
+    cat_full: str = ""
+
+
+@router.post("/desc")
+def desc(req: DescReq, user: dict = Depends(require_login)):
+    """🤖 AI 상세설명 다시 쓰기 — 대표 사진 + 상품명."""
+    b, mt = _bytes(req.image)
+    u = user["username"]
+
+    def fn(log):
+        log('상세설명 쓰는 중…')
+        try:
+            return {'desc': prs.gen_desc(u, b, mt, req.name, req.cat_full)}
+        except ValueError as e:
+            raise RuntimeError(str(e))
+    return _start(user, 'desc', fn)
+
+
+class LabelReq(BaseModel):
+    image: Img
+
+
+@router.post("/label")
+def label(req: LabelReq, user: dict = Depends(require_login)):
+    """🍱 표시사항(라벨) 사진 → 한글표시사항 표."""
+    b, mt = _bytes(req.image)
+    u = user["username"]
+
+    def fn(log):
+        log('라벨 읽는 중… (원재료·영양성분)')
+        try:
+            return prs.gen_label(u, b, mt)
+        except ValueError as e:
+            raise RuntimeError(str(e))
+    return _start(user, 'label', fn)
+
+
+@router.get("/spec/{costco_no}")
+def spec(costco_no: str, user: dict = Depends(require_login)):
+    """🌐 코스트코 사이트의 한글표시사항(상품번호로 조회)."""
+    rows = prs.costco_spec_rows(costco_no)
+    if not rows:
+        raise HTTPException(status_code=404,
+                            detail=f"코스트코 사이트에서 {costco_no}의 표시사항을 찾지 못했습니다")
+    return {'rows': rows}
+
+
+class TagsReq(BaseModel):
+    name: str
+    cat_full: str = ""
+
+
+@router.post("/tags")
+def tags(req: TagsReq, user: dict = Depends(require_login)):
+    """🏷 AI 연관태그 다시 만들기 — 후보 → 네이버 태그사전 검증 → 제한태그 제거."""
+    u = user["username"]
+
+    def fn(log):
+        log('태그 만드는 중… (AI 후보 → 태그사전 검증)')
+        try:
+            return {'tags': prs.gen_tags(u, req.name, req.cat_full)}
+        except ValueError as e:
+            raise RuntimeError(str(e))
+    return _start(user, 'tags', fn)
 
 
 @router.get("/job/{jid}")
