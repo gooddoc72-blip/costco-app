@@ -384,6 +384,43 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             from pages_lib import _naver_reg_panel
             _naver_reg_panel.render(key_prefix="nvlog_nr", nested=True, editable=True)
 
+    # ── 🔑 공용 AI 키 (관리자 전용) — 내 키를 넣으면 모든 사용자가 이 키로 사진등록 메뉴 사용 ──
+    #   ※ 네이버 API 키 게이트(st.stop)보다 위에 둔다 — 관리자 본인 스토어 키가 없으면
+    #     이 칸이 아예 안 보여 공용 키를 넣을 방법이 없었다(11/24).
+    if IS_ADMIN:
+        with st.expander("🔑 공용 AI 키 (관리자 전용 — 모든 사용자 공용)", expanded=not (get_global_setting('gemini_api_key') or get_global_setting('anthropic_api_key'))):
+            _gk_cur = get_global_setting('anthropic_api_key') or ''
+            _gkc1, _gkc2 = st.columns([3, 1])
+            _gk_in = _gkc1.text_input(
+                "Anthropic API 키 (공용)", value=_gk_cur, type="password", key="nr_global_aikey",
+                help="여기에 내 Anthropic 키를 넣으면, 모든 사용자가 이 키로 '사진+가격사진 신상품 등록' "
+                     "메뉴를 사용합니다. (강제 통일 — 본인 키가 있어도 공용 키 사용 / AI 비용은 이 키로 청구)")
+            _gkc2.metric("공용키 상태", "✅ 설정됨" if _gk_cur else "미설정")
+            st.caption("⚙️ 강제 통일 모드 — 공용 키가 설정되면 **모든 사용자가 본인 키와 상관없이 이 공용 키**를 "
+                       "사용합니다. (공용 키 미설정 시에만 각자 본인 키로 폴백)")
+            if _gk_in.strip() != _gk_cur:
+                set_global_setting('anthropic_api_key', _gk_in.strip())
+                if _gk_in.strip():
+                    st.success("✅ 공용 AI 키 저장 — 이제 모든 사용자에게 이 메뉴가 열립니다.")
+                else:
+                    st.info("공용 AI 키 해제됨.")
+                st.rerun()
+
+            # Gemini 공용키 — 사진 판독은 Gemini 우선(비용 약 1/5)이라 여기에 넣어두면
+            #   Claude 크레딧과 무관하게 전 사용자 판독이 돌아간다.
+            _gg_cur = get_global_setting('gemini_api_key') or ''
+            _ggc1, _ggc2 = st.columns([3, 1])
+            _gg_in = _ggc1.text_input(
+                "Gemini API 키 (공용)", value=_gg_cur, type="password", key="nr_global_gkey",
+                placeholder="AIza...",
+                help="발급: aistudio.google.com/apikey (무료 등급 있음). "
+                     "사진 판독·상품명 생성에 Gemini를 우선 사용합니다.")
+            _ggc2.metric("Gemini 공용키", "✅ 설정됨" if _gg_cur else "미설정")
+            if _gg_in.strip() != _gg_cur:
+                set_global_setting('gemini_api_key', _gg_in.strip())
+                st.success("✅ 공용 Gemini 키 저장" if _gg_in.strip() else "공용 Gemini 키 해제됨")
+                st.rerun()
+
     if not HAS_NAVER_API:
         st.error("naver_api.py 없음 — 관리자에게 문의하세요.")
         st.stop()
@@ -640,41 +677,6 @@ def render(USERNAME: str, IS_ADMIN: bool, settings: dict):
             set_setting(USERNAME, 'naver_detail_top_img', '')
             set_setting(USERNAME, 'naver_detail_bottom_img', '')
             st.success("공통 이미지 해제됨"); st.rerun()
-
-    # ── 🔑 공용 AI 키 (관리자 전용) — 내 키를 넣으면 모든 사용자가 이 키로 사진등록 메뉴 사용 ──
-    if IS_ADMIN:
-        with st.expander("🔑 공용 AI 키 (관리자 전용 — 모든 사용자 공용)", expanded=not _ph_aikey):
-            _gk_cur = get_global_setting('anthropic_api_key') or ''
-            _gkc1, _gkc2 = st.columns([3, 1])
-            _gk_in = _gkc1.text_input(
-                "Anthropic API 키 (공용)", value=_gk_cur, type="password", key="nr_global_aikey",
-                help="여기에 내 Anthropic 키를 넣으면, 모든 사용자가 이 키로 '사진+가격사진 신상품 등록' "
-                     "메뉴를 사용합니다. (강제 통일 — 본인 키가 있어도 공용 키 사용 / AI 비용은 이 키로 청구)")
-            _gkc2.metric("공용키 상태", "✅ 설정됨" if _gk_cur else "미설정")
-            st.caption("⚙️ 강제 통일 모드 — 공용 키가 설정되면 **모든 사용자가 본인 키와 상관없이 이 공용 키**를 "
-                       "사용합니다. (공용 키 미설정 시에만 각자 본인 키로 폴백)")
-            if _gk_in.strip() != _gk_cur:
-                set_global_setting('anthropic_api_key', _gk_in.strip())
-                if _gk_in.strip():
-                    st.success("✅ 공용 AI 키 저장 — 이제 모든 사용자에게 이 메뉴가 열립니다.")
-                else:
-                    st.info("공용 AI 키 해제됨.")
-                st.rerun()
-
-            # Gemini 공용키 — 사진 판독은 Gemini 우선(비용 약 1/5)이라 여기에 넣어두면
-            #   Claude 크레딧과 무관하게 전 사용자 판독이 돌아간다.
-            _gg_cur = get_global_setting('gemini_api_key') or ''
-            _ggc1, _ggc2 = st.columns([3, 1])
-            _gg_in = _ggc1.text_input(
-                "Gemini API 키 (공용)", value=_gg_cur, type="password", key="nr_global_gkey",
-                placeholder="AIza...",
-                help="발급: aistudio.google.com/apikey (무료 등급 있음). "
-                     "사진 판독·상품명 생성에 Gemini를 우선 사용합니다.")
-            _ggc2.metric("Gemini 공용키", "✅ 설정됨" if _gg_cur else "미설정")
-            if _gg_in.strip() != _gg_cur:
-                set_global_setting('gemini_api_key', _gg_in.strip())
-                st.success("✅ 공용 Gemini 키 저장" if _gg_in.strip() else "공용 Gemini 키 해제됨")
-                st.rerun()
 
     if not (_ph_aikey or _ph_gkey):
         st.info("ℹ️ AI 사진 등록 메뉴는 Anthropic 또는 Gemini 키가 있어야 표시됩니다. "
