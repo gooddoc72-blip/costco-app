@@ -400,6 +400,13 @@ def _tab_user(USERNAME, dmap, fixed_user=None):
     m5.metric("예치금 잔액", f"{fmt(_bal)}원",
               help="지금까지 넣은 예치금 − 예치금으로 뺀 구매액 (± 적립·조정). "
                    "마이너스면 그만큼 더 넣어야 합니다.")
+    # 잔액 숫자만으론 '언제 넣고 어디에 빠졌나'를 못 본다 — 카드 바로 아래에서 편다.
+    #   (내역은 맨 아래에도 있지만 기간으로 잘려 잔액과 안 맞아 보이고, 청구 내역을
+    #    한참 내려가야 했다) 여기는 잔액과 맞도록 전체 기간.
+    if m5.toggle("📜 예치 내역 펼치기", key=f"sbu_balx_{_u}"):
+        with st.expander(f"💳 {_name} 예치 내역 (전체 기간) · 현재 잔액 {fmt(_bal)}원",
+                         expanded=True):
+            _user_deposit_section(_u, _name, date(2000, 1, 1), date.today())
     if _draft_amt:
         st.caption(f"⚪ 아직 청구 전 {fmt(_draft_amt)}원 — "
                    + ("관리자가 청구하면 '청구됨'으로 바뀝니다." if _ro
