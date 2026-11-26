@@ -832,6 +832,34 @@ def _render_items_detail(ds, invs, dmap, ded=None, by='', box=None, readonly=Fal
                            f"**{ds}** 를 열어 다시 매칭하세요.")
                 st.rerun()
 
+            # ── 💰 이날 입금확인 — 품목을 본 그 자리에서 바로 체크한다.
+            #   (전엔 이 패널에 삭제만 있어 맨 아래 '입금 확인' 표까지 내려가야 했다)
+            #   청구 전(draft)이면 청구 → 입금 순서로 같이 처리해 청구일시도 남긴다.
+            _inv_total = int(_inv.get('total_amount') or 0)
+            _st = str(_inv.get('status') or '')
+            if _inv_total > 0 and _st in ('draft', 'billed'):
+                st.markdown("**💰 입금확인**" + (" — 아직 청구 전이라 청구와 함께 처리합니다"
+                                                if _st == 'draft' else ""))
+                _p1, _p2, _p3 = st.columns([1.2, 2, 1.2])
+                _pamt = _p1.number_input("실입금액", min_value=0, step=1000, value=_inv_total,
+                                         key=f"sb_det_pamt_{ds}_{_u}",
+                                         help="금액이 다르면 고치세요(부분 입금).")
+                _pmemo = _p2.text_input("메모", key=f"sb_det_pmemo_{ds}_{_u}",
+                                        placeholder="예: 국민 홍길동 입금")
+                with _p3:
+                    st.write("")
+                    if st.button("💰 입금확인", type="primary", use_container_width=True,
+                                 key=f"sb_det_pay_{ds}_{_u}"):
+                        if _st == 'draft':
+                            _ds.mark_billed(ds, usernames=[_u], by=by)
+                        _ds.mark_paid(ds, _u, paid_amount=int(_pamt), memo=str(_pmemo or ''))
+                        st.toast(f"✅ {dmap.get(_u, _u)} {ds} 입금완료 "
+                                 f"({fmt(int(_pamt))}원)", icon="💰")
+                        st.rerun()
+                if int(_pamt) != _inv_total:
+                    st.caption(f"⚠️ 청구액 {fmt(_inv_total)}원과 "
+                               f"{fmt(abs(_inv_total - int(_pamt)))}원 차이 — 부분 입금으로 기록됩니다.")
+
         _goods_sum = sum(int(i['amount'] or 0) for i in items)
         _inv_amt = int(_inv.get('total_amount') or 0)
         _fee = int(_inv.get('ship_fee') or 0) + int(_inv.get('pack_fee') or 0)
