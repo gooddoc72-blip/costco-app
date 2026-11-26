@@ -136,7 +136,7 @@ def _tab_day(USERNAME, dmap):
 
     st.divider()
     st.subheader("📋 정산리스트")
-    st.dataframe(pd.DataFrame([{
+    _day_ev = st.dataframe(pd.DataFrame([{
         '상태': _ST_ICON.get(i['status'], i['status']),
         '판매자': dmap.get(i['username'], i['username']),
         '품목': int(i['item_count'] or 0),
@@ -148,9 +148,22 @@ def _tab_day(USERNAME, dmap):
         '청구일시': str(i['billed_at'] or '')[:16],
         '입금일시': str(i['paid_at'] or '')[:16],
     } for i in invs]), use_container_width=True, hide_index=True,
+        on_select="rerun", selection_mode="single-row", key=f"sb_day_tbl_{ds}",
         column_config={k: st.column_config.NumberColumn(k, format='%d')
                        for k in ('청구액(물건값)', '입금액', '예치금잔액')})
-    st.caption("청구액은 **물건값만**입니다 — 택배비·포장비는 별도로 청구합니다.")
+    st.caption("청구액은 **물건값만**입니다 — 택배비·포장비는 별도로 청구합니다. "
+               "👆 판매자 행을 누르면 그 사람의 **예치금 내역**이 바로 아래에 펼쳐집니다.")
+    # 예치금잔액 숫자만으론 '언제 넣고 어디에 빠졌나'를 못 본다 — 누른 사람 내역을 편다
+    try:
+        _day_sel = list(_day_ev.selection.rows)
+    except Exception:
+        _day_sel = []
+    if _day_sel and _day_sel[0] < len(invs):
+        _su = invs[_day_sel[0]]['username']
+        _sn = dmap.get(_su, _su)
+        with st.expander(f"💳 {_sn} 예치금 내역 · 현재 잔액 {fmt(int(_bal.get(_su, 0)))}원",
+                         expanded=True):
+            _user_deposit_section(_su, _sn, date(2000, 1, 1), date.today())
 
     _render_items_detail(ds, invs, dmap, ded=_ded, by=USERNAME)
 
