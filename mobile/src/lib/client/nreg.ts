@@ -26,6 +26,17 @@ export interface NregResult {
   origin_no: string; name: string; sale: number; images: number; tags: number;
   price_msg: string; warning: string;
 }
+export interface Delivery {
+  ship_cost: number; fee_type: string; base_fee: number; repeat_quantity: number;
+  free_conditional_amount: number; return_fee: number; exchange_fee: number; company: string;
+}
+export type Benefits = Record<string, number>;
+export interface NregPresets {
+  delivery: Delivery; benefits: Benefits;
+  fee_types: { code: string; label: string }[];
+  companies: { code: string; label: string }[];
+  benefit_keys: { key: string; label: string }[];
+}
 export interface Job<T> { status: 'running' | 'ok' | 'fail'; msg: string; result: T | null }
 export interface Img { name: string; content_b64: string }
 
@@ -36,6 +47,9 @@ export const nreg = {
     call<{ job: string }>('POST', `${B}/analyze`, { prod, price, label: label || null }),
   price: (p: { cost: number; margin: number; ship_cost: number; box_cost: number; customer_ship: number; sale?: number }) =>
     call<{ sale: number; margin: number; margin_rate: number }>('POST', `${B}/price`, p),
+  presets: () => call<NregPresets>('GET', `${B}/presets`),
+  savePreset: (kind: 'delivery' | 'benefit', value: Delivery | Benefits) =>
+    call<{ value: Delivery | Benefits }>('POST', `${B}/presets/${kind}`, { value }),
   categories: (q: string) =>
     call<{ items: { id: string; full_name: string }[] }>('GET', `${B}/categories?q=${encodeURIComponent(q)}`),
   register: (body: Record<string, unknown>) => call<{ job: string }>('POST', `${B}/register`, body),

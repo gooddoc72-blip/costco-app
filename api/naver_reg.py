@@ -124,6 +124,23 @@ def price(req: PriceReq, user: dict = Depends(require_login)):
                                             req.customer_ship)}
 
 
+@router.get("/presets")
+def presets(user: dict = Depends(require_login)):
+    """🚚 배송 설정·🎁 혜택 — 저장된 기본값 + 고를 수 있는 값(PC와 같은 설정)."""
+    return prs.presets(user["username"])
+
+
+class PresetReq(BaseModel):
+    value: dict
+
+
+@router.post("/presets/{kind}")
+def save_preset(kind: str, req: PresetReq, user: dict = Depends(require_login)):
+    if kind not in ('delivery', 'benefit'):
+        raise HTTPException(status_code=404, detail='없는 설정')
+    return {'value': prs.save_preset(user["username"], kind, req.value)}
+
+
 @router.get("/categories")
 def categories(q: str, user: dict = Depends(require_login)):
     import naver_api
@@ -157,6 +174,8 @@ class RegReq(BaseModel):
     tags: Optional[List[dict]] = None             # 화면에서 고른 연관태그 [{code, text}]
     ai_desc: bool = True                          # 설명이 비었으면 등록 때 AI가 쓴다
     ai_tags: bool = True                          # 태그가 비었으면 등록 때 AI가 만든다
+    delivery: Optional[dict] = None               # 🚚 이 건 배송 설정(없으면 저장된 기본값)
+    benefits: Optional[dict] = None               # 🎁 이 건 혜택 포인트(없으면 저장된 기본값)
 
 
 @router.post("/register")

@@ -44,6 +44,36 @@ def delivery(s):
     return naver_api.merge_delivery(_preset(s, 'naver_delivery_preset'))
 
 
+def presets(username):
+    """모바일 🚚 배송 설정·🎁 혜택 칸 — 저장된 기본값과 고를 수 있는 값들.
+    저장 위치는 PC 상품DB·네이버 등록 탭과 같은 사용자 설정(naver_delivery_preset·
+    naver_benefit_preset)이라 어느 화면에서 고쳐도 같은 값을 본다."""
+    from db_products import get_all_settings
+    s = get_all_settings(username) or {}
+    bn = _preset(s, 'naver_benefit_preset')
+    return {
+        'delivery': delivery(s),
+        'benefits': {k: int(bn.get(k) or 0) for k in naver_api.BENEFIT_KEYS},
+        'fee_types': [{'code': t, 'label': naver_api.FEE_TYPE_LABELS.get(t, t)}
+                      for t in naver_api.FEE_TYPES],
+        'companies': [{'code': c, 'label': n} for c, n in naver_api.DELIVERY_COMPANIES.items()],
+        'benefit_keys': [{'key': k, 'label': naver_api.BENEFIT_LABELS.get(k, k)}
+                         for k in naver_api.BENEFIT_KEYS],
+    }
+
+
+def save_preset(username, kind, val):
+    """kind: 'delivery' | 'benefit'. 저장한 값(정리된 것)을 돌려준다."""
+    from db_products import set_setting
+    if kind == 'delivery':
+        v = naver_api.merge_delivery(val or {})
+        set_setting(username, 'naver_delivery_preset', json.dumps(v))
+    else:
+        v = {k: max(0, int((val or {}).get(k) or 0)) for k in naver_api.BENEFIT_KEYS}
+        set_setting(username, 'naver_benefit_preset', json.dumps(v))
+    return v
+
+
 def customer_ship(dlv):
     return int(dlv.get('base_fee') or 0) if dlv.get('fee_type') != 'FREE' else 0
 
@@ -445,14 +475,18 @@ def register(username, is_admin, imgs, f, log=None):
             tags = []
 
     food = f.get('food') or None
-    dlv = delivery(s)
+    # 화면(🚚 배송 설정)에서 이 건만 바꿨으면 그 값, 아니면 저장된 기본값
+    dlv = (naver_api.merge_delivery(f['delivery']) if isinstance(f.get('delivery'), dict)
+           else delivery(s))
     cship = int(f.get('customer_ship') if f.get('customer_ship') is not None else customer_ship(dlv))
     if cship != customer_ship(dlv):     # 화면에서 고객 배송비를 바꿨으면 등록 배송비에도 반영 (PC와 같다)
         dlv = naver_api.merge_delivery({
             **dlv, 'fee_type': ('FREE' if cship <= 0 else
                                 ('PAID' if dlv.get('fee_type') == 'FREE' else dlv.get('fee_type'))),
             'base_fee': cship})
-    benefits = {k: v for k, v in _preset(s, 'naver_benefit_preset').items() if v}
+    # 🎁 혜택도 화면 값 우선(저장 안 눌러도 이번 등록엔 화면 값 — PC와 같다)
+    _bn = f.get('benefits') if isinstance(f.get('benefits'), dict) else _preset(s, 'naver_benefit_preset')
+    benefits = {k: int(_bn.get(k) or 0) for k in naver_api.BENEFIT_KEYS if int(_bn.get(k) or 0)}
     brand = str(f.get('brand') or '').strip()
 
     log('네이버에 등록 중…')

@@ -17,7 +17,7 @@ import Header from '@/components/Header';
 import BottomNav from '@/components/BottomNav';
 import { num } from '@/lib/fmt';
 import { shrinkJpegB64 } from '@/lib/client/ptag';
-import { nreg, waitJob, NregStatus, NregPreview, NregResult, Img, Tag } from '@/lib/client/nreg';
+import { nreg, waitJob, NregStatus, NregPreview, NregResult, Img, Tag, NregPresets, Delivery, Benefits } from '@/lib/client/nreg';
 
 async function toImg(f: File, i: number): Promise<Img> {
   return { name: `p${i}.jpg`, content_b64: await shrinkJpegB64(f, 1600) };
@@ -199,6 +199,14 @@ function PreviewForm({ pv, prod, labelFile, busy, setBusy, setMsg, setErr, block
   const [newTag, setNewTag] = useState('');
   const [sub, setSub] = useState('');          // 상세설명·태그·라벨 다시 만들기 진행 중 표시
   const [note, setNote] = useState([pv.label_err, pv.desc_err, pv.tags_err].filter(Boolean).join(' · '));
+  // 🚚 배송 설정·🎁 혜택 — 저장된 기본값으로 시작, 이 건만 바꿀 수 있다(PC 사진등록과 같다)
+  const [ps, setPs] = useState<NregPresets | null>(null);
+  const [dlv, setDlv] = useState<Delivery | null>(null);
+  const [bn, setBn] = useState<Benefits>({});
+  useEffect(() => {
+    nreg.presets().then(r => { setPs(r); setDlv(r.delivery); setBn(r.benefits); })
+      .catch(e => setNote('배송·혜택 설정을 못 불러왔습니다: ' + (e as Error).message));
+  }, []);
 
   // 분석이 끝난 뒤 라벨 사진을 넣으면 그 자리에서 읽어 표를 채운다(코스트코 표가 없을 때)
   const labelSeen = useRef<File | null>(null);
@@ -281,6 +289,7 @@ function PreviewForm({ pv, prod, labelFile, busy, setBusy, setMsg, setErr, block
         costco_no: cno.trim(), barcode: pv.barcode, brand, manufacturer: maker, model_name: model,
         desc, food, spec_rows: rows.filter(([k, v]) => k.trim() && v.trim()),
         tags: tags.map(t => ({ code: t.code, text: t.text })), ai_desc: true, ai_tags: true,
+        delivery: dlv, benefits: ps ? bn : null,
       });
       onDone(await waitJob<NregResult>(job, setMsg));
     } catch (e) { setErr('등록 실패: ' + (e as Error).message); }
@@ -344,7 +353,12 @@ function PreviewForm({ pv, prod, labelFile, busy, setBusy, setMsg, setErr, block
           </Field>
           <Field label="고객 배송비">
             <input value={cship} inputMode="numeric" className={inp}
-              onChange={e => { const v = parseInt(e.target.value.replace(/\D/g, ''), 10) || 0; setCship(v); recalcSale({ customer_ship: v }); }} />
+              onChange={e => {
+                const v = parseInt(e.target.value.replace(/\D/g, ''), 10) || 0; setCship(v); recalcSale({ customer_ship: v });
+                // 계산기의 고객 배송비를 실제 등록 배송비에도 반영 (PC와 같다)
+                setDlv(d => d && ({ ...d, base_fee: v,
+                  fee_type: v <= 0 ? 'FREE' : (d.fee_type === 'FREE' ? 'PAID' : d.fee_type) }));
+              }} />
           </Field>
         </div>
         <Field label="네이버 판매가">
@@ -358,6 +372,13 @@ function PreviewForm({ pv, prod, labelFile, busy, setBusy, setMsg, setErr, block
           {mi && mi.margin < 0 && <span className="text-red-600"> — 역마진</span>}
         </div>
       </div>
+
+      {ps && dlv && <DeliveryBox ps={ps} d={dlv} onChange={nd => {
+        setDlv(nd);
+        const cs = nd.fee_type === 'FREE' ? 0 : nd.base_fee;   // 배송비가 바뀌면 판매가도 다시
+        if (cs !== cship) { setCship(cs); recalcSale({ customer_ship: cs }); }
+      }} />}
+      {ps && <BenefitBox ps={ps} b={bn} onChange={setBn} />}
 
       <details className="text-sm">
         <summary className="text-xs text-gray-600 cursor-pointer">🏷 브랜드·제조사·모델명 {brand ? `(${brand})` : ''}</summary>
@@ -431,5 +452,115 @@ function PreviewForm({ pv, prod, labelFile, busy, setBusy, setMsg, setErr, block
         {busy ? '⏳ 등록 중…' : `🛍 ${num(sale)}원으로 네이버 등록 (사진 ${prod.length}장)`}
       </button>
     </section>
+  );
+}
+
+const numIn = (s: string) => parseInt(s.replace(/\D/g, ''), 10) || 0;
+
+function dlvLabel(ps: NregPresets, d: Delivery) {
+  const t = ps.fee_types.find(x => x.code === d.fee_type)?.label || d.fee_type;
+  const c = ps.companies.find(x => x.code === d.company)?.label || d.company;
+  let s = t;
+  if (d.fee_type === 'UNIT_QUANTITY_PAID') s += ` ${num(d.base_fee)}원 / ${d.repeat_quantity}개마다`;
+  else if (d.fee_type === 'CONDITIONAL_FREE') s += ` ${num(d.base_fee)}원 (${num(d.free_conditional_amount)}원 이상 무료)`;
+  else if (d.fee_type !== 'FREE') s += ` ${num(d.base_fee)}원`;
+  return `${s} · ${c}`;
+}
+
+/** 🚚 배송 설정 — 저장된 기본값(PC 상품DB '배송 설정'과 같은 값)에서 시작, 이 건만 바꾼다. */
+function DeliveryBox({ ps, d, onChange }: { ps: NregPresets; d: Delivery; onChange: (d: Delivery) => void }) {
+  const [saving, setSaving] = useState(false);
+  const [msg, setMsg] = useState('');
+  const set = (p: Partial<Delivery>) => {
+    const nd = { ...d, ...p };
+    if (nd.fee_type !== 'FREE' && nd.base_fee < 10) nd.base_fee = 3000;   // 네이버 최소 10원
+    onChange(nd); setMsg('');
+  };
+  async function save() {
+    setSaving(true);
+    try { await nreg.savePreset('delivery', d); setMsg('✅ 기본 배송 설정으로 저장했습니다 — 모든 등록 경로에 적용'); }
+    catch (e) { setMsg('저장 실패: ' + (e as Error).message); }
+    finally { setSaving(false); }
+  }
+  return (
+    <details className="border rounded-lg p-2 text-sm">
+      <summary className="text-xs font-semibold cursor-pointer">🚚 배송 설정 <span className="font-normal text-gray-500">· {dlvLabel(ps, d)}</span></summary>
+      <div className="space-y-2 mt-2">
+        <div className="text-[11px] text-gray-500">기본값은 저장된 배송 설정입니다. 여기서 바꾸면 <b>이번 등록 건에만</b> 적용됩니다.</div>
+        <div className="grid grid-cols-2 gap-2">
+          <Field label="배송비 유형">
+            <select value={d.fee_type} onChange={e => set({ fee_type: e.target.value })} className={inp}>
+              {ps.fee_types.map(t => <option key={t.code} value={t.code}>{t.label}</option>)}
+            </select>
+          </Field>
+          <Field label="택배사">
+            <select value={d.company} onChange={e => set({ company: e.target.value })} className={inp}>
+              {ps.companies.map(c => <option key={c.code} value={c.code}>{c.label}</option>)}
+            </select>
+          </Field>
+        </div>
+        {d.fee_type !== 'FREE' && (
+          <div className="grid grid-cols-2 gap-2">
+            <Field label="구매자 부담 배송비">
+              <input value={d.base_fee} inputMode="numeric" className={inp} onChange={e => onChange({ ...d, base_fee: numIn(e.target.value) })} />
+            </Field>
+            {d.fee_type === 'UNIT_QUANTITY_PAID' && (
+              <Field label="반복부과 수량" hint="이 수량마다 배송비를 다시 부과">
+                <input value={d.repeat_quantity} inputMode="numeric" className={inp} onChange={e => set({ repeat_quantity: Math.max(1, numIn(e.target.value)) })} />
+              </Field>
+            )}
+            {d.fee_type === 'CONDITIONAL_FREE' && (
+              <Field label="무료 조건금액">
+                <input value={d.free_conditional_amount} inputMode="numeric" className={inp} onChange={e => set({ free_conditional_amount: numIn(e.target.value) })} />
+              </Field>
+            )}
+          </div>
+        )}
+        <div className="grid grid-cols-2 gap-2">
+          <Field label="반품 배송비"><input value={d.return_fee} inputMode="numeric" className={inp} onChange={e => set({ return_fee: numIn(e.target.value) })} /></Field>
+          <Field label="교환 배송비"><input value={d.exchange_fee} inputMode="numeric" className={inp} onChange={e => set({ exchange_fee: numIn(e.target.value) })} /></Field>
+        </div>
+        {d.fee_type === 'FREE' && <div className="text-xs text-amber-700">⚠️ 무료배송입니다 — 판매가에 택배비가 들어 있지 않으면 판매 건마다 택배비만큼 손해입니다.</div>}
+        {d.fee_type !== 'FREE' && d.base_fee < 10 && <div className="text-xs text-red-600">구매자 부담 배송비는 10원 이상이어야 합니다.</div>}
+        <button onClick={save} disabled={saving} className="text-xs border rounded px-2 py-1 disabled:opacity-40">💾 이 설정을 기본 배송 설정으로 저장</button>
+        {msg && <div className="text-xs text-gray-600">{msg}</div>}
+      </div>
+    </details>
+  );
+}
+
+/** 🎁 구매/리뷰 혜택(스마트스토어 포인트) — 저장 안 해도 이번 등록엔 화면 값이 걸린다. */
+function BenefitBox({ ps, b, onChange }: { ps: NregPresets; b: Benefits; onChange: (b: Benefits) => void }) {
+  const [saving, setSaving] = useState(false);
+  const [msg, setMsg] = useState('');
+  const on = ps.benefit_keys.filter(k => (b[k.key] || 0) > 0);
+  async function save(v: Benefits) {
+    setSaving(true);
+    try { await nreg.savePreset('benefit', v); setMsg('✅ 저장했습니다 — 다음 등록부터 기본값'); }
+    catch (e) { setMsg('저장 실패: ' + (e as Error).message); }
+    finally { setSaving(false); }
+  }
+  return (
+    <details className="border rounded-lg p-2 text-sm">
+      <summary className="text-xs font-semibold cursor-pointer">🎁 구매/리뷰 혜택 <span className="font-normal text-gray-500">
+        · {on.length ? on.map(k => `${k.label} ${num(b[k.key])}`).join(', ') : '없음'}</span></summary>
+      <div className="space-y-2 mt-2">
+        <div className="text-[11px] text-gray-500">등록할 때 포인트가 함께 걸립니다. 0은 지급 안 함입니다.</div>
+        <div className="grid grid-cols-2 gap-2">
+          {ps.benefit_keys.map(k => (
+            <Field key={k.key} label={k.label}>
+              <input value={b[k.key] || 0} inputMode="numeric" className={inp}
+                onChange={e => { onChange({ ...b, [k.key]: numIn(e.target.value) }); setMsg(''); }} />
+            </Field>
+          ))}
+        </div>
+        <div className="flex gap-2">
+          <button onClick={() => save(b)} disabled={saving} className="text-xs border rounded px-2 py-1 disabled:opacity-40">💾 혜택 저장</button>
+          <button onClick={() => { const z = Object.fromEntries(ps.benefit_keys.map(k => [k.key, 0])); onChange(z); save(z); }}
+            disabled={saving} className="text-xs border rounded px-2 py-1 text-gray-500 disabled:opacity-40">🧹 지우기</button>
+        </div>
+        {msg && <div className="text-xs text-gray-600">{msg}</div>}
+      </div>
+    </details>
   );
 }
